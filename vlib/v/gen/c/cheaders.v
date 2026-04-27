@@ -477,6 +477,13 @@ typedef __builtin_va_list va_list;
 #endif
 #endif
 #if !defined(_MSC_VER) || defined(__clang__)
+#ifdef __cplusplus
+extern "C" {
+#endif
+// mingw-w64 stdio.h declares these as static __mingw_ovr inline overrides.
+// Skip them under mingw to avoid static-after-extern conflicts when
+// thirdparty headers later include stdio.h.
+#if !defined(__MINGW32__) && !defined(__MINGW64__)
 V_CRT_LINKAGE int V_CRT_CALL vfprintf(FILE *stream, const char *format, va_list ap);
 V_CRT_LINKAGE int V_CRT_CALL vsnprintf(char *str, size_t size, const char *format, va_list ap);
 V_CRT_LINKAGE int V_CRT_CALL fprintf(FILE *stream, const char *format, ...);
@@ -485,6 +492,7 @@ V_CRT_LINKAGE int V_CRT_CALL snprintf(char *str, size_t size, const char *format
 V_CRT_LINKAGE int V_CRT_CALL sprintf(char *str, const char *format, ...);
 V_CRT_LINKAGE int V_CRT_CALL sscanf(const char *str, const char *format, ...);
 V_CRT_LINKAGE int V_CRT_CALL scanf(const char *format, ...);
+#endif
 V_CRT_LINKAGE int V_CRT_CALL puts(const char *str);
 V_CRT_LINKAGE void V_CRT_CALL perror(const char *str);
 V_CRT_LINKAGE int V_CRT_CALL fputs(const char *str, FILE *stream);
@@ -558,6 +566,9 @@ V_CRT_LINKAGE int V_CRT_CALL _wputenv(const unsigned short *envstring);
 #endif
 V_CRT_LINKAGE int V_CRT_CALL _vscprintf(const char *format, va_list ap);
 V_CRT_LINKAGE int V_CRT_CALL _vsnprintf_s(char *buffer, size_t size, size_t count, const char *format, va_list ap);
+#endif
+#ifdef __cplusplus
+}
 #endif
 #endif
 #ifndef _IOFBF
