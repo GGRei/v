@@ -106,6 +106,35 @@ fn test_can_compile_cleanc_locally_follows_target_contract() {
 	assert non_host_prefs.source_filter_target_os() == non_host
 }
 
+fn test_can_run_target_binary_locally_follows_effective_target() {
+	host := normalize_target_os_name(os.user_os())
+	host_prefs := new_preferences_from_args(['-os', host, 'main.v'])
+	assert host_prefs.can_run_target_binary_locally()
+
+	cross_prefs := new_preferences_from_args(['-os', 'cross', 'main.v'])
+	assert cross_prefs.can_run_target_binary_locally()
+
+	native_cross_prefs := new_preferences_from_args(['-b', 'x64', '-os', 'cross', 'main.v'])
+	assert native_cross_prefs.backend == .x64
+	assert !native_cross_prefs.can_run_target_binary_locally()
+
+	freestanding_prefs := new_preferences_from_args(['-freestanding', '-os', host, 'main.v'])
+	assert !freestanding_prefs.can_run_target_binary_locally()
+
+	mut native_freestanding_prefs := new_preferences_from_args(['-b', 'x64', '-freestanding', '-os',
+		host, 'main.v'])
+	native_freestanding_prefs.backend = .x64
+	assert !native_freestanding_prefs.can_run_target_binary_locally()
+
+	non_host := if host == 'windows' { 'linux' } else { 'windows' }
+	non_host_prefs := new_preferences_from_args(['-os', non_host, 'main.v'])
+	assert !non_host_prefs.can_run_target_binary_locally()
+
+	mut native_non_host_prefs := new_preferences_from_args(['-b', 'x64', '-os', non_host, 'main.v'])
+	native_non_host_prefs.backend = .x64
+	assert !native_non_host_prefs.can_run_target_binary_locally()
+}
+
 fn test_new_preferences_from_args_parses_freestanding_hooks() {
 	prefs := new_preferences_from_args(['-freestanding', '-fhooks', 'output,panic', '-os', 'linux',
 		'main.v'])

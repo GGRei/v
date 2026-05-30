@@ -203,6 +203,22 @@ pub fn (p &Preferences) can_compile_cleanc_locally() bool {
 	return p.normalized_target_os() == normalize_target_os_name(os.user_os())
 }
 
+pub fn (p &Preferences) can_run_target_binary_locally() bool {
+	if p == unsafe { nil } {
+		return true
+	}
+	if p.is_freestanding() {
+		return false
+	}
+	if p.backend == .cleanc && p.is_cross_target() {
+		return true
+	}
+	if p.normalized_target_os() != normalize_target_os_name(os.user_os()) {
+		return false
+	}
+	return true
+}
+
 pub fn (p &Preferences) source_filter_target_os() string {
 	if p == unsafe { nil } {
 		return normalize_target_os_name(os.user_os())

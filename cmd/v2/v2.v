@@ -109,7 +109,7 @@ fn should_auto_run_test_binary(prefs &pref.Preferences) bool {
 	if prefs == unsafe { nil } {
 		return true
 	}
-	if prefs.backend == .cleanc && !prefs.can_compile_cleanc_locally() {
+	if !prefs.can_run_target_binary_locally() {
 		return false
 	}
 	return true

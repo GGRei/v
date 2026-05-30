@@ -120,6 +120,22 @@ fn run_v2_to_output(v2_binary string, tmp_dir string, name string, args []string
 	}
 }
 
+fn run_v2_to_output_with_cache(v2_binary string, tmp_dir string, name string, args []string, source string, output_path string) CleancCliResult {
+	source_path := os.join_path(tmp_dir, '${name}.v')
+	os.write_file(source_path, source) or { panic(err) }
+	cmd := 'cd "${e2e_repo_root()}" && "${v2_binary}" -gc none --no-parallel ${args.join(' ')} -o "${output_path}" "${source_path}"'
+	res := os.execute(cmd)
+	c_path := generated_c_output_path(output_path)
+	c_source := if os.exists(c_path) { os.read_file(c_path) or { '' } } else { '' }
+	return CleancCliResult{
+		exit_code: res.exit_code
+		output:    res.output
+		c_source:  c_source
+		out_path:  output_path
+		c_path:    c_path
+	}
+}
+
 fn assert_cli_success(res CleancCliResult) {
 	assert res.exit_code == 0, res.output
 	assert os.exists(res.out_path), res.output
@@ -983,6 +999,23 @@ fn main() {}
 	], minimal_source, non_host_out)
 	assert_generated_c_only(non_host_res)
 	assert non_host_res.c_path == non_host_out + '.c'
+
+	non_host_cached_out := os.join_path(tmp_dir, 'target_${non_host_target}_cached_app')
+	non_host_cached_res := run_v2_to_output_with_cache(v2_binary, tmp_dir,
+		'concrete_non_host_generation_only_cached', [
+		'-cc',
+		missing_cc,
+		'-os',
+		non_host_target,
+	], 'module main
+
+fn main() {
+	println(123)
+}
+', non_host_cached_out)
+	assert_generated_c_only(non_host_cached_res)
+	assert non_host_cached_res.c_path == non_host_cached_out + '.c'
+	assert non_host_cached_res.c_source.contains('void println(string s) {'), non_host_cached_res.c_source
 }
 
 fn test_cleanc_cli_does_not_auto_run_stale_test_binary_for_generation_only_target() {
@@ -1015,4 +1048,53 @@ exit 73
 	assert !res.output.contains('STALE_AUTORUN_EXECUTED'), res.output
 	assert os.exists(os.join_path(tmp_dir, 'stale_autorun_test.c')), res.output
 	assert os.exists(stale_path), res.output
+
+	native_source_path := os.join_path(tmp_dir, 'native_cross_autorun_test.v')
+	native_stale_path := os.join_path(tmp_dir, 'native_cross_autorun_test')
+	os.write_file(native_source_path, 'module main
+
+fn main() {}
+') or { panic(err) }
+	os.write_file(native_stale_path, '#!/bin/sh
+echo NATIVE_STALE_AUTORUN_EXECUTED
+exit 74
+') or {
+		panic(err)
+	}
+	os.chmod(native_stale_path, 0o755) or { panic(err) }
+	non_host_target := concrete_non_host_e2e_os()
+	native_res :=
+		os.execute('cd "${tmp_dir}" && "${v2_binary}" -gc none -nocache --no-parallel -b x64 -os ${non_host_target} --skip-builtin "${native_source_path}"')
+	assert native_res.exit_code == 0, native_res.output
+	assert !native_res.output.contains('NATIVE_STALE_AUTORUN_EXECUTED'), native_res.output
+	assert os.exists(native_stale_path), native_res.output
+}
+
+fn test_cleanc_cli_auto_runs_cross_test_binary_when_compiled_for_host() {
+	if !host_cc_available() {
+		eprintln('skip: cc is not available for cleanc cross auto-run e2e')
+		return
+	}
+	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_cleanc_cross_autorun_${os.getpid()}')
+	os.rmdir_all(tmp_dir) or {}
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+	v2_binary := build_v2_for_target_e2e(tmp_dir)
+	source_path := os.join_path(tmp_dir, 'cross_autorun_test.v')
+	os.write_file(source_path, 'module main
+
+fn main() {
+	println("CROSS_AUTORUN_OK")
+}
+') or {
+		panic(err)
+	}
+	env_prefix := if host_c_e2e_flags().len > 0 { 'V2CFLAGS="${host_c_e2e_flags()}" ' } else { '' }
+	res :=
+		os.execute('cd "${tmp_dir}" && ${env_prefix}"${v2_binary}" -gc none -nocache --no-parallel -cc cc -os cross "${source_path}"')
+	assert res.exit_code == 0, res.output
+	assert res.output.contains('CROSS_AUTORUN_OK'), res.output
+	assert !os.exists(os.join_path(tmp_dir, 'cross_autorun_test')), res.output
 }

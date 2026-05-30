@@ -992,8 +992,10 @@ fn (mut b Builder) gen_cleanc() {
 		c_output_name := cleanc_c_output_name(output_name)
 		mut c_source := ''
 		// For .c output, prefer the same cached-core split used by normal
-		// build+link flow, when the cache is valid.
-		if use_cache && !b.pref.skip_builtin && b.has_module('builtin') && b.has_module('strconv')
+		// build+link flow, when the cache is valid. For C-only output forced
+		// by disabled local compilation, emit a complete translation unit.
+		if output_name.ends_with('.c') && b.can_compile_cleanc_locally() && use_cache
+			&& !b.pref.skip_builtin && b.has_module('builtin') && b.has_module('strconv')
 			&& b.can_use_cached_core_headers() {
 			main_modules := b.collect_modules_excluding(core_cached_module_names)
 			if main_modules.len > 0 {
