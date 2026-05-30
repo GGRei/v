@@ -208,6 +208,104 @@ fn test_freestanding_diagnostics_gate_direct_runtime_helpers_by_capability() {
 	}) == 'print_conversion'
 }
 
+fn test_freestanding_diagnostics_skip_inactive_conditional_functions() {
+	ctx := FreestandingScanContext{
+		user_defines: ['freestanding']
+		target_os:    'linux'
+	}
+	hosted_call := ast.Stmt(ast.ExprStmt{
+		expr: ast.Expr(ast.CallExpr{
+			lhs: ast.Expr(ast.Ident{
+				name: 'println'
+			})
+		})
+	})
+	inactive_windows_fn := ast.Stmt(ast.FnDecl{
+		attributes: [
+			ast.Attribute{
+				comptime_cond: ast.Expr(ast.Ident{
+					name: 'windows'
+				})
+			},
+		]
+		stmts:      [hosted_call]
+	})
+	inactive_not_freestanding_fn := ast.Stmt(ast.FnDecl{
+		attributes: [
+			ast.Attribute{
+				comptime_cond: ast.Expr(ast.PrefixExpr{
+					op:   .not
+					expr: ast.Expr(ast.Ident{
+						name: 'freestanding'
+					})
+				})
+			},
+		]
+		stmts:      [hosted_call]
+	})
+	active_fn := ast.Stmt(ast.FnDecl{
+		attributes: [
+			ast.Attribute{
+				comptime_cond: ast.Expr(ast.Ident{
+					name: 'freestanding'
+				})
+			},
+		]
+		stmts:      [hosted_call]
+	})
+	assert freestanding_restricted_call_in_stmt(inactive_windows_fn, ctx) == ''
+	assert freestanding_restricted_call_in_stmt(inactive_not_freestanding_fn, ctx) == ''
+	assert freestanding_restricted_call_in_stmt(active_fn, ctx) == 'println'
+}
+
+fn test_freestanding_diagnostics_do_not_require_alloc_for_fixed_arrays() {
+	ctx := FreestandingScanContext{
+		user_defines: ['freestanding']
+		target_os:    'linux'
+	}
+	fixed_array := ast.Expr(ast.ArrayInitExpr{
+		typ: ast.Expr(ast.Type(ast.ArrayFixedType{
+			len:       ast.Expr(ast.BasicLiteral{
+				kind:  .number
+				value: '3'
+			})
+			elem_type: ast.Expr(ast.Ident{
+				name: 'int'
+			})
+		}))
+	})
+	dynamic_array := ast.Expr(ast.ArrayInitExpr{
+		typ: ast.Expr(ast.Type(ast.ArrayType{
+			elem_type: ast.Expr(ast.Ident{
+				name: 'int'
+			})
+		}))
+	})
+	fixed_literal_array := ast.Expr(ast.ArrayInitExpr{
+		exprs: [
+			ast.Expr(ast.BasicLiteral{
+				kind:  .number
+				value: '1'
+			}),
+			ast.Expr(ast.BasicLiteral{
+				kind:  .number
+				value: '2'
+			}),
+			ast.Expr(ast.BasicLiteral{
+				kind:  .number
+				value: '3'
+			}),
+		]
+		len:   ast.Expr(ast.PostfixExpr{
+			op:   .not
+			expr: ast.empty_expr
+		})
+	})
+	assert freestanding_restricted_call_in_expr(fixed_array, ctx) == ''
+	assert freestanding_restricted_call_in_expr(fixed_literal_array, ctx) == ''
+	assert freestanding_restricted_call_in_expr(dynamic_array, ctx) == 'alloc'
+}
+
 fn test_collect_cflags_from_sources_uses_or_and_not_precedence() {
 	source := 'module main
 

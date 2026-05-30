@@ -490,9 +490,13 @@ fn test_comptime_if_directives_support_infix_os_conditions() {
 	#include <active_or_marker.h>
 }
 
-\$if linux && !windows {
-	#include <active_and_marker.h>
-}
+	\$if linux && !windows {
+		#include <active_and_marker.h>
+	}
+
+	\$if macos {
+		#include <active_macos_marker.h>
+	}
 
 fn main() {}
 '
@@ -500,16 +504,48 @@ fn main() {}
 		'linux', false, false)
 	assert linux_src.contains('#include <active_or_marker.h>')
 	assert linux_src.contains('#include <active_and_marker.h>')
+	assert !linux_src.contains('#include <active_macos_marker.h>')
 
 	macos_src := generated_c_for_target_program_with_options('comptime_if_infix_macos', source,
 		'macos', false, false)
 	assert !macos_src.contains('#include <active_or_marker.h>')
 	assert !macos_src.contains('#include <active_and_marker.h>')
+	assert macos_src.contains('#include <active_macos_marker.h>')
 
 	windows_src := generated_c_for_target_program_with_options('comptime_if_infix_windows', source,
 		'windows', false, false)
 	assert windows_src.contains('#include <active_or_marker.h>')
 	assert !windows_src.contains('#include <active_and_marker.h>')
+	assert !windows_src.contains('#include <active_macos_marker.h>')
+
+	cross_src := generated_c_for_target_program_with_options('comptime_if_infix_cross', source,
+		'cross', false, false)
+	assert cross_src.contains('defined(__linux__)')
+	assert cross_src.contains('defined(_WIN32)')
+	assert cross_src.contains('#include <active_or_marker.h>')
+	assert cross_src.contains('!(defined(_WIN32))')
+	assert cross_src.contains('#include <active_and_marker.h>')
+	assert cross_src.contains(apple_macos_cross_guard)
+	assert cross_src.contains('#include <active_macos_marker.h>')
+}
+
+fn test_cross_comptime_if_else_directives_do_not_emit_selected_else_unguarded() {
+	source := 'module main
+
+\$if linux {
+	#include <linux_marker.h>
+} \$else {
+	#include <fallback_marker.h>
+}
+
+fn main() {}
+'
+	cross_src := generated_c_for_target_program_with_options('comptime_if_else_cross', source,
+		'cross', false, false)
+	assert cross_src.contains('#if defined(__linux__)\n#include <linux_marker.h>\n#endif')
+	assert cross_src.contains('#if !(defined(__linux__))\n#include <fallback_marker.h>\n#endif')
+	assert cross_src.count('#include <fallback_marker.h>') == 1
+	assert cross_src.count('#include <linux_marker.h>') == 1
 }
 
 fn test_c_directives_keep_freestanding_user_os_directives_for_concrete_target() {
@@ -538,6 +574,13 @@ fn test_preamble_specializes_apple_includes_by_target() {
 	assert cross_src.contains('#if ${apple_macos_cross_guard}')
 	assert !cross_src.contains('#ifdef __APPLE__')
 	assert cross_src.contains('#include <mach/mach.h>')
+	assert cross_src.contains('#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <dirent.h>\n#include <pthread.h>\n#endif')
+	assert cross_src.contains('#if defined(_WIN32)\ntypedef struct sync__RwMutex { SRWLOCK mutex; u32 inited; } sync__RwMutex;')
+	assert cross_src.contains('#else\ntypedef struct sync__RwMutex { pthread_rwlock_t mutex; u32 inited; } sync__RwMutex;')
+	full_cross_src := full_preamble_for_target('cross', [])
+	assert full_cross_src.contains('#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <unistd.h>')
+	assert full_cross_src.contains('#include <pthread.h>\n#include <sys/time.h>')
+	assert full_cross_src.contains('extern char** environ;\n#endif')
 }
 
 fn test_freestanding_minimal_preamble_avoids_implicit_os_runtime_headers() {
@@ -548,6 +591,7 @@ fn test_freestanding_minimal_preamble_avoids_implicit_os_runtime_headers() {
 	assert src.contains('#include <string.h>')
 	assert !src.contains('#include <stdio.h>')
 	assert !src.contains('#include <stdlib.h>')
+	assert !src.contains('#include <windows.h>')
 	assert !src.contains('#include <dirent.h>')
 	assert !src.contains('#include <pthread.h>')
 	assert !src.contains('#include <mach/mach.h>')
@@ -562,6 +606,7 @@ fn test_freestanding_full_preamble_avoids_implicit_os_runtime_headers() {
 	assert src.contains('#include <stddef.h>')
 	assert src.contains('#include <string.h>')
 	assert !src.contains('#include <unistd.h>')
+	assert !src.contains('#include <windows.h>')
 	assert !src.contains('#include <pthread.h>')
 	assert !src.contains('#include <dirent.h>')
 	assert !src.contains('#include <termios.h>')
@@ -577,6 +622,7 @@ fn test_freestanding_field_full_preamble_avoids_implicit_os_runtime_headers() {
 	assert src.contains('#include <stddef.h>')
 	assert src.contains('#include <string.h>')
 	assert !src.contains('#include <unistd.h>')
+	assert !src.contains('#include <windows.h>')
 	assert !src.contains('#include <pthread.h>')
 	assert !src.contains('#include <dirent.h>')
 	assert !src.contains('#include <termios.h>')
@@ -645,7 +691,10 @@ fn test_windows_minimal_preamble_avoids_posix_headers() {
 	assert !src.contains('#include <dirent.h>')
 	assert !src.contains('#include <pthread.h>')
 	assert !src.contains('#include <mach/mach.h>')
-	assert src.contains('typedef struct sync__RwMutex { u32 inited; } sync__RwMutex;')
+	assert src.contains('#include <windows.h>')
+	assert src.contains('typedef struct sync__RwMutex { SRWLOCK mutex; u32 inited; } sync__RwMutex;')
+	assert src.contains('AcquireSRWLockExclusive')
+	assert !src.contains('static inline void sync__RwMutex_lock(sync__RwMutex* m) { (void)m; }')
 	assert !src.contains('pthread_rwlock_t')
 	assert src.contains('#include <stdio.h>')
 	assert src.contains('#include <stdlib.h>')
@@ -659,7 +708,10 @@ fn test_windows_full_preamble_avoids_posix_headers() {
 	assert !src.contains('#include <sys/ioctl.h>')
 	assert !src.contains('#include <dirent.h>')
 	assert !src.contains('#include <pthread.h>')
-	assert src.contains('typedef struct sync__RwMutex { u32 inited; } sync__RwMutex;')
+	assert src.contains('#include <windows.h>')
+	assert src.contains('typedef struct sync__RwMutex { SRWLOCK mutex; u32 inited; } sync__RwMutex;')
+	assert src.contains('AcquireSRWLockExclusive')
+	assert !src.contains('static inline void sync__RwMutex_lock(sync__RwMutex* m) { (void)m; }')
 	assert !src.contains('pthread_rwlock_t')
 	assert src.contains('#include <stdio.h>')
 	assert src.contains('#include <stdlib.h>')

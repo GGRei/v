@@ -62,7 +62,7 @@ fn run_v2_to_c(v2_binary string, tmp_dir string, name string, args []string, sou
 	source_path := os.join_path(tmp_dir, '${name}.v')
 	out_path := os.join_path(tmp_dir, '${name}.c')
 	os.write_file(source_path, source) or { panic(err) }
-	cmd := 'cd "${e2e_repo_root()}" && "${v2_binary}" -backend cleanc -gc none -nocache --no-parallel ${args.join(' ')} -o "${out_path}" "${source_path}"'
+	cmd := 'cd "${e2e_repo_root()}" && "${v2_binary}" -gc none -nocache --no-parallel ${args.join(' ')} -o "${out_path}" "${source_path}"'
 	res := os.execute(cmd)
 	c_source := if os.exists(out_path) { os.read_file(out_path) or { '' } } else { '' }
 	return CleancCliResult{
@@ -94,7 +94,7 @@ fn run_v2_to_binary(v2_binary string, tmp_dir string, name string, args []string
 	out_path := e2e_binary_output_path(tmp_dir, name)
 	os.write_file(source_path, source) or { panic(err) }
 	env_prefix := if host_c_e2e_flags().len > 0 { 'V2CFLAGS="${host_c_e2e_flags()}" ' } else { '' }
-	cmd := 'cd "${e2e_repo_root()}" && ${env_prefix}"${v2_binary}" -backend cleanc -gc none -nocache --no-parallel ${args.join(' ')} -o "${out_path}" "${source_path}"'
+	cmd := 'cd "${e2e_repo_root()}" && ${env_prefix}"${v2_binary}" -gc none -nocache --no-parallel ${args.join(' ')} -o "${out_path}" "${source_path}"'
 	res := os.execute(cmd)
 	return CleancCliResult{
 		exit_code: res.exit_code
@@ -107,7 +107,7 @@ fn run_v2_to_binary(v2_binary string, tmp_dir string, name string, args []string
 fn run_v2_to_output(v2_binary string, tmp_dir string, name string, args []string, source string, output_path string) CleancCliResult {
 	source_path := os.join_path(tmp_dir, '${name}.v')
 	os.write_file(source_path, source) or { panic(err) }
-	cmd := 'cd "${e2e_repo_root()}" && "${v2_binary}" -backend cleanc -gc none -nocache --no-parallel ${args.join(' ')} -o "${output_path}" "${source_path}"'
+	cmd := 'cd "${e2e_repo_root()}" && "${v2_binary}" -gc none -nocache --no-parallel ${args.join(' ')} -o "${output_path}" "${source_path}"'
 	res := os.execute(cmd)
 	c_path := generated_c_output_path(output_path)
 	c_source := if os.exists(c_path) { os.read_file(c_path) or { '' } } else { '' }
@@ -314,7 +314,10 @@ fn test_cleanc_cli_freestanding_diagnostics_and_user_directives() {
 
 	help_res := os.execute('"${v2_binary}" --definitely-unknown-freestanding-flag')
 	assert help_res.exit_code != 0, help_res.output
-	assert help_res.output.contains('Advanced cleanc hooks for --skip-builtin --skip-type-check stubs'), help_res.output
+	assert help_res.output.contains('-fhooks <values>'), help_res.output
+	assert help_res.output.contains('Advanced freestanding hooks for --skip-builtin --skip-type-check stubs'), help_res.output
+	assert help_res.output.contains('-b <name>'), help_res.output
+	assert help_res.output.contains('omit for cleanc'), help_res.output
 
 	assert help_res.output.contains('Override target OS (default: host OS)'), help_res.output
 
@@ -371,7 +374,7 @@ fn main() {}
 
 	output_hook_res := run_v2_to_c(v2_binary, tmp_dir, 'freestanding_output_hook', [
 		'-freestanding',
-		'-freestanding-hooks',
+		'-fhooks',
 		'output',
 		'-os',
 		'linux',
@@ -389,7 +392,7 @@ fn main() {}
 	output_hook_builtin_res := run_v2_to_c(v2_binary, tmp_dir,
 		'freestanding_output_hook_builtin_runtime', [
 		'-freestanding',
-		'-freestanding-hooks',
+		'-fhooks',
 		'output',
 		'-os',
 		'linux',
@@ -401,7 +404,7 @@ fn main() {}
 	output_hook_skip_builtin_typecheck_res := run_v2_to_c(v2_binary, tmp_dir,
 		'freestanding_output_hook_skip_builtin_typecheck_gate', [
 		'-freestanding',
-		'-freestanding-hooks',
+		'-fhooks',
 		'output',
 		'-os',
 		'linux',
@@ -415,7 +418,7 @@ fn main() {}
 		hook_runtime_res := run_v2_to_c(v2_binary, tmp_dir,
 			'freestanding_${hook_name}_builtin_runtime_gate', [
 			'-freestanding',
-			'-freestanding-hooks',
+			'-fhooks',
 			hook_name,
 			'-os',
 			'linux',
@@ -427,7 +430,7 @@ fn main() {}
 
 	output_missing_res := run_v2_to_c(v2_binary, tmp_dir, 'freestanding_output_missing', [
 		'-freestanding',
-		'-freestanding-hooks',
+		'-fhooks',
 		'panic',
 		'-os',
 		'linux',
@@ -472,7 +475,7 @@ fn main() {
 		print_conversion_res := run_v2_to_c(v2_binary, tmp_dir,
 			'freestanding_output_only_${print_call.all_before('(')}_conversion', [
 			'-freestanding',
-			'-freestanding-hooks',
+			'-fhooks',
 			'output',
 			'-os',
 			'linux',
@@ -490,7 +493,7 @@ fn main() {
 
 	panic_hook_res := run_v2_to_c(v2_binary, tmp_dir, 'freestanding_panic_hook', [
 		'-freestanding',
-		'-freestanding-hooks',
+		'-fhooks',
 		'panic',
 		'-os',
 		'linux',
@@ -504,7 +507,7 @@ fn main() {
 
 	panic_missing_res := run_v2_to_c(v2_binary, tmp_dir, 'freestanding_panic_missing', [
 		'-freestanding',
-		'-freestanding-hooks',
+		'-fhooks',
 		'output',
 		'-os',
 		'linux',
@@ -526,7 +529,7 @@ fn main() {
 
 	alloc_missing_res := run_v2_to_c(v2_binary, tmp_dir, 'freestanding_alloc_missing', [
 		'-freestanding',
-		'-freestanding-hooks',
+		'-fhooks',
 		'output',
 		'-os',
 		'linux',
@@ -548,7 +551,7 @@ fn main() {
 
 	arguments_res := run_v2_to_c(v2_binary, tmp_dir, 'freestanding_arguments', [
 		'-freestanding',
-		'-freestanding-hooks',
+		'-fhooks',
 		'alloc',
 		'-os',
 		'linux',
@@ -566,7 +569,7 @@ fn main() {
 	alloc_hook_string_interpolation_res := run_v2_to_c(v2_binary, tmp_dir,
 		'freestanding_alloc_string_interpolation', [
 		'-freestanding',
-		'-freestanding-hooks',
+		'-fhooks',
 		'alloc',
 		'-os',
 		'linux',
@@ -583,7 +586,7 @@ fn main() {
 
 	alloc_hook_res := run_v2_to_c(v2_binary, tmp_dir, 'freestanding_alloc_hook', [
 		'-freestanding',
-		'-freestanding-hooks',
+		'-fhooks',
 		'alloc',
 		'-os',
 		'linux',
@@ -719,8 +722,45 @@ fn main() {
 		eprintln('inactive')
 	}
 }
-")
+	")
 	assert_cli_success(inactive_branch_res)
+
+	inactive_fn_attr_res := run_v2_to_c(v2_binary, tmp_dir, 'freestanding_inactive_fn_attributes', [
+		'-freestanding',
+		'-os',
+		'linux',
+		'--skip-builtin',
+		'--skip-type-check',
+	], "module main
+
+	@[if !freestanding]
+	fn hosted_only() {
+		println('inactive')
+	}
+
+	@[if windows]
+	fn windows_only() {
+		eprintln('inactive')
+	}
+
+	fn main() {}
+	")
+	assert_cli_success(inactive_fn_attr_res)
+
+	fixed_array_res := run_v2_to_c(v2_binary, tmp_dir, 'freestanding_fixed_array_no_alloc', [
+		'-freestanding',
+		'-os',
+		'linux',
+		'--skip-builtin',
+		'--skip-type-check',
+	], 'module main
+
+	fn main() {
+		_ := [3]int{init: 0}
+		_ := [1, 2, 3]!
+	}
+	')
+	assert_cli_success(fixed_array_res)
 
 	inactive_import_res := run_v2_to_c(v2_binary, tmp_dir, 'freestanding_inactive_import', [
 		'-freestanding',
@@ -756,7 +796,7 @@ fn main() {
 	hook_inactive_branch_res := run_v2_to_c(v2_binary, tmp_dir,
 		'freestanding_hook_inactive_branch', [
 		'-freestanding',
-		'-freestanding-hooks',
+		'-fhooks',
 		'output',
 		'-os',
 		'linux',

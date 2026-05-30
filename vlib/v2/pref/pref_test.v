@@ -3,13 +3,13 @@ module pref
 import os
 
 fn test_source_files_from_args_skips_os_option_value() {
-	files := source_files_from_args(['-backend', 'cleanc', '-os', 'windows', '-o', 'app', 'main.v'])
+	files := source_files_from_args(['-b', 'x64', '-os', 'windows', '-o', 'app', 'main.v'])
 	assert files == ['main.v']
 }
 
-fn test_source_files_from_args_skips_freestanding_hooks_option_value() {
-	files := source_files_from_args(['-backend', 'cleanc', '-freestanding', '-freestanding-hooks',
-		'output,panic', '-o', 'app', 'main.v'])
+fn test_source_files_from_args_skips_fhooks_option_value() {
+	files := source_files_from_args(['-freestanding', '-fhooks', 'output,panic', '-o', 'app',
+		'main.v'])
 	assert files == ['main.v']
 }
 
@@ -24,7 +24,7 @@ fn test_new_preferences_from_args_defaults_to_host_target() {
 }
 
 fn test_new_preferences_from_args_parses_target_os() {
-	linux_prefs := new_preferences_from_args(['-backend', 'cleanc', '-os', 'linux', 'main.v'])
+	linux_prefs := new_preferences_from_args(['-os', 'linux', 'main.v'])
 	assert linux_prefs.target_os == 'linux'
 	assert linux_prefs.normalized_target_os() == 'linux'
 	assert !linux_prefs.is_cross_target()
@@ -73,8 +73,8 @@ fn test_new_preferences_from_args_freestanding_is_distinct_from_cross() {
 }
 
 fn test_new_preferences_from_args_parses_freestanding_hooks() {
-	prefs := new_preferences_from_args(['-freestanding', '-freestanding-hooks', 'output,panic',
-		'-os', 'linux', 'main.v'])
+	prefs := new_preferences_from_args(['-freestanding', '-fhooks', 'output,panic', '-os', 'linux',
+		'main.v'])
 	assert prefs.is_freestanding()
 	assert prefs.freestanding_hook_list() == ['output', 'panic']
 	assert prefs.has_freestanding_hooks()
@@ -111,8 +111,7 @@ fn test_freestanding_hook_defines_do_not_grant_hook_capabilities() {
 }
 
 fn test_new_preferences_from_args_expands_minimal_freestanding_hooks() {
-	prefs :=
-		new_preferences_from_args(['-freestanding', '-freestanding-hooks', 'minimal', 'main.v'])
+	prefs := new_preferences_from_args(['-freestanding', '-fhooks', 'minimal', 'main.v'])
 	assert prefs.freestanding_hook_list() == ['output', 'panic', 'alloc']
 	assert prefs.has_freestanding_hook('output')
 	assert prefs.has_freestanding_hook('panic')
@@ -136,7 +135,7 @@ fn test_new_preferences_using_options_accepts_target_os_and_freestanding() {
 
 fn test_new_preferences_using_options_accepts_freestanding_hooks() {
 	prefs := new_preferences_using_options(['--cleanc', '--os-linux', '--freestanding',
-		'--freestanding-hooks-output,alloc'])
+		'--fhooks-output,alloc'])
 	assert prefs.is_freestanding()
 	assert prefs.freestanding_hook_list() == ['output', 'alloc']
 	assert prefs.has_freestanding_hook('output')

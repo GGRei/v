@@ -58,7 +58,7 @@ pub mut:
 	target_os             string = os.user_os()
 	output_cross_c        bool     // -os cross: keep generated C portable
 	freestanding          bool     // -freestanding: target a platform contract without an OS runtime
-	freestanding_hooks    []string // -freestanding-hooks: explicit platform capabilities
+	freestanding_hooks    []string // -fhooks: explicit freestanding platform capabilities
 	output_file           string
 	printfn_list          []string // List of function names whose generated C source should be printed
 	user_defines          []string // User-defined comptime flags via -d <name>
@@ -281,7 +281,7 @@ fn add_freestanding_hook_defines(mut defines []string, hooks []string) {
 
 pub fn source_files_from_args(args []string) []string {
 	options_with_values := ['-backend', '-b', '-o', '-output', '-arch', '-printfn', '-gc', '-d',
-		'-hot-fn', '-cc', '-os', '-freestanding-hooks']
+		'-hot-fn', '-cc', '-os', '-fhooks']
 	mut files := []string{}
 	mut skip_next := false
 	for arg in args {
@@ -372,7 +372,7 @@ pub fn new_preferences_from_args(args []string) Preferences {
 	output_file := cmdline.option(args, '-o', cmdline.option(args, '-output', ''))
 	ccompiler := cmdline.option(args, '-cc', '')
 	target_os_arg := cmdline.option(args, '-os', '')
-	freestanding_hooks_arg := cmdline.option(args, '-freestanding-hooks', '')
+	freestanding_hooks_arg := cmdline.option(args, '-fhooks', '')
 	// Without -os, V2 targets the host OS. -os is an explicit target override;
 	// -os cross and -freestanding express separate portable/platform contracts.
 	normalized_target_os := if target_os_arg.len > 0 {
@@ -436,7 +436,7 @@ pub fn new_preferences_from_args(args []string) Preferences {
 	freestanding := '-freestanding' in args || '--freestanding' in args
 	freestanding_hooks := parse_freestanding_hooks(freestanding_hooks_arg)
 	if freestanding_hooks.len > 0 && !freestanding {
-		eprintln('error: -freestanding-hooks requires -freestanding')
+		eprintln('error: -fhooks requires -freestanding')
 		exit(1)
 	}
 	if freestanding && 'freestanding' !in all_defines {
@@ -457,7 +457,7 @@ pub fn new_preferences_from_args(args []string) Preferences {
 
 	// Validate flags: error on unknown options
 	known_flags_with_values := ['-backend', '-b', '-o', '-output', '-arch', '-printfn', '-gc',
-		'-d', '-hot-fn', '-cc', '-os', '-freestanding-hooks']
+		'-d', '-hot-fn', '-cc', '-os', '-fhooks']
 	mut known_boolean_flags := ['--debug', '--verbose', '-v', '--skip-genv', '--skip-builtin',
 		'--skip-imports', '--skip-type-check', '--no-parallel', '-nocache', '--nocache',
 		'-nomarkused', '--nomarkused', '-showcc', '--showcc', '-stats', '--stats',
@@ -475,8 +475,8 @@ pub fn new_preferences_from_args(args []string) Preferences {
 			eprintln('')
 			eprintln('Options:')
 			eprintln('  -o <file>              Output file name')
-			eprintln('  -backend <name>        Backend: eval, cleanc, c, v, arm64, x64 (default: cleanc)')
-			eprintln('  -b <name>              Short for -backend')
+			eprintln('  -b <name>              Backend: eval, cleanc, c, v, arm64, x64 (default: cleanc; omit for cleanc)')
+			eprintln('                         -backend <name> is accepted as a compatibility alias')
 			eprintln('  -arch <name>           Architecture: auto, x64, arm64 (default: auto)')
 			eprintln('  -os <target>           Override target OS (default: host OS): linux, macos, windows, cross')
 			eprintln('  -printfn <names>       Print generated C for functions (comma-separated)')
@@ -487,7 +487,7 @@ pub fn new_preferences_from_args(args []string) Preferences {
 			eprintln('  -prod                  Production build: optimize with -O3 -flto')
 			eprintln('  -prealloc              Use arena allocation (faster, not thread-safe)')
 			eprintln('  -freestanding          Generate for a freestanding platform contract')
-			eprintln('  -freestanding-hooks    Advanced cleanc hooks for --skip-builtin --skip-type-check stubs')
+			eprintln('  -fhooks <values>       Advanced freestanding hooks for --skip-builtin --skip-type-check stubs')
 			eprintln('                         Values: output, panic, alloc, minimal')
 			eprintln('  -O0                    Skip SSA optimization (faster compile, slower code)')
 			$if ownership ? {
@@ -557,12 +557,12 @@ fn target_os_from_option_tokens(options []string) string {
 fn freestanding_hooks_from_option_tokens(options []string) []string {
 	mut hooks := []string{}
 	for opt in options {
-		if opt.starts_with('--freestanding-hooks-') {
-			for hook in parse_freestanding_hooks(opt.all_after('--freestanding-hooks-')) {
+		if opt.starts_with('--fhooks-') {
+			for hook in parse_freestanding_hooks(opt.all_after('--fhooks-')) {
 				append_freestanding_hook(mut hooks, hook)
 			}
-		} else if opt.starts_with('freestanding-hooks-') {
-			for hook in parse_freestanding_hooks(opt.all_after('freestanding-hooks-')) {
+		} else if opt.starts_with('fhooks-') {
+			for hook in parse_freestanding_hooks(opt.all_after('fhooks-')) {
 				append_freestanding_hook(mut hooks, hook)
 			}
 		}

@@ -403,6 +403,26 @@ fn freestanding_print_arg_is_obvious_non_string(expr ast.Expr) bool {
 	}
 }
 
+fn freestanding_attributes_are_inactive(attributes []ast.Attribute, ctx FreestandingScanContext) bool {
+	for attr in attributes {
+		if attr.comptime_cond !is ast.EmptyExpr
+			&& !ast_comptime_cond_matches(attr.comptime_cond, ctx.user_defines, ctx.target_os) {
+			return true
+		}
+	}
+	return false
+}
+
+fn freestanding_array_init_needs_alloc(expr ast.ArrayInitExpr) bool {
+	if expr.len is ast.PostfixExpr {
+		postfix := expr.len as ast.PostfixExpr
+		if postfix.op == .not && postfix.expr is ast.EmptyExpr {
+			return false
+		}
+	}
+	return !(expr.typ is ast.Type && expr.typ is ast.ArrayFixedType)
+}
+
 fn freestanding_restricted_call_in_stmts(stmts []ast.Stmt, ctx FreestandingScanContext) string {
 	for stmt in stmts {
 		call_name := freestanding_restricted_call_in_stmt(stmt, ctx)
@@ -442,7 +462,9 @@ fn freestanding_restricted_call_in_stmt(stmt ast.Stmt, ctx FreestandingScanConte
 			freestanding_restricted_call_in_expr(stmt.expr, ctx)
 		}
 		ast.FnDecl {
-			if stmt.attributes.has('live') {
+			if freestanding_attributes_are_inactive(stmt.attributes, ctx) {
+				''
+			} else if stmt.attributes.has('live') {
 				'live'
 			} else {
 				freestanding_restricted_call_in_stmts(stmt.stmts, ctx)
@@ -551,6 +573,8 @@ fn freestanding_restricted_call_in_expr(expr ast.Expr, ctx FreestandingScanConte
 									freestanding_restricted_call_in_expr(expr.update_expr, ctx)
 								if update_call != '' {
 									update_call
+								} else if !freestanding_array_init_needs_alloc(expr) {
+									''
 								} else {
 									freestanding_needs_alloc_hook(ctx)
 								}

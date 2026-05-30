@@ -12,8 +12,11 @@ The fixture is a compact demonstration of the supported user-facing contract:
 - implicit host OS selection when `-os` is omitted;
 - explicit `-os` overrides for concrete targets;
 - `-os cross` preserving portable directive guards;
-- advanced `-freestanding-hooks` isolation with `--skip-builtin --skip-type-check`;
+- advanced `-fhooks` isolation with `--skip-builtin --skip-type-check`;
 - capability-specific `output`, `panic`, and `alloc` hook behavior.
+
+V2 uses `cleanc` by default. `-b` is only needed when selecting a non-default
+backend explicitly.
 
 The regression tests keep unsupported/error-only programs inline in the test
 file, so this directory stays readable as an example rather than a catalogue of
