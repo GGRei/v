@@ -107,27 +107,7 @@ fn is_test_file(files []string) bool {
 
 // get_files extracts source files from args, excluding options and their values
 fn get_files(args []string) []string {
-	options_with_values := ['-backend', '-b', '-o', '-output', '-arch', '-printfn', '-gc', '-d',
-		'-hot-fn', '-cc']
-	mut files := []string{}
-	mut skip_next := false
-	for arg in args {
-		if arg == '--' {
-			break
-		}
-		if skip_next {
-			skip_next = false
-			continue
-		}
-		if arg.starts_with('-') {
-			if arg in options_with_values {
-				skip_next = true
-			}
-			continue
-		}
-		files << arg
-	}
-	return files
+	return pref.source_files_from_args(args)
 }
 
 fn resolve_own_path() string {

@@ -1,10 +1,14 @@
 module pref
 
-fn normalize_current_os_name(current_os string) string {
-	return match current_os.to_lower() {
+pub fn normalize_target_os_name(target_os string) string {
+	return match target_os.to_lower() {
 		'darwin', 'mac' { 'macos' }
-		else { current_os.to_lower() }
+		else { target_os.to_lower() }
 	}
+}
+
+fn normalize_current_os_name(current_os string) string {
+	return normalize_target_os_name(current_os)
 }
 
 // file_has_incompatible_os_suffix reports whether file is specialized for a different OS.

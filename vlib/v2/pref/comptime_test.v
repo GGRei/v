@@ -62,3 +62,14 @@ fn test_v2_native_windows_pe_minimal_flag() {
 	prefs.backend = .arm64
 	assert !comptime_flag_value(&prefs, 'v2_native_windows_pe_minimal')
 }
+
+fn test_freestanding_hook_comptime_flags() {
+	mut prefs := new_preferences()
+	prefs.freestanding = true
+	prefs.freestanding_hooks = ['output', 'alloc']
+	assert comptime_flag_value(&prefs, 'freestanding')
+	assert comptime_flag_value(&prefs, 'freestanding_hooks')
+	assert comptime_flag_value(&prefs, 'freestanding_output')
+	assert comptime_flag_value(&prefs, 'freestanding_alloc')
+	assert !comptime_flag_value(&prefs, 'freestanding_panic')
+}
