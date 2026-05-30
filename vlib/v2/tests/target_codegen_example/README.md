@@ -12,6 +12,7 @@ The fixture is a compact demonstration of the supported user-facing contract:
 - implicit host OS selection when `-os` is omitted;
 - explicit `-os` overrides for concrete targets;
 - `-os cross` preserving portable directive guards;
+- pure `-freestanding -os none` generation with no concrete OS selected;
 - advanced `-fhooks` isolation with `--skip-builtin --skip-type-check`;
 - capability-specific `output`, `panic`, and `alloc` hook behavior.
 
@@ -27,6 +28,7 @@ Fixture roles:
 - `target_directives.vv2`: host/default target and concrete `-os` overrides.
 - `cross_directives.vv2`: `-os cross` preserving portable directive guards.
 - `freestanding_directives.vv2`: freestanding target directive selection.
+- `freestanding_none.vv2`: pure `-freestanding -os none` platform contract.
 - `freestanding_output.vv2`: `output` hook example.
 - `freestanding_panic.vv2`: `panic` hook example.
 - `freestanding_alloc.vv2`: `alloc` hook example.

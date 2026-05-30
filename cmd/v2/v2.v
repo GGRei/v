@@ -36,7 +36,7 @@ fn main() {
 	b.build(files)
 
 	// Auto-run test binaries after compilation (matching v1 behavior)
-	if prefs.output_file == '' && is_test_file(files) {
+	if prefs.output_file == '' && is_test_file(files) && should_auto_run_test_binary(&prefs) {
 		last := os.file_name(files.last())
 		output_name := if last.ends_with('.vv2') {
 			last.all_before_last('.vv2')
@@ -103,6 +103,16 @@ fn is_test_file(files []string) bool {
 		}
 	}
 	return false
+}
+
+fn should_auto_run_test_binary(prefs &pref.Preferences) bool {
+	if prefs == unsafe { nil } {
+		return true
+	}
+	if prefs.backend == .cleanc && !prefs.can_compile_cleanc_locally() {
+		return false
+	}
+	return true
 }
 
 // get_files extracts source files from args, excluding options and their values

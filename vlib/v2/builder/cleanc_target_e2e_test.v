@@ -180,6 +180,10 @@ fn freestanding_directive_source() string {
 	return target_fixture_source('freestanding_directives.vv2')
 }
 
+fn freestanding_none_source() string {
+	return target_fixture_source('freestanding_none.vv2')
+}
+
 fn assert_concrete_target_markers(c_source string, target string) {
 	assert c_source.contains(match target {
 		'linux' { target_linux_marker }
@@ -325,6 +329,20 @@ fn test_cleanc_cli_freestanding_diagnostics_and_user_directives() {
 	fixture_output := target_fixture_source('freestanding_output.vv2')
 	fixture_panic := target_fixture_source('freestanding_panic.vv2')
 	fixture_alloc := target_fixture_source('freestanding_alloc.vv2')
+
+	none_without_freestanding_res := run_v2_to_c(v2_binary, tmp_dir, 'none_without_freestanding', [
+		'-os',
+		'none',
+	], fixture_empty)
+	assert_cli_failure_contains(none_without_freestanding_res, '-os none requires -freestanding')
+
+	freestanding_cross_res := run_v2_to_c(v2_binary, tmp_dir, 'freestanding_cross', [
+		'-freestanding',
+		'-os',
+		'cross',
+		'--skip-builtin',
+	], fixture_empty)
+	assert_cli_failure_contains(freestanding_cross_res, '-freestanding -os cross is not supported')
 
 	os_import_res := run_v2_to_c(v2_binary, tmp_dir, 'freestanding_os_import', [
 		'-freestanding',
@@ -939,6 +957,22 @@ fn main() {}
 	assert_generated_c_only(freestanding_res)
 	assert freestanding_res.c_path == freestanding_out + '.c'
 
+	freestanding_none_out := os.join_path(tmp_dir, 'freestanding_none_app')
+	freestanding_none_res := run_v2_to_output(v2_binary, tmp_dir,
+		'freestanding_none_generation_only', [
+		'-cc',
+		missing_cc,
+		'-freestanding',
+		'-os',
+		'none',
+		'--skip-builtin',
+	], freestanding_none_source(), freestanding_none_out)
+	assert_generated_c_only(freestanding_none_res)
+	assert freestanding_none_res.c_path == freestanding_none_out + '.c'
+	assert freestanding_none_res.c_source.contains('#include <platform_none.h>')
+	assert freestanding_none_res.c_source.contains('platform_none_tick')
+	assert_no_os_runtime_headers(freestanding_none_res.c_source)
+
 	non_host_target := concrete_non_host_e2e_os()
 	non_host_out := os.join_path(tmp_dir, 'target_${non_host_target}_app')
 	non_host_res := run_v2_to_output(v2_binary, tmp_dir, 'concrete_non_host_generation_only', [
@@ -949,4 +983,36 @@ fn main() {}
 	], minimal_source, non_host_out)
 	assert_generated_c_only(non_host_res)
 	assert non_host_res.c_path == non_host_out + '.c'
+}
+
+fn test_cleanc_cli_does_not_auto_run_stale_test_binary_for_generation_only_target() {
+	$if windows {
+		eprintln('skip: stale executable auto-run guard uses a POSIX shell script')
+		return
+	}
+	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_cleanc_no_stale_autorun_${os.getpid()}')
+	os.rmdir_all(tmp_dir) or {}
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+	v2_binary := build_v2_for_target_e2e(tmp_dir)
+	source_path := os.join_path(tmp_dir, 'stale_autorun_test.v')
+	stale_path := os.join_path(tmp_dir, 'stale_autorun_test')
+	os.write_file(source_path, 'module main
+
+fn main() {}
+') or { panic(err) }
+	os.write_file(stale_path, '#!/bin/sh
+echo STALE_AUTORUN_EXECUTED
+exit 73
+') or { panic(err) }
+	os.chmod(stale_path, 0o755) or { panic(err) }
+
+	res :=
+		os.execute('cd "${tmp_dir}" && "${v2_binary}" -gc none -nocache --no-parallel -freestanding -os none --skip-builtin "${source_path}"')
+	assert res.exit_code == 0, res.output
+	assert !res.output.contains('STALE_AUTORUN_EXECUTED'), res.output
+	assert os.exists(os.join_path(tmp_dir, 'stale_autorun_test.c')), res.output
+	assert os.exists(stale_path), res.output
 }

@@ -395,33 +395,78 @@ fn c_preprocessor_flag_expr_for_ct_flag(name string) ?string {
 	}
 }
 
-fn c_preprocessor_expr_for_ct_cond(cond string) ?string {
+fn (g &Gen) c_preprocessor_expr_for_ct_cond(cond string) ?string {
 	trimmed := cond.trim_space()
 	if trimmed == '' {
 		return none
 	}
 	if or_idx := top_level_bool_op_index(trimmed, '||') {
-		left := c_preprocessor_expr_for_ct_cond(trimmed[..or_idx].trim_space()) or { return none }
-		right := c_preprocessor_expr_for_ct_cond(trimmed[or_idx + 2..].trim_space()) or {
+		left := g.c_preprocessor_expr_for_ct_cond(trimmed[..or_idx].trim_space()) or { return none }
+		right := g.c_preprocessor_expr_for_ct_cond(trimmed[or_idx + 2..].trim_space()) or {
 			return none
 		}
-		return '(${left}) || (${right})'
+		return combine_c_preprocessor_or_expr(left, right)
 	}
 	if and_idx := top_level_bool_op_index(trimmed, '&&') {
-		left := c_preprocessor_expr_for_ct_cond(trimmed[..and_idx].trim_space()) or { return none }
-		right := c_preprocessor_expr_for_ct_cond(trimmed[and_idx + 2..].trim_space()) or {
+		left := g.c_preprocessor_expr_for_ct_cond(trimmed[..and_idx].trim_space()) or {
 			return none
 		}
-		return '(${left}) && (${right})'
+		right := g.c_preprocessor_expr_for_ct_cond(trimmed[and_idx + 2..].trim_space()) or {
+			return none
+		}
+		return combine_c_preprocessor_and_expr(left, right)
 	}
 	if trimmed.starts_with('!') {
-		inner := c_preprocessor_expr_for_ct_cond(trimmed[1..]) or { return none }
-		return '!(${inner})'
+		inner := g.c_preprocessor_expr_for_ct_cond(trimmed[1..]) or { return none }
+		return negate_c_preprocessor_expr(inner)
 	}
 	if stripped := strip_outer_bool_parens(trimmed) {
-		return c_preprocessor_expr_for_ct_cond(stripped)
+		return g.c_preprocessor_expr_for_ct_cond(stripped)
 	}
-	return c_preprocessor_flag_expr_for_ct_flag(trimmed)
+	lower_trimmed := trimmed.to_lower()
+	if os_guard := c_preprocessor_flag_expr_for_ct_flag(lower_trimmed) {
+		return os_guard
+	}
+	if g.directive_ct_flag_matches(lower_trimmed) {
+		return ''
+	}
+	return '0'
+}
+
+fn combine_c_preprocessor_and_expr(left string, right string) string {
+	if left == '0' || right == '0' {
+		return '0'
+	}
+	if left == '' {
+		return right
+	}
+	if right == '' {
+		return left
+	}
+	return '(${left}) && (${right})'
+}
+
+fn combine_c_preprocessor_or_expr(left string, right string) string {
+	if left == '' || right == '' {
+		return ''
+	}
+	if left == '0' {
+		return right
+	}
+	if right == '0' {
+		return left
+	}
+	return '(${left}) || (${right})'
+}
+
+fn negate_c_preprocessor_expr(expr string) string {
+	if expr == '' {
+		return '0'
+	}
+	if expr == '0' {
+		return ''
+	}
+	return '!(${expr})'
 }
 
 fn (g &Gen) preamble_includes(minimal_preamble bool) string {
@@ -488,7 +533,7 @@ fn (g &Gen) directive_ct_cond_matches(cond string) bool {
 		return true
 	}
 	trimmed := cond.trim_space()
-	if g.target_os_name() == 'cross' && c_preprocessor_expr_for_ct_cond(trimmed) != none {
+	if g.target_os_name() == 'cross' && g.c_preprocessor_expr_for_ct_cond(trimmed) != none {
 		return true
 	}
 	if or_idx := top_level_bool_op_index(trimmed, '||') {
@@ -605,7 +650,7 @@ fn (g &Gen) cross_directive_guard(cond string) ?string {
 	if g.target_os_name() != 'cross' {
 		return none
 	}
-	return c_preprocessor_expr_for_ct_cond(cond)
+	return g.c_preprocessor_expr_for_ct_cond(cond)
 }
 
 fn find_vmod_root_for_file(file_path string) string {
@@ -706,13 +751,33 @@ fn (mut g Gen) collect_directives_from_stmts(stmts []ast.Stmt, file_name string,
 }
 
 fn (mut g Gen) collect_directives_from_stmts_with_ct_cond(stmts []ast.Stmt, file_name string, emit_implementation_directives bool, outer_ct_cond string, mut seen map[string]bool) {
+	g.collect_directives_from_stmts_with_ct_cond_and_seen_guard(stmts, file_name,
+		emit_implementation_directives, outer_ct_cond, '', mut seen)
+}
+
+fn (mut g Gen) collect_directives_from_stmts_with_ct_cond_and_seen_guard(stmts []ast.Stmt, file_name string, emit_implementation_directives bool, outer_ct_cond string, active_seen_guard string, mut seen map[string]bool) {
+	if outer_ct_cond != '' && g.target_os_name() == 'cross' {
+		if guard := g.cross_directive_guard(outer_ct_cond) {
+			if guard == '0' {
+				return
+			}
+			if guard != '' {
+				g.sb.writeln('#if ${guard}')
+				g.collect_directives_from_stmts_with_ct_cond_and_seen_guard(stmts, file_name,
+					emit_implementation_directives, '', combine_ct_conditions(active_seen_guard,
+					guard), mut seen)
+				g.sb.writeln('#endif')
+				return
+			}
+		}
+	}
 	for stmt in stmts {
 		if stmt is ast.Directive {
-			g.emit_directive_with_outer_ct_cond(stmt, file_name, emit_implementation_directives,
-				outer_ct_cond, mut seen)
+			g.emit_directive_with_outer_ct_cond_and_seen_guard(stmt, file_name,
+				emit_implementation_directives, outer_ct_cond, active_seen_guard, mut seen)
 		} else if stmt is ast.ExprStmt {
-			g.collect_directives_from_expr_with_ct_cond(stmt.expr, file_name,
-				emit_implementation_directives, outer_ct_cond, mut seen)
+			g.collect_directives_from_expr_with_ct_cond_and_seen_guard(stmt.expr, file_name,
+				emit_implementation_directives, outer_ct_cond, active_seen_guard, mut seen)
 		}
 	}
 }
@@ -723,76 +788,91 @@ fn (mut g Gen) collect_directives_from_expr(expr ast.Expr, file_name string, emi
 }
 
 fn (mut g Gen) collect_directives_from_expr_with_ct_cond(expr ast.Expr, file_name string, emit_implementation_directives bool, outer_ct_cond string, mut seen map[string]bool) {
+	g.collect_directives_from_expr_with_ct_cond_and_seen_guard(expr, file_name,
+		emit_implementation_directives, outer_ct_cond, '', mut seen)
+}
+
+fn (mut g Gen) collect_directives_from_expr_with_ct_cond_and_seen_guard(expr ast.Expr, file_name string, emit_implementation_directives bool, outer_ct_cond string, active_seen_guard string, mut seen map[string]bool) {
 	if expr is ast.ComptimeExpr {
 		if expr.expr is ast.IfExpr {
 			g.collect_directives_from_active_comptime_if(expr.expr, file_name,
-				emit_implementation_directives, outer_ct_cond, mut seen)
+				emit_implementation_directives, outer_ct_cond, active_seen_guard, mut seen)
 		} else {
-			g.collect_directives_from_expr_with_ct_cond(expr.expr, file_name,
-				emit_implementation_directives, outer_ct_cond, mut seen)
+			g.collect_directives_from_expr_with_ct_cond_and_seen_guard(expr.expr, file_name,
+				emit_implementation_directives, outer_ct_cond, active_seen_guard, mut seen)
 		}
 	} else if expr is ast.IfExpr {
-		g.collect_directives_from_stmts_with_ct_cond(expr.stmts, file_name,
-			emit_implementation_directives, outer_ct_cond, mut seen)
+		g.collect_directives_from_stmts_with_ct_cond_and_seen_guard(expr.stmts, file_name,
+			emit_implementation_directives, outer_ct_cond, active_seen_guard, mut seen)
 		if expr.else_expr !is ast.EmptyExpr {
-			g.collect_directives_from_expr_with_ct_cond(expr.else_expr, file_name,
-				emit_implementation_directives, outer_ct_cond, mut seen)
+			g.collect_directives_from_expr_with_ct_cond_and_seen_guard(expr.else_expr, file_name,
+				emit_implementation_directives, outer_ct_cond, active_seen_guard, mut seen)
 		}
 	}
 }
 
 fn (mut g Gen) emit_directive_with_outer_ct_cond(stmt ast.Directive, file_name string, emit_implementation_directives bool, outer_ct_cond string, mut seen map[string]bool) {
+	g.emit_directive_with_outer_ct_cond_and_seen_guard(stmt, file_name,
+		emit_implementation_directives, outer_ct_cond, '', mut seen)
+}
+
+fn (mut g Gen) emit_directive_with_outer_ct_cond_and_seen_guard(stmt ast.Directive, file_name string, emit_implementation_directives bool, outer_ct_cond string, active_seen_guard string, mut seen map[string]bool) {
 	if outer_ct_cond == '' {
-		g.emit_directive(stmt, file_name, emit_implementation_directives, mut seen)
+		g.emit_directive_with_seen_guard(stmt, file_name, emit_implementation_directives,
+			active_seen_guard, mut seen)
 		return
 	}
-	g.emit_directive(ast.Directive{
+	g.emit_directive_with_seen_guard(ast.Directive{
 		name:    stmt.name
 		value:   stmt.value
 		ct_cond: combine_ct_conditions(outer_ct_cond, stmt.ct_cond)
-	}, file_name, emit_implementation_directives, mut seen)
+	}, file_name, emit_implementation_directives, active_seen_guard, mut seen)
 }
 
-fn (mut g Gen) collect_directives_from_active_comptime_if(expr ast.IfExpr, file_name string, emit_implementation_directives bool, outer_ct_cond string, mut seen map[string]bool) {
+fn (mut g Gen) collect_directives_from_active_comptime_if(expr ast.IfExpr, file_name string, emit_implementation_directives bool, outer_ct_cond string, active_seen_guard string, mut seen map[string]bool) {
 	if g.target_os_name() == 'cross' {
 		if cond := ast_ct_cond_string(expr.cond) {
-			if c_preprocessor_expr_for_ct_cond(cond) != none {
-				g.collect_directives_from_stmts_with_ct_cond(expr.stmts, file_name,
-					emit_implementation_directives, combine_ct_conditions(outer_ct_cond, cond), mut
-					seen)
+			if g.c_preprocessor_expr_for_ct_cond(cond) != none {
+				g.collect_directives_from_stmts_with_ct_cond_and_seen_guard(expr.stmts, file_name,
+					emit_implementation_directives, combine_ct_conditions(outer_ct_cond, cond),
+					active_seen_guard, mut seen)
 				next_outer_cond := combine_ct_conditions(outer_ct_cond, '!(${cond})')
 				if expr.else_expr is ast.IfExpr {
 					if expr.else_expr.cond is ast.EmptyExpr {
-						g.collect_directives_from_stmts_with_ct_cond(expr.else_expr.stmts,
-							file_name, emit_implementation_directives, next_outer_cond, mut seen)
+						g.collect_directives_from_stmts_with_ct_cond_and_seen_guard(expr.else_expr.stmts,
+							file_name, emit_implementation_directives, next_outer_cond,
+							active_seen_guard, mut seen)
 					} else {
 						g.collect_directives_from_active_comptime_if(expr.else_expr, file_name,
-							emit_implementation_directives, next_outer_cond, mut seen)
+							emit_implementation_directives, next_outer_cond, active_seen_guard, mut
+							seen)
 					}
 				} else if expr.else_expr !is ast.EmptyExpr {
-					g.collect_directives_from_expr_with_ct_cond(expr.else_expr, file_name,
-						emit_implementation_directives, next_outer_cond, mut seen)
+					g.collect_directives_from_expr_with_ct_cond_and_seen_guard(expr.else_expr,
+						file_name, emit_implementation_directives, next_outer_cond,
+						active_seen_guard, mut seen)
 				}
 				return
 			}
 		}
 	}
 	if g.ast_comptime_simple_cond_matches(expr.cond) {
-		g.collect_directives_from_stmts_with_ct_cond(expr.stmts, file_name,
-			emit_implementation_directives, outer_ct_cond, mut seen)
+		g.collect_directives_from_stmts_with_ct_cond_and_seen_guard(expr.stmts, file_name,
+			emit_implementation_directives, outer_ct_cond, active_seen_guard, mut seen)
 		return
 	}
 	if expr.else_expr is ast.IfExpr {
 		if expr.else_expr.cond is ast.EmptyExpr {
-			g.collect_directives_from_stmts_with_ct_cond(expr.else_expr.stmts, file_name,
-				emit_implementation_directives, outer_ct_cond, mut seen)
+			g.collect_directives_from_stmts_with_ct_cond_and_seen_guard(expr.else_expr.stmts,
+				file_name, emit_implementation_directives, outer_ct_cond, active_seen_guard, mut
+				seen)
 		} else {
 			g.collect_directives_from_active_comptime_if(expr.else_expr, file_name,
-				emit_implementation_directives, outer_ct_cond, mut seen)
+				emit_implementation_directives, outer_ct_cond, active_seen_guard, mut seen)
 		}
 	} else if expr.else_expr !is ast.EmptyExpr {
-		g.collect_directives_from_expr_with_ct_cond(expr.else_expr, file_name,
-			emit_implementation_directives, outer_ct_cond, mut seen)
+		g.collect_directives_from_expr_with_ct_cond_and_seen_guard(expr.else_expr, file_name,
+			emit_implementation_directives, outer_ct_cond, active_seen_guard, mut seen)
 	}
 }
 
@@ -872,6 +952,10 @@ fn c_directive_emits_linked_symbols(value string) bool {
 }
 
 fn (mut g Gen) emit_directive(stmt ast.Directive, file_name string, emit_implementation_directives bool, mut seen map[string]bool) {
+	g.emit_directive_with_seen_guard(stmt, file_name, emit_implementation_directives, '', mut seen)
+}
+
+fn (mut g Gen) emit_directive_with_seen_guard(stmt ast.Directive, file_name string, emit_implementation_directives bool, active_seen_guard string, mut seen map[string]bool) {
 	name := stmt.name.trim_space()
 	if name == '' || name == 'flag' {
 		return
@@ -901,11 +985,20 @@ fn (mut g Gen) emit_directive(stmt ast.Directive, file_name string, emit_impleme
 	}
 	line := if value == '' { '#${emit_name}' } else { '#${emit_name} ${value}' }
 	guard := g.cross_directive_guard(stmt.ct_cond) or { '' }
-	seen_key := if guard == '' { line } else { '#if ${guard}\n${line}' }
-	if seen_key in seen {
+	if guard == '0' {
 		return
 	}
-	seen[seen_key] = true
+	mut seen_key := if guard == '' { line } else { '#if ${guard}\n${line}' }
+	if active_seen_guard != '' {
+		seen_key = '#if ${active_seen_guard}\n${seen_key}'
+	}
+	deduplicate := emit_name !in ['if', 'ifdef', 'ifndef', 'elif', 'else', 'endif']
+	if deduplicate {
+		if seen_key in seen {
+			return
+		}
+		seen[seen_key] = true
+	}
 	if emit_name == 'include' && value.contains('/thirdparty/stdatomic/nix/atomic.h') {
 		if guard != '' {
 			g.sb.writeln('#if ${guard}')
@@ -925,7 +1018,12 @@ fn (mut g Gen) emit_directive(stmt ast.Directive, file_name string, emit_impleme
 	// Defer .m (Objective-C) includes until after type definitions,
 	// because they reference V-generated C types like gg__Color, string, etc.
 	if emit_name == 'include' && (value.contains('.m"') || value.contains(".m'")) {
-		g.deferred_m_includes << if guard == '' { line } else { '#if ${guard}\n${line}\n#endif' }
+		deferred_guard := combine_ct_conditions(active_seen_guard, guard)
+		g.deferred_m_includes << if deferred_guard == '' {
+			line
+		} else {
+			'#if ${deferred_guard}\n${line}\n#endif'
+		}
 		return
 	}
 	if guard != '' {

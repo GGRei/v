@@ -317,6 +317,26 @@ fn assert_no_hosted_formatting_or_abort_runtime(csrc string) {
 	}
 }
 
+fn assert_no_os_runtime_headers(csrc string) {
+	for marker in [
+		'#include <stdio.h>',
+		'#include <stdlib.h>',
+		'#include <unistd.h>',
+		'#include <windows.h>',
+		'#include <dirent.h>',
+		'#include <pthread.h>',
+		'#include <mach/mach.h>',
+		'#include <termios.h>',
+		'#include <sys/wait.h>',
+		'#include <sys/ioctl.h>',
+		'extern char** environ;',
+		'pthread_rwlock_t',
+		'SRWLOCK',
+	] {
+		assert !csrc.contains(marker), marker
+	}
+}
+
 fn test_eval_comptime_flag_uses_target_os_preference() {
 	windows_gen := new_target_test_gen('windows', [])
 	assert windows_gen.eval_comptime_flag('windows')
@@ -362,6 +382,16 @@ fn test_eval_comptime_flag_uses_target_os_preference_for_extended_targets() {
 
 	freestanding_gen := new_target_test_gen_with_freestanding('linux', [], true)
 	assert freestanding_gen.eval_comptime_flag('freestanding')
+}
+
+fn test_freestanding_none_comptime_selects_no_concrete_os() {
+	gen := new_target_test_gen_with_freestanding('none', [], true)
+	assert gen.eval_comptime_flag('freestanding')
+	assert !gen.eval_comptime_flag('linux')
+	assert !gen.eval_comptime_flag('windows')
+	assert !gen.eval_comptime_flag('macos')
+	assert !gen.eval_comptime_flag('darwin')
+	assert !gen.eval_comptime_flag('cross')
 }
 
 fn test_c_directives_use_target_os_preference() {
@@ -461,6 +491,26 @@ fn test_c_directives_keep_cross_complex_os_conditions_portable() {
 	assert and_src.contains('#if (defined(__linux__)) && (!(defined(_WIN32)))')
 	assert and_src.contains('#include <target_marker.h>')
 
+	cross_and_src := c_directive_output_for_target('cross && linux', 'cross', [])
+	assert cross_and_src.contains('#if defined(__linux__)')
+	assert cross_and_src.contains('#include <target_marker.h>')
+	assert !cross_and_src.contains('cross')
+
+	feature_and_src := c_directive_output_for_target('feature && linux', 'cross', [
+		'feature',
+	])
+	assert feature_and_src.contains('#if defined(__linux__)')
+	assert feature_and_src.contains('#include <target_marker.h>')
+	assert !feature_and_src.contains('feature')
+
+	not_feature_and_src := c_directive_output_for_target('!feature && linux', 'cross', [
+		'feature',
+	])
+	assert !not_feature_and_src.contains('#include <target_marker.h>')
+
+	missing_feature_and_src := c_directive_output_for_target('feature && linux', 'cross', [])
+	assert !missing_feature_and_src.contains('#include <target_marker.h>')
+
 	or_src := c_directive_output_for_target('linux || windows', 'cross', [])
 	assert or_src.contains('#if (defined(__linux__)) || (defined(_WIN32))')
 	assert or_src.contains('#include <target_marker.h>')
@@ -498,6 +548,10 @@ fn test_comptime_if_directives_support_infix_os_conditions() {
 		#include <active_macos_marker.h>
 	}
 
+	\$if cross && linux {
+		#include <cross_linux_marker.h>
+	}
+
 fn main() {}
 '
 	linux_src := generated_c_for_target_program_with_options('comptime_if_infix_linux', source,
@@ -505,18 +559,21 @@ fn main() {}
 	assert linux_src.contains('#include <active_or_marker.h>')
 	assert linux_src.contains('#include <active_and_marker.h>')
 	assert !linux_src.contains('#include <active_macos_marker.h>')
+	assert !linux_src.contains('#include <cross_linux_marker.h>')
 
 	macos_src := generated_c_for_target_program_with_options('comptime_if_infix_macos', source,
 		'macos', false, false)
 	assert !macos_src.contains('#include <active_or_marker.h>')
 	assert !macos_src.contains('#include <active_and_marker.h>')
 	assert macos_src.contains('#include <active_macos_marker.h>')
+	assert !macos_src.contains('#include <cross_linux_marker.h>')
 
 	windows_src := generated_c_for_target_program_with_options('comptime_if_infix_windows', source,
 		'windows', false, false)
 	assert windows_src.contains('#include <active_or_marker.h>')
 	assert !windows_src.contains('#include <active_and_marker.h>')
 	assert !windows_src.contains('#include <active_macos_marker.h>')
+	assert !windows_src.contains('#include <cross_linux_marker.h>')
 
 	cross_src := generated_c_for_target_program_with_options('comptime_if_infix_cross', source,
 		'cross', false, false)
@@ -527,6 +584,7 @@ fn main() {}
 	assert cross_src.contains('#include <active_and_marker.h>')
 	assert cross_src.contains(apple_macos_cross_guard)
 	assert cross_src.contains('#include <active_macos_marker.h>')
+	assert cross_src.contains('#if defined(__linux__)\n#include <cross_linux_marker.h>\n#endif')
 }
 
 fn test_cross_comptime_if_else_directives_do_not_emit_selected_else_unguarded() {
@@ -548,6 +606,50 @@ fn main() {}
 	assert cross_src.count('#include <linux_marker.h>') == 1
 }
 
+fn test_cross_comptime_directive_scope_preserves_nested_preprocessor_blocks() {
+	source := 'module main
+
+\$if linux {
+	#ifdef HAVE_FOO
+	#include <foo.h>
+	#endif
+}
+
+fn main() {}
+'
+	cross_src := generated_c_for_target_program_with_options('nested_preprocessor_cross', source,
+		'cross', false, false)
+	assert cross_src.contains('#if defined(__linux__)\n#ifdef HAVE_FOO\n#include <foo.h>\n#endif\n#endif')
+	assert !cross_src.contains('#if defined(__linux__)\n#ifdef HAVE_FOO\n#endif\n#if defined(__linux__)')
+	assert cross_src.count('#include <foo.h>') == 1
+}
+
+fn test_cross_user_define_comptime_directives_reduce_to_os_guards() {
+	source := 'module main
+
+\$if feature && linux {
+	#include <feature_linux.h>
+}
+
+\$if !feature && linux {
+	#include <disabled_feature_linux.h>
+}
+
+\$if missing_feature && linux {
+	#include <missing_feature_linux.h>
+}
+
+fn main() {}
+'
+	feature_src := generated_c_for_target_program_with_defines('feature_directive_cross', source,
+		'cross', ['feature'], false, false)
+	assert feature_src.contains('#if defined(__linux__)\n#include <feature_linux.h>\n#endif')
+	assert feature_src.count('#include <feature_linux.h>') == 1
+	assert !feature_src.contains('#include <disabled_feature_linux.h>')
+	assert !feature_src.contains('#include <missing_feature_linux.h>')
+	assert !feature_src.contains('feature && linux')
+}
+
 fn test_c_directives_keep_freestanding_user_os_directives_for_concrete_target() {
 	assert c_directive_output_for_target('', 'linux', ['freestanding']).contains('#include <target_marker.h>')
 	assert c_directive_output_for_target('freestanding', 'linux', ['freestanding']).contains('#include <target_marker.h>')
@@ -555,6 +657,49 @@ fn test_c_directives_keep_freestanding_user_os_directives_for_concrete_target() 
 	assert !c_directive_output_for_target('windows', 'linux', ['freestanding']).contains('#include <target_marker.h>')
 	assert c_directive_output_for_target('windows', 'windows', ['freestanding']).contains('#include <target_marker.h>')
 	assert c_directive_output_for_freestanding_target('freestanding', 'linux').contains('#include <target_marker.h>')
+}
+
+fn test_freestanding_none_c_directives_select_only_freestanding() {
+	assert c_directive_output_for_freestanding_target('freestanding', 'none').contains('#include <target_marker.h>')
+	for cond in ['linux', 'windows', 'macos', 'darwin', 'cross'] {
+		src := c_directive_output_for_freestanding_target(cond, 'none')
+		assert !src.contains('#include <target_marker.h>'), cond
+	}
+}
+
+fn test_freestanding_none_comptime_if_directives_select_only_freestanding() {
+	source := 'module main
+
+\$if freestanding {
+	#include <freestanding_none_marker.h>
+}
+
+\$if linux {
+	#include <linux_none_marker.h>
+}
+
+\$if windows {
+	#include <windows_none_marker.h>
+}
+
+\$if macos {
+	#include <macos_none_marker.h>
+}
+
+\$if cross {
+	#include <cross_none_marker.h>
+}
+
+fn main() {}
+'
+	src := generated_c_for_target_program_with_options('freestanding_none_comptime_if', source,
+		'none', true, true)
+	assert src.contains('#include <freestanding_none_marker.h>')
+	assert !src.contains('#include <linux_none_marker.h>')
+	assert !src.contains('#include <windows_none_marker.h>')
+	assert !src.contains('#include <macos_none_marker.h>')
+	assert !src.contains('#include <cross_none_marker.h>')
+	assert_no_os_runtime_headers(src)
 }
 
 fn test_preamble_specializes_apple_includes_by_target() {
@@ -629,6 +774,16 @@ fn test_freestanding_field_full_preamble_avoids_implicit_os_runtime_headers() {
 	assert !src.contains('#include <sys/wait.h>')
 	assert src.contains('typedef struct sync__RwMutex { u32 inited; } sync__RwMutex;')
 	assert !src.contains('pthread_rwlock_t')
+}
+
+fn test_freestanding_none_preamble_avoids_implicit_os_runtime_headers() {
+	src := full_preamble_for_options('none', [], true, false)
+	assert src.contains('#include <stdbool.h>')
+	assert src.contains('#include <stdint.h>')
+	assert src.contains('#include <stddef.h>')
+	assert src.contains('#include <string.h>')
+	assert src.contains('typedef struct sync__RwMutex { u32 inited; } sync__RwMutex;')
+	assert_no_os_runtime_headers(src)
 }
 
 fn test_freestanding_prealloc_preamble_avoids_implicit_free_contract() {

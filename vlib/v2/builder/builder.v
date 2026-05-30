@@ -71,13 +71,17 @@ fn (b &Builder) can_compile_cleanc_locally() bool {
 	if b.pref == unsafe { nil } {
 		return true
 	}
-	if b.pref.is_freestanding() {
-		return false
+	return b.pref.can_compile_cleanc_locally()
+}
+
+fn (b &Builder) cflags_target_os_for_local_compile() string {
+	if b.pref == unsafe { nil } {
+		return normalize_target_os_name(os.user_os())
 	}
-	if b.pref.is_cross_target() {
-		return true
+	if b.pref.is_cross_target() && b.can_compile_cleanc_locally() {
+		return b.pref.source_filter_target_os()
 	}
-	return b.pref.normalized_target_os() == normalize_target_os_name(os.user_os())
+	return b.pref.target_os_or_host()
 }
 
 fn cleanc_c_output_name(output_name string) string {
@@ -2204,7 +2208,7 @@ fn parse_flag_directive_line_with_context(line string, file_path string, target_
 		matches := if prefs == unsafe { nil } {
 			flag_os_matches(parts[0], target_os)
 		} else {
-			flag_pref_matches(parts[0], prefs)
+			flag_os_matches(parts[0], target_os) || flag_pref_matches(parts[0], prefs)
 		}
 		if !matches {
 			return none
@@ -2261,8 +2265,9 @@ fn (b &Builder) collect_cflags_from_sources() string {
 			scan_paths << file.name
 		}
 	}
+	cflags_target_os := b.cflags_target_os_for_local_compile()
 	if !b.pref.skip_builtin {
-		target_os := b.pref.target_os_or_host()
+		target_os := cflags_target_os
 		for module_path in core_cached_module_paths {
 			vlib_path := b.pref.get_vlib_module_path(module_path)
 			module_files := get_v_files_from_dir(vlib_path, b.pref.user_defines, target_os)
@@ -2306,7 +2311,7 @@ fn (b &Builder) collect_cflags_from_sources() string {
 				}
 				if chain_matched[cur] {
 					skip_depth = 1
-				} else if comptime_cond_matches_with_pref(new_cond, b.pref) {
+				} else if comptime_cond_matches_with_context(new_cond, cflags_target_os, b.pref) {
 					chain_matched[cur] = true
 					skip_depth = 0
 				} else {
@@ -2334,7 +2339,7 @@ fn (b &Builder) collect_cflags_from_sources() string {
 			// $if cond { (chain opener)
 			if rest.starts_with(r'$if ') {
 				cond := rest[4..].trim_right('?{ ').trim_space()
-				matched := comptime_cond_matches_with_pref(cond, b.pref)
+				matched := comptime_cond_matches_with_context(cond, cflags_target_os, b.pref)
 				chain_matched << matched
 				if skip_depth > 0 {
 					skip_depth++
@@ -2370,9 +2375,8 @@ fn (b &Builder) collect_cflags_from_sources() string {
 			// Replace @VEXEROOT before parsing so path normalization sees absolute paths
 			resolved_line := line.replace('@VEXEROOT', b.pref.vroot).replace('VEXEROOT',
 				b.pref.vroot)
-			mut flag := parse_flag_directive_line_with_pref(resolved_line, scan_path, b.pref) or {
-				continue
-			}
+			mut flag := parse_flag_directive_line_with_context(resolved_line, scan_path,
+				cflags_target_os, b.pref) or { continue }
 			// Build include flags from already-collected flags for compiling missing .o files
 			mut inc_flags := []string{}
 			for f in flags {
@@ -2467,7 +2471,7 @@ fn comptime_cond_matches_with_context(cond string, target_os string, prefs &pref
 		return comptime_cond_matches_with_context(stripped, target_os, prefs)
 	}
 	if prefs != unsafe { nil } {
-		return flag_pref_matches(trimmed, prefs)
+		return flag_os_matches(trimmed, target_os) || flag_pref_matches(trimmed, prefs)
 	}
 	current := normalize_target_os_name(target_os)
 	return match trimmed.to_lower() {

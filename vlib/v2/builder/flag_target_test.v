@@ -122,8 +122,16 @@ $if cross {
 $if linux {
 #flag -DLINUX_BLOCK
 }
+$if macos {
+#flag -DMACOS_BLOCK
+}
+$if windows {
+#flag -DWINDOWS_BLOCK
+}
 #flag cross -DCROSS_DIRECT
 #flag linux -DLINUX_DIRECT
+#flag macos -DMACOS_DIRECT
+#flag windows -DWINDOWS_DIRECT
 '
 	mut cross_prefs := pref.new_preferences()
 	cross_prefs.target_os = 'cross'
@@ -131,8 +139,31 @@ $if linux {
 	cross_flags := collect_cflags_for_test_source(cross_source, mut cross_prefs)
 	assert cross_flags.contains('-DCROSS_BLOCK')
 	assert cross_flags.contains('-DCROSS_DIRECT')
-	assert !cross_flags.contains('-DLINUX_BLOCK')
-	assert !cross_flags.contains('-DLINUX_DIRECT')
+	host_os := normalize_target_os_name(os.user_os())
+	if host_os in ['linux', 'macos', 'windows'] {
+		assert cross_flags.contains(match host_os {
+			'macos' { '-DMACOS_BLOCK' }
+			'windows' { '-DWINDOWS_BLOCK' }
+			else { '-DLINUX_BLOCK' }
+		})
+		assert cross_flags.contains(match host_os {
+			'macos' { '-DMACOS_DIRECT' }
+			'windows' { '-DWINDOWS_DIRECT' }
+			else { '-DLINUX_DIRECT' }
+		})
+	}
+	if host_os != 'linux' {
+		assert !cross_flags.contains('-DLINUX_BLOCK')
+		assert !cross_flags.contains('-DLINUX_DIRECT')
+	}
+	if host_os != 'macos' {
+		assert !cross_flags.contains('-DMACOS_BLOCK')
+		assert !cross_flags.contains('-DMACOS_DIRECT')
+	}
+	if host_os != 'windows' {
+		assert !cross_flags.contains('-DWINDOWS_BLOCK')
+		assert !cross_flags.contains('-DWINDOWS_DIRECT')
+	}
 
 	free_source := 'module main
 

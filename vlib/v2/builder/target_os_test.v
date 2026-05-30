@@ -71,6 +71,71 @@ fn test_get_v_files_from_dir_uses_linux_and_macos_target_os() {
 	assert 'platform_linux.v' !in macos_names
 }
 
+fn test_parse_files_uses_host_source_filter_for_cross_target() {
+	tmp_dir := os.join_path(os.temp_dir(), 'v2_builder_filter_cross_${os.getpid()}')
+	os.rmdir_all(tmp_dir) or {}
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+
+	write_test_file(os.join_path(tmp_dir, 'common.v'))
+	write_test_file(os.join_path(tmp_dir, 'platform_nix.v'))
+	write_test_file(os.join_path(tmp_dir, 'platform_linux.v'))
+	write_test_file(os.join_path(tmp_dir, 'platform_macos.v'))
+	write_test_file(os.join_path(tmp_dir, 'platform_darwin.v'))
+	write_test_file(os.join_path(tmp_dir, 'platform_windows.v'))
+
+	mut prefs := pref.new_preferences()
+	prefs.skip_builtin = true
+	prefs.skip_imports = true
+	prefs.target_os = 'cross'
+	prefs.output_cross_c = true
+	prefs.user_defines = ['cross']
+	mut b := new_builder(&prefs)
+	files := b.parse_files([tmp_dir])
+	cross_names := files.map(os.file_name(it.name))
+	host_os := normalize_target_os_name(os.user_os())
+	assert 'common.v' in cross_names
+	assert ('platform_nix.v' in cross_names) == (host_os != 'windows')
+	assert ('platform_linux.v' in cross_names) == (host_os == 'linux')
+	assert ('platform_macos.v' in cross_names) == (host_os == 'macos')
+	assert ('platform_darwin.v' in cross_names) == (host_os == 'macos')
+	assert ('platform_windows.v' in cross_names) == (host_os == 'windows')
+}
+
+fn test_parse_files_excludes_os_variants_for_freestanding_none_target() {
+	tmp_dir := os.join_path(os.temp_dir(), 'v2_builder_filter_none_${os.getpid()}')
+	os.rmdir_all(tmp_dir) or {}
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+
+	write_test_file(os.join_path(tmp_dir, 'common.v'))
+	write_test_file(os.join_path(tmp_dir, 'platform_nix.v'))
+	write_test_file(os.join_path(tmp_dir, 'platform_linux.v'))
+	write_test_file(os.join_path(tmp_dir, 'platform_macos.v'))
+	write_test_file(os.join_path(tmp_dir, 'platform_darwin.v'))
+	write_test_file(os.join_path(tmp_dir, 'platform_windows.v'))
+
+	mut prefs := pref.new_preferences()
+	prefs.skip_builtin = true
+	prefs.skip_imports = true
+	prefs.freestanding = true
+	prefs.target_os = 'none'
+	prefs.user_defines = ['freestanding']
+	mut b := new_builder(&prefs)
+	files := b.parse_files([tmp_dir])
+	names := files.map(os.file_name(it.name))
+	assert 'common.v' in names
+	assert 'platform_nix.v' !in names
+	assert 'platform_linux.v' !in names
+	assert 'platform_macos.v' !in names
+	assert 'platform_darwin.v' !in names
+	assert 'platform_windows.v' !in names
+}
+
 fn test_parse_files_uses_target_os_preference_for_windows_files() {
 	tmp_dir := os.join_path(os.temp_dir(), 'v2_builder_parse_windows_${os.getpid()}')
 	os.rmdir_all(tmp_dir) or {}

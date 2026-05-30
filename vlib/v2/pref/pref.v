@@ -190,6 +190,29 @@ pub fn (p &Preferences) is_freestanding() bool {
 	return p != unsafe { nil } && p.freestanding
 }
 
+pub fn (p &Preferences) can_compile_cleanc_locally() bool {
+	if p == unsafe { nil } {
+		return true
+	}
+	if p.is_freestanding() {
+		return false
+	}
+	if p.is_cross_target() {
+		return true
+	}
+	return p.normalized_target_os() == normalize_target_os_name(os.user_os())
+}
+
+pub fn (p &Preferences) source_filter_target_os() string {
+	if p == unsafe { nil } {
+		return normalize_target_os_name(os.user_os())
+	}
+	if p.is_cross_target() {
+		return normalize_target_os_name(os.user_os())
+	}
+	return p.target_os_or_host()
+}
+
 pub fn (p &Preferences) freestanding_hook_list() []string {
 	if p == unsafe { nil } {
 		return []string{}
@@ -212,14 +235,25 @@ pub fn (p &Preferences) has_freestanding_hook(name string) bool {
 fn normalize_cli_target_os(target_os string) string {
 	normalized := normalize_target_os_name(target_os)
 	match normalized {
-		'linux', 'macos', 'windows', 'cross', 'freebsd', 'openbsd', 'netbsd', 'dragonfly',
+		'linux', 'macos', 'windows', 'cross', 'none', 'freebsd', 'openbsd', 'netbsd', 'dragonfly',
 		'android', 'ios', 'solaris', 'qnx', 'serenity', 'plan9', 'vinix' {
 			return normalized
 		}
 		else {
-			eprintln('error: unknown target OS `${target_os}`. Valid targets include: linux, macos, windows, cross, freebsd, openbsd, netbsd, dragonfly, android, ios, solaris, qnx, serenity, plan9, vinix')
+			eprintln('error: unknown target OS `${target_os}`. Valid targets include: linux, macos, windows, cross, none, freebsd, openbsd, netbsd, dragonfly, android, ios, solaris, qnx, serenity, plan9, vinix')
 			exit(1)
 		}
+	}
+}
+
+fn validate_target_contract(target_os string, freestanding bool) {
+	if target_os == 'none' && !freestanding {
+		eprintln('error: -os none requires -freestanding')
+		exit(1)
+	}
+	if target_os == 'cross' && freestanding {
+		eprintln('error: -freestanding -os cross is not supported; use -os none for pure freestanding targets')
+		exit(1)
 	}
 }
 
@@ -434,6 +468,7 @@ pub fn new_preferences_from_args(args []string) Preferences {
 		all_defines << 'prealloc'
 	}
 	freestanding := '-freestanding' in args || '--freestanding' in args
+	validate_target_contract(normalized_target_os, freestanding)
 	freestanding_hooks := parse_freestanding_hooks(freestanding_hooks_arg)
 	if freestanding_hooks.len > 0 && !freestanding {
 		eprintln('error: -fhooks requires -freestanding')
@@ -478,7 +513,7 @@ pub fn new_preferences_from_args(args []string) Preferences {
 			eprintln('  -b <name>              Backend: eval, cleanc, c, v, arm64, x64 (default: cleanc; omit for cleanc)')
 			eprintln('                         -backend <name> is accepted as a compatibility alias')
 			eprintln('  -arch <name>           Architecture: auto, x64, arm64 (default: auto)')
-			eprintln('  -os <target>           Override target OS (default: host OS): linux, macos, windows, cross')
+			eprintln('  -os <target>           Override target OS (default: host OS): linux, macos, windows, cross, none')
 			eprintln('  -printfn <names>       Print generated C for functions (comma-separated)')
 			eprintln('  -stats, --stats        Print compilation statistics')
 			eprintln('  -nocache, --nocache    Disable build cache')
@@ -597,6 +632,7 @@ pub fn new_preferences_using_options(options []string) Preferences {
 	output_cross_c := target_os == 'cross'
 	freestanding := '--freestanding' in options || '-freestanding' in options
 		|| 'freestanding' in options
+	validate_target_contract(target_os, freestanding)
 	freestanding_hooks := freestanding_hooks_from_option_tokens(options)
 	if freestanding_hooks.len > 0 && !freestanding {
 		eprintln('error: freestanding hooks require freestanding target mode')
