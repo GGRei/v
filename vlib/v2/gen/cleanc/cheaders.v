@@ -725,6 +725,9 @@ fn (mut g Gen) emit_collected_c_directives() {
 }
 
 fn (mut g Gen) collect_cross_directives_from_original_sources(mut seen map[string]bool) map[string]bool {
+	// Cross mode reparses only the files that survived normal source filtering.
+	// This recovers C directives from $if OS branches before transform strips
+	// them, but it does not provide a second OS-specific function-body pipeline.
 	mut parsed_paths := map[string]bool{}
 	mut file_set := token.FileSet.new()
 	mut par := parser.Parser.new(g.pref)

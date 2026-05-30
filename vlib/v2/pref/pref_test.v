@@ -226,7 +226,16 @@ fn test_file_suffix_filter_cross_target_contract() {
 	assert file_has_incompatible_os_suffix('platform_macos.v', 'cross')
 	assert file_has_incompatible_os_suffix('platform_darwin.v', 'cross')
 	assert file_has_incompatible_os_suffix('platform_windows.v', 'cross')
+	assert file_has_incompatible_os_suffix('platform_termux.c.v', 'cross')
 	assert !file_has_incompatible_os_suffix('platform_nix.v', 'cross')
+}
+
+fn test_file_suffix_filter_termux_is_excluded_for_current_targets() {
+	for target in ['linux', 'macos', 'windows', 'android', 'ios', 'freebsd', 'openbsd', 'netbsd',
+		'dragonfly', 'solaris', 'qnx', 'serenity', 'plan9', 'vinix'] {
+		assert file_has_incompatible_os_suffix('platform_termux.c.v', target)
+	}
+	assert !file_has_incompatible_os_suffix('platform_android_outside_termux.c.v', 'android')
 }
 
 fn test_file_suffix_filter_none_target_excludes_all_os_variants() {
@@ -236,5 +245,6 @@ fn test_file_suffix_filter_none_target_excludes_all_os_variants() {
 	assert file_has_incompatible_os_suffix('platform_darwin.v', 'none')
 	assert file_has_incompatible_os_suffix('platform_windows.v', 'none')
 	assert file_has_incompatible_os_suffix('platform_nix.v', 'none')
+	assert file_has_incompatible_os_suffix('platform_termux.c.v', 'none')
 	assert file_has_incompatible_os_suffix('platform_bsd.v', 'none')
 }
