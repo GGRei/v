@@ -78,8 +78,8 @@ fn (mut w MachOTinyObjectWriter) write(path string) ! {
 			macho_tiny_defined_symbol_is_external(name), ObjectFormat.macho.section_index(.text))
 	}
 	for name in runtime_symbols {
-		symbol_indices[name] = out.add_symbol(name, func_offsets[name], false,
-			ObjectFormat.macho.section_index(.text))
+		symbol_indices[name] = out.add_symbol(name, func_offsets[name],
+			macho_tiny_defined_symbol_is_external(name), ObjectFormat.macho.section_index(.text))
 	}
 	mut data_names := data_offsets.keys()
 	data_names.sort()
@@ -315,7 +315,7 @@ fn (w MachOTinyObjectWriter) data_section_alignment(section ObjectSection) u64 {
 }
 
 fn macho_tiny_defined_symbol_is_external(name string) bool {
-	return name == '_main'
+	return name == '_main' || name == macos_tiny_builtin_string_plus_symbol
 }
 
 fn macho_tiny_add_runtime_helpers(mut out MachOObject, mut reachable MachOTinyReachable, mut func_offsets map[string]u64, mut runtime_symbols []string, mut runtime_relocs []MachOTinyRuntimeReloc) {

@@ -1661,7 +1661,7 @@ fn test_macho_tiny_object_writer_resolves_builtin_string_plus_with_libsystem_run
 		assert false, 'missing _builtin__string__+ in Mach-O tiny output'
 		return
 	}
-	assert string_plus_out.type_ == 0x0e
+	assert string_plus_out.type_ == 0x0f, '_builtin__string__+ must stay external because original call relocations are serialized as external branch relocations'
 	assert string_plus_out.sect == 1
 	assert string_plus_out.value > 0
 	for name in ['_malloc', '_exit'] {
@@ -1678,6 +1678,7 @@ fn test_macho_tiny_object_writer_resolves_builtin_string_plus_with_libsystem_run
 	assert relocs.len == 3
 	assert relocs[0].addr == 1
 	assert symbols[relocs[0].sym_idx].name == '_builtin__string__+'
+	assert relocs[0].extern
 	assert relocs[1].addr > int(string_plus_out.value)
 	assert symbols[relocs[1].sym_idx].name == '_malloc'
 	assert relocs[2].addr > int(string_plus_out.value)
