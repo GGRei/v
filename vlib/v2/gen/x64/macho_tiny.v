@@ -94,13 +94,6 @@ fn (mut w MachOTinyObjectWriter) write(path string) ! {
 	for name in undefined_names {
 		symbol_indices[name] = out.add_undefined(name)
 	}
-	for reloc in runtime_relocs {
-		sym_idx := symbol_indices[reloc.symbol] or {
-			return macos_tiny_not_eligible('runtime helper symbol `${reloc.symbol}` is not resolved by the tiny object')
-		}
-		out.add_reloc(reloc.addr, sym_idx, x86_64_reloc_branch, true, 2)
-	}
-
 	for name in reachable.names {
 		range := w.text_range(name)!
 		new_base := func_offsets[name]
@@ -115,6 +108,12 @@ fn (mut w MachOTinyObjectWriter) write(path string) ! {
 			out.add_reloc(int(new_base + u64(reloc.addr - int(range.start))), sym_idx, reloc.type_,
 				reloc.pcrel, reloc.length)
 		}
+	}
+	for reloc in runtime_relocs {
+		sym_idx := symbol_indices[reloc.symbol] or {
+			return macos_tiny_not_eligible('runtime helper symbol `${reloc.symbol}` is not resolved by the tiny object')
+		}
+		out.add_reloc(reloc.addr, sym_idx, x86_64_reloc_branch, true, 2)
 	}
 
 	out.write(path)

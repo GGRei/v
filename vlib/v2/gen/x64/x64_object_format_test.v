@@ -1675,6 +1675,14 @@ fn test_macho_tiny_object_writer_resolves_builtin_string_plus_with_libsystem_run
 	}
 
 	relocs := macho_test_text_relocations(data)
+	assert relocs.len == 3
+	assert relocs[0].addr == 1
+	assert symbols[relocs[0].sym_idx].name == '_builtin__string__+'
+	assert relocs[1].addr > int(string_plus_out.value)
+	assert symbols[relocs[1].sym_idx].name == '_malloc'
+	assert relocs[2].addr > int(string_plus_out.value)
+	assert relocs[2].addr > relocs[1].addr
+	assert symbols[relocs[2].sym_idx].name == '_exit'
 	mut reloc_names := []string{}
 	for reloc in relocs {
 		reloc_names << symbols[reloc.sym_idx].name
