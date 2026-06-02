@@ -682,6 +682,86 @@ fn run_x64_host_file_redirected(name string, source_dir string, source_file stri
 	}
 }
 
+fn run_x64_host_file_redirected_tiny(name string, source_dir string, source_file string) X64HostRunResult {
+	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_x64_runtime_${name}_${os.getpid()}')
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	source_path := os.join_path(source_dir, source_file)
+	source_text := 'source file: ${source_path}'
+	bin_path := x64_host_bin_path(tmp_dir, name)
+	vexe := x64_vexe_command_path()
+	mut build := os.new_process(vexe)
+	defer {
+		build.close()
+	}
+	build.set_environment(x64_strict_tiny_build_environment(vexe, tmp_dir))
+	build.set_work_folder(source_dir)
+	build.set_args(['-v2', '-b', 'x64', source_file, '-o', bin_path])
+	build.set_redirect_stdio()
+	build.run()
+	build.wait()
+	build_output := 'stdout:\n${build.stdout_slurp()}\nstderr:\n${build.stderr_slurp()}'
+	if build.code != 0 {
+		assert false, x64_host_build_failure_message(name, tmp_dir, source_path, source_text,
+			bin_path, build.code, build_output)
+	}
+	mut run := os.new_process(bin_path)
+	defer {
+		run.close()
+	}
+	run.set_redirect_stdio()
+	run.run()
+	run.wait()
+	stdout := run.stdout_slurp().bytes()
+	stderr := run.stderr_slurp().bytes()
+	if run.code != 0 {
+		assert false, x64_host_run_failure_message(name, tmp_dir, source_path, source_text,
+			bin_path, build_output, run.code, stdout, stderr)
+	}
+	return X64HostRunResult{
+		name:         name
+		tmp_dir:      tmp_dir
+		source_path:  source_path
+		source_text:  source_text
+		bin_path:     bin_path
+		build_output: build_output
+		stdout:       stdout
+		stderr:       stderr
+	}
+}
+
+fn assert_x64_linux_tiny_file_build_rejected(name string, source_dir string, source_file string, expected_message string) {
+	$if linux {
+		tmp_dir := os.join_path(os.vtmp_dir(), 'v2_x64_runtime_${name}_${os.getpid()}')
+		os.mkdir_all(tmp_dir) or { panic(err) }
+		defer {
+			os.rmdir_all(tmp_dir) or {}
+		}
+		source_path := os.join_path(source_dir, source_file)
+		source_text := 'source file: ${source_path}'
+		bin_path := x64_host_bin_path(tmp_dir, name)
+		vexe := x64_vexe_command_path()
+		mut build := os.new_process(vexe)
+		defer {
+			build.close()
+		}
+		build.set_environment(x64_strict_tiny_build_environment(vexe, tmp_dir))
+		build.set_work_folder(source_dir)
+		build.set_args(['-v2', '-b', 'x64', source_file, '-o', bin_path])
+		build.set_redirect_stdio()
+		build.run()
+		build.wait()
+		build_output := 'stdout:\n${build.stdout_slurp()}\nstderr:\n${build.stderr_slurp()}'
+		assert build.code != 0, '${name} unexpectedly built with Linux tiny:\n${build_output}'
+		assert build_output.contains(linux_tiny_not_eligible_prefix), '${x64_host_build_failure_message(name,
+			tmp_dir, source_path, source_text, bin_path, build.code, build_output)}\nexpected Linux tiny rejection prefix `${linux_tiny_not_eligible_prefix}`'
+
+		assert build_output.contains(expected_message), '${x64_host_build_failure_message(name,
+			tmp_dir, source_path, source_text, bin_path, build.code, build_output)}\nexpected rejection to contain `${expected_message}`'
+
+		assert !os.exists(bin_path), '${name} produced a binary despite Linux tiny rejection: ${bin_path}'
+	}
+}
+
 fn run_x64_host_file_redirected_auto(name string, source_dir string, source_file string) X64HostRunResult {
 	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_x64_runtime_${name}_${os.getpid()}')
 	os.mkdir_all(tmp_dir) or { panic(err) }
@@ -2320,6 +2400,176 @@ Buzz
 '.bytes()
 }
 
+fn x64_js_hello_world_example_stdout() []u8 {
+	return 'Hello from V.js (0)
+Hello from V.js (1)
+Hello from V.js (2)
+'.bytes()
+}
+
+fn x64_vascii_example_stdout() []u8 {
+	source := os.read_file(os.join_path(x64_examples_dir(), 'vascii.v')) or { panic(err) }
+	start_marker := "println('"
+	end_marker := "')"
+	assert source.count(start_marker) == 1, 'vascii stdout oracle expects one single-quoted println literal'
+	start := source.index(start_marker) or { panic('missing vascii println literal start') } +
+		start_marker.len
+	end := source.last_index(end_marker) or { panic('missing vascii println literal end') }
+	assert source[end + end_marker.len..].trim_space() == '}', 'vascii stdout oracle expects the println literal to be the final main statement'
+
+	mut out := x64_v_single_quoted_literal_bytes(source[start..end])
+	assert out.len == 8525, 'vascii stdout oracle source shape changed: literal bytes=${out.len}'
+	assert out.bytestr().contains('DEC  OCT   HEX  BIN        Sym'), 'vascii stdout oracle missing table header'
+
+	assert out.bytestr().contains('127  177   7F   01111111   DEL   &#127;            Delete'), 'vascii stdout oracle missing final ASCII row'
+
+	out << u8(`\n`)
+	return out
+}
+
+fn x64_v_single_quoted_literal_bytes(raw string) []u8 {
+	mut out := []u8{cap: raw.len}
+	mut i := 0
+	for i < raw.len {
+		if raw[i] == `\\` && i + 1 < raw.len {
+			match raw[i + 1] {
+				`n` { out << u8(`\n`) }
+				`t` { out << u8(`\t`) }
+				`r` { out << u8(`\r`) }
+				`\\` { out << u8(`\\`) }
+				`'` { out << u8(`'`) }
+				`"` { out << u8(`"`) }
+				else { out << raw[i + 1] }
+			}
+
+			i += 2
+			continue
+		}
+		out << raw[i]
+		i++
+	}
+	return out
+}
+
+fn x64_rune_example_stdout() []u8 {
+	return [u8(0xf0), 0x9f, 0x98, 0x80, u8(`\n`), u8(`@`), u8(`\n`)]
+}
+
+fn x64_rune_utf32_parity_stdout() []u8 {
+	return [
+		u8(0x7f),
+		u8(`\n`),
+		u8(0xc2),
+		0x80,
+		u8(`\n`),
+		u8(0xdf),
+		0xbf,
+		u8(`\n`),
+		u8(0xe0),
+		0xa0,
+		0x80,
+		u8(`\n`),
+		u8(0xed),
+		0x9f,
+		0xbf,
+		u8(`\n`),
+		u8(0xed),
+		0xa0,
+		0x80,
+		u8(`\n`),
+		u8(0xed),
+		0xbf,
+		0xbf,
+		u8(`\n`),
+		u8(0xee),
+		0x80,
+		0x80,
+		u8(`\n`),
+		u8(0xef),
+		0xbf,
+		0xbf,
+		u8(`\n`),
+		u8(0xf0),
+		0x90,
+		0x80,
+		0x80,
+		u8(`\n`),
+		u8(0xf4),
+		0x8f,
+		0xbf,
+		0xbf,
+		u8(`\n`),
+		u8(`\n`),
+	]
+}
+
+fn x64_long_ascii_literal_stdout() []u8 {
+	mut out := []u8{cap: 600}
+	for i in 0 .. 600 {
+		out << u8(`A` + i % 26)
+	}
+	return out
+}
+
+fn x64_long_ascii_literal_source() string {
+	literal := x64_long_ascii_literal_stdout().bytestr()
+	return "module main
+
+fn emit(s string) {
+	print(s)
+}
+
+fn main() {
+	emit('${literal}')
+}
+	"
+}
+
+fn x64_string_literal_field_size_source() string {
+	literal := x64_long_ascii_literal_stdout().bytestr()
+	return "module main
+
+struct BoxedString {
+	before u8
+	value string
+	after u8
+}
+
+fn emit(s string) {
+	println(s.len)
+	println(s.is_lit)
+}
+
+fn main() {
+	s := '${literal}'
+	boxed := BoxedString{
+		before: 17
+		value: s
+		after: 23
+	}
+	println(s.len)
+	println(s.is_lit)
+	println(boxed.value.len)
+	println(boxed.value.is_lit)
+	println(int(boxed.before))
+	println(int(boxed.after))
+	emit('${literal}')
+}
+"
+}
+
+fn x64_string_literal_field_size_stdout() []u8 {
+	return '600
+1
+600
+1
+17
+23
+600
+1
+'.bytes()
+}
+
 fn x64_module_init_once_sources() map[string]string {
 	return {
 		'main.v':          "module main
@@ -2743,6 +2993,16 @@ fn main() {
 	])
 }
 
+fn test_x64_linux_long_string_literal_len_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('long_string_literal_len_exact', x64_long_ascii_literal_source(),
+		x64_long_ascii_literal_stdout())
+}
+
+fn test_x64_linux_string_literal_field_size_stores_do_not_clobber_adjacent_fields() {
+	assert_x64_linux_stdout_bytes('string_literal_field_size_no_clobber',
+		x64_string_literal_field_size_source(), x64_string_literal_field_size_stdout())
+}
+
 fn test_x64_linux_i64_loop_carried_mutable_state_controls_branch() {
 	assert_x64_linux_stdout_bytes('i64_loop_carried_mutable_state_branch', "module main
 
@@ -2827,6 +3087,86 @@ fn test_x64_linux_hello_world_example_auto_tiny_no_libc() {
 		assert_x64_linux_tiny_load_segment_layout(result, 0)
 		context := x64_host_result_context(result)
 		assert os.file_size(result.bin_path) < 512, '${context}\nbinary is not ultra tiny: ${os.file_size(result.bin_path)} bytes'
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_js_hello_world_example_strict_tiny_blocked_by_string_concat() {
+	$if linux {
+		assert_x64_linux_tiny_file_build_rejected('js_hello_world_example_strict_tiny_blocked',
+			x64_examples_dir(), 'js_hello_world.v', 'external symbol `builtin__string__+`')
+	}
+}
+
+fn test_x64_linux_js_hello_world_example_auto_tiny_falls_back_to_hosted_libc() {
+	$if linux {
+		result := run_x64_host_file_redirected_auto('js_hello_world_example_auto_tiny_hosted',
+			x64_examples_dir(), 'js_hello_world.v')
+		assert_x64_linux_hosted_libc_binary(result, x64_js_hello_world_example_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_vascii_example_strict_tiny_no_libc() {
+	$if linux {
+		result := run_x64_host_file_redirected_tiny('vascii_example_strict_tiny_no_libc',
+			x64_examples_dir(), 'vascii.v')
+		assert_x64_linux_no_libc_binary(result, x64_vascii_example_stdout())
+		assert_x64_linux_tiny_load_segment_layout(result, 0)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_rune_example_strict_tiny_no_libc() {
+	$if linux {
+		result := run_x64_host_file_redirected_tiny('rune_example_strict_tiny_no_libc',
+			x64_examples_dir(), 'rune.v')
+		assert_x64_linux_no_libc_binary(result, x64_rune_example_stdout())
+		assert_x64_linux_tiny_load_segment_layout(result, linux_tiny_rune_str_arena_metadata_bytes)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_rune_str_utf32_edge_bytes_strict_tiny_no_libc() {
+	$if linux {
+		result := run_x64_host_program_redirected_tiny('rune_str_utf32_edge_bytes_strict_tiny', 'module main
+
+fn main() {
+	println(rune(0x7f))
+	println(rune(0x80))
+	println(rune(0x7ff))
+	println(rune(0x800))
+	println(rune(0xd7ff))
+	println(rune(0xd800))
+	println(rune(0xdfff))
+	println(rune(0xe000))
+	println(rune(0xffff))
+	println(rune(0x10000))
+	println(rune(0x10ffff))
+	println(rune(0x110000))
+}
+')
+		assert_x64_linux_no_libc_binary(result, x64_rune_utf32_parity_stdout())
+		assert_x64_linux_tiny_load_segment_layout(result, linux_tiny_rune_str_arena_metadata_bytes)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_int_i64_rune_strict_tiny_bss_metadata_sum() {
+	$if linux {
+		result := run_x64_host_program_redirected_tiny('int_i64_rune_strict_tiny_bss_sum', 'module main
+
+fn main() {
+	println(int(-23))
+	println(i64(4294967296))
+	println(rune(0x80))
+}
+')
+		mut expected_stdout := '-23\n4294967296\n'.bytes()
+		expected_stdout << [u8(0xc2), 0x80, u8(`\n`)]
+		assert_x64_linux_no_libc_binary(result, expected_stdout)
+		assert_x64_linux_tiny_load_segment_layout(result, linux_tiny_int_str_arena_metadata_bytes +
+			linux_tiny_rune_str_arena_metadata_bytes)
 		x64_host_cleanup_tmp(result.tmp_dir)
 	}
 }
@@ -3007,9 +3347,9 @@ fn main() {
 	}
 }
 
-fn test_x64_linux_auto_tiny_stored_int_str_values_fall_back_to_hosted_libc() {
+fn test_x64_linux_auto_tiny_stored_int_str_values_use_tiny_runtime() {
 	$if linux {
-		result := run_x64_host_program_redirected_auto('auto_tiny_stored_int_str_values_hosted', 'module main
+		result := run_x64_host_program_redirected_auto('auto_tiny_stored_int_str_values_runtime', 'module main
 
 fn main() {
 	a := 12.str()
@@ -3019,14 +3359,15 @@ fn main() {
 	println(a)
 }
 ')
-		assert_x64_linux_hosted_libc_binary(result, '12\n34\n12\n'.bytes())
+		assert_x64_linux_no_libc_binary(result, '12\n34\n12\n'.bytes())
+		assert_x64_linux_tiny_load_segment_layout(result, linux_tiny_int_str_arena_metadata_bytes)
 		x64_host_cleanup_tmp(result.tmp_dir)
 	}
 }
 
-fn test_x64_linux_strict_tiny_stored_int_str_values_are_rejected() {
+fn test_x64_linux_strict_tiny_stored_int_str_values_use_tiny_runtime() {
 	$if linux {
-		assert_x64_linux_tiny_build_rejected('strict_tiny_stored_int_str_values_rejected', 'module main
+		result := run_x64_host_program_redirected_tiny('strict_tiny_stored_int_str_values_runtime', 'module main
 
 fn main() {
 	a := 12.str()
@@ -3035,14 +3376,16 @@ fn main() {
 	println(b)
 	println(a)
 }
-',
-			linux_tiny_not_eligible_prefix)
+')
+		assert_x64_linux_no_libc_binary(result, '12\n34\n12\n'.bytes())
+		assert_x64_linux_tiny_load_segment_layout(result, linux_tiny_int_str_arena_metadata_bytes)
+		x64_host_cleanup_tmp(result.tmp_dir)
 	}
 }
 
-fn test_x64_linux_auto_tiny_passed_int_str_value_falls_back_to_hosted_libc() {
+fn test_x64_linux_auto_tiny_passed_int_str_value_uses_tiny_runtime() {
 	$if linux {
-		result := run_x64_host_program_redirected_auto('auto_tiny_passed_int_str_value_hosted', 'module main
+		result := run_x64_host_program_redirected_auto('auto_tiny_passed_int_str_value_runtime', 'module main
 
 fn emit_twice(s string) {
 	println(s)
@@ -3053,14 +3396,15 @@ fn main() {
 	emit_twice(42.str())
 }
 ')
-		assert_x64_linux_hosted_libc_binary(result, '42\n42\n'.bytes())
+		assert_x64_linux_no_libc_binary(result, '42\n42\n'.bytes())
+		assert_x64_linux_tiny_load_segment_layout(result, linux_tiny_int_str_arena_metadata_bytes)
 		x64_host_cleanup_tmp(result.tmp_dir)
 	}
 }
 
-fn test_x64_linux_strict_tiny_passed_int_str_value_is_rejected() {
+fn test_x64_linux_strict_tiny_passed_int_str_value_uses_tiny_runtime() {
 	$if linux {
-		assert_x64_linux_tiny_build_rejected('strict_tiny_passed_int_str_value_rejected', 'module main
+		result := run_x64_host_program_redirected_tiny('strict_tiny_passed_int_str_value_runtime', 'module main
 
 fn emit_twice(s string) {
 	println(s)
@@ -3070,8 +3414,10 @@ fn emit_twice(s string) {
 fn main() {
 	emit_twice(42.str())
 }
-',
-			linux_tiny_not_eligible_prefix)
+')
+		assert_x64_linux_no_libc_binary(result, '42\n42\n'.bytes())
+		assert_x64_linux_tiny_load_segment_layout(result, linux_tiny_int_str_arena_metadata_bytes)
+		x64_host_cleanup_tmp(result.tmp_dir)
 	}
 }
 
@@ -3169,6 +3515,25 @@ fn main() {
 		}
 		expected_stdout << '2147483647\n'.bytes()
 		assert_x64_linux_no_libc_binary(result, expected_stdout)
+		assert_x64_linux_tiny_load_segment_layout(result, linux_tiny_int_str_arena_metadata_bytes)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_tiny_i64_str_boundary_values_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_tiny('tiny_i64_str_boundary_values', 'module main
+
+fn main() {
+	println(i64(9223372036854775807))
+	println(-i64(9223372036854775807) - i64(1))
+	println(i64(4294967296))
+	println(i64(-4294967297))
+	println(i64(1234567890123456789))
+}
+')
+		assert_x64_linux_no_libc_binary(result,
+			'9223372036854775807\n-9223372036854775808\n4294967296\n-4294967297\n1234567890123456789\n'.bytes())
 		assert_x64_linux_tiny_load_segment_layout(result, linux_tiny_int_str_arena_metadata_bytes)
 		x64_host_cleanup_tmp(result.tmp_dir)
 	}
@@ -3486,9 +3851,29 @@ fn test_x64_macos_windows_fizz_buzz_core_for_range_match_true_stdout_exact_bytes
 		x64_fizz_buzz_core_source(), x64_fizz_buzz_core_stdout())
 }
 
+fn test_x64_macos_windows_string_literal_field_size_stores_do_not_clobber_adjacent_fields() {
+	assert_x64_macos_windows_stdout_bytes('string_literal_field_size_no_clobber',
+		x64_string_literal_field_size_source(), x64_string_literal_field_size_stdout())
+}
+
 fn test_x64_macos_windows_fizz_buzz_example_top_level_stdout_exact_bytes() {
 	assert_x64_macos_windows_file_stdout_bytes('fizz_buzz_example_top_level_exact',
 		x64_examples_dir(), 'fizz_buzz.v', x64_fizz_buzz_example_stdout())
+}
+
+fn test_x64_macos_windows_js_hello_world_example_top_level_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes('js_hello_world_example_top_level_exact',
+		x64_examples_dir(), 'js_hello_world.v', x64_js_hello_world_example_stdout())
+}
+
+fn test_x64_macos_windows_vascii_example_top_level_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes('vascii_example_top_level_exact',
+		x64_examples_dir(), 'vascii.v', x64_vascii_example_stdout())
+}
+
+fn test_x64_macos_windows_rune_example_top_level_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes('rune_example_top_level_exact', x64_examples_dir(),
+		'rune.v', x64_rune_example_stdout())
 }
 
 fn test_x64_macos_windows_imported_module_init_runs_once_before_use_stdout_exact_bytes() {

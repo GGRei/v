@@ -982,8 +982,8 @@ fn (mut g Gen) gen_instr(val_id int) {
 		.inline_string_init {
 			g.zero_value_bytes(val_id, g.stack_storage_size(val_id))
 			for fi, field_id in instr.operands {
-				g.store_field_value(val_id, instr.typ, fi, field_id,
-					g.type_size(g.mod.values[field_id].typ))
+				field_typ := g.struct_field_type(instr.typ, fi, g.mod.values[field_id].typ)
+				g.store_field_value(val_id, instr.typ, fi, field_id, g.type_size(field_typ))
 			}
 		}
 		.struct_init {
@@ -2547,11 +2547,26 @@ fn (mut g Gen) materialize_string_literal(reg int, val_id int) {
 	asm_lea_reg_rip(mut g, rax)
 	g.add_rip_reloc(sym_idx)
 	g.emit_u32(0)
-	asm_store_rbp_disp_reg_size(mut g, slot_off + g.struct_field_offset_bytes(val.typ, 0), rax, 8)
+	mut str_field_size := g.type_size(g.struct_field_type(val.typ, 0, 0))
+	if str_field_size <= 0 {
+		str_field_size = 8
+	}
+	mut len_field_size := g.type_size(g.struct_field_type(val.typ, 1, 0))
+	if len_field_size <= 0 {
+		len_field_size = 8
+	}
+	mut is_lit_field_size := g.type_size(g.struct_field_type(val.typ, 2, 0))
+	if is_lit_field_size <= 0 {
+		is_lit_field_size = 8
+	}
+	asm_store_rbp_disp_reg_size(mut g, slot_off + g.struct_field_offset_bytes(val.typ, 0), rax,
+		str_field_size)
 	asm_mov_reg_imm32(mut g, rax, u32(val.index))
-	asm_store_rbp_disp_reg_size(mut g, slot_off + g.struct_field_offset_bytes(val.typ, 1), rax, 4)
+	asm_store_rbp_disp_reg_size(mut g, slot_off + g.struct_field_offset_bytes(val.typ, 1), rax,
+		len_field_size)
 	asm_mov_reg_imm32(mut g, rax, 1)
-	asm_store_rbp_disp_reg_size(mut g, slot_off + g.struct_field_offset_bytes(val.typ, 2), rax, 4)
+	asm_store_rbp_disp_reg_size(mut g, slot_off + g.struct_field_offset_bytes(val.typ, 2), rax,
+		is_lit_field_size)
 	if slot_off >= -128 && slot_off <= 127 {
 		asm_lea_rax_rbp_disp8(mut g, i8(slot_off))
 	} else {

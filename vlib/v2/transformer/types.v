@@ -2707,6 +2707,11 @@ fn (t &Transformer) get_expr_type(expr ast.Expr) ?types.Type {
 				return t.normalize_type(typ)
 			}
 		}
+		if t.call_or_cast_lhs_is_type(expr.lhs) {
+			if typ := t.type_from_param_type_expr(expr.lhs, []) {
+				return t.normalize_type(typ)
+			}
+		}
 		if typ := t.resolve_call_return_type(expr) {
 			return t.normalize_type(typ)
 		}
@@ -4120,6 +4125,9 @@ fn (t &Transformer) get_str_fn_name_for_type(typ types.Type) ?string {
 		types.Enum {
 			return '${typ.name}__str'
 		}
+		types.Rune {
+			return 'rune__str'
+		}
 		types.Primitive {
 			if typ.props.has(types.Properties.boolean) {
 				return 'bool__str'
@@ -4132,18 +4140,18 @@ fn (t &Transformer) get_str_fn_name_for_type(typ types.Type) ?string {
 			}
 			if typ.props.has(types.Properties.unsigned) {
 				match typ.size {
-					1 { return 'u8__str' }
-					2 { return 'u16__str' }
-					4 { return 'u32__str' }
-					8 { return 'u64__str' }
+					8 { return 'u8__str' }
+					16 { return 'u16__str' }
+					32 { return 'u32__str' }
+					64 { return 'u64__str' }
 					else { return 'int__str' }
 				}
 			}
 			match typ.size {
-				1 { return 'i8__str' }
-				2 { return 'i16__str' }
-				4 { return 'int__str' }
-				8 { return 'i64__str' }
+				8 { return 'i8__str' }
+				16 { return 'i16__str' }
+				32, 0 { return 'int__str' }
+				64 { return 'i64__str' }
 				else { return 'int__str' }
 			}
 		}
