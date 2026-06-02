@@ -339,6 +339,14 @@ fn (l PeLinker) build_runtime_text() PeRuntimeText {
 		rt.symbols['exit'] = runtime_base + u32(rt.bytes.len)
 		pe_emit_runtime_exit(mut rt)
 	}
+	if l.uses_undefined_symbol('builtin__i64__str') {
+		rt.symbols['builtin__i64__str'] = runtime_base + u32(rt.bytes.len)
+		pe_emit_runtime_i64_str(mut rt)
+	}
+	if l.uses_undefined_symbol('builtin__string__+') {
+		rt.symbols['builtin__string__+'] = runtime_base + u32(rt.bytes.len)
+		pe_emit_runtime_string_plus(mut rt)
+	}
 	if l.uses_undefined_symbol('builtin__Array_rune__string') {
 		rt.symbols['builtin__Array_rune__string'] = runtime_base + u32(rt.bytes.len)
 		pe_emit_runtime_array_rune_string(mut rt)
@@ -1175,6 +1183,149 @@ fn pe_emit_runtime_exit(mut rt PeRuntimeText) {
 	rt.bytes << [u8(0x48), 0x83, 0xec, 0x28] // sub rsp, 40
 	pe_emit_runtime_call_import(mut rt, 'ExitProcess')
 	rt.bytes << u8(0xcc) // int3
+}
+
+fn pe_emit_runtime_exit_process_1(mut rt PeRuntimeText) {
+	rt.bytes << [u8(0xb9), 0x01, 0, 0, 0] // mov ecx, 1
+	pe_emit_runtime_call_import(mut rt, 'ExitProcess')
+	rt.bytes << u8(0xcc) // int3
+}
+
+fn pe_emit_runtime_i64_str(mut rt PeRuntimeText) {
+	rt.bytes << [u8(0x48), 0x83, 0xec, 0x58] // sub rsp, 88
+	rt.bytes << [u8(0x48), 0x89, 0x4c, 0x24, 0x20] // mov [rsp+32], rcx
+	rt.bytes << [u8(0x48), 0x89, 0x54, 0x24, 0x28] // mov [rsp+40], rdx
+	pe_emit_runtime_call_import(mut rt, 'GetProcessHeap')
+	rt.bytes << [u8(0x48), 0x85, 0xc0] // test rax, rax
+	no_heap := pe_emit_jcc32(mut rt.bytes, 0x84) // je
+	rt.bytes << [u8(0x48), 0x89, 0xc1] // mov rcx, rax
+	rt.bytes << [u8(0xba), 0x08, 0, 0, 0] // mov edx, HEAP_ZERO_MEMORY
+	rt.bytes << [u8(0x41), 0xb8, 0x20, 0, 0, 0] // mov r8d, 32
+	pe_emit_runtime_call_import(mut rt, 'HeapAlloc')
+	rt.bytes << [u8(0x48), 0x85, 0xc0] // test rax, rax
+	alloc_failed := pe_emit_jcc32(mut rt.bytes, 0x84) // je
+	rt.bytes << [u8(0x48), 0x89, 0x44, 0x24, 0x30] // mov [rsp+48], rax
+	rt.bytes << [u8(0x4c), 0x8d, 0x40, 0x1f] // lea r8, [rax+31]
+	rt.bytes << [u8(0x41), 0xc6, 0x00, 0x00] // mov byte ptr [r8], 0
+	rt.bytes << [u8(0x48), 0x8b, 0x44, 0x24, 0x28] // mov rax, [rsp+40]
+	rt.bytes << [u8(0x45), 0x31, 0xc9] // xor r9d, r9d
+	rt.bytes << [u8(0x45), 0x31, 0xd2] // xor r10d, r10d
+	rt.bytes << [u8(0x48), 0x85, 0xc0] // test rax, rax
+	non_negative := pe_emit_jcc32(mut rt.bytes, 0x89) // jns
+	rt.bytes << [u8(0x41), 0xb2, 0x01] // mov r10b, 1
+	rt.bytes << [u8(0x48), 0xf7, 0xd8] // neg rax
+	non_negative_target := rt.bytes.len
+	rt.bytes << [u8(0x48), 0x85, 0xc0] // test rax, rax
+	non_zero := pe_emit_jcc32(mut rt.bytes, 0x85) // jne
+	rt.bytes << [u8(0x49), 0xff, 0xc8] // dec r8
+	rt.bytes << [u8(0x41), 0xc6, 0x00, 0x30] // mov byte ptr [r8], '0'
+	rt.bytes << [u8(0x41), 0xb9, 0x01, 0, 0, 0] // mov r9d, 1
+	maybe_sign_jump := pe_emit_jmp32(mut rt.bytes)
+	loop_start := rt.bytes.len
+	rt.bytes << [u8(0x31), 0xd2] // xor edx, edx
+	rt.bytes << [u8(0xb9), 0x0a, 0, 0, 0] // mov ecx, 10
+	rt.bytes << [u8(0x48), 0xf7, 0xf1] // div rcx
+	rt.bytes << [u8(0x80), 0xc2, 0x30] // add dl, '0'
+	rt.bytes << [u8(0x49), 0xff, 0xc8] // dec r8
+	rt.bytes << [u8(0x41), 0x88, 0x10] // mov [r8], dl
+	rt.bytes << [u8(0x49), 0xff, 0xc1] // inc r9
+	rt.bytes << [u8(0x48), 0x85, 0xc0] // test rax, rax
+	loop_more := pe_emit_jcc32(mut rt.bytes, 0x85) // jne
+	maybe_sign := rt.bytes.len
+	rt.bytes << [u8(0x45), 0x84, 0xd2] // test r10b, r10b
+	done_digits := pe_emit_jcc32(mut rt.bytes, 0x84) // je
+	rt.bytes << [u8(0x49), 0xff, 0xc8] // dec r8
+	rt.bytes << [u8(0x41), 0xc6, 0x00, 0x2d] // mov byte ptr [r8], '-'
+	rt.bytes << [u8(0x49), 0xff, 0xc1] // inc r9
+	done_digits_target := rt.bytes.len
+	rt.bytes << [u8(0x48), 0x8b, 0x54, 0x24, 0x20] // mov rdx, [rsp+32]
+	rt.bytes << [u8(0x4c), 0x89, 0x02] // mov [rdx], r8
+	rt.bytes << [u8(0x44), 0x89, 0x4a, 0x08] // mov [rdx+8], r9d
+	rt.bytes << [u8(0xc7), 0x42, 0x0c, 0, 0, 0, 0] // mov dword ptr [rdx+12], 0
+	rt.bytes << [u8(0x48), 0x89, 0xd0] // mov rax, rdx
+	rt.bytes << [u8(0x48), 0x83, 0xc4, 0x58] // add rsp, 88
+	rt.bytes << u8(0xc3) // ret
+	fail := rt.bytes.len
+	pe_emit_runtime_exit_process_1(mut rt)
+	pe_patch_rel32_local(mut rt.bytes, no_heap, fail)
+	pe_patch_rel32_local(mut rt.bytes, alloc_failed, fail)
+	pe_patch_rel32_local(mut rt.bytes, non_negative, non_negative_target)
+	pe_patch_rel32_local(mut rt.bytes, non_zero, loop_start)
+	pe_patch_rel32_local(mut rt.bytes, maybe_sign_jump, maybe_sign)
+	pe_patch_rel32_local(mut rt.bytes, loop_more, loop_start)
+	pe_patch_rel32_local(mut rt.bytes, done_digits, done_digits_target)
+}
+
+fn pe_emit_runtime_string_plus(mut rt PeRuntimeText) {
+	rt.bytes << [u8(0x48), 0x83, 0xec, 0x68] // sub rsp, 104
+	rt.bytes << [u8(0x48), 0x89, 0x4c, 0x24, 0x20] // mov [rsp+32], rcx
+	rt.bytes << [u8(0x48), 0x89, 0x54, 0x24, 0x28] // mov [rsp+40], rdx
+	rt.bytes << [u8(0x4c), 0x89, 0x44, 0x24, 0x30] // mov [rsp+48], r8
+	rt.bytes << [u8(0x44), 0x8b, 0x4a, 0x08] // mov r9d, [rdx+8]
+	rt.bytes << [u8(0x45), 0x03, 0x48, 0x08] // add r9d, [r8+8]
+	len_overflow := pe_emit_jcc32(mut rt.bytes, 0x82) // jc
+	rt.bytes << [u8(0x4c), 0x89, 0x4c, 0x24, 0x38] // mov [rsp+56], r9
+	rt.bytes << [u8(0x45), 0x89, 0xc8] // mov r8d, r9d
+	rt.bytes << [u8(0x49), 0x83, 0xc0, 0x01] // add r8, 1
+	alloc_overflow := pe_emit_jcc32(mut rt.bytes, 0x82) // jc
+	rt.bytes << [u8(0x4c), 0x89, 0x44, 0x24, 0x40] // mov [rsp+64], r8
+	pe_emit_runtime_call_import(mut rt, 'GetProcessHeap')
+	rt.bytes << [u8(0x48), 0x85, 0xc0] // test rax, rax
+	no_heap := pe_emit_jcc32(mut rt.bytes, 0x84) // je
+	rt.bytes << [u8(0x48), 0x89, 0xc1] // mov rcx, rax
+	rt.bytes << [u8(0xba), 0x08, 0, 0, 0] // mov edx, HEAP_ZERO_MEMORY
+	rt.bytes << [u8(0x4c), 0x8b, 0x44, 0x24, 0x40] // mov r8, [rsp+64]
+	pe_emit_runtime_call_import(mut rt, 'HeapAlloc')
+	rt.bytes << [u8(0x48), 0x85, 0xc0] // test rax, rax
+	alloc_failed := pe_emit_jcc32(mut rt.bytes, 0x84) // je
+	rt.bytes << [u8(0x48), 0x89, 0x44, 0x24, 0x48] // mov [rsp+72], rax
+	rt.bytes << [u8(0x48), 0x8b, 0x54, 0x24, 0x28] // mov rdx, [rsp+40]
+	rt.bytes << [u8(0x4c), 0x8b, 0x12] // mov r10, [rdx]
+	rt.bytes << [u8(0x44), 0x8b, 0x5a, 0x08] // mov r11d, [rdx+8]
+	rt.bytes << [u8(0x48), 0x89, 0xc1] // mov rcx, rax
+	rt.bytes << [u8(0x4d), 0x85, 0xdb] // test r11, r11
+	copy_a_done := pe_emit_jcc32(mut rt.bytes, 0x84) // je
+	copy_a_loop := rt.bytes.len
+	rt.bytes << [u8(0x45), 0x8a, 0x0a] // mov r9b, [r10]
+	rt.bytes << [u8(0x44), 0x88, 0x09] // mov [rcx], r9b
+	rt.bytes << [u8(0x49), 0xff, 0xc2] // inc r10
+	rt.bytes << [u8(0x48), 0xff, 0xc1] // inc rcx
+	rt.bytes << [u8(0x49), 0xff, 0xcb] // dec r11
+	copy_a_more := pe_emit_jcc32(mut rt.bytes, 0x85) // jne
+	copy_a_done_target := rt.bytes.len
+	rt.bytes << [u8(0x4c), 0x8b, 0x44, 0x24, 0x30] // mov r8, [rsp+48]
+	rt.bytes << [u8(0x4d), 0x8b, 0x10] // mov r10, [r8]
+	rt.bytes << [u8(0x45), 0x8b, 0x58, 0x08] // mov r11d, [r8+8]
+	rt.bytes << [u8(0x4d), 0x85, 0xdb] // test r11, r11
+	copy_b_done := pe_emit_jcc32(mut rt.bytes, 0x84) // je
+	copy_b_loop := rt.bytes.len
+	rt.bytes << [u8(0x45), 0x8a, 0x0a] // mov r9b, [r10]
+	rt.bytes << [u8(0x44), 0x88, 0x09] // mov [rcx], r9b
+	rt.bytes << [u8(0x49), 0xff, 0xc2] // inc r10
+	rt.bytes << [u8(0x48), 0xff, 0xc1] // inc rcx
+	rt.bytes << [u8(0x49), 0xff, 0xcb] // dec r11
+	copy_b_more := pe_emit_jcc32(mut rt.bytes, 0x85) // jne
+	copy_b_done_target := rt.bytes.len
+	rt.bytes << [u8(0xc6), 0x01, 0x00] // mov byte ptr [rcx], 0
+	rt.bytes << [u8(0x48), 0x8b, 0x54, 0x24, 0x20] // mov rdx, [rsp+32]
+	rt.bytes << [u8(0x48), 0x8b, 0x44, 0x24, 0x48] // mov rax, [rsp+72]
+	rt.bytes << [u8(0x48), 0x89, 0x02] // mov [rdx], rax
+	rt.bytes << [u8(0x8b), 0x44, 0x24, 0x38] // mov eax, [rsp+56]
+	rt.bytes << [u8(0x89), 0x42, 0x08] // mov [rdx+8], eax
+	rt.bytes << [u8(0xc7), 0x42, 0x0c, 0, 0, 0, 0] // mov dword ptr [rdx+12], 0
+	rt.bytes << [u8(0x48), 0x89, 0xd0] // mov rax, rdx
+	rt.bytes << [u8(0x48), 0x83, 0xc4, 0x68] // add rsp, 104
+	rt.bytes << u8(0xc3) // ret
+	fail := rt.bytes.len
+	pe_emit_runtime_exit_process_1(mut rt)
+	pe_patch_rel32_local(mut rt.bytes, len_overflow, fail)
+	pe_patch_rel32_local(mut rt.bytes, alloc_overflow, fail)
+	pe_patch_rel32_local(mut rt.bytes, no_heap, fail)
+	pe_patch_rel32_local(mut rt.bytes, alloc_failed, fail)
+	pe_patch_rel32_local(mut rt.bytes, copy_a_done, copy_a_done_target)
+	pe_patch_rel32_local(mut rt.bytes, copy_a_more, copy_a_loop)
+	pe_patch_rel32_local(mut rt.bytes, copy_b_done, copy_b_done_target)
+	pe_patch_rel32_local(mut rt.bytes, copy_b_more, copy_b_loop)
 }
 
 fn pe_emit_runtime_errno(mut rt PeRuntimeText) {

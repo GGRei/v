@@ -2511,6 +2511,14 @@ fn x64_long_ascii_literal_stdout() []u8 {
 	return out
 }
 
+fn x64_repeated_ascii_literal(ch u8, count int) string {
+	mut out := []u8{cap: count}
+	for _ in 0 .. count {
+		out << ch
+	}
+	return out.bytestr()
+}
+
 fn x64_long_ascii_literal_source() string {
 	literal := x64_long_ascii_literal_stdout().bytestr()
 	return "module main
@@ -3091,18 +3099,80 @@ fn test_x64_linux_hello_world_example_auto_tiny_no_libc() {
 	}
 }
 
-fn test_x64_linux_js_hello_world_example_strict_tiny_blocked_by_string_concat() {
+fn test_x64_linux_js_hello_world_example_strict_tiny_no_libc() {
 	$if linux {
-		assert_x64_linux_tiny_file_build_rejected('js_hello_world_example_strict_tiny_blocked',
-			x64_examples_dir(), 'js_hello_world.v', 'external symbol `builtin__string__+`')
+		result := run_x64_host_file_redirected_tiny('js_hello_world_example_strict_tiny_no_libc',
+			x64_examples_dir(), 'js_hello_world.v')
+		assert_x64_linux_no_libc_binary(result, x64_js_hello_world_example_stdout())
+		assert_x64_linux_tiny_load_segment_layout(result, linux_tiny_int_str_arena_metadata_bytes +
+			linux_tiny_string_plus_arena_metadata_bytes)
+		x64_host_cleanup_tmp(result.tmp_dir)
 	}
 }
 
-fn test_x64_linux_js_hello_world_example_auto_tiny_falls_back_to_hosted_libc() {
+fn test_x64_linux_js_hello_world_example_auto_tiny_no_libc() {
 	$if linux {
-		result := run_x64_host_file_redirected_auto('js_hello_world_example_auto_tiny_hosted',
+		result := run_x64_host_file_redirected_auto('js_hello_world_example_auto_tiny_no_libc',
 			x64_examples_dir(), 'js_hello_world.v')
-		assert_x64_linux_hosted_libc_binary(result, x64_js_hello_world_example_stdout())
+		assert_x64_linux_no_libc_binary(result, x64_js_hello_world_example_stdout())
+		assert_x64_linux_tiny_load_segment_layout(result, linux_tiny_int_str_arena_metadata_bytes +
+			linux_tiny_string_plus_arena_metadata_bytes)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_string_plus_runtime_strict_tiny_no_libc() {
+	$if linux {
+		result := run_x64_host_program_redirected_tiny('string_plus_runtime_strict_tiny_no_libc', "module main
+
+fn main() {
+	left := 'tiny '
+	right := 'concat'
+	println(left + right)
+}
+")
+		assert_x64_linux_no_libc_binary(result, 'tiny concat\n'.bytes())
+		assert_x64_linux_tiny_load_segment_layout(result,
+			linux_tiny_string_plus_arena_metadata_bytes)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_string_plus_chain_preserves_tmp_lifetime_strict_tiny_no_libc() {
+	$if linux {
+		result := run_x64_host_program_redirected_tiny('string_plus_chain_preserves_tmp_lifetime_strict_tiny_no_libc', "module main
+
+fn main() {
+	a := 'one'
+	b := ' two'
+	c := ' three'
+	tmp := a + b
+	println(tmp + c)
+	println(tmp)
+}
+")
+		assert_x64_linux_no_libc_binary(result, 'one two three\none two\n'.bytes())
+		assert_x64_linux_tiny_load_segment_layout(result,
+			linux_tiny_string_plus_arena_metadata_bytes)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_string_plus_large_allocation_strict_tiny_no_libc() {
+	$if linux {
+		left := x64_repeated_ascii_literal(`A`, 4096)
+		right := x64_repeated_ascii_literal(`B`, 64)
+		result := run_x64_host_program_redirected_tiny('string_plus_large_allocation_strict_tiny_no_libc', "module main
+
+fn main() {
+	left := '${left}'
+	right := '${right}'
+	println(left + right)
+}
+")
+		assert_x64_linux_no_libc_binary(result, (left + right + '\n').bytes())
+		assert_x64_linux_tiny_load_segment_layout(result,
+			linux_tiny_string_plus_arena_metadata_bytes)
 		x64_host_cleanup_tmp(result.tmp_dir)
 	}
 }
@@ -3217,6 +3287,72 @@ fn test_x64_macos_fizz_buzz_example_auto_tiny_uses_tiny_object() {
 		assert tiny_size > 0, '${context}\ntiny size: ${tiny_size}'
 		assert normal_size > 0, '${context}\nnormal size: ${normal_size}'
 		println('macOS x64 tiny fizz_buzz: tiny size=${tiny_size}; normal size=${normal_size}')
+		x64_host_cleanup_tmp(tiny.tmp_dir)
+		x64_host_cleanup_tmp(normal.tmp_dir)
+	}
+}
+
+fn test_x64_macos_js_hello_world_example_auto_tiny_uses_tiny_object() {
+	$if macos {
+		tiny := run_x64_host_file_redirected_macos_auto_tiny('macos_js_hello_world_example_auto_tiny',
+			x64_examples_dir(), 'js_hello_world.v')
+		normal := run_x64_host_file_redirected_no_tiny('macos_js_hello_world_example_normal',
+			x64_examples_dir(), 'js_hello_world.v')
+		context := '${x64_host_result_context(tiny)}\nnormal build:\n${x64_host_result_context(normal)}'
+		assert tiny.stdout == x64_js_hello_world_example_stdout(), context
+		assert tiny.stderr == []u8{}, context
+		assert normal.stdout == tiny.stdout, context
+		assert normal.stderr == []u8{}, context
+		assert_x64_macos_tiny_object_used(tiny, context)
+		tiny_size := os.file_size(tiny.bin_path)
+		normal_size := os.file_size(normal.bin_path)
+		assert tiny_size > 0, '${context}\ntiny size: ${tiny_size}'
+		assert normal_size > 0, '${context}\nnormal size: ${normal_size}'
+		println('macOS x64 tiny js_hello_world: tiny size=${tiny_size}; normal size=${normal_size}')
+		x64_host_cleanup_tmp(tiny.tmp_dir)
+		x64_host_cleanup_tmp(normal.tmp_dir)
+	}
+}
+
+fn test_x64_macos_vascii_example_auto_tiny_uses_tiny_object() {
+	$if macos {
+		tiny := run_x64_host_file_redirected_macos_auto_tiny('macos_vascii_example_auto_tiny',
+			x64_examples_dir(), 'vascii.v')
+		normal := run_x64_host_file_redirected_no_tiny('macos_vascii_example_normal',
+			x64_examples_dir(), 'vascii.v')
+		context := '${x64_host_result_context(tiny)}\nnormal build:\n${x64_host_result_context(normal)}'
+		assert tiny.stdout == x64_vascii_example_stdout(), context
+		assert tiny.stderr == []u8{}, context
+		assert normal.stdout == tiny.stdout, context
+		assert normal.stderr == []u8{}, context
+		assert_x64_macos_tiny_object_used(tiny, context)
+		tiny_size := os.file_size(tiny.bin_path)
+		normal_size := os.file_size(normal.bin_path)
+		assert tiny_size > 0, '${context}\ntiny size: ${tiny_size}'
+		assert normal_size > 0, '${context}\nnormal size: ${normal_size}'
+		println('macOS x64 tiny vascii: tiny size=${tiny_size}; normal size=${normal_size}')
+		x64_host_cleanup_tmp(tiny.tmp_dir)
+		x64_host_cleanup_tmp(normal.tmp_dir)
+	}
+}
+
+fn test_x64_macos_rune_example_auto_tiny_uses_tiny_object() {
+	$if macos {
+		tiny := run_x64_host_file_redirected_macos_auto_tiny('macos_rune_example_auto_tiny',
+			x64_examples_dir(), 'rune.v')
+		normal := run_x64_host_file_redirected_no_tiny('macos_rune_example_normal',
+			x64_examples_dir(), 'rune.v')
+		context := '${x64_host_result_context(tiny)}\nnormal build:\n${x64_host_result_context(normal)}'
+		assert tiny.stdout == x64_rune_example_stdout(), context
+		assert tiny.stderr == []u8{}, context
+		assert normal.stdout == tiny.stdout, context
+		assert normal.stderr == []u8{}, context
+		assert_x64_macos_tiny_object_used(tiny, context)
+		tiny_size := os.file_size(tiny.bin_path)
+		normal_size := os.file_size(normal.bin_path)
+		assert tiny_size > 0, '${context}\ntiny size: ${tiny_size}'
+		assert normal_size > 0, '${context}\nnormal size: ${normal_size}'
+		println('macOS x64 tiny rune: tiny size=${tiny_size}; normal size=${normal_size}')
 		x64_host_cleanup_tmp(tiny.tmp_dir)
 		x64_host_cleanup_tmp(normal.tmp_dir)
 	}
@@ -3709,6 +3845,19 @@ fn test_x64_macos_windows_println_string_parameter_stdout_exact_bytes() {
 fn test_x64_macos_windows_i64_loop_carried_mutable_state_controls_branch() {
 	assert_x64_macos_windows_stdout_bytes('i64_loop_carried_mutable_state_branch',
 		x64_i64_loop_carried_mutable_state_source(), x64_i64_loop_carried_mutable_state_stdout())
+}
+
+fn test_x64_windows_i64_str_boundary_values_stdout_exact_bytes() {
+	assert_x64_windows_stdout_bytes('windows_i64_str_boundary_values', 'module main
+
+fn main() {
+	println(i64(9223372036854775807))
+	println(-i64(9223372036854775807) - i64(1))
+	println(i64(4294967296))
+	println(i64(-4294967297))
+}
+',
+		'9223372036854775807\n-9223372036854775808\n4294967296\n-4294967297\n'.bytes())
 }
 
 fn test_x64_macos_windows_print_integer_and_int_str_stdout_exact_bytes() {

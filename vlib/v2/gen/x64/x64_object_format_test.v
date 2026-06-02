@@ -1632,6 +1632,60 @@ fn test_macho_tiny_object_writer_preserves_undefined_externals_and_remaps_reloca
 	}
 }
 
+fn test_macho_tiny_object_writer_resolves_builtin_string_plus_with_libsystem_runtime() {
+	path := temp_object_path('macho_tiny_string_plus_runtime')
+	defer {
+		os.rm(path) or {}
+	}
+
+	mut obj := MachOObject.new()
+	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xc3]
+	string_plus_sym := obj.add_undefined('_builtin__string__+')
+	obj.add_symbol('_main', 0, true, 1)
+	obj.add_reloc(1, string_plus_sym, x86_64_reloc_branch, true, 2)
+
+	mut writer := MachOTinyObjectWriter{
+		macho: obj
+	}
+	writer.write(path) or { panic(err) }
+
+	data := os.read_bytes(path) or { panic(err) }
+	symbols := macho_test_symbols(data)
+	names := symbols.map(it.name)
+	assert '_main' in names
+	assert '_builtin__string__+' in names
+	assert '_malloc' in names
+	assert '_exit' in names
+
+	string_plus_out := macho_test_symbol_by_name(symbols, '_builtin__string__+') or {
+		assert false, 'missing _builtin__string__+ in Mach-O tiny output'
+		return
+	}
+	assert string_plus_out.type_ == 0x0e
+	assert string_plus_out.sect == 1
+	assert string_plus_out.value > 0
+	for name in ['_malloc', '_exit'] {
+		symbol := macho_test_symbol_by_name(symbols, name) or {
+			assert false, 'missing ${name} in Mach-O tiny output'
+			return
+		}
+		assert symbol.type_ == 0x01
+		assert symbol.sect == 0
+		assert symbol.value == 0
+	}
+
+	relocs := macho_test_text_relocations(data)
+	mut reloc_names := []string{}
+	for reloc in relocs {
+		reloc_names << symbols[reloc.sym_idx].name
+		assert reloc.pcrel
+		assert reloc.length == 2
+		assert reloc.type_ == x86_64_reloc_branch
+	}
+	reloc_names.sort()
+	assert reloc_names == ['_builtin__string__+', '_exit', '_malloc']
+}
+
 fn test_macho_tiny_object_writer_keeps_referenced_rodata_and_data() {
 	path := temp_object_path('macho_tiny_rodata_data')
 	defer {

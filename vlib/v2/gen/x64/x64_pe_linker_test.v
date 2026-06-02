@@ -428,6 +428,38 @@ fn test_pe_linker_adds_runtime_kernel32_import_patches_only_when_needed() {
 	assert 'WriteFile' !in names
 }
 
+fn test_pe_linker_resolves_windows_string_plus_runtime_with_heap_imports() {
+	mut obj := CoffObject.new()
+	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xc3]
+	obj.add_symbol('main', 5, true, 1)
+	string_plus_sym := obj.add_undefined('builtin__string__+')
+	obj.add_text_reloc(1, string_plus_sym, coff_image_rel_amd64_rel32)
+
+	mut linker := PeLinker.new(obj)
+	image := linker.image() or { panic(err) }
+	names := pe_test_import_names(image)
+
+	assert names == ['ExitProcess', 'GetProcessHeap', 'HeapAlloc']
+	assert pe_test_iat_size(image) == u32((names.len + 1) * 8)
+	assert 'WriteFile' !in names
+}
+
+fn test_pe_linker_resolves_windows_i64_str_runtime_with_heap_imports() {
+	mut obj := CoffObject.new()
+	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xc3]
+	obj.add_symbol('main', 5, true, 1)
+	i64_str_sym := obj.add_undefined('builtin__i64__str')
+	obj.add_text_reloc(1, i64_str_sym, coff_image_rel_amd64_rel32)
+
+	mut linker := PeLinker.new(obj)
+	image := linker.image() or { panic(err) }
+	names := pe_test_import_names(image)
+
+	assert names == ['ExitProcess', 'GetProcessHeap', 'HeapAlloc']
+	assert pe_test_iat_size(image) == u32((names.len + 1) * 8)
+	assert 'WriteFile' !in names
+}
+
 fn test_pe_linker_zeroes_unemitted_data_directories() {
 	obj := sample_pe_coff_object()
 	mut linker := PeLinker.new(obj)
