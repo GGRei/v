@@ -65,7 +65,7 @@ jobs:
             }
           }
 
-          function Invoke-NativeX64Example([string] $source, [string] $name, [byte[]] $expected_stdout) {
+          function Invoke-NativeX64Example([string] $source, [string] $name, [byte[]] $expected_stdout, [string[]] $program_args = @()) {
             $exe = Join-Path $tmp "$name.exe"
             $stdout_path = Join-Path $tmp "$name.out"
             $stderr_path = Join-Path $tmp "$name.err"
@@ -74,7 +74,11 @@ jobs:
             Assert-LastExit "compile $source"
 
             Remove-Item -LiteralPath $stdout_path, $stderr_path -Force -ErrorAction SilentlyContinue
-            $process = Start-Process -FilePath $exe -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout_path -RedirectStandardError $stderr_path
+            if ($program_args.Count -gt 0) {
+              $process = Start-Process -FilePath $exe -ArgumentList $program_args -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout_path -RedirectStandardError $stderr_path
+            } else {
+              $process = Start-Process -FilePath $exe -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout_path -RedirectStandardError $stderr_path
+            }
             if ($process.ExitCode -ne 0) {
               if (Test-Path -LiteralPath $stderr_path) {
                 Get-Content -LiteralPath $stderr_path
@@ -117,6 +121,9 @@ jobs:
           }
           $fizz_expected = [System.Text.Encoding]::UTF8.GetBytes(($fizz_lines -join "`n") + "`n")
           Invoke-NativeX64Example 'examples/fizz_buzz.v' 'fizz_buzz' $fizz_expected
+
+          $fibonacci_expected = [System.Text.Encoding]::UTF8.GetBytes("1`n1`n2`n3`n5`n8`n13`n21`n34`n55`n89`n")
+          Invoke-NativeX64Example 'examples/fibonacci.v' 'fibonacci' $fibonacci_expected @('10')
 
           function Get-HanoiExpectedLines([int] $n, [string] $a, [string] $b, [string] $c) {
             if ($n -eq 1) {

@@ -3684,6 +3684,39 @@ fn test_x64_macos_fibonacci_example_arg_10_auto_tiny_falls_back_to_hosted() {
 	}
 }
 
+fn test_x64_windows_arguments_index_one_int_stdout_exact_bytes() {
+	$if windows {
+		result := run_x64_host_program_redirected_auto_with_args('windows_arguments_index_one_int',
+			x64_arguments_index_one_int_source(), ['10'])
+		context := x64_host_result_context(result)
+		assert result.stdout == x64_arguments_index_one_int_stdout(), context
+		assert result.stderr == []u8{}, context
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_windows_arguments_via_function_pointer_stdout_exact_bytes() {
+	$if windows {
+		result := run_x64_host_program_redirected_auto_with_args('windows_arguments_via_function_pointer',
+			x64_arguments_via_function_pointer_source(), ['10'])
+		context := x64_host_result_context(result)
+		assert result.stdout == x64_arguments_via_function_pointer_stdout(), context
+		assert result.stderr == []u8{}, context
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_windows_fibonacci_example_arg_10_stdout_exact_bytes() {
+	$if windows {
+		result := run_x64_host_file_redirected_auto_with_args('windows_fibonacci_example_arg_10_exact',
+			x64_examples_dir(), 'fibonacci.v', ['10'])
+		context := x64_host_result_context(result)
+		assert result.stdout == x64_fibonacci_10_example_stdout(), context
+		assert result.stderr == []u8{}, context
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
 fn test_x64_linux_struct_sumtype_field_init_stdout_exact_bytes() {
 	assert_x64_linux_stdout_bytes('struct_sumtype_field_init_exact',
 		x64_struct_sumtype_field_init_source(), x64_struct_sumtype_field_init_stdout())
