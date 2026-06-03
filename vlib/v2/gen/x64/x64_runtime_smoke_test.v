@@ -461,6 +461,100 @@ fn run_x64_host_program_redirected_auto(name string, source string) X64HostRunRe
 	}
 }
 
+fn run_x64_host_program_redirected_auto_with_args(name string, source string, args []string) X64HostRunResult {
+	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_x64_runtime_${name}_${os.getpid()}')
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	source_path := os.join_path(tmp_dir, '${name}.v')
+	bin_path := x64_host_bin_path(tmp_dir, name)
+	os.write_file(source_path, source) or { panic(err) }
+	vexe := os.getenv_opt('VEXE') or { @VEXE }
+	mut build := os.new_process(vexe)
+	defer {
+		build.close()
+	}
+	build.set_environment(x64_pinned_v2_build_environment(vexe, tmp_dir))
+	build.set_args(['-v2', '-no-parallel', '-b', 'x64', source_path, '-o', bin_path])
+	build.set_redirect_stdio()
+	build.run()
+	build.wait()
+	build_output := 'stdout:\n${build.stdout_slurp()}\nstderr:\n${build.stderr_slurp()}'
+	if build.code != 0 {
+		assert false, x64_host_build_failure_message(name, tmp_dir, source_path, source, bin_path,
+			build.code, build_output)
+	}
+	mut run := os.new_process(bin_path)
+	defer {
+		run.close()
+	}
+	run.set_args(args)
+	run.set_redirect_stdio()
+	run.run()
+	run.wait()
+	stdout := run.stdout_slurp().bytes()
+	stderr := run.stderr_slurp().bytes()
+	if run.code != 0 {
+		assert false, x64_host_run_failure_message(name, tmp_dir, source_path, source, bin_path,
+			build_output, run.code, stdout, stderr)
+	}
+	return X64HostRunResult{
+		name:         name
+		tmp_dir:      tmp_dir
+		source_path:  source_path
+		source_text:  source
+		bin_path:     bin_path
+		build_output: build_output
+		stdout:       stdout
+		stderr:       stderr
+	}
+}
+
+fn run_x64_host_program_redirected_macos_auto_tiny_verbose_with_args(name string, source string, args []string) X64HostRunResult {
+	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_x64_runtime_${name}_${os.getpid()}')
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	source_path := os.join_path(tmp_dir, '${name}.v')
+	bin_path := x64_host_bin_path(tmp_dir, name)
+	os.write_file(source_path, source) or { panic(err) }
+	vexe := os.getenv_opt('VEXE') or { @VEXE }
+	mut build := os.new_process(vexe)
+	defer {
+		build.close()
+	}
+	build.set_environment(x64_macos_auto_tiny_build_environment(vexe, tmp_dir))
+	build.set_args(['-v2', '-v', '-no-parallel', '-b', 'x64', source_path, '-o', bin_path])
+	build.set_redirect_stdio()
+	build.run()
+	build.wait()
+	build_output := 'stdout:\n${build.stdout_slurp()}\nstderr:\n${build.stderr_slurp()}'
+	if build.code != 0 {
+		assert false, x64_host_build_failure_message(name, tmp_dir, source_path, source, bin_path,
+			build.code, build_output)
+	}
+	mut run := os.new_process(bin_path)
+	defer {
+		run.close()
+	}
+	run.set_args(args)
+	run.set_redirect_stdio()
+	run.run()
+	run.wait()
+	stdout := run.stdout_slurp().bytes()
+	stderr := run.stderr_slurp().bytes()
+	if run.code != 0 {
+		assert false, x64_host_run_failure_message(name, tmp_dir, source_path, source, bin_path,
+			build_output, run.code, stdout, stderr)
+	}
+	return X64HostRunResult{
+		name:         name
+		tmp_dir:      tmp_dir
+		source_path:  source_path
+		source_text:  source
+		bin_path:     bin_path
+		build_output: build_output
+		stdout:       stdout
+		stderr:       stderr
+	}
+}
+
 fn run_x64_host_program_redirected_with_exit(name string, source string) X64HostRunExitResult {
 	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_x64_runtime_${name}_${os.getpid()}')
 	os.mkdir_all(tmp_dir) or { panic(err) }
@@ -789,6 +883,102 @@ fn run_x64_host_file_redirected_auto(name string, source_dir string, source_file
 	defer {
 		run.close()
 	}
+	run.set_redirect_stdio()
+	run.run()
+	run.wait()
+	stdout := run.stdout_slurp().bytes()
+	stderr := run.stderr_slurp().bytes()
+	if run.code != 0 {
+		assert false, x64_host_run_failure_message(name, tmp_dir, source_path, source_text,
+			bin_path, build_output, run.code, stdout, stderr)
+	}
+	return X64HostRunResult{
+		name:         name
+		tmp_dir:      tmp_dir
+		source_path:  source_path
+		source_text:  source_text
+		bin_path:     bin_path
+		build_output: build_output
+		stdout:       stdout
+		stderr:       stderr
+	}
+}
+
+fn run_x64_host_file_redirected_auto_with_args(name string, source_dir string, source_file string, args []string) X64HostRunResult {
+	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_x64_runtime_${name}_${os.getpid()}')
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	source_path := os.join_path(source_dir, source_file)
+	source_text := 'source file: ${source_path}'
+	bin_path := x64_host_bin_path(tmp_dir, name)
+	vexe := x64_vexe_command_path()
+	mut build := os.new_process(vexe)
+	defer {
+		build.close()
+	}
+	build.set_environment(x64_pinned_v2_build_environment(vexe, tmp_dir))
+	build.set_work_folder(source_dir)
+	build.set_args(['-v2', '-no-parallel', '-b', 'x64', source_file, '-o', bin_path])
+	build.set_redirect_stdio()
+	build.run()
+	build.wait()
+	build_output := 'stdout:\n${build.stdout_slurp()}\nstderr:\n${build.stderr_slurp()}'
+	if build.code != 0 {
+		assert false, x64_host_build_failure_message(name, tmp_dir, source_path, source_text,
+			bin_path, build.code, build_output)
+	}
+	mut run := os.new_process(bin_path)
+	defer {
+		run.close()
+	}
+	run.set_args(args)
+	run.set_redirect_stdio()
+	run.run()
+	run.wait()
+	stdout := run.stdout_slurp().bytes()
+	stderr := run.stderr_slurp().bytes()
+	if run.code != 0 {
+		assert false, x64_host_run_failure_message(name, tmp_dir, source_path, source_text,
+			bin_path, build_output, run.code, stdout, stderr)
+	}
+	return X64HostRunResult{
+		name:         name
+		tmp_dir:      tmp_dir
+		source_path:  source_path
+		source_text:  source_text
+		bin_path:     bin_path
+		build_output: build_output
+		stdout:       stdout
+		stderr:       stderr
+	}
+}
+
+fn run_x64_host_file_redirected_macos_auto_tiny_verbose_with_args(name string, source_dir string, source_file string, args []string) X64HostRunResult {
+	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_x64_runtime_${name}_${os.getpid()}')
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	source_path := os.join_path(source_dir, source_file)
+	source_text := 'source file: ${source_path}'
+	bin_path := x64_host_bin_path(tmp_dir, name)
+	vexe := x64_vexe_command_path()
+	mut build := os.new_process(vexe)
+	defer {
+		build.close()
+	}
+	build.set_environment(x64_macos_auto_tiny_build_environment(vexe, tmp_dir))
+	build.set_work_folder(source_dir)
+	build.set_args(['-v2', '-v', '-no-parallel', '-b', 'x64', source_file, '-o', bin_path])
+	build.set_redirect_stdio()
+	build.run()
+	build.wait()
+	build_output := 'stdout:\n${build.stdout_slurp()}\nstderr:\n${build.stderr_slurp()}'
+	if build.code != 0 {
+		assert false, x64_host_build_failure_message(name, tmp_dir, source_path, source_text,
+			bin_path, build.code, build_output)
+	}
+	mut run := os.new_process(bin_path)
+	defer {
+		run.close()
+	}
+	run.set_args(args)
 	run.set_redirect_stdio()
 	run.run()
 	run.wait()
@@ -2191,6 +2381,23 @@ fn x64_dynamic_int_array_stdout() []u8 {
 '.bytes()
 }
 
+fn x64_dynamic_string_array_index_source() string {
+	return "module main
+
+fn main() {
+	mut values := []string{}
+	values << 'alpha'
+	values << 'beta'
+	println(values[1])
+}
+"
+}
+
+fn x64_dynamic_string_array_index_stdout() []u8 {
+	return 'beta
+'.bytes()
+}
+
 fn x64_windows_noscan_array_grow_free_slice_source() string {
 	return "module main
 
@@ -2374,8 +2581,63 @@ fn x64_examples_dir() string {
 	return os.join_path(@VMODROOT, 'examples')
 }
 
+fn x64_arguments_index_one_int_source() string {
+	return 'module main
+
+fn main() {
+	args := arguments()
+	println(args.len)
+	println(args[1].int() + 32)
+}
+'
+}
+
+fn x64_arguments_index_one_int_stdout() []u8 {
+	return '2
+42
+'.bytes()
+}
+
+fn x64_arguments_via_function_pointer_source() string {
+	return 'module main
+
+fn get_args_len() int {
+	return arguments().len
+}
+
+fn call_it(f fn () int) int {
+	return f()
+}
+
+fn main() {
+	f := get_args_len
+	println(call_it(f))
+}
+'
+}
+
+fn x64_arguments_via_function_pointer_stdout() []u8 {
+	return '2
+'.bytes()
+}
+
 fn x64_hello_world_example_stdout() []u8 {
 	return 'Hello, World!\n'.bytes()
+}
+
+fn x64_fibonacci_10_example_stdout() []u8 {
+	return '1
+1
+2
+3
+5
+8
+13
+21
+34
+55
+89
+'.bytes()
 }
 
 fn x64_fizz_buzz_example_stdout() []u8 {
@@ -3346,6 +3608,82 @@ fn test_x64_linux_function_types_example_top_level_stdout_exact_bytes() {
 		x64_examples_dir(), 'function_types.v', x64_function_types_example_stdout())
 }
 
+fn test_x64_linux_arguments_index_one_int_auto_tiny_falls_back_to_hosted() {
+	$if linux {
+		source := x64_arguments_index_one_int_source()
+		assert_x64_linux_tiny_build_rejected('tiny_arguments_index_one_int_rejected', source,
+			'arguments() requires hosted argc/argv')
+		result := run_x64_host_program_redirected_auto_with_args('arguments_index_one_int_hosted',
+			source, ['10'])
+		assert_x64_linux_hosted_libc_binary(result, x64_arguments_index_one_int_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_arguments_via_function_pointer_auto_tiny_falls_back_to_hosted() {
+	$if linux {
+		source := x64_arguments_via_function_pointer_source()
+		assert_x64_linux_tiny_build_rejected('tiny_arguments_via_function_pointer_rejected',
+			source, 'arguments() requires hosted argc/argv')
+		result := run_x64_host_program_redirected_auto_with_args('arguments_via_function_pointer_hosted',
+			source, ['10'])
+		assert_x64_linux_hosted_libc_binary(result, x64_arguments_via_function_pointer_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_fibonacci_example_arg_10_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_file_redirected_auto_with_args('fibonacci_example_arg_10_exact',
+			x64_examples_dir(), 'fibonacci.v', ['10'])
+		assert_x64_linux_hosted_libc_binary(result, x64_fibonacci_10_example_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_fibonacci_example_strict_tiny_rejected() {
+	$if linux {
+		assert_x64_linux_tiny_file_build_rejected('fibonacci_example_strict_tiny_rejected',
+			x64_examples_dir(), 'fibonacci.v', 'arguments() requires hosted argc/argv')
+	}
+}
+
+fn test_x64_macos_arguments_index_one_int_auto_tiny_falls_back_to_hosted() {
+	$if macos {
+		result := run_x64_host_program_redirected_macos_auto_tiny_verbose_with_args('macos_arguments_index_one_int_hosted',
+			x64_arguments_index_one_int_source(), ['10'])
+		context := x64_host_result_context(result)
+		assert result.stdout == x64_arguments_index_one_int_stdout(), context
+		assert result.stderr == []u8{}, context
+		assert_x64_macos_tiny_object_rejected_for_arguments(result, context)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_macos_arguments_via_function_pointer_auto_tiny_falls_back_to_hosted() {
+	$if macos {
+		result := run_x64_host_program_redirected_macos_auto_tiny_verbose_with_args('macos_arguments_via_function_pointer_hosted',
+			x64_arguments_via_function_pointer_source(), ['10'])
+		context := x64_host_result_context(result)
+		assert result.stdout == x64_arguments_via_function_pointer_stdout(), context
+		assert result.stderr == []u8{}, context
+		assert_x64_macos_tiny_object_rejected_for_arguments(result, context)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_macos_fibonacci_example_arg_10_auto_tiny_falls_back_to_hosted() {
+	$if macos {
+		result := run_x64_host_file_redirected_macos_auto_tiny_verbose_with_args('macos_fibonacci_example_arg_10_exact',
+			x64_examples_dir(), 'fibonacci.v', ['10'])
+		context := x64_host_result_context(result)
+		assert result.stdout == x64_fibonacci_10_example_stdout(), context
+		assert result.stderr == []u8{}, context
+		assert_x64_macos_tiny_object_rejected_for_arguments(result, context)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
 fn test_x64_linux_struct_sumtype_field_init_stdout_exact_bytes() {
 	assert_x64_linux_stdout_bytes('struct_sumtype_field_init_exact',
 		x64_struct_sumtype_field_init_source(), x64_struct_sumtype_field_init_stdout())
@@ -3551,6 +3889,14 @@ fn assert_x64_macos_tiny_object_used(result X64HostRunResult, context string) {
 	assert result.build_output.contains('built-in macOS tiny object'), context
 	assert !result.build_output.contains('falling back to normal Mach-O object'), context
 	assert !result.build_output.contains('retrying with normal Mach-O object'), context
+}
+
+fn assert_x64_macos_tiny_object_rejected_for_arguments(result X64HostRunResult, context string) {
+	assert result.build_output.contains('macOS tiny object candidate enabled'), context
+	assert result.build_output.contains('macOS tiny object not eligible; falling back to normal Mach-O object'), context
+
+	assert result.build_output.contains('arguments() requires hosted argc/argv'), context
+	assert !result.build_output.contains('built-in macOS tiny object'), context
 }
 
 fn test_x64_macos_i64_str_boundary_values_auto_tiny_uses_tiny_object() {
@@ -4310,6 +4656,11 @@ fn test_x64_macos_windows_dynamic_int_array_stdout_exact_bytes() {
 		x64_dynamic_int_array_source(), x64_dynamic_int_array_stdout())
 }
 
+fn test_x64_macos_windows_dynamic_string_array_index_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('dynamic_string_array_index_exact',
+		x64_dynamic_string_array_index_source(), x64_dynamic_string_array_index_stdout())
+}
+
 fn test_x64_windows_noscan_array_grow_free_slice_stdout_exact_bytes() {
 	assert_x64_windows_stdout_bytes('noscan_array_grow_free_slice_exact',
 		x64_windows_noscan_array_grow_free_slice_source(),
@@ -4716,6 +5067,11 @@ fn main() {
 		u8(`S`),
 		u8(`\n`),
 	])
+}
+
+fn test_x64_linux_dynamic_string_array_index_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('dynamic_string_array_index_exact',
+		x64_dynamic_string_array_index_source(), x64_dynamic_string_array_index_stdout())
 }
 
 fn test_x64_linux_imported_module_init_runs_once_before_use_stdout_exact_bytes() {

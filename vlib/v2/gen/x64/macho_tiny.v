@@ -157,6 +157,9 @@ fn (mut w MachOTinyObjectWriter) collect_reachable() !MachOTinyReachable {
 			} else if sym.sect == ObjectFormat.macho.section_index(.rodata) {
 				w.add_data_range(mut selected_data, .rodata, sym.value)!
 			} else if sym.sect == ObjectFormat.macho.section_index(.data) {
+				if x64_main_argc_global_name(sym.name) || x64_main_argv_global_name(sym.name) {
+					return macos_tiny_not_eligible('arguments() requires hosted argc/argv; macOS tiny _main argv is not implemented yet')
+				}
 				w.add_data_range(mut selected_data, .data, sym.value)!
 			} else if sym.sect == 0 && sym.type_ == 0x01 {
 				undefined[sym.name] = true

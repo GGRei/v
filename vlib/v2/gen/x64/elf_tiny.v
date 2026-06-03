@@ -372,6 +372,9 @@ fn (mut l ElfTinyLinker) collect_reachable() !ElfTinyReachable {
 			} else if sym.shndx == u16(l.elf_section_index(.rodata)) {
 				l.add_data_range(mut selected_data, .rodata, sym.value)!
 			} else if sym.shndx == u16(l.elf_section_index(.data)) {
+				if x64_main_argc_global_name(sym.name) || x64_main_argv_global_name(sym.name) {
+					return linux_tiny_not_eligible('arguments() requires hosted argc/argv; Linux tiny _start argv is not implemented yet')
+				}
 				l.add_data_range(mut selected_data, .data, sym.value)!
 			} else if sym.shndx == 0 {
 				if !l.tiny_runtime_symbol_name(sym.name) {
