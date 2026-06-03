@@ -4122,6 +4122,9 @@ fn (t &Transformer) get_str_fn_name_for_type(typ types.Type) ?string {
 		types.Struct {
 			return '${typ.name}__str'
 		}
+		types.SumType {
+			return '${t.type_to_c_name(typ)}__str'
+		}
 		types.Enum {
 			return '${typ.name}__str'
 		}

@@ -141,6 +141,7 @@ fn x64_build_file_from_dir(vexe string, source_dir string, source_file string, b
 		build.close()
 	}
 	build.set_work_folder(source_dir)
+	build.set_environment(x64_pinned_v2_build_environment(vexe, os.dir(bin_path)))
 	build.set_args(['-v2', '-no-parallel', '-b', 'x64', source_file, '-o', bin_path])
 	build.set_redirect_stdio()
 	build.run()
@@ -2583,6 +2584,59 @@ fn x64_struct_sumtype_field_init_stdout() []u8 {
 '.bytes()
 }
 
+fn x64_auto_str_recursive_sumtype_source() string {
+	return '
+module main
+
+type Tree = Empty | Node
+
+struct Empty {}
+
+struct Node {
+	value int
+	left  Tree
+	right Tree
+}
+
+fn main() {
+	leaf := Node{7, Empty{}, Empty{}}
+	root := Node{9, leaf, Empty{}}
+	print("\${root}")
+}
+'
+}
+
+fn x64_auto_str_recursive_sumtype_stdout() []u8 {
+	return 'Node{
+    value: 9
+    left: Tree(Node{
+        value: 7
+        left: Tree(Empty{})
+        right: Tree(Empty{})
+    })
+    right: Tree(Empty{})
+}'.bytes()
+}
+
+fn x64_tree_of_nodes_example_stdout() []u8 {
+	return 'tree structure:
+ Node{
+    value: 10
+    left: Tree(Node{
+        value: 30
+        left: Tree(Empty{})
+        right: Tree(Empty{})
+    })
+    right: Tree(Node{
+        value: 20
+        left: Tree(Empty{})
+        right: Tree(Empty{})
+    })
+}
+tree size: 3
+'.bytes()
+}
+
 fn x64_js_hello_world_example_stdout() []u8 {
 	return 'Hello from V.js (0)
 Hello from V.js (1)
@@ -3295,6 +3349,16 @@ fn test_x64_linux_function_types_example_top_level_stdout_exact_bytes() {
 fn test_x64_linux_struct_sumtype_field_init_stdout_exact_bytes() {
 	assert_x64_linux_stdout_bytes('struct_sumtype_field_init_exact',
 		x64_struct_sumtype_field_init_source(), x64_struct_sumtype_field_init_stdout())
+}
+
+fn test_x64_linux_auto_str_recursive_sumtype_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('auto_str_recursive_sumtype_exact',
+		x64_auto_str_recursive_sumtype_source(), x64_auto_str_recursive_sumtype_stdout())
+}
+
+fn test_x64_linux_tree_of_nodes_example_top_level_stdout_exact_bytes() {
+	assert_x64_linux_file_stdout_bytes('tree_of_nodes_example_top_level_exact', x64_examples_dir(),
+		'tree_of_nodes.v', x64_tree_of_nodes_example_stdout())
 }
 
 fn test_x64_linux_fizz_buzz_example_auto_tiny_no_libc() {
@@ -4335,6 +4399,16 @@ fn test_x64_macos_windows_function_types_example_top_level_stdout_exact_bytes() 
 fn test_x64_macos_windows_struct_sumtype_field_init_stdout_exact_bytes() {
 	assert_x64_macos_windows_stdout_bytes('struct_sumtype_field_init_exact',
 		x64_struct_sumtype_field_init_source(), x64_struct_sumtype_field_init_stdout())
+}
+
+fn test_x64_macos_windows_auto_str_recursive_sumtype_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('auto_str_recursive_sumtype_exact',
+		x64_auto_str_recursive_sumtype_source(), x64_auto_str_recursive_sumtype_stdout())
+}
+
+fn test_x64_macos_windows_tree_of_nodes_example_top_level_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes('tree_of_nodes_example_top_level_exact',
+		x64_examples_dir(), 'tree_of_nodes.v', x64_tree_of_nodes_example_stdout())
 }
 
 fn test_x64_macos_windows_js_hello_world_example_top_level_stdout_exact_bytes() {
