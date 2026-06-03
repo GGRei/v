@@ -151,9 +151,12 @@ mut:
 	// Enum name -> field values
 	enum_values map[string]int
 	// Function name -> SSA function index
-	fn_index map[string]int
+	fn_index        map[string]int
+	module_fn_names map[string]string
 	// Function name -> SSA func_ref value
 	fn_refs map[string]ValueID
+	// Current file's selective imports: short symbol name -> mangled function name.
+	selective_import_fn_names map[string]string
 	// Global variable name -> SSA global value
 	global_refs map[string]ValueID
 	// Constant name -> evaluated integer value (for inlining)
@@ -202,17 +205,19 @@ pub fn Builder.new(mod &Module) &Builder {
 
 pub fn Builder.new_with_env(mod &Module, env &types.Environment) &Builder {
 	mut b := &Builder{
-		mod:                    mod
-		vars:                   map[string]ValueID{}
-		loop_stack:             []LoopInfo{}
-		struct_types:           map[string]TypeID{}
-		enum_values:            map[string]int{}
-		fn_index:               map[string]int{}
-		fn_refs:                map[string]ValueID{}
-		global_refs:            map[string]ValueID{}
-		option_wrapper_types:   map[string]TypeID{}
-		result_wrapper_types:   map[string]TypeID{}
-		array_value_elem_types: map[int]TypeID{}
+		mod:                       mod
+		vars:                      map[string]ValueID{}
+		loop_stack:                []LoopInfo{}
+		struct_types:              map[string]TypeID{}
+		enum_values:               map[string]int{}
+		fn_index:                  map[string]int{}
+		module_fn_names:           map[string]string{}
+		fn_refs:                   map[string]ValueID{}
+		selective_import_fn_names: map[string]string{}
+		global_refs:               map[string]ValueID{}
+		option_wrapper_types:      map[string]TypeID{}
+		result_wrapper_types:      map[string]TypeID{}
+		array_value_elem_types:    map[int]TypeID{}
 	}
 	unsafe {
 		b.env = env
@@ -239,6 +244,8 @@ pub fn (mut b Builder) new_worker_clone(worker_mod &Module, worker_idx int) &Bui
 		struct_types:                    b.struct_types.clone()
 		enum_values:                     b.enum_values.clone()
 		fn_index:                        b.fn_index.clone()
+		module_fn_names:                 b.module_fn_names.clone()
+		selective_import_fn_names:       b.selective_import_fn_names.clone()
 		global_refs:                     b.global_refs.clone()
 		const_values:                    b.const_values.clone()
 		const_value_types:               b.const_value_types.clone()
@@ -258,6 +265,62 @@ pub fn (mut b Builder) new_worker_clone(worker_mod &Module, worker_idx int) &Bui
 		label_blocks:   map[string]BlockID{}
 		mut_ptr_params: map[string]bool{}
 	}
+}
+
+pub fn imported_symbol_fn_name(module_name string, name string) string {
+	if module_name == '' || module_name == 'main' {
+		return name
+	}
+	return '${module_name}__${name}'
+}
+
+fn import_module_name(imp ast.ImportStmt) string {
+	return if imp.is_aliased { imp.name.all_after_last('.') } else { imp.alias }
+}
+
+pub fn selective_import_fn_names_from_imports(imports []ast.ImportStmt) map[string]string {
+	mut names := map[string]string{}
+	for imp in imports {
+		if imp.symbols.len == 0 {
+			continue
+		}
+		module_name := import_module_name(imp)
+		for symbol in imp.symbols {
+			if symbol is ast.Ident {
+				names[symbol.name] = imported_symbol_fn_name(module_name, symbol.name)
+			}
+		}
+	}
+	return names
+}
+
+fn (b &Builder) selective_import_fn_name(name string) ?string {
+	if imported := b.selective_import_fn_names[name] {
+		if imported in b.fn_index {
+			return imported
+		}
+	}
+	return none
+}
+
+fn module_fn_key(module_name string, name string) string {
+	return '${module_name}:${name}'
+}
+
+fn (b &Builder) current_module_fn_name(name string) ?string {
+	if name == '' {
+		return none
+	}
+	if target := b.module_fn_names[module_fn_key(b.cur_module, name)] {
+		if target in b.fn_index {
+			return target
+		}
+	}
+	return none
+}
+
+pub fn (mut b Builder) set_selective_import_fn_names(names map[string]string) {
+	b.selective_import_fn_names = names.clone()
 }
 
 pub fn (mut b Builder) build_all(files []ast.File) {
@@ -2826,6 +2889,9 @@ fn (mut b Builder) register_fn_sig(decl ast.FnDecl) {
 	if fn_name in b.fn_index {
 		return
 	}
+	if !decl.is_method && decl.language != .c && !is_generated_helper_fn_name(decl.name) {
+		b.module_fn_names[module_fn_key(b.cur_module, decl.name)] = fn_name
+	}
 
 	ret_type := b.ast_type_to_ssa(decl.typ.return_type)
 	idx := b.mod.new_function(fn_name, ret_type, []TypeID{})
@@ -2951,6 +3017,7 @@ fn (mut b Builder) receiver_type_name(typ ast.Expr) string {
 // --- Phase 3: Build function bodies ---
 
 pub fn (mut b Builder) build_fn_bodies(file ast.File) {
+	b.selective_import_fn_names = selective_import_fn_names_from_imports(file.imports)
 	nstmts := file.stmts.len
 	for si in 0 .. nstmts {
 		if file.stmts[si] is ast.FnDecl {
@@ -2985,6 +3052,8 @@ pub fn (mut b Builder) build_fn_bodies(file ast.File) {
 // this is the s185 wiring step that drops the last per-decl body decode.
 pub fn (mut b Builder) build_fn_bodies_from_flat(file_cursor ast.FileCursor) {
 	file_name := file_cursor.name()
+	b.selective_import_fn_names =
+		selective_import_fn_names_from_imports(file_cursor.flat.read_file_imports(file_cursor.flat_file()))
 	stmts := file_cursor.stmts()
 	for si in 0 .. stmts.len() {
 		c := stmts.at(si)
@@ -7817,17 +7886,23 @@ fn (mut b Builder) build_ident(ident ast.Ident) ValueID {
 		}
 	}
 	// Try as function reference
+	qualified_name := '${b.cur_module}__${ident.name}'
+	if local_fn := b.current_module_fn_name(ident.name) {
+		return b.get_or_create_fn_ref(local_fn, 0)
+	}
+	if imported := b.selective_import_fn_name(ident.name) {
+		return b.get_or_create_fn_ref(imported, 0)
+	}
 	if ident.name in b.fn_index {
 		return b.get_or_create_fn_ref(ident.name, 0)
+	}
+	if qualified_name in b.fn_index {
+		return b.get_or_create_fn_ref(qualified_name, 0)
 	}
 	// Try with module prefix (transformer strips module prefix for builtin functions)
 	builtin_name := 'builtin__${ident.name}'
 	if builtin_name in b.fn_index {
 		return b.get_or_create_fn_ref(builtin_name, 0)
-	}
-	qualified_name := '${b.cur_module}__${ident.name}'
-	if qualified_name in b.fn_index {
-		return b.get_or_create_fn_ref(qualified_name, 0)
 	}
 	// Try as float constant (inline as f64)
 	if fval := b.float_const_values[ident.name] {
@@ -9540,15 +9615,19 @@ fn (mut b Builder) resolve_method_name_for_value(val ValueID, method_name string
 // `resolve_call_name_ident_from_flat` (s216) delegate here so they stay
 // bit-identical. No AST traversal; pure string + map lookups.
 fn (b &Builder) resolve_call_name_for_ident_name(name string) string {
-	// Try module-qualified FIRST to avoid shadowing by C functions.
-	// E.g., os.getenv() should resolve to os__getenv, not C.getenv.
-	qualified := '${b.cur_module}__${name}'
-	if qualified in b.fn_index {
-		return qualified
+	if local_fn := b.current_module_fn_name(name) {
+		return local_fn
+	}
+	if imported := b.selective_import_fn_name(name) {
+		return imported
 	}
 	// Check if it's a known function
 	if name in b.fn_index {
 		return name
+	}
+	qualified := '${b.cur_module}__${name}'
+	if qualified in b.fn_index {
+		return qualified
 	}
 	// Try builtin-qualified (transformer remaps builtin__X to X)
 	builtin_qualified := 'builtin__${name}'

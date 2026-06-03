@@ -2525,6 +2525,88 @@ fn x64_named_function_value_stdout() []u8 {
 '.bytes()
 }
 
+fn x64_selective_import_builtin_shadow_fn_value_sources() map[string]string {
+	return {
+		'main.v':                     'module main
+
+import mymodules { print }
+
+fn main() {
+	f := print
+	f("ok")
+}
+'
+		'mymodules/main_functions.v': 'module mymodules
+
+pub fn print(s string) {
+	println("module:" + s)
+}
+'
+	}
+}
+
+fn x64_selective_import_builtin_shadow_fn_value_stdout() []u8 {
+	return 'module:ok
+'.bytes()
+}
+
+fn x64_selective_import_bare_fallback_shadow_sources() map[string]string {
+	return {
+		'main.v':                     'module main
+
+import mymodules { malloc }
+
+fn main() {
+	f := malloc
+	println(f("fn-value"))
+	println(malloc("direct"))
+}
+'
+		'mymodules/main_functions.v': 'module mymodules
+
+pub fn malloc(s string) string {
+	return "module:" + s
+}
+'
+	}
+}
+
+fn x64_selective_import_bare_fallback_shadow_stdout() []u8 {
+	return 'module:fn-value
+module:direct
+'.bytes()
+}
+
+fn x64_selective_import_method_shadow_sources() map[string]string {
+	return {
+		'main.v':                     'module main
+
+import mymodules { ping }
+
+struct Foo {}
+
+fn (f Foo) ping() string {
+	return "method"
+}
+
+fn main() {
+	println(ping())
+}
+'
+		'mymodules/main_functions.v': 'module mymodules
+
+pub fn ping() string {
+	return "module"
+}
+'
+	}
+}
+
+fn x64_selective_import_method_shadow_stdout() []u8 {
+	return 'module
+'.bytes()
+}
+
 fn x64_non_capturing_fn_literal_value_source() string {
 	return 'module main
 
@@ -2637,6 +2719,12 @@ fn x64_fibonacci_10_example_stdout() []u8 {
 34
 55
 89
+'.bytes()
+}
+
+fn x64_submodule_example_stdout() []u8 {
+	return '5
+3
 '.bytes()
 }
 
@@ -3505,6 +3593,23 @@ fn test_x64_linux_named_function_value_stdout_exact_bytes() {
 		x64_named_function_value_stdout())
 }
 
+fn test_x64_linux_selective_import_builtin_shadow_fn_value_stdout_exact_bytes() {
+	assert_x64_linux_project_stdout_bytes('selective_import_builtin_shadow_fn_value_exact',
+		x64_selective_import_builtin_shadow_fn_value_sources(),
+		x64_selective_import_builtin_shadow_fn_value_stdout())
+}
+
+fn test_x64_linux_selective_import_bare_fallback_shadow_stdout_exact_bytes() {
+	assert_x64_linux_project_stdout_bytes('selective_import_bare_fallback_shadow_exact',
+		x64_selective_import_bare_fallback_shadow_sources(),
+		x64_selective_import_bare_fallback_shadow_stdout())
+}
+
+fn test_x64_linux_selective_import_method_shadow_stdout_exact_bytes() {
+	assert_x64_linux_project_stdout_bytes('selective_import_method_shadow_exact',
+		x64_selective_import_method_shadow_sources(), x64_selective_import_method_shadow_stdout())
+}
+
 fn test_x64_linux_non_capturing_fn_literal_value_stdout_exact_bytes() {
 	assert_x64_linux_stdout_bytes('non_capturing_fn_literal_value_exact',
 		x64_non_capturing_fn_literal_value_source(), x64_non_capturing_fn_literal_value_stdout())
@@ -3606,6 +3711,11 @@ fn test_x64_linux_sudoku_example_top_level_stdout_exact_bytes() {
 fn test_x64_linux_function_types_example_top_level_stdout_exact_bytes() {
 	assert_x64_linux_file_stdout_bytes('function_types_example_top_level_exact',
 		x64_examples_dir(), 'function_types.v', x64_function_types_example_stdout())
+}
+
+fn test_x64_linux_submodule_example_top_level_stdout_exact_bytes() {
+	assert_x64_linux_file_stdout_bytes('submodule_example_top_level_exact', x64_examples_dir(),
+		'submodule/main.v', x64_submodule_example_stdout())
 }
 
 fn test_x64_linux_arguments_index_one_int_auto_tiny_falls_back_to_hosted() {
@@ -4576,6 +4686,23 @@ fn test_x64_macos_windows_named_function_value_stdout_exact_bytes() {
 		x64_named_function_value_source(), x64_named_function_value_stdout())
 }
 
+fn test_x64_macos_windows_selective_import_builtin_shadow_fn_value_stdout_exact_bytes() {
+	assert_x64_macos_windows_project_stdout_bytes('selective_import_builtin_shadow_fn_value_exact',
+		x64_selective_import_builtin_shadow_fn_value_sources(),
+		x64_selective_import_builtin_shadow_fn_value_stdout())
+}
+
+fn test_x64_macos_windows_selective_import_bare_fallback_shadow_stdout_exact_bytes() {
+	assert_x64_macos_windows_project_stdout_bytes('selective_import_bare_fallback_shadow_exact',
+		x64_selective_import_bare_fallback_shadow_sources(),
+		x64_selective_import_bare_fallback_shadow_stdout())
+}
+
+fn test_x64_macos_windows_selective_import_method_shadow_stdout_exact_bytes() {
+	assert_x64_macos_windows_project_stdout_bytes('selective_import_method_shadow_exact',
+		x64_selective_import_method_shadow_sources(), x64_selective_import_method_shadow_stdout())
+}
+
 fn test_x64_macos_windows_non_capturing_fn_literal_value_stdout_exact_bytes() {
 	assert_x64_macos_windows_stdout_bytes('non_capturing_fn_literal_value_exact',
 		x64_non_capturing_fn_literal_value_source(), x64_non_capturing_fn_literal_value_stdout())
@@ -4778,6 +4905,11 @@ fn test_x64_macos_windows_sudoku_example_top_level_stdout_exact_bytes() {
 fn test_x64_macos_windows_function_types_example_top_level_stdout_exact_bytes() {
 	assert_x64_macos_windows_file_stdout_bytes('function_types_example_top_level_exact',
 		x64_examples_dir(), 'function_types.v', x64_function_types_example_stdout())
+}
+
+fn test_x64_macos_windows_submodule_example_top_level_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes('submodule_example_top_level_exact',
+		x64_examples_dir(), 'submodule/main.v', x64_submodule_example_stdout())
 }
 
 fn test_x64_macos_windows_struct_sumtype_field_init_stdout_exact_bytes() {

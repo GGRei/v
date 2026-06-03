@@ -197,6 +197,9 @@ jobs:
           $function_types_expected = [System.Text.Encoding]::UTF8.GetBytes("HELLO WORLD`nHELLO WORLD`nHELLO WORLD`n")
           Invoke-NativeX64Example 'examples/function_types.v' 'function_types' $function_types_expected
 
+          $submodule_expected = [System.Text.Encoding]::UTF8.GetBytes("5`n3`n")
+          Invoke-NativeX64Example 'examples/submodule/main.v' 'submodule' $submodule_expected
+
           function Get-TreeOfNodesExpectedLines {
             @(
               'tree structure:'

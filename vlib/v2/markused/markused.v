@@ -100,22 +100,24 @@ mut:
 
 	used_keys map[string]bool
 
-	module_names              map[string]bool
-	module_alias_to_real      map[string]string
-	type_names                map[string]bool
-	interface_type_names      map[string]bool
-	interface_method_names    map[string][]string
-	interface_embedded_names  map[string][]string
-	methods_by_receiver       map[string][]int
-	struct_field_receivers    map[string][]string
-	struct_embedded_receivers map[string][]string
-	global_interface_names    map[string]string
-	const_fn_value_aliases    map[string]string
+	module_names                map[string]bool
+	module_alias_to_real        map[string]string
+	type_names                  map[string]bool
+	interface_type_names        map[string]bool
+	interface_method_names      map[string][]string
+	interface_embedded_names    map[string][]string
+	methods_by_receiver         map[string][]int
+	struct_field_receivers      map[string][]string
+	struct_embedded_receivers   map[string][]string
+	global_interface_names      map[string]string
+	const_fn_value_aliases      map[string]string
+	selective_import_fn_targets map[string]string
 
 	lookup map[string][]int
 
 	cur_fn_scope &types.Scope = unsafe { nil }
 	cur_fn_decl  ast.FnDecl
+	cur_fn_file  string
 }
 
 pub struct MarkUsedOptions {
@@ -147,22 +149,23 @@ pub fn decl_key(module_name string, decl ast.FnDecl, env &types.Environment) str
 
 fn new_walker(files []ast.File, env &types.Environment, opts MarkUsedOptions) Walker {
 	return Walker{
-		files:                     files
-		env:                       unsafe { env }
-		opts:                      opts
-		used_keys:                 map[string]bool{}
-		queued_fn_indices:         map[int]bool{}
-		module_names:              map[string]bool{}
-		type_names:                map[string]bool{}
-		interface_type_names:      map[string]bool{}
-		interface_method_names:    map[string][]string{}
-		interface_embedded_names:  map[string][]string{}
-		methods_by_receiver:       map[string][]int{}
-		struct_field_receivers:    map[string][]string{}
-		struct_embedded_receivers: map[string][]string{}
-		global_interface_names:    map[string]string{}
-		const_fn_value_aliases:    map[string]string{}
-		lookup:                    map[string][]int{}
+		files:                       files
+		env:                         unsafe { env }
+		opts:                        opts
+		used_keys:                   map[string]bool{}
+		queued_fn_indices:           map[int]bool{}
+		module_names:                map[string]bool{}
+		type_names:                  map[string]bool{}
+		interface_type_names:        map[string]bool{}
+		interface_method_names:      map[string][]string{}
+		interface_embedded_names:    map[string][]string{}
+		methods_by_receiver:         map[string][]int{}
+		struct_field_receivers:      map[string][]string{}
+		struct_embedded_receivers:   map[string][]string{}
+		global_interface_names:      map[string]string{}
+		const_fn_value_aliases:      map[string]string{}
+		selective_import_fn_targets: map[string]string{}
+		lookup:                      map[string][]int{}
 	}
 }
 
@@ -192,8 +195,10 @@ fn (mut w Walker) walk_collected() map[string]bool {
 		info := w.fns[idx]
 		w.cur_fn_scope = w.lookup_fn_scope(info)
 		w.cur_fn_decl = info.decl
+		w.cur_fn_file = info.file
 		w.walk_stmts(info.decl.stmts, info.mod)
 		w.cur_fn_scope = unsafe { nil }
+		w.cur_fn_file = ''
 	}
 	return w.used_keys
 }
@@ -223,12 +228,14 @@ fn (mut w Walker) walk_collected_from_flat(flat &ast.FlatAst) map[string]bool {
 		info := w.fns[idx]
 		w.cur_fn_scope = w.lookup_fn_scope(info)
 		w.cur_fn_decl = info.decl
+		w.cur_fn_file = info.file
 		if info.decl_id >= 0 {
 			w.walk_fn_body_cursor(flat, info.decl_id, info.mod)
 		} else {
 			w.walk_stmts(info.decl.stmts, info.mod)
 		}
 		w.cur_fn_scope = unsafe { nil }
+		w.cur_fn_file = ''
 	}
 	return w.used_keys
 }
@@ -806,7 +813,7 @@ fn (mut w Walker) collect_defs() {
 	for file in w.files {
 		mod_name := normalize_module_name(file.mod)
 		w.add_module_name(mod_name)
-		w.collect_imports(file.imports)
+		w.collect_file_imports(file.name, file.imports)
 		for stmt in file.stmts {
 			w.collect_def_stmt(stmt, mod_name, file.name, ast.FlatNodeId(-1))
 		}
@@ -832,6 +839,18 @@ fn (mut w Walker) collect_defs_from_flat(flat &ast.FlatAst) {
 			name := imp_cur.name()
 			w.add_module_name(name)
 			alias := imp_cur.extra_str()
+			import_mod := if imp_cur.flag(ast.flag_is_aliased) {
+				name.all_after_last('.')
+			} else {
+				alias
+			}
+			for si in 0 .. imp_cur.edge_count() {
+				symbol := imp_cur.edge(si)
+				if symbol.is_valid() && symbol.kind() == .expr_ident {
+					w.selective_import_fn_targets['${fc.name()}:${symbol.name()}'] = markused_imported_symbol_fn_name(import_mod,
+						symbol.name())
+				}
+			}
 			if alias != '' {
 				w.add_module_name(alias)
 				// Map alias to real module name for correct symbol resolution.
@@ -889,6 +908,8 @@ fn const_fn_value_alias_key(mod_name string, name string) string {
 fn (mut w Walker) collect_const_fn_value_aliases() {
 	for file in w.files {
 		mod_name := normalize_module_name(file.mod)
+		prev_fn_file := w.cur_fn_file
+		w.cur_fn_file = file.name
 		for stmt in file.stmts {
 			if !stmt_ok(stmt) {
 				continue
@@ -910,6 +931,7 @@ fn (mut w Walker) collect_const_fn_value_aliases() {
 				}
 			}
 		}
+		w.cur_fn_file = prev_fn_file
 	}
 }
 
@@ -917,6 +939,8 @@ fn (mut w Walker) collect_const_fn_value_aliases_from_flat(flat &ast.FlatAst) {
 	for fi in 0 .. flat.files.len {
 		fc := flat.file_cursor(fi)
 		mod_name := normalize_module_name(fc.mod())
+		prev_fn_file := w.cur_fn_file
+		w.cur_fn_file = fc.name()
 		stmts_list := fc.stmts()
 		for i in 0 .. stmts_list.len() {
 			c := stmts_list.at(i)
@@ -946,6 +970,7 @@ fn (mut w Walker) collect_const_fn_value_aliases_from_flat(flat &ast.FlatAst) {
 				}
 			}
 		}
+		w.cur_fn_file = prev_fn_file
 	}
 }
 
@@ -962,6 +987,33 @@ fn (mut w Walker) collect_imports(imports []ast.ImportStmt) {
 				imp.name
 			}
 			w.module_alias_to_real[imp.alias] = real_name
+		}
+	}
+}
+
+fn markused_imported_symbol_fn_name(module_name string, name string) string {
+	if module_name == '' || module_name == 'main' {
+		return name
+	}
+	return '${module_name}__${name}'
+}
+
+fn selective_import_fn_key(file_name string, name string) string {
+	return '${file_name}:${name}'
+}
+
+fn (mut w Walker) collect_file_imports(file_name string, imports []ast.ImportStmt) {
+	w.collect_imports(imports)
+	for imp in imports {
+		if imp.symbols.len == 0 {
+			continue
+		}
+		import_mod := if imp.is_aliased { imp.name.all_after_last('.') } else { imp.alias }
+		for symbol in imp.symbols {
+			if symbol is ast.Ident {
+				w.selective_import_fn_targets[selective_import_fn_key(file_name, symbol.name)] = markused_imported_symbol_fn_name(import_mod,
+					symbol.name)
+			}
 		}
 	}
 }
@@ -1979,7 +2031,21 @@ fn (w &Walker) ident_resolves_to_fn_value(name string, mod_name string) bool {
 			return obj is types.Fn
 		}
 	}
-	for candidate in called_fn_name_candidates(name) {
+	candidates := called_fn_name_candidates(name)
+	if _ := w.exact_mangled_fn_lookup_key(name) {
+		return true
+	}
+	for candidate in candidates {
+		if _ := w.current_module_fn_lookup_key(candidate, mod_name) {
+			return true
+		}
+	}
+	for candidate in candidates {
+		if _ := w.selective_import_fn_lookup_key(candidate) {
+			return true
+		}
+	}
+	for candidate in candidates {
 		if w.lookup_count('mod:${mod_name}:${candidate}') > 0
 			|| w.lookup_count('fn:${candidate}') > 0 {
 			return true
@@ -1992,11 +2058,60 @@ fn (w &Walker) ident_resolves_to_fn_value(name string, mod_name string) bool {
 	return false
 }
 
+fn (w &Walker) current_module_fn_lookup_key(name string, mod_name string) ?string {
+	key := 'mod:${mod_name}:${name}'
+	if w.lookup_count(key) > 0 {
+		return key
+	}
+	return none
+}
+
+fn (w &Walker) exact_mangled_fn_lookup_key(name string) ?string {
+	if !name.contains('__') {
+		return none
+	}
+	key := 'fn:${name}'
+	if w.lookup_count(key) > 0 {
+		return key
+	}
+	return none
+}
+
+fn (w &Walker) selective_import_fn_lookup_key(name string) ?string {
+	if w.cur_fn_file == '' {
+		return none
+	}
+	if target := w.selective_import_fn_targets[selective_import_fn_key(w.cur_fn_file, name)] {
+		key := 'fn:${target}'
+		if w.lookup_count(key) > 0 {
+			return key
+		}
+	}
+	return none
+}
+
 fn (mut w Walker) mark_fn_name(name string, mod_name string) {
 	if name == '' {
 		return
 	}
-	for candidate in called_fn_name_candidates(name) {
+	candidates := called_fn_name_candidates(name)
+	if key := w.exact_mangled_fn_lookup_key(name) {
+		w.mark_lookup(key)
+		return
+	}
+	for candidate in candidates {
+		if key := w.current_module_fn_lookup_key(candidate, mod_name) {
+			w.mark_lookup(key)
+			return
+		}
+	}
+	for candidate in candidates {
+		if key := w.selective_import_fn_lookup_key(candidate) {
+			w.mark_lookup(key)
+			return
+		}
+	}
+	for candidate in candidates {
 		w.mark_lookup('mod:${mod_name}:${candidate}')
 		w.mark_lookup('fn:${candidate}')
 		if !candidate.contains('__') && mod_name != '' && mod_name != 'main'
@@ -2490,7 +2605,24 @@ fn (w &Walker) add_fn_name_indices(name string, mod_name string, mut out []int) 
 	if name == '' {
 		return
 	}
-	for candidate in called_fn_name_candidates(name) {
+	candidates := called_fn_name_candidates(name)
+	if key := w.exact_mangled_fn_lookup_key(name) {
+		w.add_lookup_indices(key, mut out)
+		return
+	}
+	for candidate in candidates {
+		if key := w.current_module_fn_lookup_key(candidate, mod_name) {
+			w.add_lookup_indices(key, mut out)
+			return
+		}
+	}
+	for candidate in candidates {
+		if key := w.selective_import_fn_lookup_key(candidate) {
+			w.add_lookup_indices(key, mut out)
+			return
+		}
+	}
+	for candidate in candidates {
 		w.add_lookup_indices('mod:${mod_name}:${candidate}', mut out)
 		w.add_lookup_indices('fn:${candidate}', mut out)
 		if !candidate.contains('__') && mod_name != '' && mod_name != 'main'
