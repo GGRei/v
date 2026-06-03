@@ -2503,6 +2503,44 @@ fn x64_hanoi_example_append_expected(mut out []u8, n int, a string, b string, c 
 	x64_hanoi_example_append_expected(mut out, n - 1, b, a, c)
 }
 
+fn x64_sudoku_example_stdout() []u8 {
+	mut out := []u8{}
+	x64_sudoku_append_stdout_line(mut out, 'Sudoku Puzzle:', false)
+	x64_sudoku_append_stdout_line(mut out, '0 3 0  | 0 7 0  | 0 0 0', true)
+	x64_sudoku_append_stdout_line(mut out, '0 0 0  | 1 3 5  | 0 0 0', true)
+	x64_sudoku_append_stdout_line(mut out, '0 0 1  | 0 0 0  | 0 5 0', true)
+	x64_sudoku_append_stdout_line(mut out, '- - - - - - - - - - - -', false)
+	x64_sudoku_append_stdout_line(mut out, '1 0 0  | 0 6 0  | 0 0 3', true)
+	x64_sudoku_append_stdout_line(mut out, '4 0 0  | 8 0 3  | 0 0 1', true)
+	x64_sudoku_append_stdout_line(mut out, '7 0 0  | 0 2 0  | 0 0 6', true)
+	x64_sudoku_append_stdout_line(mut out, '- - - - - - - - - - - -', false)
+	x64_sudoku_append_stdout_line(mut out, '0 0 0  | 0 0 0  | 2 1 0', true)
+	x64_sudoku_append_stdout_line(mut out, '0 0 0  | 4 1 2  | 0 0 5', true)
+	x64_sudoku_append_stdout_line(mut out, '0 0 0  | 0 0 0  | 0 7 4', true)
+	x64_sudoku_append_stdout_line(mut out, 'Solving...', false)
+	x64_sudoku_append_stdout_line(mut out, 'Solution:', false)
+	x64_sudoku_append_stdout_line(mut out, '2 3 5  | 6 7 8  | 1 4 9', true)
+	x64_sudoku_append_stdout_line(mut out, '9 4 7  | 1 3 5  | 8 6 2', true)
+	x64_sudoku_append_stdout_line(mut out, '6 8 1  | 2 4 9  | 3 5 7', true)
+	x64_sudoku_append_stdout_line(mut out, '- - - - - - - - - - - -', false)
+	x64_sudoku_append_stdout_line(mut out, '1 2 8  | 7 6 4  | 5 9 3', true)
+	x64_sudoku_append_stdout_line(mut out, '4 5 6  | 8 9 3  | 7 2 1', true)
+	x64_sudoku_append_stdout_line(mut out, '7 9 3  | 5 2 1  | 4 8 6', true)
+	x64_sudoku_append_stdout_line(mut out, '- - - - - - - - - - - -', false)
+	x64_sudoku_append_stdout_line(mut out, '3 6 4  | 9 5 7  | 2 1 8', true)
+	x64_sudoku_append_stdout_line(mut out, '8 7 9  | 4 1 2  | 6 3 5', true)
+	x64_sudoku_append_stdout_line(mut out, '5 1 2  | 3 8 6  | 9 7 4', true)
+	return out
+}
+
+fn x64_sudoku_append_stdout_line(mut out []u8, line string, trailing_space bool) {
+	out << line.bytes()
+	if trailing_space {
+		out << u8(` `)
+	}
+	out << u8(`\n`)
+}
+
 fn x64_js_hello_world_example_stdout() []u8 {
 	return 'Hello from V.js (0)
 Hello from V.js (1)
@@ -3200,6 +3238,11 @@ fn test_x64_linux_fizz_buzz_example_top_level_stdout_exact_bytes() {
 fn test_x64_linux_hanoi_example_top_level_stdout_exact_bytes() {
 	assert_x64_linux_file_stdout_bytes('hanoi_example_top_level_exact', x64_examples_dir(),
 		'hanoi.v', x64_hanoi_example_stdout())
+}
+
+fn test_x64_linux_sudoku_example_top_level_stdout_exact_bytes() {
+	assert_x64_linux_file_stdout_bytes('sudoku_example_top_level_exact', x64_examples_dir(),
+		'sudoku.v', x64_sudoku_example_stdout())
 }
 
 fn test_x64_linux_fizz_buzz_example_auto_tiny_no_libc() {
@@ -4225,6 +4268,11 @@ fn test_x64_macos_windows_fizz_buzz_example_top_level_stdout_exact_bytes() {
 fn test_x64_macos_windows_hanoi_example_top_level_stdout_exact_bytes() {
 	assert_x64_macos_windows_file_stdout_bytes('hanoi_example_top_level_exact', x64_examples_dir(),
 		'hanoi.v', x64_hanoi_example_stdout())
+}
+
+fn test_x64_macos_windows_sudoku_example_top_level_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes('sudoku_example_top_level_exact',
+		x64_examples_dir(), 'sudoku.v', x64_sudoku_example_stdout())
 }
 
 fn test_x64_macos_windows_js_hello_world_example_top_level_stdout_exact_bytes() {

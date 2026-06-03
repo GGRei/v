@@ -172,6 +172,56 @@ jobs:
           PY
           }
 
+          write_sudoku_expected() {
+            python3 - <<'PY'
+          import sys
+
+          puzzle = [
+              [0, 3, 0, 0, 7, 0, 0, 0, 0],
+              [0, 0, 0, 1, 3, 5, 0, 0, 0],
+              [0, 0, 1, 0, 0, 0, 0, 5, 0],
+              [1, 0, 0, 0, 6, 0, 0, 0, 3],
+              [4, 0, 0, 8, 0, 3, 0, 0, 1],
+              [7, 0, 0, 0, 2, 0, 0, 0, 6],
+              [0, 0, 0, 0, 0, 0, 2, 1, 0],
+              [0, 0, 0, 4, 1, 2, 0, 0, 5],
+              [0, 0, 0, 0, 0, 0, 0, 7, 4],
+          ]
+          solution = [
+              [2, 3, 5, 6, 7, 8, 1, 4, 9],
+              [9, 4, 7, 1, 3, 5, 8, 6, 2],
+              [6, 8, 1, 2, 4, 9, 3, 5, 7],
+              [1, 2, 8, 7, 6, 4, 5, 9, 3],
+              [4, 5, 6, 8, 9, 3, 7, 2, 1],
+              [7, 9, 3, 5, 2, 1, 4, 8, 6],
+              [3, 6, 4, 9, 5, 7, 2, 1, 8],
+              [8, 7, 9, 4, 1, 2, 6, 3, 5],
+              [5, 1, 2, 3, 8, 6, 9, 7, 4],
+          ]
+
+          def append_grid(lines, label, grid):
+              lines.append(label)
+              for i, row in enumerate(grid):
+                  if i % 3 == 0 and i != 0:
+                      lines.append("- - - - - - - - - - - -")
+                  line = ""
+                  for j, value in enumerate(row):
+                      if j % 3 == 0 and j != 0:
+                          line += " | "
+                      line += f"{value} "
+                  lines.append(line)
+
+          lines = []
+          append_grid(lines, "Sudoku Puzzle:", puzzle)
+          lines.append("Solving...")
+          append_grid(lines, "Solution:", solution)
+          out = ("\n".join(lines) + "\n").encode()
+          if len(out) != 582:
+              raise SystemExit(f"sudoku stdout oracle shape changed: {len(out)} bytes")
+          sys.stdout.buffer.write(out)
+          PY
+          }
+
           write_js_hello_world_expected() {
             printf 'Hello from V.js (0)\nHello from V.js (1)\nHello from V.js (2)\n'
           }
@@ -230,6 +280,7 @@ jobs:
           printf 'Hello, World!\n' > "$tmp/hello_world.expected"
           write_fizz_buzz_expected > "$tmp/fizz_buzz.expected"
           write_hanoi_expected > "$tmp/hanoi.expected"
+          write_sudoku_expected > "$tmp/sudoku.expected"
           write_js_hello_world_expected > "$tmp/js_hello_world.expected"
           write_vascii_expected > "$tmp/vascii.expected"
           write_rune_expected > "$tmp/rune.expected"
@@ -237,6 +288,7 @@ jobs:
           run_native_x64_example examples/hello_world.v hello_world "$tmp/hello_world.expected"
           run_native_x64_example examples/fizz_buzz.v fizz_buzz "$tmp/fizz_buzz.expected"
           run_native_x64_example examples/hanoi.v hanoi "$tmp/hanoi.expected"
+          run_native_x64_example examples/sudoku.v sudoku "$tmp/sudoku.expected"
           run_native_x64_example examples/js_hello_world.v js_hello_world "$tmp/js_hello_world.expected"
           run_native_x64_example examples/vascii.v vascii "$tmp/vascii.expected"
           run_native_x64_example examples/rune.v rune "$tmp/rune.expected"
