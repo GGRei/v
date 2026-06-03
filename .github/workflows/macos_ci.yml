@@ -141,7 +141,7 @@ jobs:
             name="$2"
             expected="$3"
 
-            ./v -v2 -b x64 "$source" -o "$tmp/$name"
+            ./v -v2 -no-parallel -b x64 "$source" -o "$tmp/$name"
             "$tmp/$name" > "$tmp/$name.out" 2> "$tmp/$name.err"
             check_empty_stderr "$name" "$tmp/$name.err"
             check_stdout "$name" "$expected" "$tmp/$name.out"
@@ -227,6 +227,26 @@ jobs:
           PY
           }
 
+          write_tree_of_nodes_expected() {
+            cat <<'EOF'
+          tree structure:
+           Node{
+              value: 10
+              left: Tree(Node{
+                  value: 30
+                  left: Tree(Empty{})
+                  right: Tree(Empty{})
+              })
+              right: Tree(Node{
+                  value: 20
+                  left: Tree(Empty{})
+                  right: Tree(Empty{})
+              })
+          }
+          tree size: 3
+          EOF
+          }
+
           write_js_hello_world_expected() {
             printf 'Hello from V.js (0)\nHello from V.js (1)\nHello from V.js (2)\n'
           }
@@ -287,6 +307,7 @@ jobs:
           write_hanoi_expected > "$tmp/hanoi.expected"
           write_sudoku_expected > "$tmp/sudoku.expected"
           printf 'HELLO WORLD\nHELLO WORLD\nHELLO WORLD\n' > "$tmp/function_types.expected"
+          write_tree_of_nodes_expected > "$tmp/tree_of_nodes.expected"
           write_js_hello_world_expected > "$tmp/js_hello_world.expected"
           write_vascii_expected > "$tmp/vascii.expected"
           write_rune_expected > "$tmp/rune.expected"
@@ -296,6 +317,7 @@ jobs:
           run_native_x64_example examples/hanoi.v hanoi "$tmp/hanoi.expected"
           run_native_x64_example examples/sudoku.v sudoku "$tmp/sudoku.expected"
           run_native_x64_example examples/function_types.v function_types "$tmp/function_types.expected"
+          run_native_x64_example examples/tree_of_nodes.v tree_of_nodes "$tmp/tree_of_nodes.expected"
           run_native_x64_example examples/js_hello_world.v js_hello_world "$tmp/js_hello_world.expected"
           run_native_x64_example examples/vascii.v vascii "$tmp/vascii.expected"
           run_native_x64_example examples/rune.v rune "$tmp/rune.expected"

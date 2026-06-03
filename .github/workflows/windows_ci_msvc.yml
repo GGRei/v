@@ -70,7 +70,7 @@ jobs:
             $stdout_path = Join-Path $tmp "$name.out"
             $stderr_path = Join-Path $tmp "$name.err"
 
-            .\v.exe -v2 -b x64 $source -o $exe
+            .\v.exe -v2 -no-parallel -b x64 $source -o $exe
             Assert-LastExit "compile $source"
 
             Remove-Item -LiteralPath $stdout_path, $stderr_path -Force -ErrorAction SilentlyContinue
@@ -189,6 +189,33 @@ jobs:
 
           $function_types_expected = [System.Text.Encoding]::UTF8.GetBytes("HELLO WORLD`nHELLO WORLD`nHELLO WORLD`n")
           Invoke-NativeX64Example 'examples/function_types.v' 'function_types' $function_types_expected
+
+          function Get-TreeOfNodesExpectedLines {
+            @(
+              'tree structure:'
+              ' Node{'
+              '    value: 10'
+              '    left: Tree(Node{'
+              '        value: 30'
+              '        left: Tree(Empty{})'
+              '        right: Tree(Empty{})'
+              '    })'
+              '    right: Tree(Node{'
+              '        value: 20'
+              '        left: Tree(Empty{})'
+              '        right: Tree(Empty{})'
+              '    })'
+              '}'
+              'tree size: 3'
+            )
+          }
+
+          $tree_of_nodes_lines = @(Get-TreeOfNodesExpectedLines)
+          $tree_of_nodes_expected = [System.Text.Encoding]::UTF8.GetBytes(($tree_of_nodes_lines -join "`n") + "`n")
+          if ($tree_of_nodes_expected.Length -ne 259) {
+            throw "tree_of_nodes stdout oracle shape changed: $($tree_of_nodes_expected.Length) bytes"
+          }
+          Invoke-NativeX64Example 'examples/tree_of_nodes.v' 'tree_of_nodes' $tree_of_nodes_expected
 
           $js_hello_world_expected = [System.Text.Encoding]::UTF8.GetBytes("Hello from V.js (0)`nHello from V.js (1)`nHello from V.js (2)`n")
           Invoke-NativeX64Example 'examples/js_hello_world.v' 'js_hello_world' $js_hello_world_expected
