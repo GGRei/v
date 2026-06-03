@@ -11566,7 +11566,16 @@ fn (mut b Builder) collect_init_expr_values(expr ast.InitExpr) (TypeID, []ValueI
 				if is_sumtype_data {
 					b.in_sumtype_data = true
 				}
-				mut field_val := b.build_expr(expr.fields[idx].value)
+				mut field_val := ValueID(0)
+				if b.ssa_type_is_sumtype(field_type) {
+					addr := b.build_addr(expr.fields[idx].value)
+					if wrapped := b.wrap_address_for_sumtype_target(addr, field_type) {
+						field_val = wrapped
+					}
+				}
+				if field_val == 0 {
+					field_val = b.build_expr(expr.fields[idx].value)
+				}
 				if is_sumtype_data {
 					b.in_sumtype_data = false
 				}
@@ -11588,6 +11597,7 @@ fn (mut b Builder) collect_init_expr_values(expr ast.InitExpr) (TypeID, []ValueI
 						])
 					}
 				}
+				field_val = b.coerce_struct_sumtype_field_value(field_val, field_type)
 				field_vals << field_val
 			} else {
 				field_vals << b.mod.get_or_add_const(field_type, '0')
@@ -11675,7 +11685,16 @@ fn (mut b Builder) collect_init_expr_values_from_flat(c ast.Cursor) (TypeID, []V
 				}
 				field_c := c.edge(1 + idx)
 				value_c := field_c.edge(0)
-				mut field_val := b.build_expr_from_flat(value_c)
+				mut field_val := ValueID(0)
+				if b.ssa_type_is_sumtype(field_type) {
+					addr := b.build_addr_from_flat(value_c)
+					if wrapped := b.wrap_address_for_sumtype_target(addr, field_type) {
+						field_val = wrapped
+					}
+				}
+				if field_val == 0 {
+					field_val = b.build_expr_from_flat(value_c)
+				}
 				if is_sumtype_data {
 					b.in_sumtype_data = false
 				}
@@ -11693,6 +11712,7 @@ fn (mut b Builder) collect_init_expr_values_from_flat(c ast.Cursor) (TypeID, []V
 						])
 					}
 				}
+				field_val = b.coerce_struct_sumtype_field_value(field_val, field_type)
 				field_vals << field_val
 			} else {
 				field_vals << b.mod.get_or_add_const(field_type, '0')
@@ -11707,6 +11727,19 @@ fn (mut b Builder) collect_init_expr_values_from_flat(c ast.Cursor) (TypeID, []V
 	}
 
 	return struct_type, field_vals
+}
+
+fn (mut b Builder) coerce_struct_sumtype_field_value(field_val ValueID, field_type TypeID) ValueID {
+	if field_val <= 0 || field_val >= b.mod.values.len || !b.ssa_type_is_sumtype(field_type) {
+		return field_val
+	}
+	if b.mod.values[field_val].typ == field_type {
+		return field_val
+	}
+	if wrapped := b.wrap_value_for_sumtype_target(field_val, field_type) {
+		return wrapped
+	}
+	return field_val
 }
 
 // build_init_expr_ptr_from_flat is the cursor-native counterpart of

@@ -2548,6 +2548,41 @@ HELLO WORLD
 '.bytes()
 }
 
+fn x64_struct_sumtype_field_init_source() string {
+	return '
+module main
+
+type Tree = Empty | Node
+
+struct Empty {}
+
+struct Node {
+	value int
+}
+
+struct Holder {
+	item Tree
+}
+
+fn value(tree Tree) int {
+	return match tree {
+		Empty { 0 }
+		Node { tree.value }
+	}
+}
+
+fn main() {
+	holder := Holder{Node{42}}
+	println(value(holder.item))
+}
+'
+}
+
+fn x64_struct_sumtype_field_init_stdout() []u8 {
+	return '42
+'.bytes()
+}
+
 fn x64_js_hello_world_example_stdout() []u8 {
 	return 'Hello from V.js (0)
 Hello from V.js (1)
@@ -3255,6 +3290,11 @@ fn test_x64_linux_sudoku_example_top_level_stdout_exact_bytes() {
 fn test_x64_linux_function_types_example_top_level_stdout_exact_bytes() {
 	assert_x64_linux_file_stdout_bytes('function_types_example_top_level_exact',
 		x64_examples_dir(), 'function_types.v', x64_function_types_example_stdout())
+}
+
+fn test_x64_linux_struct_sumtype_field_init_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('struct_sumtype_field_init_exact',
+		x64_struct_sumtype_field_init_source(), x64_struct_sumtype_field_init_stdout())
 }
 
 fn test_x64_linux_fizz_buzz_example_auto_tiny_no_libc() {
@@ -4290,6 +4330,11 @@ fn test_x64_macos_windows_sudoku_example_top_level_stdout_exact_bytes() {
 fn test_x64_macos_windows_function_types_example_top_level_stdout_exact_bytes() {
 	assert_x64_macos_windows_file_stdout_bytes('function_types_example_top_level_exact',
 		x64_examples_dir(), 'function_types.v', x64_function_types_example_stdout())
+}
+
+fn test_x64_macos_windows_struct_sumtype_field_init_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('struct_sumtype_field_init_exact',
+		x64_struct_sumtype_field_init_source(), x64_struct_sumtype_field_init_stdout())
 }
 
 fn test_x64_macos_windows_js_hello_world_example_top_level_stdout_exact_bytes() {
