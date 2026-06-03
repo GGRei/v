@@ -3248,6 +3248,29 @@ fn assert_x64_macos_tiny_object_used(result X64HostRunResult, context string) {
 	assert !result.build_output.contains('retrying with normal Mach-O object'), context
 }
 
+fn test_x64_macos_i64_str_boundary_values_auto_tiny_uses_tiny_object() {
+	$if macos {
+		result := run_x64_host_project_redirected_macos_auto_tiny_verbose('macos_i64_str_boundary_values_auto_tiny', {
+			'main.v': 'module main
+
+fn main() {
+	println(i64(9223372036854775807))
+	println(-i64(9223372036854775807) - i64(1))
+	println(i64(4294967296))
+	println(i64(-4294967297))
+	println(i64(1234567890123456789))
+}
+'
+		})
+		context := x64_host_result_context(result)
+		assert result.stdout == '9223372036854775807\n-9223372036854775808\n4294967296\n-4294967297\n1234567890123456789\n'.bytes(), context
+
+		assert result.stderr == []u8{}, context
+		assert_x64_macos_tiny_object_used(result, context)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
 fn test_x64_macos_hello_world_example_auto_tiny_uses_tiny_object() {
 	$if macos {
 		tiny := run_x64_host_file_redirected_macos_auto_tiny('macos_hello_world_example_auto_tiny',

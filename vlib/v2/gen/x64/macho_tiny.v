@@ -9,6 +9,7 @@ import encoding.binary
 pub const macos_tiny_not_eligible_prefix = 'macOS tiny object is not eligible: '
 
 const macos_tiny_builtin_string_plus_symbol = '_builtin__string__+'
+const macos_tiny_builtin_i64_str_symbol = '_builtin__i64__str'
 const macos_tiny_malloc_symbol = '_malloc'
 const macos_tiny_exit_symbol = '_exit'
 
@@ -105,8 +106,13 @@ fn (mut w MachOTinyObjectWriter) write(path string) ! {
 			sym_idx := symbol_indices[sym.name] or {
 				return macos_tiny_not_eligible('symbol `${sym.name}` is not resolved by the tiny object')
 			}
-			out.add_reloc(int(new_base + u64(reloc.addr - int(range.start))), sym_idx, reloc.type_,
-				reloc.pcrel, reloc.length)
+			out_reloc_addr := int(new_base + u64(reloc.addr - int(range.start)))
+			if macho_tiny_resolve_relocation_locally(sym.name, reloc) {
+				macho_tiny_patch_rel32_local(mut out.text_data, out_reloc_addr,
+					int(func_offsets[sym.name]))
+				continue
+			}
+			out.add_reloc(out_reloc_addr, sym_idx, reloc.type_, reloc.pcrel, reloc.length)
 		}
 	}
 	for reloc in runtime_relocs {
@@ -315,10 +321,23 @@ fn (w MachOTinyObjectWriter) data_section_alignment(section ObjectSection) u64 {
 }
 
 fn macho_tiny_defined_symbol_is_external(name string) bool {
-	return name == '_main' || name == macos_tiny_builtin_string_plus_symbol
+	return name == '_main'
+}
+
+fn macho_tiny_resolve_relocation_locally(name string, reloc MachORelocationInfo) bool {
+	return name in [macos_tiny_builtin_string_plus_symbol, macos_tiny_builtin_i64_str_symbol]
+		&& reloc.type_ == x86_64_reloc_branch && reloc.pcrel && reloc.length == 2
 }
 
 fn macho_tiny_add_runtime_helpers(mut out MachOObject, mut reachable MachOTinyReachable, mut func_offsets map[string]u64, mut runtime_symbols []string, mut runtime_relocs []MachOTinyRuntimeReloc) {
+	if reachable.undefined[macos_tiny_builtin_i64_str_symbol] {
+		reachable.undefined.delete(macos_tiny_builtin_i64_str_symbol)
+		reachable.undefined[macos_tiny_malloc_symbol] = true
+		reachable.undefined[macos_tiny_exit_symbol] = true
+		func_offsets[macos_tiny_builtin_i64_str_symbol] = u64(out.text_data.len)
+		runtime_symbols << macos_tiny_builtin_i64_str_symbol
+		macho_tiny_emit_i64_str(mut out.text_data, mut runtime_relocs)
+	}
 	if reachable.undefined[macos_tiny_builtin_string_plus_symbol] {
 		reachable.undefined.delete(macos_tiny_builtin_string_plus_symbol)
 		reachable.undefined[macos_tiny_malloc_symbol] = true
@@ -327,6 +346,154 @@ fn macho_tiny_add_runtime_helpers(mut out MachOObject, mut reachable MachOTinyRe
 		runtime_symbols << macos_tiny_builtin_string_plus_symbol
 		macho_tiny_emit_string_plus(mut out.text_data, mut runtime_relocs)
 	}
+}
+
+fn macho_tiny_emit_i64_str(mut text []u8, mut runtime_relocs []MachOTinyRuntimeReloc) {
+	text << [
+		u8(0x57), // push rdi, input value
+		0xbf,
+		0x20,
+		0x00,
+		0x00,
+		0x00, // mov edi, 32
+	]
+	macho_tiny_emit_call_reloc(mut text, mut runtime_relocs, macos_tiny_malloc_symbol)
+	text << [
+		u8(0x48),
+		0x85,
+		0xc0, // test rax, rax
+	]
+	malloc_ok := macho_tiny_emit_jcc32(mut text, 0x85) // jne ok
+	text << [
+		u8(0xbf),
+		0x01,
+		0x00,
+		0x00,
+		0x00, // mov edi, 1
+	]
+	macho_tiny_emit_call_reloc(mut text, mut runtime_relocs, macos_tiny_exit_symbol)
+	text << [u8(0x0f), 0x0b] // ud2
+	ok_start := text.len
+	macho_tiny_patch_rel32_local(mut text, malloc_ok, ok_start)
+
+	text << [
+		u8(0x5f), // pop rdi
+		0x4c,
+		0x8d,
+		0x40,
+		0x1f, // lea r8, [rax+31]
+		0x41,
+		0xc6,
+		0x00,
+		0x00, // mov byte ptr [r8], 0
+		0x48,
+		0x89,
+		0xf8, // mov rax, rdi
+		0x45,
+		0x31,
+		0xc9, // xor r9d, r9d
+		0x45,
+		0x31,
+		0xd2, // xor r10d, r10d
+		0x48,
+		0x85,
+		0xc0, // test rax, rax
+	]
+	non_negative := macho_tiny_emit_jcc32(mut text, 0x89) // jns non_negative
+	text << [
+		u8(0x41),
+		0xb2,
+		0x01, // mov r10b, 1
+		0x48,
+		0xf7,
+		0xd8, // neg rax
+	]
+	non_negative_target := text.len
+	text << [
+		u8(0x48),
+		0x85,
+		0xc0, // test rax, rax
+	]
+	non_zero := macho_tiny_emit_jcc32(mut text, 0x85) // jne loop
+	text << [
+		u8(0x49),
+		0xff,
+		0xc8, // dec r8
+		0x41,
+		0xc6,
+		0x00,
+		0x30, // mov byte ptr [r8], '0'
+		0x41,
+		0xb9,
+		0x01,
+		0x00,
+		0x00,
+		0x00, // mov r9d, 1
+	]
+	maybe_sign_jump := macho_tiny_emit_jmp32(mut text)
+	loop_start := text.len
+	text << [
+		u8(0x31),
+		0xd2, // xor edx, edx
+		0xb9,
+		0x0a,
+		0x00,
+		0x00,
+		0x00, // mov ecx, 10
+		0x48,
+		0xf7,
+		0xf1, // div rcx
+		0x80,
+		0xc2,
+		0x30, // add dl, '0'
+		0x49,
+		0xff,
+		0xc8, // dec r8
+		0x41,
+		0x88,
+		0x10, // mov [r8], dl
+		0x49,
+		0xff,
+		0xc1, // inc r9
+		0x48,
+		0x85,
+		0xc0, // test rax, rax
+	]
+	loop_more := macho_tiny_emit_jcc32(mut text, 0x85) // jne loop
+	maybe_sign := text.len
+	text << [
+		u8(0x45),
+		0x84,
+		0xd2, // test r10b, r10b
+	]
+	done_digits := macho_tiny_emit_jcc32(mut text, 0x84) // je done
+	text << [
+		u8(0x49),
+		0xff,
+		0xc8, // dec r8
+		0x41,
+		0xc6,
+		0x00,
+		0x2d, // mov byte ptr [r8], '-'
+		0x49,
+		0xff,
+		0xc1, // inc r9
+	]
+	done_digits_target := text.len
+	text << [
+		u8(0x4c),
+		0x89,
+		0xc0, // mov rax, r8
+		0x4c,
+		0x89,
+		0xca, // mov rdx, r9
+		0xc3, // ret
+	]
+	macho_tiny_patch_rel32_local(mut text, non_negative, non_negative_target)
+	macho_tiny_patch_rel32_local(mut text, non_zero, loop_start)
+	macho_tiny_patch_rel32_local(mut text, maybe_sign_jump, maybe_sign)
+	macho_tiny_patch_rel32_local(mut text, loop_more, loop_start)
+	macho_tiny_patch_rel32_local(mut text, done_digits, done_digits_target)
 }
 
 fn macho_tiny_emit_string_plus(mut text []u8, mut runtime_relocs []MachOTinyRuntimeReloc) {
@@ -507,6 +674,13 @@ fn macho_tiny_emit_call_reloc(mut text []u8, mut runtime_relocs []MachOTinyRunti
 
 fn macho_tiny_emit_jcc32(mut text []u8, opcode u8) int {
 	text << [u8(0x0f), opcode]
+	field_off := text.len
+	text << [u8(0), 0, 0, 0]
+	return field_off
+}
+
+fn macho_tiny_emit_jmp32(mut text []u8) int {
+	text << u8(0xe9)
 	field_off := text.len
 	text << [u8(0), 0, 0, 0]
 	return field_off

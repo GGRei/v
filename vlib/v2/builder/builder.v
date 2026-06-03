@@ -2619,6 +2619,16 @@ fn (mut b Builder) gen_native(backend_arch pref.Arch) {
 			if link_result.exit_code != 0 && used_macos_tiny_object {
 				if b.pref.verbose {
 					println('[*] macOS tiny object link failed; retrying with normal Mach-O object')
+					println('[*] macOS tiny object link exit code: ${link_result.exit_code}')
+					println('[*] macOS tiny object link output:')
+					if link_result.output.len > 0 {
+						print(link_result.output)
+						if !link_result.output.ends_with('\n') {
+							println('')
+						}
+					} else {
+						println('<empty>')
+					}
 				}
 				if os.exists(output_binary) {
 					os.rm(output_binary) or {}

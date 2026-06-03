@@ -351,6 +351,38 @@ fn macho_test_text_relocations(data []u8) []MachOTestRelocation {
 	return relocs
 }
 
+fn macho_test_text_bytes(data []u8) []u8 {
+	load_cmds := macho_test_load_commands(data)
+	sections := macho_test_sections(data, load_cmds[0])
+	return data[int(sections[0].offset)..int(sections[0].offset + sections[0].size)]
+}
+
+fn macho_test_bytes_index(data []u8, needle []u8) int {
+	if needle.len == 0 {
+		return 0
+	}
+	if needle.len > data.len {
+		return -1
+	}
+	for i in 0 .. data.len - needle.len + 1 {
+		mut matches := true
+		for j in 0 .. needle.len {
+			if data[i + j] != needle[j] {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return i
+		}
+	}
+	return -1
+}
+
+fn assert_macho_test_bytes_contains(data []u8, needle []u8, label string) {
+	assert macho_test_bytes_index(data, needle) >= 0, label
+}
+
 struct CoffTestSection {
 	name            string
 	virtual_size    u32
@@ -1661,7 +1693,7 @@ fn test_macho_tiny_object_writer_resolves_builtin_string_plus_with_libsystem_run
 		assert false, 'missing _builtin__string__+ in Mach-O tiny output'
 		return
 	}
-	assert string_plus_out.type_ == 0x0f, '_builtin__string__+ must stay external because original call relocations are serialized as external branch relocations'
+	assert string_plus_out.type_ == 0x0e
 	assert string_plus_out.sect == 1
 	assert string_plus_out.value > 0
 	for name in ['_malloc', '_exit'] {
@@ -1675,24 +1707,192 @@ fn test_macho_tiny_object_writer_resolves_builtin_string_plus_with_libsystem_run
 	}
 
 	relocs := macho_test_text_relocations(data)
-	assert relocs.len == 3
-	assert relocs[0].addr == 1
-	assert symbols[relocs[0].sym_idx].name == '_builtin__string__+'
-	assert relocs[0].extern
+	assert relocs.len == 2
+	assert relocs[0].addr > int(string_plus_out.value)
+	assert symbols[relocs[0].sym_idx].name == '_malloc'
 	assert relocs[1].addr > int(string_plus_out.value)
-	assert symbols[relocs[1].sym_idx].name == '_malloc'
-	assert relocs[2].addr > int(string_plus_out.value)
-	assert relocs[2].addr > relocs[1].addr
-	assert symbols[relocs[2].sym_idx].name == '_exit'
+	assert relocs[1].addr > relocs[0].addr
+	assert symbols[relocs[1].sym_idx].name == '_exit'
 	mut reloc_names := []string{}
 	for reloc in relocs {
 		reloc_names << symbols[reloc.sym_idx].name
 		assert reloc.pcrel
 		assert reloc.length == 2
+		assert reloc.extern
 		assert reloc.type_ == x86_64_reloc_branch
 	}
 	reloc_names.sort()
-	assert reloc_names == ['_builtin__string__+', '_exit', '_malloc']
+	assert reloc_names == ['_exit', '_malloc']
+
+	text := macho_test_text_bytes(data)
+	expected_disp := i64(string_plus_out.value) - i64(1 + 4)
+	assert read_u32_le(text, 1) == u32(i32(expected_disp))
+}
+
+fn test_macho_tiny_object_writer_resolves_builtin_i64_str_with_libsystem_runtime() {
+	path := temp_object_path('macho_tiny_i64_str_runtime')
+	defer {
+		os.rm(path) or {}
+	}
+
+	mut obj := MachOObject.new()
+	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xc3]
+	i64_str_sym := obj.add_undefined('_builtin__i64__str')
+	obj.add_symbol('_main', 0, true, 1)
+	obj.add_reloc(1, i64_str_sym, x86_64_reloc_branch, true, 2)
+
+	mut writer := MachOTinyObjectWriter{
+		macho: obj
+	}
+	writer.write(path) or { panic(err) }
+
+	data := os.read_bytes(path) or { panic(err) }
+	symbols := macho_test_symbols(data)
+	i64_str_out := macho_test_symbol_by_name(symbols, '_builtin__i64__str') or {
+		assert false, 'missing _builtin__i64__str in Mach-O tiny output'
+		return
+	}
+	assert i64_str_out.type_ == 0x0e
+	assert i64_str_out.sect == 1
+	assert i64_str_out.value > 0
+
+	relocs := macho_test_text_relocations(data)
+	assert relocs.len == 2
+	mut reloc_names := []string{}
+	for reloc in relocs {
+		reloc_names << symbols[reloc.sym_idx].name
+		assert reloc.pcrel
+		assert reloc.length == 2
+		assert reloc.extern
+		assert reloc.type_ == x86_64_reloc_branch
+		assert reloc.addr > int(i64_str_out.value)
+	}
+	reloc_names.sort()
+	assert reloc_names == ['_exit', '_malloc']
+
+	text := macho_test_text_bytes(data)
+	expected_disp := i64(i64_str_out.value) - i64(1 + 4)
+	assert read_u32_le(text, 1) == u32(i32(expected_disp))
+}
+
+fn test_macho_tiny_i64_str_helper_uses_signed_64_bit_decimal_runtime() {
+	path := temp_object_path('macho_tiny_i64_str_runtime_bytes')
+	defer {
+		os.rm(path) or {}
+	}
+
+	mut obj := MachOObject.new()
+	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xc3]
+	i64_str_sym := obj.add_undefined('_builtin__i64__str')
+	obj.add_symbol('_main', 0, true, 1)
+	obj.add_reloc(1, i64_str_sym, x86_64_reloc_branch, true, 2)
+
+	mut writer := MachOTinyObjectWriter{
+		macho: obj
+	}
+	writer.write(path) or { panic(err) }
+
+	data := os.read_bytes(path) or { panic(err) }
+	symbols := macho_test_symbols(data)
+	i64_str_out := macho_test_symbol_by_name(symbols, '_builtin__i64__str') or {
+		assert false, 'missing _builtin__i64__str in Mach-O tiny output'
+		return
+	}
+	text := macho_test_text_bytes(data)
+	helper := text[int(i64_str_out.value)..]
+
+	assert helper[0..7] == [u8(0x57), 0xbf, 0x20, 0, 0, 0, 0xe8]
+	assert helper[32] == 0x5f
+	assert_macho_test_bytes_contains(helper, [u8(0x48), 0x89, 0xf8],
+		'i64 str helper must read the full i64 argument from rdi')
+	assert_macho_test_bytes_contains(helper, [u8(0x41), 0xb2, 0x01],
+		'i64 str helper must remember signed negative inputs')
+	assert_macho_test_bytes_contains(helper, [u8(0x48), 0xf7, 0xd8],
+		'i64 str helper must negate the full 64-bit value, preserving i64_min as unsigned magnitude')
+	assert_macho_test_bytes_contains(helper, [u8(0x48), 0xf7, 0xf1],
+		'i64 str helper must divide the full 64-bit magnitude by 10')
+	assert_macho_test_bytes_contains(helper, [u8(0x41), 0xc6, 0x00, 0x2d],
+		'i64 str helper must emit a minus sign for signed negative inputs')
+	assert_macho_test_bytes_contains(helper, [u8(0x4c), 0x89, 0xc0, 0x4c, 0x89, 0xca, 0xc3],
+		'i64 str helper must return ptr in rax and len in rdx')
+
+	relocs := macho_test_text_relocations(data)
+	mut malloc_relocs := 0
+	mut exit_relocs := 0
+	for reloc in relocs {
+		name := symbols[reloc.sym_idx].name
+		if name == '_malloc' {
+			malloc_relocs++
+			assert reloc.addr == u32(i64_str_out.value + 7)
+		} else if name == '_exit' {
+			exit_relocs++
+			assert reloc.addr == u32(i64_str_out.value + 26)
+		} else {
+			assert false, 'unexpected Mach-O tiny i64 str helper relocation to ${name}'
+		}
+		assert reloc.extern
+		assert reloc.pcrel
+		assert reloc.length == 2
+		assert reloc.type_ == x86_64_reloc_branch
+	}
+	assert malloc_relocs == 1
+	assert exit_relocs == 1
+}
+
+fn test_macho_tiny_object_writer_resolves_i64_str_and_string_plus_locally() {
+	path := temp_object_path('macho_tiny_i64_str_string_plus_runtime')
+	defer {
+		os.rm(path) or {}
+	}
+
+	mut obj := MachOObject.new()
+	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xe8, 0, 0, 0, 0, 0xc3]
+	i64_str_sym := obj.add_undefined('_builtin__i64__str')
+	string_plus_sym := obj.add_undefined('_builtin__string__+')
+	obj.add_symbol('_main', 0, true, 1)
+	obj.add_reloc(1, i64_str_sym, x86_64_reloc_branch, true, 2)
+	obj.add_reloc(6, string_plus_sym, x86_64_reloc_branch, true, 2)
+
+	mut writer := MachOTinyObjectWriter{
+		macho: obj
+	}
+	writer.write(path) or { panic(err) }
+
+	data := os.read_bytes(path) or { panic(err) }
+	symbols := macho_test_symbols(data)
+	i64_str_out := macho_test_symbol_by_name(symbols, '_builtin__i64__str') or {
+		assert false, 'missing _builtin__i64__str in Mach-O tiny output'
+		return
+	}
+	string_plus_out := macho_test_symbol_by_name(symbols, '_builtin__string__+') or {
+		assert false, 'missing _builtin__string__+ in Mach-O tiny output'
+		return
+	}
+	assert i64_str_out.type_ == 0x0e
+	assert i64_str_out.sect == 1
+	assert i64_str_out.value > 0
+	assert string_plus_out.type_ == 0x0e
+	assert string_plus_out.sect == 1
+	assert string_plus_out.value > i64_str_out.value
+
+	relocs := macho_test_text_relocations(data)
+	assert relocs.len == 4
+	mut reloc_names := []string{}
+	for reloc in relocs {
+		reloc_names << symbols[reloc.sym_idx].name
+		assert reloc.pcrel
+		assert reloc.length == 2
+		assert reloc.extern
+		assert reloc.type_ == x86_64_reloc_branch
+	}
+	reloc_names.sort()
+	assert reloc_names == ['_exit', '_exit', '_malloc', '_malloc']
+
+	text := macho_test_text_bytes(data)
+	expected_i64_disp := i64(i64_str_out.value) - i64(1 + 4)
+	expected_string_plus_disp := i64(string_plus_out.value) - i64(6 + 4)
+	assert read_u32_le(text, 1) == u32(i32(expected_i64_disp))
+	assert read_u32_le(text, 6) == u32(i32(expected_string_plus_disp))
 }
 
 fn test_macho_tiny_object_writer_keeps_referenced_rodata_and_data() {
