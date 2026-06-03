@@ -187,6 +187,9 @@ jobs:
           }
           Invoke-NativeX64Example 'examples/sudoku.v' 'sudoku' $sudoku_expected
 
+          $function_types_expected = [System.Text.Encoding]::UTF8.GetBytes("HELLO WORLD`nHELLO WORLD`nHELLO WORLD`n")
+          Invoke-NativeX64Example 'examples/function_types.v' 'function_types' $function_types_expected
+
           $js_hello_world_expected = [System.Text.Encoding]::UTF8.GetBytes("Hello from V.js (0)`nHello from V.js (1)`nHello from V.js (2)`n")
           Invoke-NativeX64Example 'examples/js_hello_world.v' 'js_hello_world' $js_hello_world_expected
 

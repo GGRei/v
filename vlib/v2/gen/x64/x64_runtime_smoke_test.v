@@ -2541,6 +2541,13 @@ fn x64_sudoku_append_stdout_line(mut out []u8, line string, trailing_space bool)
 	out << u8(`\n`)
 }
 
+fn x64_function_types_example_stdout() []u8 {
+	return 'HELLO WORLD
+HELLO WORLD
+HELLO WORLD
+'.bytes()
+}
+
 fn x64_js_hello_world_example_stdout() []u8 {
 	return 'Hello from V.js (0)
 Hello from V.js (1)
@@ -3243,6 +3250,11 @@ fn test_x64_linux_hanoi_example_top_level_stdout_exact_bytes() {
 fn test_x64_linux_sudoku_example_top_level_stdout_exact_bytes() {
 	assert_x64_linux_file_stdout_bytes('sudoku_example_top_level_exact', x64_examples_dir(),
 		'sudoku.v', x64_sudoku_example_stdout())
+}
+
+fn test_x64_linux_function_types_example_top_level_stdout_exact_bytes() {
+	assert_x64_linux_file_stdout_bytes('function_types_example_top_level_exact',
+		x64_examples_dir(), 'function_types.v', x64_function_types_example_stdout())
 }
 
 fn test_x64_linux_fizz_buzz_example_auto_tiny_no_libc() {
@@ -4273,6 +4285,11 @@ fn test_x64_macos_windows_hanoi_example_top_level_stdout_exact_bytes() {
 fn test_x64_macos_windows_sudoku_example_top_level_stdout_exact_bytes() {
 	assert_x64_macos_windows_file_stdout_bytes('sudoku_example_top_level_exact',
 		x64_examples_dir(), 'sudoku.v', x64_sudoku_example_stdout())
+}
+
+fn test_x64_macos_windows_function_types_example_top_level_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes('function_types_example_top_level_exact',
+		x64_examples_dir(), 'function_types.v', x64_function_types_example_stdout())
 }
 
 fn test_x64_macos_windows_js_hello_world_example_top_level_stdout_exact_bytes() {
