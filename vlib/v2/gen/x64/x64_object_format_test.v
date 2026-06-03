@@ -59,6 +59,24 @@ fn new_macho_global_codegen_test_module(name string, linkage ssa.Linkage) mir.Mo
 	}
 }
 
+fn new_func_ref_codegen_test_module(name string) mir.Module {
+	mut ts := ssa.TypeStore.new()
+	i8_t := ts.get_int(8)
+	ptr_t := ts.get_ptr(i8_t)
+	return mir.Module{
+		type_store: unsafe { *ts }
+		values:     [
+			mir.Value{
+				id:    0
+				typ:   ptr_t
+				index: 0
+				kind:  .func_ref
+				name:  name
+			},
+		]
+	}
+}
+
 fn new_windows_coff_global_codegen_test_module() mir.Module {
 	mut ts := ssa.TypeStore.new()
 	i64_t := ts.get_int(64)
@@ -1274,6 +1292,47 @@ fn test_macho_codegen_keeps_private_global_references_signed() {
 	assert gen.macho.relocs[0].extern
 	assert gen.macho.relocs[0].length == 2
 	assert gen.macho.symbols[gen.macho.relocs[0].sym_idx].name == '_app_global'
+}
+
+fn test_elf_codegen_loads_func_ref_as_rip_relative_address() {
+	mut mod := new_func_ref_codegen_test_module('_anon_fn_0')
+	mut gen := Gen.new_with_format(&mod, .elf)
+	gen.load_val_to_reg(0, 0)
+
+	assert gen.elf.text_data == [u8(0x48), 0x8d, 0x05, 0, 0, 0, 0]
+	assert gen.elf.text_relocs.len == 1
+	assert gen.elf.text_relocs[0].offset == 3
+	assert gen.elf.text_relocs[0].info & u64(0xffff_ffff) == u64(r_x86_64_pc32)
+	sym_idx := int(gen.elf.text_relocs[0].info >> 32)
+	assert gen.elf.symbols[sym_idx].name == '_anon_fn_0'
+	assert gen.elf.text_relocs[0].addend == i64(-4)
+}
+
+fn test_macho_codegen_loads_func_ref_as_rip_relative_address() {
+	mut mod := new_func_ref_codegen_test_module('_anon_fn_0')
+	mut gen := Gen.new_with_format(&mod, .macho)
+	gen.load_val_to_reg(0, 0)
+
+	assert gen.macho.text_data == [u8(0x48), 0x8d, 0x05, 0, 0, 0, 0]
+	assert gen.macho.relocs.len == 1
+	assert gen.macho.relocs[0].addr == 3
+	assert gen.macho.relocs[0].type_ == x86_64_reloc_signed
+	assert gen.macho.relocs[0].pcrel
+	assert gen.macho.relocs[0].extern
+	assert gen.macho.relocs[0].length == 2
+	assert gen.macho.symbols[gen.macho.relocs[0].sym_idx].name == '__anon_fn_0'
+}
+
+fn test_coff_codegen_loads_func_ref_as_rip_relative_address() {
+	mut mod := new_func_ref_codegen_test_module('_anon_fn_0')
+	mut gen := Gen.new_with_format(&mod, .coff)
+	gen.load_val_to_reg(0, 0)
+
+	assert gen.coff.text_data == [u8(0x48), 0x8d, 0x05, 0, 0, 0, 0]
+	assert gen.coff.text_relocs.len == 1
+	assert gen.coff.text_relocs[0].offset == 3
+	assert gen.coff.text_relocs[0].type_ == coff_image_rel_amd64_rel32
+	assert gen.coff.symbols[gen.coff.text_relocs[0].sym_idx].name == '_anon_fn_0'
 }
 
 fn test_windows_coff_codegen_omits_unused_global_data() {

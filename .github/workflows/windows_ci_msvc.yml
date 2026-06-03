@@ -117,6 +117,85 @@ jobs:
           }
           $fizz_expected = [System.Text.Encoding]::UTF8.GetBytes(($fizz_lines -join "`n") + "`n")
           Invoke-NativeX64Example 'examples/fizz_buzz.v' 'fizz_buzz' $fizz_expected
+
+          function Get-HanoiExpectedLines([int] $n, [string] $a, [string] $b, [string] $c) {
+            if ($n -eq 1) {
+              "Disc 1 from $a to $c..."
+              return
+            }
+            Get-HanoiExpectedLines ($n - 1) $a $c $b
+            "Disc $n from $a to $c..."
+            Get-HanoiExpectedLines ($n - 1) $b $a $c
+          }
+
+          $hanoi_lines = @(Get-HanoiExpectedLines 7 'A' 'B' 'C')
+          $hanoi_expected = [System.Text.Encoding]::UTF8.GetBytes(($hanoi_lines -join "`n") + "`n")
+          Invoke-NativeX64Example 'examples/hanoi.v' 'hanoi' $hanoi_expected
+
+          $js_hello_world_expected = [System.Text.Encoding]::UTF8.GetBytes("Hello from V.js (0)`nHello from V.js (1)`nHello from V.js (2)`n")
+          Invoke-NativeX64Example 'examples/js_hello_world.v' 'js_hello_world' $js_hello_world_expected
+
+          function Get-VSingleQuotedLiteralBytes([string] $literal) {
+            $bytes = [System.Collections.Generic.List[byte]]::new()
+            for ($i = 0; $i -lt $literal.Length; $i++) {
+              $ch = $literal[$i]
+              if ($ch -eq '\') {
+                $i++
+                if ($i -ge $literal.Length) {
+                  throw 'unterminated escape in V single-quoted literal'
+                }
+                $escaped = $literal[$i]
+                switch ([int][char] $escaped) {
+                  110 { [void] $bytes.Add(10) }
+                  116 { [void] $bytes.Add(9) }
+                  114 { [void] $bytes.Add(13) }
+                  92 { [void] $bytes.Add(92) }
+                  39 { [void] $bytes.Add(39) }
+                  34 { [void] $bytes.Add(34) }
+                  default {
+                    foreach ($byte in [System.Text.Encoding]::UTF8.GetBytes([string] $escaped)) {
+                      [void] $bytes.Add($byte)
+                    }
+                  }
+                }
+              } else {
+                foreach ($byte in [System.Text.Encoding]::UTF8.GetBytes([string] $ch)) {
+                  [void] $bytes.Add($byte)
+                }
+              }
+            }
+            return $bytes.ToArray()
+          }
+
+          function Get-VasciiExpectedBytes() {
+            $source = [System.IO.File]::ReadAllText((Join-Path (Get-Location) 'examples/vascii.v'), [System.Text.Encoding]::UTF8)
+            $start_marker = "println('"
+            $end_marker = "')"
+            $first = $source.IndexOf($start_marker, [System.StringComparison]::Ordinal)
+            if ($first -lt 0) {
+              throw 'missing vascii println literal start'
+            }
+            $second = $source.IndexOf($start_marker, $first + $start_marker.Length, [System.StringComparison]::Ordinal)
+            if ($second -ne -1) {
+              throw 'vascii stdout oracle expects one single-quoted println literal'
+            }
+            $start = $first + $start_marker.Length
+            $end = $source.LastIndexOf($end_marker, [System.StringComparison]::Ordinal)
+            if ($end -lt $start) {
+              throw 'missing vascii println literal end'
+            }
+            if ($source.Substring($end + $end_marker.Length).Trim() -ne '}') {
+              throw 'vascii stdout oracle expects the println literal to be the final main statement'
+            }
+            [byte[]] $bytes = Get-VSingleQuotedLiteralBytes ($source.Substring($start, $end - $start))
+            return $bytes + [byte] 10
+          }
+
+          [byte[]] $vascii_expected = Get-VasciiExpectedBytes
+          Invoke-NativeX64Example 'examples/vascii.v' 'vascii' $vascii_expected
+
+          [byte[]] $rune_expected = 0xF0, 0x9F, 0x98, 0x80, 0x0A, 0x40, 0x0A
+          Invoke-NativeX64Example 'examples/rune.v' 'rune' $rune_expected
       - name: Build V with WX
         run: v -cflags /WX self
       - name: All code is formatted

@@ -2292,8 +2292,89 @@ FizzBuzz
 '.bytes()
 }
 
+fn x64_named_function_value_source() string {
+	return 'module main
+
+fn inc(value int) int {
+	return value + 1
+}
+
+fn apply(f fn (int) int, value int) int {
+	return f(value)
+}
+
+fn main() {
+	f := inc
+	println(f(10))
+	println(apply(inc, 20))
+}
+'
+}
+
+fn x64_named_function_value_stdout() []u8 {
+	return '11
+21
+'.bytes()
+}
+
+fn x64_non_capturing_fn_literal_value_source() string {
+	return 'module main
+
+fn apply(f fn (int) int, value int) int {
+	return f(value)
+}
+
+fn main() {
+	f := fn (value int) int {
+		return value + 7
+	}
+	println(f(7))
+	println(apply(fn (value int) int {
+		return value + 3
+	}, 8))
+}
+'
+}
+
+fn x64_non_capturing_fn_literal_value_stdout() []u8 {
+	return '14
+11
+'.bytes()
+}
+
+fn x64_returned_non_capturing_fn_literal_source() string {
+	return 'module main
+
+fn make_double() fn (int) int {
+	return fn (value int) int {
+		return value * 2
+	}
+}
+
+fn apply(f fn (int) int, value int) int {
+	return f(value)
+}
+
+fn main() {
+	f := make_double()
+	println(f(9))
+	println(apply(make_double(), 12))
+}
+'
+}
+
+fn x64_returned_non_capturing_fn_literal_stdout() []u8 {
+	return '18
+24
+'.bytes()
+}
+
 fn x64_examples_dir() string {
 	return os.join_path(@VMODROOT, 'examples')
+}
+
+fn x64_hello_world_example_stdout() []u8 {
+	return 'Hello, World!\n'.bytes()
 }
 
 fn x64_fizz_buzz_example_stdout() []u8 {
@@ -2398,6 +2479,28 @@ Fizz
 Fizz
 Buzz
 '.bytes()
+}
+
+fn x64_hanoi_example_stdout() []u8 {
+	mut out := []u8{}
+	x64_hanoi_example_append_expected(mut out, 7, 'A', 'B', 'C')
+	text := out.bytestr()
+	move_count := text.count('\n')
+	assert out.len == 2794, 'hanoi stdout oracle source shape changed: bytes=${out.len}'
+	assert move_count == 127, 'hanoi stdout oracle source shape changed: moves=${move_count}'
+	assert text.starts_with('Disc 1 from A to C...\nDisc 2 from A to B...\n'), 'hanoi stdout oracle first moves changed'
+	assert text.ends_with('Disc 2 from B to C...\nDisc 1 from A to C...\n'), 'hanoi stdout oracle final moves changed'
+	return out
+}
+
+fn x64_hanoi_example_append_expected(mut out []u8, n int, a string, b string, c string) {
+	if n == 1 {
+		out << 'Disc 1 from ${a} to ${c}...\n'.bytes()
+		return
+	}
+	x64_hanoi_example_append_expected(mut out, n - 1, a, c, b)
+	out << 'Disc ${n} from ${a} to ${c}...\n'.bytes()
+	x64_hanoi_example_append_expected(mut out, n - 1, b, a, c)
 }
 
 fn x64_js_hello_world_example_stdout() []u8 {
@@ -3001,6 +3104,22 @@ fn main() {
 	])
 }
 
+fn test_x64_linux_named_function_value_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('named_function_value_exact', x64_named_function_value_source(),
+		x64_named_function_value_stdout())
+}
+
+fn test_x64_linux_non_capturing_fn_literal_value_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('non_capturing_fn_literal_value_exact',
+		x64_non_capturing_fn_literal_value_source(), x64_non_capturing_fn_literal_value_stdout())
+}
+
+fn test_x64_linux_returned_non_capturing_fn_literal_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('returned_non_capturing_fn_literal_exact',
+		x64_returned_non_capturing_fn_literal_source(),
+		x64_returned_non_capturing_fn_literal_stdout())
+}
+
 fn test_x64_linux_long_string_literal_len_stdout_exact_bytes() {
 	assert_x64_linux_stdout_bytes('long_string_literal_len_exact', x64_long_ascii_literal_source(),
 		x64_long_ascii_literal_stdout())
@@ -3078,6 +3197,11 @@ fn test_x64_linux_fizz_buzz_example_top_level_stdout_exact_bytes() {
 		'fizz_buzz.v', x64_fizz_buzz_example_stdout())
 }
 
+fn test_x64_linux_hanoi_example_top_level_stdout_exact_bytes() {
+	assert_x64_linux_file_stdout_bytes('hanoi_example_top_level_exact', x64_examples_dir(),
+		'hanoi.v', x64_hanoi_example_stdout())
+}
+
 fn test_x64_linux_fizz_buzz_example_auto_tiny_no_libc() {
 	$if linux {
 		result := run_x64_host_file_redirected_auto('fizz_buzz_example_auto_tiny_no_libc',
@@ -3087,11 +3211,33 @@ fn test_x64_linux_fizz_buzz_example_auto_tiny_no_libc() {
 	}
 }
 
+fn test_x64_linux_hanoi_example_strict_tiny_no_libc() {
+	$if linux {
+		result := run_x64_host_file_redirected_tiny('hanoi_example_strict_tiny_no_libc',
+			x64_examples_dir(), 'hanoi.v')
+		assert_x64_linux_no_libc_binary(result, x64_hanoi_example_stdout())
+		assert_x64_linux_tiny_load_segment_layout(result, linux_tiny_int_str_arena_metadata_bytes +
+			linux_tiny_string_plus_arena_metadata_bytes)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_hanoi_example_auto_tiny_no_libc() {
+	$if linux {
+		result := run_x64_host_file_redirected_auto('hanoi_example_auto_tiny_no_libc',
+			x64_examples_dir(), 'hanoi.v')
+		assert_x64_linux_no_libc_binary(result, x64_hanoi_example_stdout())
+		assert_x64_linux_tiny_load_segment_layout(result, linux_tiny_int_str_arena_metadata_bytes +
+			linux_tiny_string_plus_arena_metadata_bytes)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
 fn test_x64_linux_hello_world_example_auto_tiny_no_libc() {
 	$if linux {
 		result := run_x64_host_file_redirected_auto('hello_world_example_auto_tiny_no_libc',
 			x64_examples_dir(), 'hello_world.v')
-		assert_x64_linux_no_libc_binary(result, 'Hello, World!\n'.bytes())
+		assert_x64_linux_no_libc_binary(result, x64_hello_world_example_stdout())
 		assert_x64_linux_tiny_load_segment_layout(result, 0)
 		context := x64_host_result_context(result)
 		assert os.file_size(result.bin_path) < 512, '${context}\nbinary is not ultra tiny: ${os.file_size(result.bin_path)} bytes'
@@ -3278,7 +3424,7 @@ fn test_x64_macos_hello_world_example_auto_tiny_uses_tiny_object() {
 		normal := run_x64_host_file_redirected_no_tiny('macos_hello_world_example_normal',
 			x64_examples_dir(), 'hello_world.v')
 		context := '${x64_host_result_context(tiny)}\nnormal build:\n${x64_host_result_context(normal)}'
-		assert tiny.stdout == 'Hello, World!\n'.bytes(), context
+		assert tiny.stdout == x64_hello_world_example_stdout(), context
 		assert tiny.stderr == []u8{}, context
 		assert normal.stdout == tiny.stdout, context
 		assert normal.stderr == []u8{}, context
@@ -3310,6 +3456,28 @@ fn test_x64_macos_fizz_buzz_example_auto_tiny_uses_tiny_object() {
 		assert tiny_size > 0, '${context}\ntiny size: ${tiny_size}'
 		assert normal_size > 0, '${context}\nnormal size: ${normal_size}'
 		println('macOS x64 tiny fizz_buzz: tiny size=${tiny_size}; normal size=${normal_size}')
+		x64_host_cleanup_tmp(tiny.tmp_dir)
+		x64_host_cleanup_tmp(normal.tmp_dir)
+	}
+}
+
+fn test_x64_macos_hanoi_example_auto_tiny_uses_tiny_object() {
+	$if macos {
+		tiny := run_x64_host_file_redirected_macos_auto_tiny('macos_hanoi_example_auto_tiny',
+			x64_examples_dir(), 'hanoi.v')
+		normal := run_x64_host_file_redirected_no_tiny('macos_hanoi_example_normal',
+			x64_examples_dir(), 'hanoi.v')
+		context := '${x64_host_result_context(tiny)}\nnormal build:\n${x64_host_result_context(normal)}'
+		assert tiny.stdout == x64_hanoi_example_stdout(), context
+		assert tiny.stderr == []u8{}, context
+		assert normal.stdout == tiny.stdout, context
+		assert normal.stderr == []u8{}, context
+		assert_x64_macos_tiny_object_used(tiny, context)
+		tiny_size := os.file_size(tiny.bin_path)
+		normal_size := os.file_size(normal.bin_path)
+		assert tiny_size > 0, '${context}\ntiny size: ${tiny_size}'
+		assert normal_size > 0, '${context}\nnormal size: ${normal_size}'
+		println('macOS x64 tiny hanoi: tiny size=${tiny_size}; normal size=${normal_size}')
 		x64_host_cleanup_tmp(tiny.tmp_dir)
 		x64_host_cleanup_tmp(normal.tmp_dir)
 	}
@@ -3865,6 +4033,22 @@ fn test_x64_macos_windows_println_string_parameter_stdout_exact_bytes() {
 		x64_println_string_parameter_stdout_source(), x64_println_string_parameter_stdout())
 }
 
+fn test_x64_macos_windows_named_function_value_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('named_function_value_exact',
+		x64_named_function_value_source(), x64_named_function_value_stdout())
+}
+
+fn test_x64_macos_windows_non_capturing_fn_literal_value_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('non_capturing_fn_literal_value_exact',
+		x64_non_capturing_fn_literal_value_source(), x64_non_capturing_fn_literal_value_stdout())
+}
+
+fn test_x64_macos_windows_returned_non_capturing_fn_literal_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('returned_non_capturing_fn_literal_exact',
+		x64_returned_non_capturing_fn_literal_source(),
+		x64_returned_non_capturing_fn_literal_stdout())
+}
+
 fn test_x64_macos_windows_i64_loop_carried_mutable_state_controls_branch() {
 	assert_x64_macos_windows_stdout_bytes('i64_loop_carried_mutable_state_branch',
 		x64_i64_loop_carried_mutable_state_source(), x64_i64_loop_carried_mutable_state_stdout())
@@ -4028,9 +4212,19 @@ fn test_x64_macos_windows_string_literal_field_size_stores_do_not_clobber_adjace
 		x64_string_literal_field_size_source(), x64_string_literal_field_size_stdout())
 }
 
+fn test_x64_macos_windows_hello_world_example_top_level_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes('hello_world_example_top_level_exact',
+		x64_examples_dir(), 'hello_world.v', x64_hello_world_example_stdout())
+}
+
 fn test_x64_macos_windows_fizz_buzz_example_top_level_stdout_exact_bytes() {
 	assert_x64_macos_windows_file_stdout_bytes('fizz_buzz_example_top_level_exact',
 		x64_examples_dir(), 'fizz_buzz.v', x64_fizz_buzz_example_stdout())
+}
+
+fn test_x64_macos_windows_hanoi_example_top_level_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes('hanoi_example_top_level_exact', x64_examples_dir(),
+		'hanoi.v', x64_hanoi_example_stdout())
 }
 
 fn test_x64_macos_windows_js_hello_world_example_top_level_stdout_exact_bytes() {

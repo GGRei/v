@@ -113,6 +113,8 @@ struct SelectorAddr {
 	base_type TypeID
 }
 
+const unsupported_captured_fn_literal_symbol = 'v2_unsupported_captured_fn_literal'
+
 pub struct Builder {
 pub mut:
 	mod        &Module
@@ -7232,9 +7234,12 @@ fn (mut b Builder) build_fn_literal_from_flat(c ast.Cursor) ValueID {
 	return_type_c := typ_c.edge(2)
 	ncaptured := c.extra_int()
 
+	if ncaptured > 0 {
+		return b.get_or_create_fn_ref(unsupported_captured_fn_literal_symbol, 0)
+	}
+
 	anon_name := '_anon_fn_${b.anon_fn_counter}'
 	b.anon_fn_counter++
-
 	ret_type := b.ast_type_to_ssa_from_flat(return_type_c)
 
 	func_idx := b.mod.new_function(anon_name, ret_type, []TypeID{})
@@ -13241,6 +13246,10 @@ fn (mut b Builder) get_or_create_fn_ref(name string, _typ TypeID) ValueID {
 }
 
 fn (mut b Builder) build_fn_literal(expr ast.FnLiteral) ValueID {
+	if expr.captured_vars.len > 0 {
+		return b.get_or_create_fn_ref(unsupported_captured_fn_literal_symbol, 0)
+	}
+
 	// Generate unique name for this anonymous function
 	anon_name := '_anon_fn_${b.anon_fn_counter}'
 	b.anon_fn_counter++

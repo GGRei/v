@@ -2490,6 +2490,11 @@ fn (mut g Gen) load_val_to_reg(reg int, val_id int) {
 				asm_mov_reg_imm64(mut g, Reg(reg), u64(int_val))
 			}
 		}
+	} else if val.kind == .func_ref {
+		sym_idx := g.add_undefined(val.name)
+		asm_lea_reg_rip(mut g, Reg(reg))
+		g.add_rip_reloc(sym_idx)
+		g.emit_u32(0)
 	} else if val.kind == .global {
 		sym_idx := g.add_undefined(val.name)
 		if g.obj_format == .macho && val.index >= 0 && val.index < g.mod.globals.len
