@@ -7640,8 +7640,22 @@ fn (mut c Checker) mark_as_referenced(mut node ast.Expr, as_interface bool) {
 		ast.Ident {
 			if mut node.obj is ast.Var {
 				mut obj := unsafe { &node.obj }
-				if c.fn_scope != unsafe { nil } {
-					obj = c.fn_scope.find_var(node.obj.name) or { obj }
+				// Resolve the canonical declaration variable so that the
+				// `is_auto_heap` promotion below is recorded on the variable
+				// that cgen will see when emitting its declaration. Walk the
+				// use-site scope chain (so variables declared in nested scopes,
+				// e.g. inside a `for` loop body, are found, unlike
+				// `c.fn_scope.find_var` which only locates function-level vars),
+				// while skipping synthetic smartcast vars from `if x is T`/`match`
+				// branches: those are copies with no declaration of their own, so
+				// promoting them would leave the real declaration emitted as a
+				// plain value and desync the pointer indirection.
+				obj = node.scope.find_var_decl(node.obj.name) or {
+					if c.fn_scope != unsafe { nil } {
+						c.fn_scope.find_var(node.obj.name) or { obj }
+					} else {
+						obj
+					}
 				}
 				if obj.typ == 0 {
 					return
@@ -7678,6 +7692,21 @@ fn (mut c Checker) mark_as_referenced(mut node ast.Expr, as_interface bool) {
 						}
 						else {
 							obj.is_auto_heap = true
+						}
+					}
+
+					if obj.is_auto_heap {
+						// `obj` is the canonical declaration, which cgen emits as a
+						// heap pointer. When the value is read through a branch-local
+						// smartcast/option-unwrap copy (`if x is T`, `if x != none`),
+						// cgen resolves that use-site copy (see
+						// `resolved_ident_is_auto_heap`) when emitting the read, so it
+						// must carry the same `is_auto_heap`. Otherwise the read (e.g.
+						// an unwrapped option's `.data`) is emitted without the pointer
+						// indirection the declaration was given, producing invalid C.
+						node.obj.is_auto_heap = true
+						if mut use_site := node.scope.find_var(node.obj.name) {
+							use_site.is_auto_heap = true
 						}
 					}
 
@@ -8372,16 +8401,26 @@ fn (mut c Checker) static_fn_value_from_enum_val(mut node ast.EnumVal, _ string,
 	return node.typ
 }
 
-fn (mut c Checker) enum_val_as_static_fn(mut node ast.EnumVal, typ_sym ast.TypeSymbol, fsym ast.TypeSymbol) ast.Type {
-	fn_name := '${typ_sym.name}__static__${node.val}'
-	if func := c.table.find_fn(fn_name) {
-		return c.static_fn_value_from_enum_val(mut node, fn_name, func)
+// static_method_of_enum_val resolves the static method that an `ast.EnumVal`-shaped
+// expression (`Type.method`, syntactically identical to an enum value `Color.red`)
+// refers to. It also checks the final/unaliased symbol, so static methods reached
+// through a supported type alias (`type Alias = Struct; Alias.new`) are found by
+// their real fkey instead of the alias name.
+fn (c &Checker) static_method_of_enum_val(node ast.EnumVal, typ_sym ast.TypeSymbol, fsym ast.TypeSymbol) ?ast.Fn {
+	if func := c.table.find_fn('${typ_sym.name}__static__${node.val}') {
+		return func
 	}
 	if fsym.name != typ_sym.name {
-		alias_fn_name := '${fsym.name}__static__${node.val}'
-		if func := c.table.find_fn(alias_fn_name) {
-			return c.static_fn_value_from_enum_val(mut node, alias_fn_name, func)
+		if func := c.table.find_fn('${fsym.name}__static__${node.val}') {
+			return func
 		}
+	}
+	return none
+}
+
+fn (mut c Checker) enum_val_as_static_fn(mut node ast.EnumVal, typ_sym ast.TypeSymbol, fsym ast.TypeSymbol) ast.Type {
+	if func := c.static_method_of_enum_val(node, typ_sym, fsym) {
+		return c.static_fn_value_from_enum_val(mut node, func.name, func)
 	}
 	return ast.void_type
 }
