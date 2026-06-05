@@ -1317,7 +1317,7 @@ pub fn (mut g Gen) gen_passes_1_to_4() {
 				}
 				// Generic functions: emit as macros for known simple functions
 				if g.generic_fn_param_names(stmt).len > 0 {
-					stmt_ptr := &stmt
+					stmt_ptr := unsafe { &stmt }
 					gfn_name := g.get_fn_name(stmt)
 					specs := g.generic_fn_specializations_for_emit_scope(stmt)
 					if specs.len > 0 {
@@ -1338,7 +1338,7 @@ pub fn (mut g Gen) gen_passes_1_to_4() {
 				}
 				recv_gp := receiver_generic_param_names(stmt)
 				if recv_gp.len > 0 {
-					stmt_ptr := &stmt
+					stmt_ptr := unsafe { &stmt }
 					all_bindings := g.get_all_receiver_generic_bindings(stmt)
 					if all_bindings.len > 0 {
 						prev_generic_types := g.active_generic_types.clone()
@@ -1389,7 +1389,7 @@ pub fn (mut g Gen) gen_passes_1_to_4() {
 						g.cur_fn_scope = fn_scope
 					}
 				}
-				stmt_ptr := &stmt
+				stmt_ptr := unsafe { &stmt }
 				g.gen_fn_head_with_name_ptr(stmt_ptr, fn_name)
 				g.sb.writeln(';')
 			}
@@ -1759,7 +1759,7 @@ fn (mut g Gen) emit_forced_helpers_from_non_emit_files() {
 				if 'fn_${fn_name}' in g.fn_owner_file {
 					continue
 				}
-				stmt_ptr := &stmt
+				stmt_ptr := unsafe { &stmt }
 				g.gen_fn_decl_ptr(stmt_ptr)
 				emitted[fn_name] = true
 			}

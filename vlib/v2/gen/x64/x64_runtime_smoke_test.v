@@ -5234,6 +5234,21 @@ fn main() {
 	])
 }
 
+fn test_x64_linux_dynamic_array_literal_push_minimal_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('dynamic_array_literal_push_minimal_exact', 'module main
+
+fn main() {
+	mut a := [1, 2, 3]
+	a[1] = 7
+	a << 11
+	println(a.len)
+}
+', [
+		u8(`4`),
+		u8(`\n`),
+	])
+}
+
 fn test_x64_linux_dynamic_string_array_index_stdout_exact_bytes() {
 	assert_x64_linux_stdout_bytes('dynamic_string_array_index_exact',
 		x64_dynamic_string_array_index_source(), x64_dynamic_string_array_index_stdout())

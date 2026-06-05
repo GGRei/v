@@ -45,6 +45,89 @@ fn mark_used_flat_minimal(files []ast.File, env &types.Environment) map[string]b
 	})
 }
 
+fn local_call_minimal_files() []ast.File {
+	return [
+		ast.File{
+			mod:   'main'
+			name:  'local_calls.v'
+			stmts: [
+				ast.Stmt(ast.FnDecl{
+					name:  'main'
+					typ:   ast.FnType{}
+					pos:   minimal_pos(10)
+					stmts: [
+						ast.Stmt(ast.ExprStmt{
+							expr: ast.CallExpr{
+								lhs: ast.Expr(minimal_ident('foo', 11))
+								pos: minimal_pos(11)
+							}
+						}),
+					]
+				}),
+				ast.Stmt(ast.FnDecl{
+					name:  'foo'
+					typ:   ast.FnType{}
+					pos:   minimal_pos(12)
+					stmts: [
+						ast.Stmt(ast.ExprStmt{
+							expr: ast.CallExpr{
+								lhs: ast.Expr(minimal_ident('status', 13))
+								pos: minimal_pos(13)
+							}
+						}),
+					]
+				}),
+				ast.Stmt(ast.FnDecl{
+					name: 'status'
+					typ:  ast.FnType{}
+					pos:  minimal_pos(14)
+				}),
+				ast.Stmt(ast.FnDecl{
+					name: 'dead'
+					typ:  ast.FnType{}
+					pos:  minimal_pos(15)
+				}),
+			]
+		},
+	]
+}
+
+fn assert_local_call_minimal_used(used map[string]bool, files []ast.File, env &types.Environment, label string) {
+	main_key := decl_key('main', files[0].stmts[0] as ast.FnDecl, env)
+	foo_key := decl_key('main', files[0].stmts[1] as ast.FnDecl, env)
+	status_key := decl_key('main', files[0].stmts[2] as ast.FnDecl, env)
+	dead_key := decl_key('main', files[0].stmts[3] as ast.FnDecl, env)
+
+	assert used[main_key], '${label}: main root was not kept'
+	assert used[foo_key], '${label}: local foo call was not marked'
+	assert used[status_key], '${label}: transitive local status call was not marked'
+	assert !used[dead_key], '${label}: unused local function should stay pruned'
+}
+
+fn test_minimal_runtime_roots_pointer_guards_accept_low_canonical_pointers() {
+	assert sumtype_payload_word_is_valid(1, 0x10000)
+	assert !sumtype_payload_word_is_valid(1, 0)
+	assert !sumtype_payload_word_is_valid(1, 3)
+	assert string_ok('foo')
+	assert string_ok('status')
+}
+
+fn test_minimal_runtime_roots_keep_local_calls_legacy() {
+	mut env := types.Environment.new()
+	files := local_call_minimal_files()
+	used := mark_used_with_options(files, env, MarkUsedOptions{
+		minimal_runtime_roots: true
+	})
+	assert_local_call_minimal_used(used, files, env, 'legacy')
+}
+
+fn test_minimal_runtime_roots_keep_local_calls_flat() {
+	mut env := types.Environment.new()
+	files := local_call_minimal_files()
+	used := mark_used_flat_minimal(files, env)
+	assert_local_call_minimal_used(used, files, env, 'flat')
+}
+
 fn selective_import_minimal_files() []ast.File {
 	return [
 		ast.File{

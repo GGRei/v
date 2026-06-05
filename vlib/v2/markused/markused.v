@@ -17,7 +17,7 @@ fn sumtype_payload_word_is_valid(tag_word u64, data_word u64) bool {
 	// looks like a small tag, the payload must be a real pointer, not a leaked
 	// enum/default value like `3`.
 	if tag_word < 256 {
-		return data_word >= 0x100000000 && data_word < 0x0000800000000000
+		return data_word >= 0x10000 && data_word < 0x0000800000000000
 	}
 	return true
 }
@@ -30,7 +30,7 @@ fn string_ok(s string) bool {
 		return false
 	}
 	ptr := unsafe { u64(s.str) }
-	return ptr >= 0x100000000 && ptr < 0x0000800000000000
+	return ptr >= 0x10000 && ptr < 0x0000800000000000
 }
 
 fn expr_ok(expr ast.Expr) bool {

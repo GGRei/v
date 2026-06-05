@@ -4916,6 +4916,13 @@ fn (mut t Transformer) transform_assign_stmt_parts(stmt ast.AssignStmt) (token.T
 				}
 			}
 		}
+		if t.is_native_be && rhs_expr is ast.ArrayInitExpr {
+			arr := rhs_expr as ast.ArrayInitExpr
+			if arr.len is ast.EmptyExpr && arr.cap is ast.EmptyExpr && arr.init is ast.EmptyExpr {
+				rhs << rhs_expr
+				continue
+			}
+		}
 		rhs << t.transform_expr(rhs_expr)
 	}
 	t.skip_if_value_lowering = saved_skip
@@ -11754,17 +11761,11 @@ fn (mut t Transformer) transform_sprintf_arg(inter ast.StringInter) ast.Expr {
 		}
 		else {
 			// For custom types with str() method: Type__str(expr).str
-			str_fn_info := t.get_str_fn_info_for_expr(inter.expr)
-			if str_fn_info.str_fn_name != '' {
-				t.needed_str_fns[str_fn_info.str_fn_name] = str_fn_info.elem_type
-				if etyp := t.string_inter_arg_type(inter.expr) {
-					if etyp is types.Enum {
-						t.needed_enum_str_fns[str_fn_info.str_fn_name] = etyp
-					}
-				}
+			str_fn_name := t.register_auto_str_dependency(typ)
+			if str_fn_name != '' {
 				str_call := ast.Expr(ast.CallExpr{
 					lhs:  ast.Ident{
-						name: str_fn_info.str_fn_name
+						name: str_fn_name
 					}
 					args: [transformed]
 					pos:  inter.expr.pos()

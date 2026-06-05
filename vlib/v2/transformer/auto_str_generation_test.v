@@ -223,6 +223,12 @@ fn auto_str_collect_expr_call_names(expr ast.Expr, mut names []string) {
 		ast.SelectorExpr {
 			auto_str_collect_expr_call_names(expr.lhs, mut names)
 		}
+		ast.StringInterLiteral {
+			for inter in expr.inters {
+				auto_str_collect_expr_call_names(inter.expr, mut names)
+				auto_str_collect_expr_call_names(inter.format_expr, mut names)
+			}
+		}
 		else {}
 	}
 }
@@ -300,6 +306,12 @@ fn auto_str_collect_expr_selector_names(expr ast.Expr, mut names []string) {
 			names << expr.rhs.name
 			auto_str_collect_expr_selector_names(expr.lhs, mut names)
 		}
+		ast.StringInterLiteral {
+			for inter in expr.inters {
+				auto_str_collect_expr_selector_names(inter.expr, mut names)
+				auto_str_collect_expr_selector_names(inter.format_expr, mut names)
+			}
+		}
 		else {}
 	}
 }
@@ -349,6 +361,11 @@ fn assert_auto_str_tree_sumtype_body(files []ast.File) {
 	assert 'Empty__str' in calls
 	assert 'Node__str' in calls
 	assert '_tag' in selectors
+}
+
+fn assert_auto_str_main_uses_node_str(files []ast.File) {
+	calls := auto_str_fn_call_names(files, 'main')
+	assert 'Node__str' in calls
 }
 
 fn test_auto_struct_str_generates_field_struct_helper_from_legacy_and_flat() {
@@ -418,6 +435,77 @@ fn show(node Node) string {
 	flat := auto_str_flat_generated_files('recursive_flat', source)
 	assert_auto_str_names(legacy, ['Empty__str', 'Node__str', 'Tree__str'])
 	assert_auto_str_names(flat, ['Empty__str', 'Node__str', 'Tree__str'])
+	assert_auto_str_recursive_node_body(legacy)
+	assert_auto_str_recursive_node_body(flat)
+	assert_auto_str_tree_sumtype_body(legacy)
+	assert_auto_str_tree_sumtype_body(flat)
+}
+
+fn test_auto_recursive_struct_sumtype_str_from_call_arg_interpolation_legacy_and_flat() {
+	source := '
+module main
+
+type Tree = Empty | Node
+
+struct Empty {}
+
+struct Node {
+	value int
+	left  Tree
+	right Tree
+}
+
+fn sink(s string) {
+	_ = s
+}
+
+fn main() {
+	leaf := Node{7, Empty{}, Empty{}}
+	root := Node{9, leaf, Empty{}}
+	sink("\${root}")
+}
+'
+	legacy := auto_str_legacy_generated_files('recursive_call_arg_legacy', source)
+	flat := auto_str_flat_generated_files('recursive_call_arg_flat', source)
+	assert_auto_str_names(legacy, ['Empty__str', 'Node__str', 'Tree__str'])
+	assert_auto_str_names(flat, ['Empty__str', 'Node__str', 'Tree__str'])
+	assert_auto_str_main_uses_node_str(legacy)
+	assert_auto_str_main_uses_node_str(flat)
+	assert_auto_str_recursive_node_body(legacy)
+	assert_auto_str_recursive_node_body(flat)
+	assert_auto_str_tree_sumtype_body(legacy)
+	assert_auto_str_tree_sumtype_body(flat)
+}
+
+fn test_auto_recursive_struct_sumtype_str_from_implicit_main_call_arg_legacy_and_flat() {
+	source := '
+type Tree = Empty | Node
+
+struct Empty {}
+
+struct Node {
+	value int
+	left  Tree
+	right Tree
+}
+
+fn sink(s string) {
+	_ = s
+}
+
+fn main() {
+	node1 := Node{30, Empty{}, Empty{}}
+	node2 := Node{20, Empty{}, Empty{}}
+	tree := Node{10, node1, node2}
+	sink("\${tree}")
+}
+'
+	legacy := auto_str_legacy_generated_files('recursive_implicit_main_call_arg_legacy', source)
+	flat := auto_str_flat_generated_files('recursive_implicit_main_call_arg_flat', source)
+	assert_auto_str_names(legacy, ['Empty__str', 'Node__str', 'Tree__str'])
+	assert_auto_str_names(flat, ['Empty__str', 'Node__str', 'Tree__str'])
+	assert_auto_str_main_uses_node_str(legacy)
+	assert_auto_str_main_uses_node_str(flat)
 	assert_auto_str_recursive_node_body(legacy)
 	assert_auto_str_recursive_node_body(flat)
 	assert_auto_str_tree_sumtype_body(legacy)

@@ -433,19 +433,31 @@ fn (t &Transformer) type_from_init_expr(expr ast.InitExpr) ?types.Type {
 		})
 	}
 	if typ := t.get_expr_type(expr.typ) {
-		return t.normalize_type(typ)
+		normalized := t.normalize_type(typ)
+		if t.type_to_c_name(normalized) != '' {
+			return normalized
+		}
 	}
 	type_name := t.expr_to_type_name(expr.typ)
 	if type_name == '' {
 		return none
 	}
 	if typ := t.c_name_to_type(type_name) {
-		return t.normalize_type(typ)
+		normalized := t.normalize_type(typ)
+		if t.type_to_c_name(normalized) != '' {
+			return normalized
+		}
 	}
 	if typ := t.lookup_type(type_name) {
-		return t.normalize_type(typ)
+		normalized := t.normalize_type(typ)
+		if t.type_to_c_name(normalized) != '' {
+			return normalized
+		}
 	}
-	return none
+	c_type_name := t.v_type_name_to_c_name(type_name)
+	return types.Type(types.Struct{
+		name: if c_type_name != '' { c_type_name } else { type_name }
+	})
 }
 
 fn (t &Transformer) generic_init_type_name(expr ast.Expr) ?string {
@@ -1082,7 +1094,10 @@ fn (t &Transformer) type_to_c_decl_name(typ types.Type) string {
 fn (t &Transformer) expr_to_type_name(expr ast.Expr) string {
 	if expr is ast.Ident {
 		if typ := t.get_synth_type(expr.pos) {
-			return t.type_to_c_name(typ)
+			c_name := t.type_to_c_name(typ)
+			if c_name != '' {
+				return c_name
+			}
 		}
 		name := expr.name
 		// Add module prefix for non-builtin types when inside a non-main/builtin module.
@@ -2750,9 +2765,13 @@ fn sumtype_payload_word_is_valid(tag_word u64, data_word u64) bool {
 	// looks like a small tag, the payload must be a real pointer, not a leaked
 	// enum/default value like `3`.
 	if tag_word < 256 {
-		return data_word >= 0x100000000 && data_word < 0x0000800000000000
+		return transformer_data_ptr_has_valid_address(data_word)
 	}
 	return true
+}
+
+fn transformer_data_ptr_has_valid_address(ptr u64) bool {
+	return ptr >= 0x10000 && ptr < 0x0000800000000000
 }
 
 fn stmt_has_valid_data(stmt ast.Stmt) bool {
@@ -2774,7 +2793,7 @@ fn stmt_array_has_valid_data(stmts []ast.Stmt) bool {
 		return false
 	}
 	data_word := u64(voidptr(stmts.data))
-	return data_word >= 0x100000000 && data_word < 0x0000800000000000
+	return transformer_data_ptr_has_valid_address(data_word)
 }
 
 fn expr_has_valid_data(expr ast.Expr) bool {
@@ -2804,7 +2823,7 @@ fn expr_array_has_valid_data(exprs []ast.Expr) bool {
 		return false
 	}
 	data_word := u64(voidptr(exprs.data))
-	return data_word >= 0x100000000 && data_word < 0x0000800000000000
+	return transformer_data_ptr_has_valid_address(data_word)
 }
 
 // get_expr_type returns the types.Type for an expression by looking it up in the environment
