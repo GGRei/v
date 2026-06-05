@@ -765,6 +765,32 @@ fn test_pe_linker_resolves_get_current_thread_id_as_kernel32_import() {
 	assert target == text_rva + get_tid_thunk
 }
 
+fn test_pe_linker_resolves_windows_system_time_imports() {
+	for name in ['GetSystemTimeAsFileTime', 'FileTimeToSystemTime', 'SystemTimeToTzSpecificLocalTime'] {
+		mut obj := CoffObject.new()
+		obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xc3]
+		obj.add_symbol('main', 0, true, 1)
+		sym := obj.add_undefined(name)
+		obj.add_text_reloc(1, sym, coff_image_rel_amd64_rel32)
+
+		mut linker := PeLinker.new(obj)
+		image := linker.image() or { panic(err) }
+		text_off := pe_test_section_header(image, '.text')
+		text_rva := pe_test_u32(image, text_off + 12)
+		text_raw := int(pe_test_u32(image, text_off + 20))
+		field_off := text_raw + linker.entry_stub_size() + 1
+		field_rva := text_rva + u32(linker.entry_stub_size() + 1)
+		disp := pe_test_i32(image, field_off)
+		target := u32(i32(field_rva + 4) + disp)
+		import_offsets := linker.import_thunk_offsets(0)
+		thunk := import_offsets[pe_kernel32_import_key(name)] or {
+			panic('missing ${name} import thunk')
+		}
+
+		assert target == text_rva + thunk
+	}
+}
+
 fn test_pe_linker_resolves_memcmp_and_exit_with_internal_runtime_thunks() {
 	mut obj := CoffObject.new()
 	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xe8, 0, 0, 0, 0, 0xc3]
@@ -1563,6 +1589,46 @@ fn test_pe_linker_resolves_new_array_from_c_array_noscan_with_internal_heap_thun
 	assert has_noscan_flags_store
 	assert has_element_size_store
 	assert has_byte_copy_loop
+}
+
+fn test_pe_linker_resolves_new_array_noscan_with_internal_heap_thunk() {
+	mut obj := CoffObject.new()
+	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xc3]
+	obj.add_symbol('main', 5, true, 1)
+	new_array_sym := obj.add_undefined('builtin____new_array_noscan')
+	obj.add_text_reloc(1, new_array_sym, coff_image_rel_amd64_rel32)
+
+	mut linker := PeLinker.new(obj)
+	image := linker.image() or { panic(err) }
+	text_off := pe_test_section_header(image, '.text')
+	text_rva := pe_test_u32(image, text_off + 12)
+	text_raw := int(pe_test_u32(image, text_off + 20))
+	text_raw_size := int(pe_test_u32(image, text_off + 16))
+	entry_stub_len := linker.entry_stub_size()
+	runtime_start_rva := text_rva + u32(entry_stub_len + obj.text_data.len)
+
+	mut first_import_thunk_file_off := -1
+	for off in text_raw + entry_stub_len + obj.text_data.len .. text_raw + text_raw_size - 1 {
+		if image[off] == 0xff && image[off + 1] == 0x25 {
+			first_import_thunk_file_off = off
+			break
+		}
+	}
+	assert first_import_thunk_file_off > 0
+	first_import_thunk_rva := text_rva + u32(first_import_thunk_file_off - text_raw)
+
+	new_array_field_off := text_raw + entry_stub_len + 1
+	new_array_field_rva := text_rva + u32(entry_stub_len + 1)
+	new_array_target := u32(i32(new_array_field_rva + 4) + pe_test_i32(image, new_array_field_off))
+	assert new_array_target >= runtime_start_rva
+	assert new_array_target < first_import_thunk_rva
+
+	new_array_off := pe_test_rva_to_file_off(image, new_array_target)
+	assert new_array_off > 0
+	assert image[new_array_off..new_array_off + 4] == [u8(0x48), 0x83, 0xec, 0x58] // sub rsp, 88
+	names := pe_test_import_names(image)
+	assert 'GetProcessHeap' in names
+	assert 'HeapAlloc' in names
 }
 
 fn test_pe_linker_rejects_unsupported_external_symbols() {
