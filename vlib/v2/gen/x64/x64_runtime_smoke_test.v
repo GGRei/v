@@ -2398,6 +2398,36 @@ fn x64_dynamic_string_array_index_stdout() []u8 {
 '.bytes()
 }
 
+fn x64_dynamic_string_array_str_source() string {
+	return "module main
+
+fn main() {
+	path := ['A', 'C', 'F']
+	println(path)
+	println('path: \${path}')
+	mut values := []string{}
+	values << 'alpha'
+	values << 'beta'
+	println(values)
+	graph := {
+		'A': ['B', 'C']
+	}
+	println(graph)
+	fixed := ['L', 'R']!
+	println(fixed)
+}
+"
+}
+
+fn x64_dynamic_string_array_str_stdout() []u8 {
+	return "['A', 'C', 'F']
+path: ['A', 'C', 'F']
+['alpha', 'beta']
+{'A': ['B', 'C']}
+['L', 'R']
+".bytes()
+}
+
 fn x64_string_int_map_literal_lookup_source() string {
 	return "module main
 
@@ -3005,6 +3035,12 @@ fn x64_tree_of_nodes_example_stdout() []u8 {
 }
 tree size: 3
 '.bytes()
+}
+
+fn x64_bfs_example_stdout() []u8 {
+	return "Graph: {'A': ['B', 'C'], 'B': ['A', 'D', 'E'], 'C': ['A', 'F'], 'D': ['B'], 'E': ['B', 'F'], 'F': ['C', 'E']}
+The shortest path from node A to node F is: ['A', 'C', 'F']
+".bytes()
 }
 
 fn x64_js_hello_world_example_stdout() []u8 {
@@ -3860,6 +3896,11 @@ fn test_x64_linux_auto_str_recursive_sumtype_stdout_exact_bytes() {
 fn test_x64_linux_tree_of_nodes_example_top_level_stdout_exact_bytes() {
 	assert_x64_linux_file_stdout_bytes('tree_of_nodes_example_top_level_exact', x64_examples_dir(),
 		'tree_of_nodes.v', x64_tree_of_nodes_example_stdout())
+}
+
+fn test_x64_linux_bfs_example_top_level_stdout_exact_bytes() {
+	assert_x64_linux_file_stdout_bytes('bfs_example_top_level_exact', os.join_path(x64_examples_dir(),
+		'graphs'), 'bfs.v', x64_bfs_example_stdout())
 }
 
 fn test_x64_linux_fizz_buzz_example_auto_tiny_no_libc() {
@@ -4841,6 +4882,11 @@ fn test_x64_macos_windows_dynamic_string_array_index_stdout_exact_bytes() {
 		x64_dynamic_string_array_index_source(), x64_dynamic_string_array_index_stdout())
 }
 
+fn test_x64_macos_windows_dynamic_string_array_str_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('dynamic_string_array_str_exact',
+		x64_dynamic_string_array_str_source(), x64_dynamic_string_array_str_stdout())
+}
+
 fn test_x64_macos_windows_string_int_map_literal_lookup_stdout_exact_bytes() {
 	assert_x64_macos_windows_stdout_bytes('string_int_map_literal_lookup_exact',
 		x64_string_int_map_literal_lookup_source(), x64_string_int_map_literal_lookup_stdout())
@@ -4950,6 +4996,11 @@ fn test_x64_macos_windows_auto_str_recursive_sumtype_stdout_exact_bytes() {
 fn test_x64_macos_windows_tree_of_nodes_example_top_level_stdout_exact_bytes() {
 	assert_x64_macos_windows_file_stdout_bytes('tree_of_nodes_example_top_level_exact',
 		x64_examples_dir(), 'tree_of_nodes.v', x64_tree_of_nodes_example_stdout())
+}
+
+fn test_x64_macos_windows_bfs_example_top_level_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes('bfs_example_top_level_exact', os.join_path(x64_examples_dir(),
+		'graphs'), 'bfs.v', x64_bfs_example_stdout())
 }
 
 fn test_x64_macos_windows_js_hello_world_example_top_level_stdout_exact_bytes() {
@@ -5277,6 +5328,11 @@ fn main() {
 fn test_x64_linux_dynamic_string_array_index_stdout_exact_bytes() {
 	assert_x64_linux_stdout_bytes('dynamic_string_array_index_exact',
 		x64_dynamic_string_array_index_source(), x64_dynamic_string_array_index_stdout())
+}
+
+fn test_x64_linux_dynamic_string_array_str_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('dynamic_string_array_str_exact',
+		x64_dynamic_string_array_str_source(), x64_dynamic_string_array_str_stdout())
 }
 
 fn test_x64_linux_string_int_map_literal_lookup_stdout_exact_bytes() {

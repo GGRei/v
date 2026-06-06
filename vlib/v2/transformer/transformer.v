@@ -15186,31 +15186,30 @@ fn (mut t Transformer) generate_array_str_fn(fn_name string, elem_type string) a
 		elem_expr
 	}
 
-	// strings__Builder__write_string(&sb, a[i]) for strings, else use the element str helper
-	for_body << ast.ExprStmt{
-		expr: ast.CallExpr{
-			lhs:  ast.Ident{
-				name: 'strings__Builder__write_string'
-			}
-			args: [
-				ast.Expr(ast.PrefixExpr{
-					op:   .amp
-					expr: ast.Ident{
-						name: 'sb'
-					}
-				}),
-				if elem_type == 'string' {
-					elem_expr
-				} else {
-					ast.Expr(ast.CallExpr{
-						lhs:  ast.Ident{
-							name: elem_str_fn
-						}
-						args: [str_arg]
-					})
-				},
-			]
+	sb_ref := ast.Expr(ast.PrefixExpr{
+		op:   .amp
+		expr: ast.Ident{
+			name: 'sb'
 		}
+	})
+	if elem_type == 'string' {
+		for_body << builder_write_string_stmt(sb_ref, ast.Expr(ast.StringLiteral{
+			kind:  .v
+			value: "'"
+		}))
+		for_body << builder_write_string_stmt(sb_ref, elem_expr)
+		for_body << builder_write_string_stmt(sb_ref, ast.Expr(ast.StringLiteral{
+			kind:  .v
+			value: "'"
+		}))
+	} else {
+		// strings__Builder__write_string(&sb, elem_str_fn(a[i]))
+		for_body << builder_write_string_stmt(sb_ref, ast.Expr(ast.CallExpr{
+			lhs:  ast.Ident{
+				name: elem_str_fn
+			}
+			args: [str_arg]
+		}))
 	}
 
 	// for loop: for i := 0; i < a.len; i++ { ... }
@@ -15466,36 +15465,38 @@ fn (mut t Transformer) generate_fixed_array_str_fn(fn_name string) ast.Stmt {
 		}
 	}
 
-	// strings__Builder__write_string(&sb, elem_str_fn(a[i]))
-	for_body << ast.ExprStmt{
-		expr: ast.CallExpr{
-			lhs:  ast.Ident{
-				name: 'strings__Builder__write_string'
-			}
-			args: [
-				ast.Expr(ast.PrefixExpr{
-					op:   .amp
-					expr: ast.Ident{
-						name: 'sb'
-					}
-				}),
-				ast.Expr(ast.CallExpr{
-					lhs:  ast.Ident{
-						name: elem_str_fn
-					}
-					args: [
-						ast.Expr(ast.IndexExpr{
-							lhs:  ast.Ident{
-								name: 'a'
-							}
-							expr: ast.Ident{
-								name: 'i'
-							}
-						}),
-					]
-				}),
-			]
+	sb_ref := ast.Expr(ast.PrefixExpr{
+		op:   .amp
+		expr: ast.Ident{
+			name: 'sb'
 		}
+	})
+	elem_expr := ast.Expr(ast.IndexExpr{
+		lhs:  ast.Ident{
+			name: 'a'
+		}
+		expr: ast.Ident{
+			name: 'i'
+		}
+	})
+	if elem_type == 'string' {
+		for_body << builder_write_string_stmt(sb_ref, ast.Expr(ast.StringLiteral{
+			kind:  .v
+			value: "'"
+		}))
+		for_body << builder_write_string_stmt(sb_ref, elem_expr)
+		for_body << builder_write_string_stmt(sb_ref, ast.Expr(ast.StringLiteral{
+			kind:  .v
+			value: "'"
+		}))
+	} else {
+		// strings__Builder__write_string(&sb, elem_str_fn(a[i]))
+		for_body << builder_write_string_stmt(sb_ref, ast.Expr(ast.CallExpr{
+			lhs:  ast.Ident{
+				name: elem_str_fn
+			}
+			args: [elem_expr]
+		}))
 	}
 
 	// for i := 0; i < arr_size; i++ { ... }
