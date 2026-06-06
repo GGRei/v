@@ -2315,6 +2315,9 @@ fn (mut w Walker) mark_fn_name(name string, mod_name string) {
 	if name == '' || !string_ok(name) || !string_ok(mod_name) {
 		return
 	}
+	if w.opts.minimal_runtime_roots && name in ['array__eq', 'builtin__array__eq'] {
+		w.mark_fn_name('map_map_eq', 'builtin')
+	}
 	candidates := called_fn_name_candidates(name)
 	if key := w.exact_mangled_fn_lookup_key(name) {
 		w.mark_lookup(key)

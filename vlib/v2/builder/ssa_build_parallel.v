@@ -96,11 +96,13 @@ fn (mut b Builder) ssa_build_parallel(mut ssa_builder ssa.Builder, files []ast.F
 	n_fns := fn_refs.len
 	$if windows {
 		ssa_builder.build_all_fn_bodies(files)
+		ssa_builder.generate_referenced_synthetic_runtime_stubs()
 		return
 	} $else {
 		if n_fns <= 1 || n_jobs <= 1 {
 			// Fallback to sequential
 			ssa_builder.build_all_fn_bodies(files)
+			ssa_builder.generate_referenced_synthetic_runtime_stubs()
 			return
 		}
 
@@ -188,5 +190,6 @@ fn (mut b Builder) ssa_build_parallel(mut ssa_builder ssa.Builder, files []ast.F
 			mod.merge_worker_module(w_mod, func_data, seed_values, seed_instrs, seed_blocks,
 				seed_types, seed_funcs)
 		}
+		ssa_builder.generate_referenced_synthetic_runtime_stubs()
 	}
 }

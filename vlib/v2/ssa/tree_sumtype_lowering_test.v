@@ -78,6 +78,49 @@ fn main() {
 		"'tree size: \${size(tree)}'")
 }
 
+fn string_param_interpolation_source() string {
+	source := r'module main
+
+fn render(n int, src string, dst string) string {
+	return @move_inter@
+}
+
+fn main() {
+	_ = render(1, @src_arg@, @dst_arg@)
+}
+'
+	return source.replace('@move_inter@', "'Disc \${n} from \${src} to \${dst}...'").replace('@src_arg@',
+		"'a'").replace('@dst_arg@', "'b'")
+}
+
+fn hanoi_string_param_interpolation_source() string {
+	source := r'module main
+
+fn println(s string) {
+	_ = s
+}
+
+fn move(n int, a string, b string) {
+	println(@move_inter@)
+}
+
+fn hanoi(n int, a string, b string, c string) {
+	if n == 1 {
+		move(n, a, c)
+	} else {
+		hanoi(n - 1, a, c, b)
+		move(n, a, c)
+		hanoi(n - 1, b, a, c)
+	}
+}
+
+fn main() {
+	hanoi(3, "A", "B", "C")
+}
+'
+	return source.replace('@move_inter@', "'Disc \${n} from \${a} to \${b}...'")
+}
+
 fn tree_ssa_module_for_source(label string, source string) &Module {
 	tmp_dir := os.join_path(os.temp_dir(), 'v2_tree_sumtype_${label}_${os.getpid()}')
 	os.mkdir_all(tmp_dir) or { panic('cannot create ${tmp_dir}') }
@@ -397,6 +440,18 @@ fn tree_ssa_assert_no_raw_tree_string_concat_arg(m &Module, func Function) {
 	}
 }
 
+fn tree_ssa_assert_string_param_interpolation_has_no_string_str(m &Module) {
+	tree_ssa_assert_func_has_no_string_str(m, 'render')
+}
+
+fn tree_ssa_assert_func_has_no_string_str(m &Module, name string) {
+	func := tree_ssa_func(m, name) or { panic('missing ${name}') }
+	callees := tree_ssa_call_callees(m, func)
+	assert 'builtin__string__str' !in callees
+	assert 'string__str' !in callees
+	assert 'builtin__string__+' in callees
+}
+
 fn tree_ssa_call_arg_type_names(m &Module, func Function, callee_name string) []string {
 	mut names := []string{}
 	for blk_id in func.blocks {
@@ -545,6 +600,30 @@ fn test_tree_sumtype_flat_match_uses_tag_and_autostr_helpers() {
 	tree_ssa_assert_no_raw_tree_string_concat_arg(m, main_func)
 }
 
+fn test_string_parameter_interpolation_does_not_call_string_str() {
+	m := tree_ssa_module_for_source('string_param_interpolation',
+		string_param_interpolation_source())
+	tree_ssa_assert_string_param_interpolation_has_no_string_str(m)
+}
+
+fn test_flat_string_parameter_interpolation_does_not_call_string_str() {
+	m := tree_ssa_module_for_source_flat('flat_string_param_interpolation',
+		string_param_interpolation_source())
+	tree_ssa_assert_string_param_interpolation_has_no_string_str(m)
+}
+
+fn test_hanoi_string_parameter_interpolation_does_not_call_string_str() {
+	m := tree_ssa_module_for_source('hanoi_string_param_interpolation',
+		hanoi_string_param_interpolation_source())
+	tree_ssa_assert_func_has_no_string_str(m, 'move')
+}
+
+fn test_flat_hanoi_string_parameter_interpolation_does_not_call_string_str() {
+	m := tree_ssa_module_for_source_flat('flat_hanoi_string_param_interpolation',
+		hanoi_string_param_interpolation_source())
+	tree_ssa_assert_func_has_no_string_str(m, 'move')
+}
+
 fn test_tree_sumtype_convert_to_string_uses_registered_autostr_helper() {
 	mut mod := Module.new('tree_three_field_struct')
 	mut builder := Builder.new_with_env(mod, types.Environment.new())
@@ -580,4 +659,35 @@ fn test_tree_sumtype_convert_to_string_uses_registered_autostr_helper() {
 	callee := builder.mod.values[instr.operands[0]]
 	assert callee.kind == .func_ref
 	assert callee.name == 'Node__str'
+}
+
+fn test_convert_to_string_treats_string_struct_names_as_already_string() {
+	for type_name in ['string', 'builtin__string'] {
+		mut mod := Module.new('string_alias_${type_name}')
+		mut builder := Builder.new_with_env(mod, types.Environment.new())
+		i8_type := builder.mod.type_store.get_int(8)
+		ptr_i8_type := builder.mod.type_store.get_ptr(i8_type)
+		int_type := builder.mod.type_store.get_int(32)
+		string_type := builder.mod.type_store.register(Type{
+			kind:        .struct_t
+			fields:      [ptr_i8_type, int_type, int_type]
+			field_names: ['str', 'len', 'is_lit']
+		})
+		builder.mod.c_struct_names[int(string_type)] = type_name
+		string_val := builder.mod.add_value_node(.argument, string_type, 's', 0)
+		str_fn := builder.mod.new_function('${type_name}__str', string_type, [
+			string_type,
+		])
+		builder.fn_index['${type_name}__str'] = str_fn
+		test_fn := builder.mod.new_function('test_convert_to_string_${type_name}', string_type,
+			[]TypeID{})
+		builder.cur_func = test_fn
+		builder.cur_block = builder.mod.add_block(test_fn, 'entry')
+
+		assert builder.is_string_struct_type(string_type)
+		str_fn_name := builder.str_fn_name_for_ssa_type(string_type) or { '' }
+		assert str_fn_name == ''
+		converted := builder.convert_to_string(string_val, string_type)
+		assert converted == string_val
+	}
 }

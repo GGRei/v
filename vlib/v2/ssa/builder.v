@@ -454,6 +454,7 @@ pub fn (mut b Builder) build_all(files []ast.File) {
 	if !b.skip_fn_bodies {
 		b.build_all_fn_bodies(files)
 	}
+	b.generate_referenced_synthetic_runtime_stubs()
 
 	// Phase 5: Generate _vinit for dynamic array constant initialization
 	// Always generate _vinit (even if empty) so the symbol is always resolvable
@@ -595,11 +596,59 @@ pub fn (mut b Builder) build_all_from_flat(flat &ast.FlatAst) {
 			b.build_fn_bodies_from_flat(fc)
 		}
 	}
+	b.generate_referenced_synthetic_runtime_stubs()
 
 	// Phase 5: Generate _vinit for dynamic array constant initialization
 	if b.hot_fn.len == 0 && !b.skip_fn_bodies {
 		b.generate_vinit()
 	}
+}
+
+// generate_referenced_synthetic_runtime_stubs materializes native-only helpers
+// that are referenced by minimal-runtime builds after markused pruning.
+pub fn (mut b Builder) generate_referenced_synthetic_runtime_stubs() {
+	if b.hot_fn.len != 0 || !b.minimal_runtime_roots || b.skip_fn_bodies {
+		return
+	}
+	referenced := b.referenced_func_ref_names()
+	if referenced['array__eq'] {
+		b.generate_array_eq_stub()
+	}
+	if referenced['_wymix'] {
+		b.generate_wymix_stub()
+	}
+	if referenced['wyhash64'] {
+		b.generate_wyhash64_stub()
+	}
+	if referenced['wyhash'] {
+		b.generate_wyhash_stub()
+	}
+	if referenced['IError__msg'] || referenced['IError__code'] || referenced['IError__type_name'] {
+		b.generate_ierror_stubs()
+	}
+	if referenced['FD_ZERO'] || referenced['FD_SET'] || referenced['FD_ISSET'] {
+		b.generate_fd_macro_stubs()
+	}
+}
+
+fn (b &Builder) referenced_func_ref_names() map[string]bool {
+	mut names := map[string]bool{}
+	for val in b.mod.values {
+		if val.kind != .instruction {
+			continue
+		}
+		instr := b.mod.instrs[val.index]
+		for operand in instr.operands {
+			if operand <= 0 || operand >= b.mod.values.len {
+				continue
+			}
+			ref := b.mod.values[operand]
+			if ref.kind == .func_ref && ref.name != '' {
+				names[ref.name] = true
+			}
+		}
+	}
+	return names
 }
 
 // build_all_fn_bodies builds SSA for all function bodies (Phase 4).
@@ -644,6 +693,14 @@ fn ssa_module_tail_name(name string) string {
 		return name.all_after_last('_')
 	}
 	return name
+}
+
+fn ssa_is_string_struct_name(name string) bool {
+	return name == 'string' || name == 'builtin__string'
+}
+
+fn ssa_is_string_str_fn_name(name string) bool {
+	return name == 'string__str' || name == 'builtin__string__str'
 }
 
 fn (b &Builder) valid_value_id(val ValueID) bool {
@@ -9244,7 +9301,7 @@ fn (mut b Builder) prepare_snprintf_arg(val ValueID, fmt string) ValueID {
 
 fn (mut b Builder) convert_to_string(val ValueID, typ TypeID) ValueID {
 	str_type := b.get_string_type()
-	// If already a string, return as-is
+	// If already a string, return as-is.
 	if b.is_string_struct_type(typ) {
 		return val
 	}
@@ -9287,7 +9344,7 @@ fn (b &Builder) str_fn_name_for_ssa_type(typ TypeID) ?string {
 		return none
 	}
 	type_name := b.mod.c_struct_names[int(typ)] or { return none }
-	if type_name == '' || type_name == 'string' {
+	if type_name == '' || ssa_is_string_struct_name(type_name) {
 		return none
 	}
 	fn_name := '${type_name}__str'
@@ -9313,7 +9370,7 @@ fn (b &Builder) is_string_struct_type(typ TypeID) bool {
 		return false
 	}
 	if name := b.mod.c_struct_names[int(typ)] {
-		if name == 'string' {
+		if ssa_is_string_struct_name(name) {
 			return true
 		}
 	}
@@ -10271,6 +10328,8 @@ fn (mut b Builder) array_elem_type_from_new_array_call(fn_name string, expr ast.
 fn (mut b Builder) build_call_arg(fn_name string, param_idx int, arg ast.Expr) ValueID {
 	old_hint := b.array_literal_elem_type_hint
 	old_as_element_buffer := b.array_literal_as_element_buffer
+	is_map_init_buffer_arg := param_idx in [7, 8]
+		&& fn_name in ['new_map_init_noscan_value', 'builtin__new_map_init_noscan_value']
 	if elem_type := b.call_param_array_elem_type(fn_name, param_idx) {
 		b.array_literal_elem_type_hint = elem_type
 	}
@@ -10282,10 +10341,29 @@ fn (mut b Builder) build_call_arg(fn_name string, param_idx int, arg ast.Expr) V
 		&& fn_name in ['new_array_from_c_array', 'builtin__new_array_from_c_array', 'new_array_from_c_array_noscan', 'builtin__new_array_from_c_array_noscan'] {
 		b.array_literal_as_element_buffer = true
 	}
-	val := b.build_expr(arg)
+	if is_map_init_buffer_arg {
+		b.array_literal_as_element_buffer = true
+	}
+	mut val := b.build_expr(arg)
 	b.array_literal_elem_type_hint = old_hint
 	b.array_literal_as_element_buffer = old_as_element_buffer
+	if is_map_init_buffer_arg {
+		val = b.dynamic_array_data_pointer_if_value(val)
+	}
 	return val
+}
+
+fn (mut b Builder) dynamic_array_data_pointer_if_value(val ValueID) ValueID {
+	if !b.valid_value_id(val) || b.get_array_type() == 0 {
+		return val
+	}
+	if b.mod.values[val].typ != b.get_array_type() {
+		return val
+	}
+	i8_t := b.mod.type_store.get_int(8)
+	void_ptr := b.mod.type_store.get_ptr(i8_t)
+	idx0 := b.mod.get_or_add_const(b.mod.type_store.get_int(32), '0')
+	return b.mod.add_instr(.extractvalue, b.cur_block, void_ptr, [val, idx0])
 }
 
 // build_call_resolved (s218) is the post-resolve body of `build_call`,
@@ -10330,6 +10408,13 @@ fn (mut b Builder) build_call_resolved(fn_name_in string, expr ast.CallExpr) Val
 		}
 		if target_type := b.call_lhs_type_to_ssa(expr.lhs) {
 			return b.build_cast_expr_to_type_id(expr.args[0], target_type)
+		}
+	}
+
+	if ssa_is_string_str_fn_name(fn_name) && expr.args.len == 1 {
+		arg_type := b.expr_type(expr.args[0])
+		if b.is_string_struct_type(arg_type) {
+			return b.build_expr(expr.args[0])
 		}
 	}
 

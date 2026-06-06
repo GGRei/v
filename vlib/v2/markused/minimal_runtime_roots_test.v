@@ -1460,6 +1460,78 @@ fn test_minimal_runtime_roots_keep_array_push_noscan_wrapper() {
 	assert used[push_key]
 }
 
+fn minimal_array_eq_runtime_dependency_files() []ast.File {
+	return [
+		ast.File{
+			mod:   'main'
+			name:  'array_eq_transformed.v'
+			stmts: [
+				ast.Stmt(ast.FnDecl{
+					name:  'main'
+					typ:   ast.FnType{}
+					pos:   minimal_pos(360)
+					stmts: [
+						ast.Stmt(ast.ExprStmt{
+							expr: ast.CallExpr{
+								lhs:  ast.Expr(minimal_ident('array__eq', 360))
+								args: [
+									ast.Expr(minimal_ident('path', 361)),
+									ast.Expr(minimal_ident('expected', 362)),
+								]
+								pos:  minimal_pos(363)
+							}
+						}),
+					]
+				}),
+			]
+		},
+		ast.File{
+			mod:   'builtin'
+			name:  'vlib/builtin/map.v'
+			stmts: [
+				ast.Stmt(ast.FnDecl{
+					name: 'map_map_eq'
+					typ:  ast.FnType{}
+					pos:  minimal_pos(364)
+				}),
+				ast.Stmt(ast.FnDecl{
+					name: 'map_clone_string'
+					typ:  ast.FnType{}
+					pos:  minimal_pos(365)
+				}),
+			]
+		},
+	]
+}
+
+fn minimal_array_eq_runtime_dependency_env() &types.Environment {
+	return types.Environment.new()
+}
+
+fn test_minimal_runtime_roots_transformed_array_eq_keeps_map_map_eq_dependency_legacy() {
+	mut env := minimal_array_eq_runtime_dependency_env()
+	files := minimal_array_eq_runtime_dependency_files()
+	used := mark_used_with_options(files, env, MarkUsedOptions{
+		minimal_runtime_roots: true
+	})
+	map_map_eq_key := decl_key('builtin', files[1].stmts[0] as ast.FnDecl, env)
+	unused_key := decl_key('builtin', files[1].stmts[1] as ast.FnDecl, env)
+
+	assert used[map_map_eq_key]
+	assert !used[unused_key]
+}
+
+fn test_minimal_runtime_roots_transformed_array_eq_keeps_map_map_eq_dependency_flat() {
+	mut env := minimal_array_eq_runtime_dependency_env()
+	files := minimal_array_eq_runtime_dependency_files()
+	used := mark_used_flat_minimal(files, env)
+	map_map_eq_key := decl_key('builtin', files[1].stmts[0] as ast.FnDecl, env)
+	unused_key := decl_key('builtin', files[1].stmts[1] as ast.FnDecl, env)
+
+	assert used[map_map_eq_key]
+	assert !used[unused_key]
+}
+
 fn test_minimal_runtime_roots_do_not_seed_array_rune_string_helper_or_generic_array_methods() {
 	mut env := types.Environment.new()
 	array_rune_type := ast.Expr(ast.Type(ast.ArrayType{

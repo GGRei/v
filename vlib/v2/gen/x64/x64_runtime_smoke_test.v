@@ -2398,6 +2398,26 @@ fn x64_dynamic_string_array_index_stdout() []u8 {
 '.bytes()
 }
 
+fn x64_string_int_map_literal_lookup_source() string {
+	return "module main
+
+fn main() {
+	values := {
+		'A': 11
+		'B': 22
+	}
+	println(values['A'])
+	println(values['B'])
+}
+"
+}
+
+fn x64_string_int_map_literal_lookup_stdout() []u8 {
+	return '11
+22
+'.bytes()
+}
+
 fn x64_windows_noscan_array_grow_free_slice_source() string {
 	return "module main
 
@@ -4821,6 +4841,11 @@ fn test_x64_macos_windows_dynamic_string_array_index_stdout_exact_bytes() {
 		x64_dynamic_string_array_index_source(), x64_dynamic_string_array_index_stdout())
 }
 
+fn test_x64_macos_windows_string_int_map_literal_lookup_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('string_int_map_literal_lookup_exact',
+		x64_string_int_map_literal_lookup_source(), x64_string_int_map_literal_lookup_stdout())
+}
+
 fn test_x64_windows_noscan_array_grow_free_slice_stdout_exact_bytes() {
 	assert_x64_windows_stdout_bytes('noscan_array_grow_free_slice_exact',
 		x64_windows_noscan_array_grow_free_slice_source(),
@@ -5252,6 +5277,11 @@ fn main() {
 fn test_x64_linux_dynamic_string_array_index_stdout_exact_bytes() {
 	assert_x64_linux_stdout_bytes('dynamic_string_array_index_exact',
 		x64_dynamic_string_array_index_source(), x64_dynamic_string_array_index_stdout())
+}
+
+fn test_x64_linux_string_int_map_literal_lookup_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('string_int_map_literal_lookup_exact',
+		x64_string_int_map_literal_lookup_source(), x64_string_int_map_literal_lookup_stdout())
 }
 
 fn test_x64_linux_imported_module_init_runs_once_before_use_stdout_exact_bytes() {
