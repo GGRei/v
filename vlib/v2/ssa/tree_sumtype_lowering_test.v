@@ -408,6 +408,7 @@ fn tree_ssa_assert_sumtype_match_uses_tag(m &Module, func Function, type_name st
 }
 
 fn tree_ssa_assert_no_raw_tree_string_concat_arg(m &Module, func Function) {
+	string_concat_callees := ['builtin__string__+', 'builtin__string__plus_two']
 	for blk_id in func.blocks {
 		for val_id in m.blocks[blk_id].instrs {
 			value := m.values[val_id]
@@ -423,7 +424,7 @@ fn tree_ssa_assert_no_raw_tree_string_concat_arg(m &Module, func Function) {
 				continue
 			}
 			callee := m.values[callee_id]
-			if callee.kind != .func_ref || callee.name != 'builtin__string__+' {
+			if callee.kind != .func_ref || callee.name !in string_concat_callees {
 				continue
 			}
 			for operand in instr.operands[1..] {
@@ -432,9 +433,9 @@ fn tree_ssa_assert_no_raw_tree_string_concat_arg(m &Module, func Function) {
 				}
 				operand_type := m.values[operand].typ
 				operand_type_name := tree_ssa_type_name(m, operand_type)
-				assert !ssa_type_name_matches(operand_type_name, 'Node'), '${func.name} passes raw Node v${operand} to builtin__string__+'
+				assert !ssa_type_name_matches(operand_type_name, 'Node'), '${func.name} passes raw Node v${operand} to ${callee.name}'
 
-				assert !ssa_type_name_matches(operand_type_name, 'Tree'), '${func.name} passes raw Tree v${operand} to builtin__string__+'
+				assert !ssa_type_name_matches(operand_type_name, 'Tree'), '${func.name} passes raw Tree v${operand} to ${callee.name}'
 			}
 		}
 	}
@@ -449,7 +450,7 @@ fn tree_ssa_assert_func_has_no_string_str(m &Module, name string) {
 	callees := tree_ssa_call_callees(m, func)
 	assert 'builtin__string__str' !in callees
 	assert 'string__str' !in callees
-	assert 'builtin__string__+' in callees
+	assert 'builtin__string__+' in callees || 'builtin__string__plus_two' in callees
 }
 
 fn tree_ssa_call_arg_type_names(m &Module, func Function, callee_name string) []string {

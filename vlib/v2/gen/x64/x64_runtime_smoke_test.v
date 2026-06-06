@@ -3985,6 +3985,24 @@ fn main() {
 	}
 }
 
+fn test_x64_linux_string_plus_two_runtime_strict_tiny_no_libc() {
+	$if linux {
+		result := run_x64_host_program_redirected_tiny('string_plus_two_runtime_strict_tiny_no_libc', "module main
+
+fn main() {
+	a := 'one'
+	b := ' two'
+	c := ' three'
+	println(a + b + c)
+}
+")
+		assert_x64_linux_no_libc_binary(result, 'one two three\n'.bytes())
+		assert_x64_linux_tiny_load_segment_layout(result,
+			linux_tiny_string_plus_arena_metadata_bytes)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
 fn test_x64_linux_string_plus_chain_preserves_tmp_lifetime_strict_tiny_no_libc() {
 	$if linux {
 		result := run_x64_host_program_redirected_tiny('string_plus_chain_preserves_tmp_lifetime_strict_tiny_no_libc', "module main
