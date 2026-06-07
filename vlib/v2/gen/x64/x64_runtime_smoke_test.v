@@ -4305,6 +4305,11 @@ fn test_x64_linux_bfs_example_top_level_stdout_exact_bytes() {
 		'graphs'), 'bfs.v', x64_bfs_example_stdout())
 }
 
+fn test_x64_linux_bfs3_example_top_level_stdout_matches_v_run() {
+	assert_x64_linux_file_stdout_matches_v_run('bfs3_example_top_level_v_run', os.join_path(x64_examples_dir(),
+		'graphs'), 'bfs3.v')
+}
+
 fn test_x64_linux_dfs_example_top_level_stdout_matches_v_run() {
 	assert_x64_linux_file_stdout_matches_v_run('dfs_example_top_level_v_run', os.join_path(x64_examples_dir(),
 		'graphs'), 'dfs.v')
@@ -5501,6 +5506,11 @@ fn test_x64_macos_windows_tree_of_nodes_example_top_level_stdout_exact_bytes() {
 fn test_x64_macos_windows_bfs_example_top_level_stdout_exact_bytes() {
 	assert_x64_macos_windows_file_stdout_bytes('bfs_example_top_level_exact', os.join_path(x64_examples_dir(),
 		'graphs'), 'bfs.v', x64_bfs_example_stdout())
+}
+
+fn test_x64_macos_windows_bfs3_example_top_level_stdout_matches_v_run() {
+	assert_x64_macos_windows_file_stdout_matches_v_run('bfs3_example_top_level_v_run', os.join_path(x64_examples_dir(),
+		'graphs'), 'bfs3.v')
 }
 
 fn test_x64_macos_windows_dfs_example_top_level_stdout_matches_v_run() {

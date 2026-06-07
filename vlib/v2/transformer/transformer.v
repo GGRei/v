@@ -3256,7 +3256,7 @@ pub fn (mut t Transformer) transform_files_to_flat_direct(files []ast.File) ast.
 	}
 	mut builder := new_transform_output_flat_builder(files_to_transform)
 	for file in files_to_transform {
-		t.transform_file_to_flat(file, mut builder)
+		t.transform_file_to_flat(t.file_without_open_generic_fn_decls(file), mut builder)
 	}
 	t_print_mem('after per-file flat loop')
 	if timing {
@@ -3316,6 +3316,34 @@ pub fn (mut t Transformer) transform_flat_to_flat_direct(flat &ast.FlatAst, file
 		eprintln('  [ttime] flat input direct post_pass: ${sw.elapsed().milliseconds()}ms')
 	}
 	return builder.flat
+}
+
+fn (t &Transformer) file_without_open_generic_fn_decls(file ast.File) ast.File {
+	mut has_open_generic_fn := false
+	for stmt in file.stmts {
+		if stmt is ast.FnDecl && t.omit_backend_generic_decl(stmt) {
+			has_open_generic_fn = true
+			break
+		}
+	}
+	if !has_open_generic_fn {
+		return file
+	}
+	mut stmts := []ast.Stmt{cap: file.stmts.len}
+	for stmt in file.stmts {
+		if stmt is ast.FnDecl && t.omit_backend_generic_decl(stmt) {
+			continue
+		}
+		stmts << stmt
+	}
+	return ast.File{
+		attributes:     file.attributes
+		mod:            file.mod
+		name:           file.name
+		stmts:          stmts
+		imports:        file.imports
+		selector_names: file.selector_names
+	}
 }
 
 fn new_transform_output_flat_builder(files []ast.File) ast.FlatBuilder {
@@ -6461,6 +6489,8 @@ fn (mut t Transformer) transform_assign_stmt_parts(stmt ast.AssignStmt) (token.T
 				}
 			}
 			if bindings := t.generic_bindings_from_generic_call_expr(rhs_src[0]) {
+				t.local_receiver_generic_bindings[lhs_name] = bindings.clone()
+			} else if bindings := t.generic_bindings_from_generic_init_expr(rhs_src[0]) {
 				t.local_receiver_generic_bindings[lhs_name] = bindings.clone()
 			}
 		}
@@ -13167,6 +13197,49 @@ fn (mut t Transformer) resolve_sprintf_format(inter ast.StringInter) string {
 	return '%d' // fallback
 }
 
+fn is_plain_string_interpolation(inter ast.StringInter) bool {
+	return inter.format == .unformatted && inter.width == 0 && inter.precision == 0
+		&& inter.format_expr is ast.EmptyExpr
+}
+
+fn explicit_str_selector_expr(receiver ast.Expr) ast.Expr {
+	return ast.Expr(ast.SelectorExpr{
+		lhs: receiver
+		rhs: ast.Ident{
+			name: 'str'
+		}
+		pos: receiver.pos()
+	})
+}
+
+fn (t &Transformer) explicit_str_method_base_name_for_interpolation(receiver ast.Expr) ?string {
+	if resolved := t.resolve_method_call_name(receiver, 'str') {
+		return resolved
+	}
+	return t.receiver_generic_template_method_from_concrete_receiver(receiver, 'str')
+}
+
+fn (mut t Transformer) explicit_str_interpolation_call_expr(receiver ast.Expr, transformed ast.Expr) ?ast.Expr {
+	base_name := t.explicit_str_method_base_name_for_interpolation(receiver) or { return none }
+	info := t.generic_aware_call_fn_info(explicit_str_selector_expr(receiver), base_name) or {
+		CallFnInfo{}
+	}
+	str_fn_name := t.receiver_generic_method_call_name(base_name, receiver, info, []ast.Expr{}) or {
+		if t.is_receiver_generic_method_call_base(base_name) {
+			return none
+		}
+		base_name
+	}
+	str_call := ast.Expr(ast.CallExpr{
+		lhs:  ast.Ident{
+			name: str_fn_name
+		}
+		args: [transformed]
+		pos:  receiver.pos()
+	})
+	return t.synth_selector(str_call, 'str', types.Type(types.voidptr_))
+}
+
 fn (mut t Transformer) transform_sprintf_arg(inter ast.StringInter) ast.Expr {
 	transformed := t.transform_expr(inter.expr)
 	typ := t.string_inter_arg_type(inter.expr) or {
@@ -13285,6 +13358,11 @@ fn (mut t Transformer) transform_sprintf_arg(inter ast.StringInter) ast.Expr {
 		}
 		else {
 			// For custom types with str() method: Type__str(expr).str
+			if is_plain_string_interpolation(inter) {
+				if str_call := t.explicit_str_interpolation_call_expr(inter.expr, transformed) {
+					return str_call
+				}
+			}
 			str_fn_name := t.register_auto_str_dependency(typ)
 			if str_fn_name != '' {
 				str_call := ast.Expr(ast.CallExpr{

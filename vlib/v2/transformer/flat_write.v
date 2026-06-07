@@ -1978,6 +1978,10 @@ fn (mut t Transformer) transform_stmt_list_item_cursor_to_flat(c ast.Cursor, mut
 			t.append_transformed_stmt_id_to_flat(mut ids, id, mut out)
 		}
 		.stmt_fn_decl {
+			decl := c.fn_decl_signature()
+			if t.omit_backend_generic_decl(decl) {
+				return
+			}
 			// Stream the body cursor-native when it has no defers (defer
 			// lowering needs the whole body, so those take the legacy
 			// whole-decl decode path).

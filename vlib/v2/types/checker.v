@@ -607,8 +607,9 @@ mut:
 	// Current file's module name (for saving function scopes)
 	cur_file_module string
 	// Function root scope - used to flatten local variable types for transformer lookup
-	fn_root_scope &Scope = unsafe { nil }
-	fallback_vars map[string]Type
+	fn_root_scope          &Scope = unsafe { nil }
+	fallback_vars          map[string]Type
+	receiver_generic_types map[string]map[string]Type
 	// when true, function declarations only register signatures and queue body checking
 	collect_fn_signatures_only bool
 	pending_fn_body_flat       &ast.FlatAst   = unsafe { nil }
@@ -5493,6 +5494,7 @@ fn (mut c Checker) assign_stmt(stmt ast.AssignStmt, unwrap_optional bool) {
 					c.fn_root_scope.insert(lx_unwrapped.name, value_obj)
 				}
 			}
+			c.update_receiver_generic_types(lx_unwrapped.name, rx)
 			// Store the type in expr_types for the lhs ident position
 			// so the transformer can look it up directly
 			lx_pos := lx_unwrapped.pos
@@ -6350,6 +6352,73 @@ fn (c &Checker) is_generic_struct_type(t Type) bool {
 	return c.generic_struct_template(t) != none
 }
 
+fn receiver_generic_type_key(scope &Scope, name string) string {
+	return '${voidptr(scope)}:${name}'
+}
+
+fn (mut c Checker) generic_type_map_from_init_expr(expr ast.Expr) ?map[string]Type {
+	resolved := c.resolve_expr(expr)
+	match resolved {
+		ast.InitExpr {
+			return c.generic_type_map_from_type_ref(resolved.typ)
+		}
+		ast.AssocExpr {
+			return c.generic_type_map_from_type_ref(resolved.typ)
+		}
+		ast.ArrayInitExpr {
+			if resolved.typ !is ast.EmptyExpr {
+				return c.generic_type_map_from_type_ref(resolved.typ)
+			}
+		}
+		else {}
+	}
+
+	return none
+}
+
+fn (mut c Checker) generic_type_map_from_type_ref(expr ast.Expr) ?map[string]Type {
+	resolved := c.resolve_expr(expr)
+	if resolved is ast.GenericArgs {
+		base_type := c.type_expr(resolved.lhs)
+		base := c.generic_struct_template(base_type) or { return none }
+		mut generic_type_map := map[string]Type{}
+		for i, generic_param in base.generic_params {
+			if i >= resolved.args.len {
+				break
+			}
+			generic_type_map[generic_param] = c.expr(resolved.args[i])
+		}
+		if generic_type_map.len > 0 {
+			return generic_type_map
+		}
+	}
+	return none
+}
+
+fn (mut c Checker) update_receiver_generic_types(name string, rhs ast.Expr) {
+	receiver_scope, _ := c.scope.lookup_parent_with_scope(name, 0) or { return }
+	key := receiver_generic_type_key(receiver_scope, name)
+	if generic_type_map := c.generic_type_map_from_init_expr(rhs) {
+		c.receiver_generic_types[key] = generic_type_map.clone()
+		return
+	}
+	c.receiver_generic_types.delete(key)
+}
+
+fn (mut c Checker) merge_receiver_generic_types(receiver ast.Expr, mut generic_type_map map[string]Type) {
+	if receiver is ast.Ident {
+		receiver_scope, _ := c.scope.lookup_parent_with_scope(receiver.name, 0) or { return }
+		key := receiver_generic_type_key(receiver_scope, receiver.name)
+		if receiver_map := c.receiver_generic_types[key] {
+			for generic_param, concrete_type in receiver_map {
+				if generic_param !in generic_type_map {
+					generic_type_map[generic_param] = concrete_type
+				}
+			}
+		}
+	}
+}
+
 fn (mut c Checker) instantiate_generic_struct(base Struct, args []ast.Expr) Type {
 	mut actual_base := base
 	// If base has no fields (stale copy), look up current version from scope
@@ -7106,6 +7175,7 @@ fn (mut c Checker) call_expr(expr &ast.CallExpr) Type {
 		}
 		mut checked_array_magic_arg := false
 		mut generic_type_map := map[string]Type{}
+		mut has_call_generic_type_map := false
 		mut checked_sort_cmp_arg := false
 		if lhs_expr is ast.SelectorExpr {
 			if lhs_expr.rhs.name in ['filter', 'map', 'any', 'all', 'count'] {
@@ -7131,6 +7201,7 @@ fn (mut c Checker) call_expr(expr &ast.CallExpr) Type {
 					generic_types << generic_type
 					generic_type_map[generic_param] = generic_type
 				}
+				has_call_generic_type_map = generic_type_map.len > 0
 				// eprintln('GENERIC TYPES: ${expr.lhs.name()}')
 				// dump(generic_types)
 			}
@@ -7154,6 +7225,7 @@ fn (mut c Checker) call_expr(expr &ast.CallExpr) Type {
 					// 	eprintln('should be NamedType but got ${param.typ.name()}')
 					// }
 				}
+				has_call_generic_type_map = generic_type_map.len > 0
 			}
 			// eprintln('## GENERIC TYPE MAP: ${expr.lhs.name()}')
 			// eprintln('========================')
@@ -7166,21 +7238,27 @@ fn (mut c Checker) call_expr(expr &ast.CallExpr) Type {
 			// 		panic('.')
 			// 	}
 			// }
-			// dump(generic_type_map)
-			if generic_type_map.len > 0 {
-				fn_.generic_types << generic_type_map
-				lhs_name := lhs_expr.name()
-				if lhs_name !in c.env.generic_types {
-					empty_generic_types := []map[string]Type{}
-					c.env.generic_types[lhs_name] = empty_generic_types
-				}
-				mut inferred_generic_types := c.env.generic_types[lhs_name]
-				inferred_generic_types << generic_type_map
-				c.env.generic_types[lhs_name] = inferred_generic_types
-			}
 		} else if lhs_expr is ast.GenericArgs {
 			c.error_with_pos('cannot call non generic function with generic argument list',
 				expr.pos)
+		}
+		mut generic_type_map_for_record := map[string]Type{}
+		if has_call_generic_type_map {
+			generic_type_map_for_record = generic_type_map.clone()
+		}
+		if lhs_expr is ast.SelectorExpr {
+			c.merge_receiver_generic_types(lhs_expr.lhs, mut generic_type_map)
+		}
+		if has_call_generic_type_map && generic_type_map_for_record.len > 0 {
+			fn_.generic_types << generic_type_map_for_record.clone()
+			lhs_name := lhs_expr.name()
+			if lhs_name !in c.env.generic_types {
+				empty_generic_types := []map[string]Type{}
+				c.env.generic_types[lhs_name] = empty_generic_types
+			}
+			mut inferred_generic_types := c.env.generic_types[lhs_name]
+			inferred_generic_types << generic_type_map_for_record.clone()
+			c.env.generic_types[lhs_name] = inferred_generic_types
 		}
 
 		// TODO: is this best place for this?
@@ -9082,6 +9160,9 @@ fn (mut c Checker) open_scope() {
 }
 
 fn (mut c Checker) close_scope() {
+	for name, _ in c.scope.objects {
+		c.receiver_generic_types.delete(receiver_generic_type_key(c.scope, name))
+	}
 	c.scope = c.scope.parent
 }
 

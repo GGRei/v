@@ -2380,8 +2380,11 @@ fn (mut t Transformer) enter_fn_body_transform(decl ast.FnDecl) ?FnBodyTransform
 	ctx.old_fn_recv_is_ptr = t.cur_fn_recv_is_ptr
 	ctx.old_monomorphized_bindings = t.cur_monomorphized_fn_bindings.move()
 	t.cur_fn_name_str = decl.name
-	t.cur_monomorphized_fn_bindings = t.lookup_monomorphized_fn_bindings(t.cur_module, decl.name) or {
-		map[string]types.Type{}
+	t.cur_monomorphized_fn_bindings = t.lookup_monomorphized_fn_bindings(t.cur_module,
+		scope_fn_name) or {
+		t.lookup_monomorphized_fn_bindings(t.cur_module, decl.name) or {
+			map[string]types.Type{}
+		}
 	}
 	if decl.is_method {
 		recv_name := t.get_receiver_type_name(decl.receiver.typ)

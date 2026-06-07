@@ -318,6 +318,9 @@ jobs:
           [byte[]] $bfs_expected = Get-VRunExpectedBytes 'examples/graphs/bfs.v' 'bfs'
           Invoke-NativeX64Example 'examples/graphs/bfs.v' 'bfs' $bfs_expected
 
+          [byte[]] $bfs3_expected = Get-VRunExpectedBytes 'examples/graphs/bfs3.v' 'bfs3'
+          Invoke-NativeX64Example 'examples/graphs/bfs3.v' 'bfs3' $bfs3_expected
+
           [byte[]] $dfs_expected = Get-VRunExpectedBytes 'examples/graphs/dfs.v' 'dfs'
           Invoke-NativeX64Example 'examples/graphs/dfs.v' 'dfs' $dfs_expected
 

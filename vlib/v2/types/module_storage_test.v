@@ -226,6 +226,42 @@ fn main() {}
 	}
 }
 
+fn test_imported_generic_receiver_init_mapping_resolves_result_return_type() {
+	code, output := run_module_storage_v2_check('imported_generic_receiver_init_mapping', {
+		'boxlib/boxlib.v': 'module boxlib
+
+pub struct Queue[T] {
+pub mut:
+	value T
+}
+
+pub fn (mut queue Queue[T]) pop() !T {
+	return queue.value
+}
+'
+		'main.v':          'module main
+
+import boxlib
+
+fn expect_strings(values []string) {
+	_ = values
+}
+
+fn expect_string(value string) {
+	_ = value
+}
+
+fn main() {
+	mut queue := boxlib.Queue[[]string]{value: ["alpha", "omega"]}
+	v := queue.pop() or { return }
+	expect_strings(v)
+	expect_string(v[0])
+}
+'
+	}, 'main.v')
+	assert code == 0, output
+}
+
 fn test_module_storage_legacy_assignment_without_mut_is_allowed_for_compat() {
 	code, output := run_module_storage_v2_check('legacy_assignment', {
 		'main.v': '__global frozen = 0

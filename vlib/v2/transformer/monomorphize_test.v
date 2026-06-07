@@ -334,6 +334,12 @@ fn mono_collect_call_names_from_expr(expr ast.Expr, mut names []string) {
 		ast.ModifierExpr {
 			mono_collect_call_names_from_expr(expr.expr, mut names)
 		}
+		ast.OrExpr {
+			mono_collect_call_names_from_expr(expr.expr, mut names)
+			for stmt in expr.stmts {
+				mono_collect_call_names_from_stmt(stmt, mut names)
+			}
+		}
 		ast.ParenExpr {
 			mono_collect_call_names_from_expr(expr.expr, mut names)
 		}
@@ -342,6 +348,96 @@ fn mono_collect_call_names_from_expr(expr ast.Expr, mut names []string) {
 		}
 		ast.SelectorExpr {
 			mono_collect_call_names_from_expr(expr.lhs, mut names)
+		}
+		ast.StringInterLiteral {
+			for inter in expr.inters {
+				mono_collect_call_names_from_expr(inter.expr, mut names)
+				mono_collect_call_names_from_expr(inter.format_expr, mut names)
+			}
+		}
+		else {}
+	}
+}
+
+fn mono_collect_string_literals_from_expr(expr ast.Expr, mut values []string) {
+	match expr {
+		ast.ArrayInitExpr {
+			for nested in expr.exprs {
+				mono_collect_string_literals_from_expr(nested, mut values)
+			}
+		}
+		ast.CallExpr {
+			mono_collect_string_literals_from_expr(expr.lhs, mut values)
+			for arg in expr.args {
+				mono_collect_string_literals_from_expr(arg, mut values)
+			}
+		}
+		ast.IfExpr {
+			mono_collect_string_literals_from_expr(expr.cond, mut values)
+			for stmt in expr.stmts {
+				mono_collect_string_literals_from_stmt(stmt, mut values)
+			}
+			mono_collect_string_literals_from_expr(expr.else_expr, mut values)
+		}
+		ast.InfixExpr {
+			mono_collect_string_literals_from_expr(expr.lhs, mut values)
+			mono_collect_string_literals_from_expr(expr.rhs, mut values)
+		}
+		ast.ModifierExpr {
+			mono_collect_string_literals_from_expr(expr.expr, mut values)
+		}
+		ast.OrExpr {
+			mono_collect_string_literals_from_expr(expr.expr, mut values)
+			for stmt in expr.stmts {
+				mono_collect_string_literals_from_stmt(stmt, mut values)
+			}
+		}
+		ast.ParenExpr {
+			mono_collect_string_literals_from_expr(expr.expr, mut values)
+		}
+		ast.PrefixExpr {
+			mono_collect_string_literals_from_expr(expr.expr, mut values)
+		}
+		ast.SelectorExpr {
+			mono_collect_string_literals_from_expr(expr.lhs, mut values)
+		}
+		ast.StringInterLiteral {
+			values << expr.values
+			for inter in expr.inters {
+				mono_collect_string_literals_from_expr(inter.expr, mut values)
+				mono_collect_string_literals_from_expr(inter.format_expr, mut values)
+			}
+		}
+		ast.StringLiteral {
+			values << expr.value
+		}
+		else {}
+	}
+}
+
+fn mono_collect_string_literals_from_stmt(stmt ast.Stmt, mut values []string) {
+	match stmt {
+		ast.AssignStmt {
+			for expr in stmt.lhs {
+				mono_collect_string_literals_from_expr(expr, mut values)
+			}
+			for expr in stmt.rhs {
+				mono_collect_string_literals_from_expr(expr, mut values)
+			}
+		}
+		ast.ExprStmt {
+			mono_collect_string_literals_from_expr(stmt.expr, mut values)
+		}
+		ast.ForStmt {
+			mono_collect_string_literals_from_expr(stmt.cond, mut values)
+			for nested in stmt.stmts {
+				mono_collect_string_literals_from_stmt(nested, mut values)
+			}
+		}
+		ast.ReturnStmt {
+			for expr in stmt.exprs {
+				mono_collect_string_literals_from_expr(expr, mut values)
+			}
 		}
 		else {}
 	}
@@ -395,6 +491,726 @@ fn mono_has_fn(files []ast.File, fn_name string) bool {
 		}
 	}
 	return false
+}
+
+fn mono_fn_names(files []ast.File) []string {
+	mut names := []string{}
+	for file in files {
+		for stmt in file.stmts {
+			if stmt is ast.FnDecl {
+				names << stmt.name
+			}
+		}
+	}
+	return names
+}
+
+fn mono_method_decl_by_receiver(files []ast.File, receiver_name string, method_name string) ?ast.FnDecl {
+	for file in files {
+		for stmt in file.stmts {
+			if stmt is ast.FnDecl && stmt.is_method && stmt.name == method_name {
+				receiver := stmt.receiver.typ
+				if receiver is ast.Ident && receiver.name == receiver_name {
+					return stmt
+				}
+			}
+		}
+	}
+	return none
+}
+
+fn mono_assert_method_clone_by_receiver(files []ast.File, receiver_name string, method_name string) ast.FnDecl {
+	fn_names := mono_fn_names(files)
+	decl := mono_method_decl_by_receiver(files, receiver_name, method_name) or {
+		assert false, 'missing concrete method clone ${receiver_name}.${method_name}, got ${fn_names}'
+		return ast.FnDecl{}
+	}
+	assert decl.is_method, '${receiver_name}.${method_name} must stay a method clone'
+	assert decl.name == method_name
+	assert decl.stmts.len > 0, '${receiver_name}.${method_name} must keep its cloned method body'
+	return decl
+}
+
+fn mono_call_names_for_decl(decl ast.FnDecl) []string {
+	mut names := []string{}
+	for stmt in decl.stmts {
+		mono_collect_call_names_from_stmt(stmt, mut names)
+	}
+	return names
+}
+
+fn mono_string_literals_for_decl(decl ast.FnDecl) []string {
+	mut values := []string{}
+	for stmt in decl.stmts {
+		mono_collect_string_literals_from_stmt(stmt, mut values)
+	}
+	return values
+}
+
+fn mono_assert_no_qualified_queue_array_string_fn_decl(fn_names []string, method_name string) {
+	qualified := 'datatypes__Queue_T_Array_string__${method_name}'
+	assert qualified !in fn_names, 'qualified method FnDecl should not be emitted for canonical clone: ${fn_names}'
+}
+
+fn mono_assert_no_open_queue_method_names(fn_names []string, call_names []string, method_name string) {
+	short_open := 'Queue__${method_name}'
+	qualified_open := 'datatypes__Queue__${method_name}'
+	assert short_open !in fn_names, 'open Queue method FnDecl leaked into ${fn_names}'
+	assert qualified_open !in fn_names, 'open datatypes Queue method FnDecl leaked into ${fn_names}'
+	assert short_open !in call_names, 'open Queue method call leaked into ${call_names}'
+	assert qualified_open !in call_names, 'open datatypes Queue method call leaked into ${call_names}'
+}
+
+fn mono_assert_no_open_queue_is_empty_names(fn_names []string, call_names []string) {
+	mono_assert_no_open_queue_method_names(fn_names, call_names, 'is_empty')
+}
+
+fn mono_assert_specialized_inner_calls(call_names []string, expected string, open_names []string) {
+	assert expected in call_names, 'expected specialized internal call ${expected}, got ${call_names}'
+	for open_name in open_names {
+		assert open_name !in call_names, 'open internal call ${open_name} leaked into ${call_names}'
+	}
+}
+
+fn mono_assert_no_open_str_calls(call_names []string, open_names []string) {
+	for open_name in open_names {
+		assert open_name !in call_names, 'open str call ${open_name} leaked into ${call_names}'
+	}
+}
+
+fn mono_assert_no_unresolved_generic_receiver_names(names []string, label string) {
+	for name in names {
+		assert !name.contains('unknown__'), '${label} leaked unresolved call ${name} in ${names}'
+		assert !name.contains('_T_datatypes_T'), '${label} kept unresolved receiver generic ${name} in ${names}'
+	}
+}
+
+struct MonoSource {
+	rel  string
+	code string
+}
+
+fn mono_transform_sources_for_test(sources []MonoSource) []ast.File {
+	tmp_dir := os.join_path(os.temp_dir(), 'v2_mono_sources_${os.getpid()}')
+	os.rmdir_all(tmp_dir) or {}
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+	mut paths := []string{cap: sources.len}
+	for source in sources {
+		path := os.join_path(tmp_dir, source.rel)
+		os.mkdir_all(os.dir(path)) or { panic(err) }
+		os.write_file(path, source.code) or { panic('failed to write ${path}') }
+		paths << path
+	}
+	prefs := &vpref.Preferences{
+		backend:     .x64
+		no_parallel: true
+	}
+	mut file_set := token.FileSet.new()
+	mut par := parser.Parser.new(prefs)
+	files := par.parse_files(paths, mut file_set)
+	mut env := types.Environment.new()
+	mut checker := types.Checker.new(prefs, file_set, env)
+	checker.check_files(files)
+	mut trans := Transformer.new_with_pref(env, prefs)
+	return trans.transform_files(files)
+}
+
+fn mono_transform_sources_flat_direct_for_test(sources []MonoSource) []ast.File {
+	tmp_dir := os.join_path(os.temp_dir(), 'v2_mono_sources_flat_${os.getpid()}')
+	os.rmdir_all(tmp_dir) or {}
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+	mut paths := []string{cap: sources.len}
+	for source in sources {
+		path := os.join_path(tmp_dir, source.rel)
+		os.mkdir_all(os.dir(path)) or { panic(err) }
+		os.write_file(path, source.code) or { panic('failed to write ${path}') }
+		paths << path
+	}
+	prefs := &vpref.Preferences{
+		backend:     .x64
+		no_parallel: true
+	}
+	mut file_set := token.FileSet.new()
+	mut par := parser.Parser.new(prefs)
+	files := par.parse_files(paths, mut file_set)
+	mut env := types.Environment.new()
+	mut checker := types.Checker.new(prefs, file_set, env)
+	checker.check_files(files)
+	flat := ast.flatten_files(files)
+	mut trans := Transformer.new_with_pref(env, prefs)
+	return trans.transform_flat_to_flat_direct(&flat, []).to_files()
+}
+
+fn test_imported_generic_struct_init_receiver_method_call_is_monomorphized() {
+	files := mono_transform_sources_for_test([
+		MonoSource{
+			rel:  'datatypes/queue.v'
+			code: '
+module datatypes
+
+pub struct Queue[T] {
+mut:
+	elements []T
+}
+
+pub fn (mut queue Queue[T]) push(value T) {
+	queue.elements << value
+}
+
+pub fn (queue Queue[T]) is_empty() bool {
+	return queue.elements.len == 0
+}
+
+pub fn (mut queue Queue[T]) pop() !T {
+	return queue.elements[0]
+}
+'
+		},
+		MonoSource{
+			rel:  'main.v'
+			code: '
+module main
+
+import datatypes
+
+fn use(value []string) bool {
+	mut queue := datatypes.Queue[[]string]{}
+	queue.push(value)
+	if queue.is_empty() {
+		return false
+	}
+	popped := queue.pop() or { return false }
+	return popped.len == 1
+}
+'
+		},
+	])
+	fn_names := mono_fn_names(files)
+	call_names := mono_call_names_for_fn(files, 'use')
+	mono_assert_method_clone_by_receiver(files, 'Queue_T_Array_string', 'push')
+	mono_assert_method_clone_by_receiver(files, 'Queue_T_Array_string', 'is_empty')
+	mono_assert_method_clone_by_receiver(files, 'Queue_T_Array_string', 'pop')
+	mono_assert_no_qualified_queue_array_string_fn_decl(fn_names, 'push')
+	mono_assert_no_qualified_queue_array_string_fn_decl(fn_names, 'is_empty')
+	mono_assert_no_qualified_queue_array_string_fn_decl(fn_names, 'pop')
+	assert call_names == [
+		'datatypes__Queue_T_Array_string__push',
+		'datatypes__Queue_T_Array_string__is_empty',
+		'datatypes__Queue_T_Array_string__pop',
+	], 'expected exact imported Queue[[]string] method calls, got ${call_names}'
+	mono_assert_no_open_queue_method_names(fn_names, call_names, 'push')
+	mono_assert_no_open_queue_is_empty_names(fn_names, call_names)
+	mono_assert_no_open_queue_method_names(fn_names, call_names, 'pop')
+}
+
+fn test_imported_generic_method_clone_body_rewrites_nested_receiver_calls() {
+	files := mono_transform_sources_for_test([
+		MonoSource{
+			rel:  'datatypes/inner.v'
+			code: '
+module datatypes
+
+pub struct Inner[T] {
+mut:
+	values []T
+}
+
+pub fn (inner Inner[T]) is_empty() bool {
+	return inner.values.len == 0
+}
+
+pub fn (mut inner Inner[T]) shift() !T {
+	return inner.values[0]
+}
+'
+		},
+		MonoSource{
+			rel:  'datatypes/outer.v'
+			code: '
+module datatypes
+
+pub struct Outer[T] {
+mut:
+	inner Inner[T]
+}
+
+pub fn (outer Outer[T]) is_empty() bool {
+	return outer.inner.is_empty()
+}
+
+pub fn (mut outer Outer[T]) pop() !T {
+	return outer.inner.shift()
+}
+'
+		},
+		MonoSource{
+			rel:  'main.v'
+			code: '
+module main
+
+import datatypes
+
+fn use() bool {
+	mut outer := datatypes.Outer[[]string]{}
+	if outer.is_empty() {
+		return false
+	}
+	popped := outer.pop() or { return false }
+	return popped.len == 1
+}
+'
+		},
+	])
+	fn_names := mono_fn_names(files)
+	call_names := mono_call_names_for_fn(files, 'use')
+	outer_is_empty := mono_assert_method_clone_by_receiver(files, 'Outer_T_Array_string',
+		'is_empty')
+	outer_pop := mono_assert_method_clone_by_receiver(files, 'Outer_T_Array_string', 'pop')
+	mono_assert_method_clone_by_receiver(files, 'Inner_T_Array_string', 'is_empty')
+	mono_assert_method_clone_by_receiver(files, 'Inner_T_Array_string', 'shift')
+	assert call_names == [
+		'datatypes__Outer_T_Array_string__is_empty',
+		'datatypes__Outer_T_Array_string__pop',
+	], 'expected exact imported Outer[[]string] method calls, got ${call_names}'
+	assert 'datatypes__Outer__is_empty' !in call_names
+	assert 'datatypes__Outer__pop' !in call_names
+	assert 'Outer__is_empty' !in call_names
+	assert 'Outer__pop' !in call_names
+	assert 'datatypes__Outer_T_Array_string__is_empty' !in fn_names
+	assert 'datatypes__Outer_T_Array_string__pop' !in fn_names
+	is_empty_body_calls := mono_call_names_for_decl(outer_is_empty)
+	pop_body_calls := mono_call_names_for_decl(outer_pop)
+	mono_assert_specialized_inner_calls(is_empty_body_calls,
+		'datatypes__Inner_T_Array_string__is_empty', [
+		'datatypes__Inner__is_empty',
+		'Inner__is_empty',
+	])
+	mono_assert_specialized_inner_calls(pop_body_calls, 'datatypes__Inner_T_Array_string__shift', [
+		'datatypes__Inner__shift',
+		'Inner__shift',
+	])
+}
+
+fn test_local_generic_struct_init_receiver_method_call_is_monomorphized() {
+	files := mono_transform_sources_for_test([
+		MonoSource{
+			rel:  'main.v'
+			code: '
+module main
+
+struct Queue[T] {
+mut:
+	elements []T
+}
+
+fn (queue Queue[T]) is_empty() bool {
+	return queue.elements.len == 0
+}
+
+fn use() bool {
+	mut queue := Queue[[]string]{}
+	return queue.is_empty()
+}
+'
+		},
+	])
+	fn_names := mono_fn_names(files)
+	call_names := mono_call_names_for_fn(files, 'use')
+	mono_assert_method_clone_by_receiver(files, 'Queue_T_Array_string', 'is_empty')
+	assert call_names == ['Queue_T_Array_string__is_empty'], 'expected exact local Queue[[]string].is_empty call, got ${call_names}'
+	mono_assert_no_open_queue_is_empty_names(fn_names, call_names)
+}
+
+fn test_shadowed_local_receiver_names_keep_distinct_generic_bindings() {
+	files := mono_transform_sources_for_test([
+		MonoSource{
+			rel:  'main.v'
+			code: '
+module main
+
+struct Queue[T] {
+mut:
+	elements []T
+}
+
+fn (queue Queue[T]) is_empty() bool {
+	return queue.elements.len == 0
+}
+
+fn use_strings() bool {
+	mut queue := Queue[[]string]{}
+	return queue.is_empty()
+}
+
+fn use_ints() bool {
+	mut queue := Queue[int]{}
+	return queue.is_empty()
+}
+'
+		},
+	])
+	fn_names := mono_fn_names(files)
+	string_call_names := mono_call_names_for_fn(files, 'use_strings')
+	int_call_names := mono_call_names_for_fn(files, 'use_ints')
+	mono_assert_method_clone_by_receiver(files, 'Queue_T_Array_string', 'is_empty')
+	mono_assert_method_clone_by_receiver(files, 'Queue_T_int', 'is_empty')
+	assert string_call_names == ['Queue_T_Array_string__is_empty'], 'expected shadowed string queue call, got ${string_call_names}'
+	assert int_call_names == ['Queue_T_int__is_empty'], 'expected shadowed int queue call, got ${int_call_names}'
+	mono_assert_no_open_queue_is_empty_names(fn_names, string_call_names)
+	mono_assert_no_open_queue_is_empty_names(fn_names, int_call_names)
+}
+
+fn test_explicit_generic_str_interpolation_uses_specialized_method_not_auto_str() {
+	files := mono_transform_sources_for_test([
+		MonoSource{
+			rel:  'main.v'
+			code: '
+module main
+
+struct Box[T] {
+	value T
+}
+
+fn (box Box[T]) str() string {
+	return "explicit-box"
+}
+
+fn use(value int) string {
+	box := Box[int]{value: value}
+	return "\${box}"
+}
+'
+		},
+	])
+	fn_names := mono_fn_names(files)
+	box_str := mono_assert_method_clone_by_receiver(files, 'Box_T_int', 'str')
+	assert 'Box_T_int__str' !in fn_names, 'auto-str/full-symbol FnDecl should not replace explicit generic method: ${fn_names}'
+	assert 'Box__str' !in fn_names
+	literals := mono_string_literals_for_decl(box_str)
+	assert '"explicit-box"' in literals, 'explicit generic str body was not cloned, got literals ${literals}'
+	call_names := mono_call_names_for_fn(files, 'use')
+	assert call_names == ['Box_T_int__str'], 'interpolation should call specialized explicit str, got ${call_names}'
+	mono_assert_no_open_str_calls(call_names, [
+		'Box__str',
+		'main__Box__str',
+	])
+}
+
+fn test_flat_direct_explicit_generic_str_interpolation_uses_specialized_method_not_auto_str() {
+	files := mono_transform_sources_flat_direct_for_test([
+		MonoSource{
+			rel:  'main.v'
+			code: '
+module main
+
+struct Box[T] {
+	value T
+}
+
+fn (box Box[T]) str() string {
+	return "explicit-box"
+}
+
+fn use(value int) string {
+	box := Box[int]{value: value}
+	return "\${box}"
+}
+'
+		},
+	])
+	fn_names := mono_fn_names(files)
+	box_str := mono_assert_method_clone_by_receiver(files, 'Box_T_int', 'str')
+	assert 'Box_T_int__str' !in fn_names, 'auto-str/full-symbol FnDecl should not replace explicit generic method: ${fn_names}'
+	assert 'Box__str' !in fn_names
+	literals := mono_string_literals_for_decl(box_str)
+	assert '"explicit-box"' in literals, 'flat direct explicit generic str body was not cloned, got literals ${literals}'
+	call_names := mono_call_names_for_fn(files, 'use')
+	assert call_names == ['Box_T_int__str'], 'flat direct interpolation should call specialized explicit str, got ${call_names}'
+	mono_assert_no_open_str_calls(call_names, [
+		'Box__str',
+		'main__Box__str',
+	])
+}
+
+fn test_nested_generic_explicit_str_rewrites_internal_str_calls() {
+	files := mono_transform_sources_for_test([
+		MonoSource{
+			rel:  'datatypes/node.v'
+			code: '
+module datatypes
+
+pub struct ListNode[T] {
+	value T
+}
+
+pub fn (node ListNode[T]) str() string {
+	return "node"
+}
+'
+		},
+		MonoSource{
+			rel:  'datatypes/linked_list.v'
+			code: '
+module datatypes
+
+pub struct LinkedList[T] {
+	head ListNode[T]
+}
+
+pub fn (list LinkedList[T]) str() string {
+	return "\${list.head}"
+}
+'
+		},
+		MonoSource{
+			rel:  'datatypes/queue.v'
+			code: '
+module datatypes
+
+pub struct Queue[T] {
+	list LinkedList[T]
+}
+
+pub fn (queue Queue[T]) str() string {
+	return "\${queue.list}"
+}
+'
+		},
+		MonoSource{
+			rel:  'main.v'
+			code: '
+module main
+
+import datatypes
+
+fn use() string {
+	queue := datatypes.Queue[[]string]{}
+	return "\${queue}"
+}
+'
+		},
+	])
+	queue_str := mono_assert_method_clone_by_receiver(files, 'Queue_T_Array_string', 'str')
+	linked_str := mono_assert_method_clone_by_receiver(files, 'LinkedList_T_Array_string', 'str')
+	mono_assert_method_clone_by_receiver(files, 'ListNode_T_Array_string', 'str')
+	call_names := mono_call_names_for_fn(files, 'use')
+	assert call_names == ['datatypes__Queue_T_Array_string__str'], 'interpolation should call specialized Queue str, got ${call_names}'
+	mono_assert_no_open_str_calls(call_names, [
+		'datatypes__Queue__str',
+		'Queue__str',
+	])
+	queue_body_calls := mono_call_names_for_decl(queue_str)
+	linked_body_calls := mono_call_names_for_decl(linked_str)
+	assert 'datatypes__LinkedList_T_Array_string__str' in queue_body_calls, 'Queue str body should call specialized LinkedList str, got ${queue_body_calls}'
+	mono_assert_no_open_str_calls(queue_body_calls, [
+		'datatypes__LinkedList__str',
+		'LinkedList__str',
+	])
+	assert 'datatypes__ListNode_T_Array_string__str' in linked_body_calls, 'LinkedList str body should call specialized ListNode str, got ${linked_body_calls}'
+	mono_assert_no_open_str_calls(linked_body_calls, [
+		'datatypes__ListNode__str',
+		'ListNode__str',
+	])
+}
+
+fn test_flat_direct_queue_nested_array_str_interpolation_forces_str_cascade() {
+	files := mono_transform_sources_flat_direct_for_test([
+		MonoSource{
+			rel:  'datatypes/linked_list.v'
+			code: '
+module datatypes
+
+pub struct LinkedList[T] {
+mut:
+	values []T
+}
+
+pub fn (mut list LinkedList[T]) push(value T) {
+	list.values << value
+}
+
+pub fn (list LinkedList[T]) array() []T {
+	return list.values
+}
+
+pub fn (list LinkedList[T]) str() string {
+	return list.array().str()
+}
+'
+		},
+		MonoSource{
+			rel:  'datatypes/queue.v'
+			code: '
+module datatypes
+
+pub struct Queue[T] {
+mut:
+	elements LinkedList[T]
+}
+
+pub fn (mut queue Queue[T]) push(value T) {
+	queue.elements.push(value)
+}
+
+pub fn (queue Queue[T]) str() string {
+	return queue.elements.str()
+}
+'
+		},
+		MonoSource{
+			rel:  'main.v'
+			code: '
+module main
+
+import datatypes
+
+fn use(value []string) string {
+	mut queue := datatypes.Queue[[]string]{}
+	queue.push(value)
+	return "\${queue}"
+}
+'
+		},
+	])
+	fn_names := mono_fn_names(files)
+	call_names := mono_call_names_for_fn(files, 'use')
+	queue_push := mono_assert_method_clone_by_receiver(files, 'Queue_T_Array_string', 'push')
+	queue_str := mono_assert_method_clone_by_receiver(files, 'Queue_T_Array_string', 'str')
+	linked_push := mono_assert_method_clone_by_receiver(files, 'LinkedList_T_Array_string', 'push')
+	linked_str := mono_assert_method_clone_by_receiver(files, 'LinkedList_T_Array_string', 'str')
+	mono_assert_method_clone_by_receiver(files, 'LinkedList_T_Array_string', 'array')
+	assert 'datatypes__Queue_T_Array_string__str' !in fn_names, 'auto-str/full-symbol FnDecl should not replace explicit Queue.str: ${fn_names}'
+	assert call_names == [
+		'datatypes__Queue_T_Array_string__push',
+		'datatypes__Queue_T_Array_string__str',
+	], 'flat direct Queue interpolation should call specialized explicit str without a prior queue.str(), got ${call_names}'
+	queue_push_calls := mono_call_names_for_decl(queue_push)
+	queue_str_calls := mono_call_names_for_decl(queue_str)
+	linked_push_calls := mono_call_names_for_decl(linked_push)
+	linked_str_calls := mono_call_names_for_decl(linked_str)
+	assert 'datatypes__LinkedList_T_Array_string__push' in queue_push_calls, 'Queue.push body should specialize LinkedList.push, got ${queue_push_calls}'
+	assert 'datatypes__LinkedList_T_Array_string__str' in queue_str_calls, 'Queue.str body should specialize LinkedList.str, got ${queue_str_calls}'
+	assert 'datatypes__LinkedList_T_Array_string__array' in linked_str_calls, 'LinkedList.str body should specialize LinkedList.array, got ${linked_str_calls}'
+	assert 'Array_Array_string_str' in linked_str_calls, 'LinkedList.str body should call nested array str helper, got ${linked_str_calls}'
+	mono_assert_no_unresolved_generic_receiver_names(fn_names, 'flat direct Queue str fn decls')
+	mono_assert_no_unresolved_generic_receiver_names(call_names,
+		'flat direct Queue interpolation body')
+	mono_assert_no_unresolved_generic_receiver_names(queue_push_calls,
+		'flat direct Queue.push body')
+	mono_assert_no_unresolved_generic_receiver_names(queue_str_calls, 'flat direct Queue.str body')
+	mono_assert_no_unresolved_generic_receiver_names(linked_push_calls,
+		'flat direct LinkedList.push body')
+	mono_assert_no_unresolved_generic_receiver_names(linked_str_calls,
+		'flat direct LinkedList.str body')
+	mono_assert_no_open_str_calls(call_names, [
+		'datatypes__Queue__str',
+		'Queue__str',
+	])
+	mono_assert_no_open_str_calls(queue_str_calls, [
+		'datatypes__LinkedList__str',
+		'LinkedList__str',
+	])
+}
+
+fn test_flat_direct_imported_generic_receiver_clone_body_keeps_bindings() {
+	files := mono_transform_sources_flat_direct_for_test([
+		MonoSource{
+			rel:  'datatypes/linked_list.v'
+			code: '
+module datatypes
+
+pub struct LinkedList[T] {
+mut:
+	values []T
+}
+
+pub fn (mut list LinkedList[T]) push(value T) {
+	list.values << value
+}
+
+pub fn (list LinkedList[T]) is_empty() bool {
+	return list.values.len == 0
+}
+
+pub fn (mut list LinkedList[T]) shift() !T {
+	return list.values[0]
+}
+'
+		},
+		MonoSource{
+			rel:  'datatypes/queue.v'
+			code: '
+module datatypes
+
+pub struct Queue[T] {
+mut:
+	elements LinkedList[T]
+}
+
+pub fn (mut queue Queue[T]) push(value T) {
+	queue.elements.push(value)
+}
+
+pub fn (queue Queue[T]) is_empty() bool {
+	return queue.elements.is_empty()
+}
+
+pub fn (mut queue Queue[T]) pop() !T {
+	return queue.elements.shift()
+}
+'
+		},
+		MonoSource{
+			rel:  'main.v'
+			code: '
+module main
+
+import datatypes
+
+fn use(value []string) bool {
+	mut queue := datatypes.Queue[[]string]{}
+	queue.push(value)
+	if queue.is_empty() {
+		return false
+	}
+	popped := queue.pop() or { return false }
+	return popped.len == 1
+}
+'
+		},
+	])
+	fn_names := mono_fn_names(files)
+	call_names := mono_call_names_for_fn(files, 'use')
+	queue_push := mono_assert_method_clone_by_receiver(files, 'Queue_T_Array_string', 'push')
+	queue_is_empty := mono_assert_method_clone_by_receiver(files, 'Queue_T_Array_string',
+		'is_empty')
+	queue_pop := mono_assert_method_clone_by_receiver(files, 'Queue_T_Array_string', 'pop')
+	mono_assert_method_clone_by_receiver(files, 'LinkedList_T_Array_string', 'push')
+	mono_assert_method_clone_by_receiver(files, 'LinkedList_T_Array_string', 'is_empty')
+	mono_assert_method_clone_by_receiver(files, 'LinkedList_T_Array_string', 'shift')
+	assert call_names == [
+		'datatypes__Queue_T_Array_string__push',
+		'datatypes__Queue_T_Array_string__is_empty',
+		'datatypes__Queue_T_Array_string__pop',
+	], 'flat direct should specialize imported Queue[[]string] calls, got ${call_names}'
+	push_body_calls := mono_call_names_for_decl(queue_push)
+	is_empty_body_calls := mono_call_names_for_decl(queue_is_empty)
+	pop_body_calls := mono_call_names_for_decl(queue_pop)
+	assert 'datatypes__LinkedList_T_Array_string__push' in push_body_calls, 'Queue.push body should specialize LinkedList.push, got ${push_body_calls}'
+	assert 'datatypes__LinkedList_T_Array_string__is_empty' in is_empty_body_calls, 'Queue.is_empty body should specialize LinkedList.is_empty, got ${is_empty_body_calls}'
+	assert 'datatypes__LinkedList_T_Array_string__shift' in pop_body_calls, 'Queue.pop body should specialize LinkedList.shift, got ${pop_body_calls}'
+	mono_assert_no_unresolved_generic_receiver_names(fn_names, 'flat direct fn decls')
+	mono_assert_no_unresolved_generic_receiver_names(call_names, 'flat direct use body')
+	mono_assert_no_unresolved_generic_receiver_names(push_body_calls, 'flat direct Queue.push body')
+	mono_assert_no_unresolved_generic_receiver_names(is_empty_body_calls,
+		'flat direct Queue.is_empty body')
+	mono_assert_no_unresolved_generic_receiver_names(pop_body_calls, 'flat direct Queue.pop body')
 }
 
 fn test_transform_dijkstra_shape_rewrites_inferred_generic_nested_array_call() {
