@@ -6493,6 +6493,24 @@ fn (t &Transformer) index_expr_storage_type(expr ast.IndexExpr) ?types.Type {
 	return none
 }
 
+fn (t &Transformer) map_type_expr_type(expr ast.Expr) ?types.Type {
+	if typ := t.type_from_param_type_expr(expr, []) {
+		if _ := t.unwrap_map_type(typ) {
+			return typ
+		}
+	}
+	if typ := t.get_expr_type(expr) {
+		if _ := t.unwrap_map_type(typ) {
+			return typ
+		}
+	}
+	return none
+}
+
+fn (t &Transformer) map_init_expr_type(expr ast.MapInitExpr) ?types.Type {
+	return t.map_type_expr_type(expr.typ)
+}
+
 fn (t &Transformer) decl_assign_storage_type(lhs ast.Expr, rhs ast.Expr) ?types.Type {
 	if typ := t.fn_pointer_call_return_type(rhs) {
 		return typ
@@ -6502,6 +6520,11 @@ fn (t &Transformer) decl_assign_storage_type(lhs ast.Expr, rhs ast.Expr) ?types.
 	}
 	if rhs is ast.ArrayInitExpr {
 		if typ := t.get_array_init_expr_type(rhs) {
+			return typ
+		}
+	}
+	if rhs is ast.MapInitExpr {
+		if typ := t.map_init_expr_type(rhs) {
 			return typ
 		}
 	}
@@ -6524,6 +6547,9 @@ fn (t &Transformer) decl_assign_storage_type(lhs ast.Expr, rhs ast.Expr) ?types.
 		}
 	}
 	if rhs is ast.InitExpr {
+		if typ := t.map_type_expr_type(rhs.typ) {
+			return typ
+		}
 		if typ := t.type_from_init_expr(rhs) {
 			return typ
 		}
@@ -14543,7 +14569,12 @@ fn (mut t Transformer) generate_str_functions_with_explicit(explicit_str_fns map
 	mut generated := map[string]bool{}
 	for {
 		mut found_new := false
-		for fn_name, elem_type in t.needed_str_fns {
+		// Generators below can register recursive str dependencies in
+		// `needed_str_fns`; iterate a stable snapshot to avoid mutating the map
+		// currently being walked.
+		pending_str_fns := t.needed_str_fns.keys()
+		for fn_name in pending_str_fns {
+			elem_type := t.needed_str_fns[fn_name] or { continue }
 			if fn_name in generated {
 				continue
 			}

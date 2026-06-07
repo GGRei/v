@@ -7182,6 +7182,27 @@ fn test_transform_init_expr_empty_typed_map_lowers_to_new_map() {
 	assert call.args.len == 6
 }
 
+fn test_decl_assign_map_init_registers_local_map_type_for_index_or() {
+	files := transform_code_for_test('
+fn lookup_bucket() []int {
+	mut per_file_clones := map[int][]int{}
+	mut bucket := per_file_clones[0] or { []int{} }
+	return bucket
+}
+')
+	assert files.len == 1
+	for stmt in files[0].stmts {
+		if stmt is ast.FnDecl && stmt.name == 'lookup_bucket' {
+			_ = find_call_with_lhs_suffix_in_stmts(stmt.stmts, 'map__get_check') or {
+				assert false, 'expected map index or-block to lower through map__get_check'
+				return
+			}
+			return
+		}
+	}
+	assert false, 'missing lookup_bucket fn'
+}
+
 fn test_transform_string_index_or_assign_expands_to_bounds_check() {
 	mut t := create_transformer_with_vars({
 		's': types.Type(types.string_)

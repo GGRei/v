@@ -3443,6 +3443,33 @@ fn test_struct_decl_emits_late_dynamic_array_alias() {
 	assert out.contains('\tArray_Foo items;')
 }
 
+fn test_runtime_array_aliases_skip_known_function_symbol_collisions() {
+	mut gen := Gen.new([])
+	for alias_name in ['Array_u8', 'Array_ast__Expr', 'Array_u8__bytestr', 'Array_u8__utf8_to_utf32',
+		'Array_ast__Expr__name_list'] {
+		gen.array_aliases[alias_name] = true
+	}
+	gen.fn_return_types['Array_u8__bytestr'] = 'string'
+	gen.fn_param_is_ptr['Array_u8__utf8_to_utf32'] = [false]
+	gen.declared_fn_names['Array_ast__Expr__name_list'] = true
+
+	gen.emit_runtime_aliases()
+	out := gen.sb.str()
+	assert out.contains('typedef array Array_u8;'), out
+	assert out.contains('typedef array Array_ast__Expr;'), out
+	assert !out.contains('typedef array Array_u8__bytestr;'), out
+	assert !out.contains('typedef array Array_u8__utf8_to_utf32;'), out
+	assert !out.contains('typedef array Array_ast__Expr__name_list;'), out
+	assert !out.contains('((Array_u8__bytestr)('), out
+	assert !out.contains('((Array_u8__utf8_to_utf32)('), out
+	assert !out.contains('((Array_ast__Expr__name_list)('), out
+	assert 'Array_u8' in gen.array_aliases
+	assert 'Array_ast__Expr' in gen.array_aliases
+	assert 'Array_u8__bytestr' !in gen.array_aliases
+	assert 'Array_u8__utf8_to_utf32' !in gen.array_aliases
+	assert 'Array_ast__Expr__name_list' !in gen.array_aliases
+}
+
 fn test_struct_dependency_order_uses_fixed_array_element_type() {
 	csrc := cleanc_csrc_for_test_source('fixed_array_struct_order', 'module main
 
@@ -4654,11 +4681,13 @@ fn main() {
 	call_cb(mut b, use_beta)
 }
 ')
-	assert csrc.contains('call_cb_T_Alpha_fn_a_Alpha_void(&a, use_alpha);'), csrc
-	assert csrc.contains('call_cb_T_Beta_fn_b_Beta_void(&b, use_beta);'), csrc
 	assert csrc.contains('void call_cb_T_Alpha_fn_a_Alpha_void(Alpha* value, void (*cb)(Alpha*))'), csrc
 	assert csrc.contains('void call_cb_T_Beta_fn_b_Beta_void(Beta* value, void (*cb)(Beta*))'), csrc
+	assert csrc.contains('call_cb_T_Alpha_fn_a_Alpha_void(&a, (void (*)(Alpha*))(use_alpha));'), csrc
+	assert csrc.contains('call_cb_T_Beta_fn_b_Beta_void(&b, (void (*)(Beta*))(use_beta));'), csrc
 	assert csrc.contains('cb(value);'), csrc
+	assert !csrc.contains('call_cb_T_Alpha_fn_a_Alpha_void(&a, use_alpha);'), csrc
+	assert !csrc.contains('call_cb_T_Beta_fn_b_Beta_void(&b, use_beta);'), csrc
 	assert !csrc.contains('call_cb_T_Alpha_voidptr'), csrc
 	assert !csrc.contains('call_cb_T_Beta_voidptr'), csrc
 	assert !csrc.contains('((void (*)(Alpha*))cb)(*value);'), csrc

@@ -3161,60 +3161,92 @@ fn (mut g Gen) active_generic_concrete_struct_for_c_name(c_name string) ?types.S
 	return none
 }
 
-fn (mut g Gen) is_fn_pointer_alias_type(type_name string) bool {
+fn (mut g Gen) known_fn_pointer_alias_c_name(type_name string) ?string {
 	if type_name == '' {
-		return false
+		return none
 	}
 	if raw_type := g.lookup_type_by_c_name(type_name) {
 		if raw_type is types.Alias && raw_type.base_type is types.FnType {
-			return true
+			return type_name
 		}
 	}
-	if g.env == unsafe { nil } {
-		return type_name.ends_with('Fn')
+	if type_name in g.fn_type_aliases {
+		return type_name
 	}
-	mut candidates := []string{cap: 3}
-	candidates << type_name
+	if g.cur_module != '' {
+		qualified := '${g.cur_module}__${type_name}'
+		if qualified in g.fn_type_aliases {
+			return qualified
+		}
+	}
+	if mut scope := g.env_scope(g.cur_module) {
+		if obj := scope.lookup_parent(type_name, 0) {
+			typ := obj.typ()
+			if typ is types.Alias {
+				if typ.base_type is types.FnType {
+					return type_name
+				}
+			}
+		}
+	}
+	if mut scope := g.env_scope('builtin') {
+		if obj := scope.lookup_parent(type_name, 0) {
+			typ := obj.typ()
+			if typ is types.Alias {
+				if typ.base_type is types.FnType {
+					return type_name
+				}
+			}
+		}
+	}
 	if type_name.contains('__') {
-		candidates << type_name.all_after_last('__')
+		mod_name := type_name.all_before('__')
+		short_name := type_name.all_after('__')
+		if mut scope := g.env_scope(mod_name) {
+			if obj := scope.lookup_parent(short_name, 0) {
+				typ := obj.typ()
+				if typ is types.Alias {
+					if typ.base_type is types.FnType {
+						return type_name
+					}
+				}
+			}
+		}
 	}
-	for cand in candidates {
-		if mut scope := g.env_scope(g.cur_module) {
-			if obj := scope.lookup_parent(cand, 0) {
-				typ := obj.typ()
-				if typ is types.Alias {
-					if typ.base_type is types.FnType {
-						return true
-					}
-				}
-			}
-		}
-		if mut scope := g.env_scope('builtin') {
-			if obj := scope.lookup_parent(cand, 0) {
-				typ := obj.typ()
-				if typ is types.Alias {
-					if typ.base_type is types.FnType {
-						return true
-					}
-				}
-			}
-		}
-		if cand.contains('__') {
-			mod_name := cand.all_before('__')
-			short_name := cand.all_after('__')
-			if mut scope := g.env_scope(mod_name) {
-				if obj := scope.lookup_parent(short_name, 0) {
-					typ := obj.typ()
-					if typ is types.Alias {
-						if typ.base_type is types.FnType {
-							return true
-						}
-					}
-				}
-			}
-		}
+	return none
+}
+
+fn (mut g Gen) is_known_fn_pointer_alias_type(type_name string) bool {
+	if _ := g.known_fn_pointer_alias_c_name(type_name) {
+		return true
+	}
+	return false
+}
+
+fn (mut g Gen) is_fn_pointer_alias_type(type_name string) bool {
+	if g.is_known_fn_pointer_alias_type(type_name) {
+		return true
 	}
 	return type_name.ends_with('Fn')
+}
+
+fn (mut g Gen) fn_pointer_alias_value_cast_type(type_name string) ?string {
+	name := type_name.trim_space()
+	if name == '' {
+		return none
+	}
+	if alias_name := g.known_fn_pointer_alias_c_name(name) {
+		return alias_name
+	}
+	if name.ends_with('*') {
+		base := name.trim_right('*').trim_space()
+		if base != '' {
+			if alias_name := g.known_fn_pointer_alias_c_name(base) {
+				return alias_name
+			}
+		}
+	}
+	return none
 }
 
 fn simd_vector_field_order(type_name string) []string {

@@ -7908,6 +7908,95 @@ fn (mut g Gen) gen_auto_deref_value_param_arg(param_type string, base_arg ast.Ex
 	return true
 }
 
+fn (mut g Gen) function_pointer_param_cast_type(param_type string) string {
+	expected_type := param_type.trim_space()
+	if expected_type == '' {
+		return ''
+	}
+	if expected_type.contains('(*)') || runtime_callback_alias_value_type(expected_type)
+		|| g.is_known_fn_pointer_alias_type(expected_type) {
+		return expected_type
+	}
+	return g.fn_pointer_alias_value_cast_type(expected_type) or { '' }
+}
+
+fn runtime_callback_alias_value_type(type_name string) bool {
+	return type_name == 'FnSortCB'
+}
+
+fn (mut g Gen) expr_is_function_pointer_value(expr ast.Expr) bool {
+	if expr is ast.FnLiteral {
+		return true
+	}
+	if expr is ast.Ident {
+		name := sanitize_fn_ident(expr.name)
+		if name == '' || name == 'nil' {
+			return false
+		}
+		if name in g.fn_return_types || name in g.v_fn_return_types || name in g.fn_param_is_ptr
+			|| name in g.fn_param_types {
+			return true
+		}
+		if name in freestanding_heap_runtime_helper_names() {
+			return true
+		}
+		if g.cur_module != '' && !name.contains('__') {
+			qualified := '${g.cur_module}__${name}'
+			if qualified in g.fn_return_types || qualified in g.v_fn_return_types
+				|| qualified in g.fn_param_is_ptr || qualified in g.fn_param_types {
+				return true
+			}
+		}
+	}
+	if g.is_fn_pointer_expr(expr) {
+		return true
+	}
+	if raw_type := g.get_raw_type(expr) {
+		if _ := extract_fn_type(raw_type) {
+			return true
+		}
+	}
+	return false
+}
+
+fn (mut g Gen) gen_function_pointer_param_cast_arg(param_type string, base_arg ast.Expr) bool {
+	cast_type := g.function_pointer_param_cast_type(param_type)
+	if cast_type == '' {
+		return false
+	}
+	if !g.expr_is_function_pointer_value(base_arg) {
+		return false
+	}
+	g.sb.write_string('(${cast_type})(')
+	g.expr(base_arg)
+	g.sb.write_string(')')
+	return true
+}
+
+fn runtime_call_signature_param_type(fn_name string, idx int) string {
+	// Some lowered runtime helpers are emitted without an AST FnDecl. Keep this
+	// as signature metadata only; casts remain driven by the expected parameter.
+	match fn_name {
+		'array__sort_with_compare', 'array__sorted_with_compare' {
+			if idx == 1 {
+				return 'FnSortCB'
+			}
+		}
+		else {}
+	}
+
+	return ''
+}
+
+fn (g &Gen) call_arg_expected_param_type(fn_name string, idx int) string {
+	if param_types := g.fn_param_types[fn_name] {
+		if idx < param_types.len {
+			return param_types[idx]
+		}
+	}
+	return runtime_call_signature_param_type(fn_name, idx)
+}
+
 fn (mut g Gen) gen_call_arg(fn_name string, idx int, arg ast.Expr) {
 	base_arg := if arg is ast.ModifierExpr { arg.expr } else { arg }
 	if fn_name == 'json__decode' && idx == 0 {
@@ -7940,12 +8029,7 @@ fn (mut g Gen) gen_call_arg(fn_name string, idx int, arg ast.Expr) {
 	}
 	// Sum type variable narrowed via `is` check, passed to a function expecting the variant type.
 	// Only extract when the parameter type matches the narrowed type (not the original sum type).
-	mut expected_param_type := ''
-	if param_types := g.fn_param_types[fn_name] {
-		if idx < param_types.len {
-			expected_param_type = param_types[idx]
-		}
-	}
+	mut expected_param_type := g.call_arg_expected_param_type(fn_name, idx)
 	if fn_name.contains('_T_') {
 		if derived_param_type := g.specialized_generic_call_param_type(fn_name, idx) {
 			if expected_param_type == '' || expected_param_type == 'Array_T'
@@ -7960,9 +8044,7 @@ fn (mut g Gen) gen_call_arg(fn_name string, idx int, arg ast.Expr) {
 		return
 	}
 	if expected_param_type != ''
-		&& (expected_param_type.contains('(*)') || g.is_fn_pointer_alias_type(expected_param_type))
-		&& base_arg is ast.FnLiteral {
-		g.expr(base_arg)
+		&& g.gen_function_pointer_param_cast_arg(expected_param_type, base_arg) {
 		return
 	}
 	if expected_param_type.ends_with('*')
@@ -10698,6 +10780,9 @@ fn (mut g Gen) call_expr(lhs ast.Expr, args []ast.Expr) {
 		// Handle C.puts, C.putchar etc.
 		if lhs.lhs is ast.Ident && lhs.lhs.name == 'C' {
 			name = lhs.rhs.name
+			if name == 'gettid' && g.target_os_name() != 'windows' && !g.is_freestanding_target() {
+				name = 'v_cleanc_gettid'
+			}
 			// With prealloc, free() is redefined as a no-op macro.
 			// C.free calls in prealloc_vcleanup need the real free via _v_cfree.
 			if name == 'free' && g.pref != unsafe { nil } && g.pref.prealloc {

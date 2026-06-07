@@ -873,21 +873,6 @@ fn (mut g Gen) fn_type_alias_name_for_base_expr(base ast.Expr) ?string {
 			return candidate
 		}
 	}
-	for candidate in candidates {
-		short_name := if candidate.contains('__') {
-			candidate.all_after_last('__')
-		} else {
-			candidate
-		}
-		if short_name == '' {
-			continue
-		}
-		for alias_name, _ in g.fn_type_aliases {
-			if alias_name == short_name || alias_name.ends_with('__${short_name}') {
-				return alias_name
-			}
-		}
-	}
 	return none
 }
 
@@ -908,6 +893,9 @@ fn (mut g Gen) fn_type_alias_name_from_generic_name(name string) ?string {
 fn (mut g Gen) fn_type_alias_cast_type(lhs ast.Expr) ?string {
 	match lhs {
 		ast.Ident {
+			if alias_name := g.fn_type_alias_name_for_base_expr(lhs) {
+				return alias_name
+			}
 			return g.fn_type_alias_name_from_generic_name(lhs.name)
 		}
 		ast.SelectorExpr {
@@ -1031,6 +1019,10 @@ fn (mut g Gen) call_or_cast_lhs_is_type(lhs ast.Expr) bool {
 fn (mut g Gen) gen_call_or_cast_expr(node ast.CallOrCastExpr) {
 	if node.expr is ast.EmptyExpr {
 		g.call_expr(node.lhs, []ast.Expr{})
+		return
+	}
+	if cast_type := g.fn_type_alias_cast_type(node.lhs) {
+		g.gen_type_cast_expr(cast_type, node.expr)
 		return
 	}
 	if g.call_or_cast_lhs_is_type(node.lhs) {
@@ -3500,6 +3492,12 @@ fn (mut g Gen) expr_is_explicit_value_of_type(expr ast.Expr, type_name string) b
 }
 
 fn (mut g Gen) gen_type_cast_expr(type_name string, expr ast.Expr) {
+	if cast_type := g.fn_pointer_alias_value_cast_type(type_name) {
+		g.sb.write_string('((${cast_type})(')
+		g.expr(expr)
+		g.sb.write_string('))')
+		return
+	}
 	expr_type := g.get_expr_type(expr)
 	if type_name.starts_with('_option_') && is_none_like_expr(expr) {
 		g.sb.write_string('(${type_name}){ .state = 2 }')
@@ -5909,6 +5907,17 @@ fn same_aggregate_cast_type(expr_type string, type_name string) bool {
 
 fn (mut g Gen) gen_cast_expr(node ast.CastExpr) {
 	mut type_name := g.expr_type_to_c(node.typ)
+	if cast_type := g.fn_type_alias_cast_type(node.typ) {
+		type_name = cast_type
+	} else if cast_type := g.fn_pointer_alias_value_cast_type(type_name) {
+		type_name = cast_type
+	}
+	if g.is_known_fn_pointer_alias_type(type_name) {
+		g.sb.write_string('((${type_name})(')
+		g.expr(node.expr)
+		g.sb.write_string('))')
+		return
+	}
 	if resolved_type := g.resolved_sum_data_cast_type(node) {
 		type_name = resolved_type
 	}

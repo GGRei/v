@@ -1795,36 +1795,15 @@ fn (mut g Gen) scan_weak_generic_specializations_from_non_emit_files(root_called
 }
 
 fn (mut g Gen) scan_weak_generic_fn_specializations(node &ast.FnDecl, root_called_names map[string]bool, required_names map[string]bool, mut needed_names map[string]bool, mut required_names_mut map[string]bool, mut scanned map[string]bool) {
-	$if trace_weak ? {
-		t_before := g.process_rss_mb()
-		specs_before_len := needed_names.len
-		mut scan_count := 0
-		for spec in g.weak_generic_fn_specializations_for_names(node, needed_names,
-			root_called_names, required_names) {
-			scan_key := '${g.cur_module}.${node.name}:${spec.name}'
-			if scan_key in scanned {
-				continue
-			}
-			scanned[scan_key] = true
-			scan_count++
-			g.scan_weak_specialization_body(node, spec.name, spec.generic_types, mut needed_names, mut
-				required_names_mut)
+	for spec in g.weak_generic_fn_specializations_for_names(node, needed_names, root_called_names,
+		required_names) {
+		scan_key := '${g.cur_module}.${node.name}:${spec.name}'
+		if scan_key in scanned {
+			continue
 		}
-		t_after := g.process_rss_mb()
-		if t_after - t_before > 50 || scan_count > 5 {
-			eprintln('[weak]   scan_fn ${g.cur_module}.${node.name} new_scans=${scan_count} rss_mb=${t_before}->${t_after} needed=${specs_before_len}->${needed_names.len}')
-		}
-	} $else {
-		for spec in g.weak_generic_fn_specializations_for_names(node, needed_names,
-			root_called_names, required_names) {
-			scan_key := '${g.cur_module}.${node.name}:${spec.name}'
-			if scan_key in scanned {
-				continue
-			}
-			scanned[scan_key] = true
-			g.scan_weak_specialization_body(node, spec.name, spec.generic_types, mut needed_names, mut
-				required_names_mut)
-		}
+		scanned[scan_key] = true
+		g.scan_weak_specialization_body(node, spec.name, spec.generic_types, mut needed_names, mut
+			required_names_mut)
 	}
 }
 
@@ -2160,32 +2139,6 @@ fn (mut g Gen) generic_types_from_specialized_fn_name(node ast.FnDecl, fn_name s
 	return generic_types
 }
 
-// process_rss_mb returns the current process's resident set size in
-// megabytes, or 0 if it can't be determined. Used by the `trace_weak`
-// diagnostics to track peak memory across codegen passes. Linux reads
-// `/proc/self/statm`; macOS shells out to `ps`; other platforms return 0.
-fn (g &Gen) process_rss_mb() i64 {
-	$if linux {
-		data := os.read_file('/proc/self/statm') or { return 0 }
-		parts := data.split(' ')
-		if parts.len < 2 {
-			return 0
-		}
-		pages := parts[1].i64()
-		raw_page_size := i64(C.sysconf(C._SC_PAGESIZE))
-		page_size := if raw_page_size > 0 { raw_page_size } else { i64(4096) }
-		return (pages * page_size) / (1024 * 1024)
-	}
-	$if macos {
-		out := os.execute('ps -o rss= -p ${os.getpid()}')
-		if out.exit_code != 0 {
-			return 0
-		}
-		return out.output.trim_space().i64() / 1024
-	}
-	return 0
-}
-
 fn (mut g Gen) split_specialization_suffix(suffix string, parts int) ?[]string {
 	if parts <= 0 || suffix == '' {
 		return none
@@ -2293,7 +2246,8 @@ fn (mut g Gen) emit_weak_receiver_generic_method_specializations(node &ast.FnDec
 // Used by parallel dispatch — each worker calls this with its assigned chunk.
 pub fn (mut g Gen) gen_pass5_files(file_indices []int) {
 	for fi in file_indices {
-		g.gen_file(g.files[fi])
+		file := g.files[fi]
+		g.gen_file(file)
 	}
 }
 

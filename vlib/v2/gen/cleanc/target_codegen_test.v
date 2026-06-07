@@ -245,6 +245,45 @@ fn generated_c_for_target_program(name string, source string) string {
 	return generated_c_for_target_program_with_options(name, source, 'linux', false, false)
 }
 
+struct CleancTargetTestSource {
+	path string
+	code string
+}
+
+fn generated_c_for_target_sources(name string, sources []CleancTargetTestSource) string {
+	tmp_dir := os.join_path(os.temp_dir(), 'v2_cleanc_target_codegen_${name}_${os.getpid()}')
+	os.rmdir_all(tmp_dir) or {}
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+
+	mut paths := []string{cap: sources.len}
+	for source in sources {
+		tmp_file := os.join_path(tmp_dir, source.path)
+		os.mkdir_all(os.dir(tmp_file)) or { panic(err) }
+		os.write_file(tmp_file, source.code) or { panic(err) }
+		paths << tmp_file
+	}
+
+	prefs := &vpref.Preferences{
+		backend:     .cleanc
+		target_os:   'linux'
+		no_parallel: true
+	}
+	mut file_set := token.FileSet.new()
+	mut par := parser.Parser.new(prefs)
+	files := par.parse_files(paths, mut file_set)
+	env := types.Environment.new()
+	mut checker := types.Checker.new(prefs, file_set, env)
+	checker.check_files(files)
+	mut trans := transformer.Transformer.new_with_pref(env, prefs)
+	trans.set_file_set(file_set)
+	transformed_files := trans.transform_files(files)
+	mut gen := Gen.new_with_env_and_pref(transformed_files, env, prefs)
+	return gen.gen()
+}
+
 fn generated_c_for_target_program_with_options(name string, source string, target_os string, freestanding bool, skip_builtin bool) string {
 	return generated_c_for_target_program_with_defines(name, source, target_os, [], freestanding,
 		skip_builtin)
@@ -906,6 +945,89 @@ fn test_preamble_specializes_apple_includes_by_target() {
 	assert full_cross_src.contains('#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <unistd.h>')
 	assert full_cross_src.contains('#include <pthread.h>\n#include <sys/time.h>')
 	assert full_cross_src.contains('extern char** environ;\n#endif')
+}
+
+fn assert_no_gettid_fallback(src string) {
+	assert !src.contains('#include <sys/syscall.h>')
+	assert !src.contains('#ifndef gettid')
+	assert !src.contains('#define gettid() syscall(SYS_gettid)')
+	assert !src.contains('v_cleanc_gettid')
+}
+
+fn test_gettid_fallback_is_limited_to_hosted_full_linux_preamble() {
+	linux_full_src := full_preamble_for_target('linux', [])
+	assert linux_full_src.contains('#if defined(__linux__)\n#include <sys/syscall.h>\nstatic inline long v_cleanc_gettid(void) {\n\treturn syscall(SYS_gettid);\n}\n#endif')
+	assert !linux_full_src.contains('static inline long v_gettid(void)')
+	assert !linux_full_src.contains('#define gettid')
+
+	cross_full_src := full_preamble_for_target('cross', [])
+	assert cross_full_src.contains('#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <unistd.h>\n#if defined(__linux__)\n#include <sys/syscall.h>\nstatic inline long v_cleanc_gettid(void) {\n\treturn syscall(SYS_gettid);\n}\n#endif')
+	assert !cross_full_src.contains('static inline long v_gettid(void)')
+	assert !cross_full_src.contains('#define gettid')
+
+	assert_no_gettid_fallback(preamble_for_target('linux', []))
+	assert_no_gettid_fallback(preamble_for_target('cross', []))
+	assert_no_gettid_fallback(preamble_for_target('windows', []))
+	assert_no_gettid_fallback(full_preamble_for_target('windows', []))
+	assert_no_gettid_fallback(preamble_for_freestanding_field('linux'))
+	assert_no_gettid_fallback(full_preamble_for_freestanding_field('linux'))
+}
+
+fn test_hosted_linux_gettid_wrapper_compiles_without_implicit_declarations() {
+	$if !linux {
+		return
+	}
+	cc := os.find_abs_path_of_executable('cc') or { return }
+	tmp_c := os.join_path(os.temp_dir(), 'v2_cleanc_gettid_wrapper_${os.getpid()}.c')
+	tmp_o := os.join_path(os.temp_dir(), 'v2_cleanc_gettid_wrapper_${os.getpid()}.o')
+	defer {
+		os.rm(tmp_c) or {}
+		os.rm(tmp_o) or {}
+	}
+	src := full_preamble_for_target('linux', []) +
+		'
+unsigned long long v_gettid(void);
+
+int main(void) {
+	return v_cleanc_gettid() > 0 ? 0 : 1;
+}
+'
+	assert src.contains('v_cleanc_gettid()'), src
+	assert src.contains('unsigned long long v_gettid(void);'), src
+	assert !src.contains('static inline long v_gettid(void)'), src
+	assert !src.contains('#define gettid'), src
+	assert !src.contains(' return gettid('), src
+	os.write_file(tmp_c, src) or { panic(err) }
+	res :=
+		os.execute('${os.quoted_path(cc)} -Werror=implicit-function-declaration -c ${os.quoted_path(tmp_c)} -o ${os.quoted_path(tmp_o)}')
+	assert res.exit_code == 0, res.output
+}
+
+fn test_c_gettid_call_rewrites_only_when_wrapper_is_emitted() {
+	source := 'module main
+
+fn C.gettid() i64
+
+fn main() {
+	_ := C.gettid()
+}
+'
+	src := generated_c_for_target_program('hosted_linux_c_gettid_call', source)
+	assert src.contains('static inline long v_cleanc_gettid(void)'), src
+	assert src.contains('v_cleanc_gettid()'), src
+	assert !src.contains('static inline long v_gettid(void)'), src
+	assert !src.contains('#define gettid'), src
+	assert !src.contains('gettid();'), src
+
+	windows_src := generated_c_for_target_program_with_options('windows_c_gettid_call', source,
+		'windows', false, false)
+	assert !windows_src.contains('static inline long v_cleanc_gettid(void)'), windows_src
+	assert !windows_src.contains('v_cleanc_gettid()'), windows_src
+
+	freestanding_src := generated_c_for_target_program_with_options('freestanding_c_gettid_call',
+		source, 'linux', true, false)
+	assert !freestanding_src.contains('static inline long v_cleanc_gettid(void)'), freestanding_src
+	assert !freestanding_src.contains('v_cleanc_gettid()'), freestanding_src
 }
 
 fn test_freestanding_minimal_preamble_avoids_implicit_os_runtime_headers() {
@@ -1824,4 +1946,185 @@ fn test_freestanding_unresolved_generic_stub_without_panic_hook_refuses_without_
 	src := unresolved_generic_stub_for_hooks(['output'])
 	assert src.contains('#error "v2: unresolved generic stub requires freestanding panic platform hook"')
 	assert_no_hosted_formatting_or_abort_runtime(src)
+}
+
+fn test_generate_c_lowers_sort_callbacks_from_source_in_linux_runnable_target_test() {
+	csrc := generated_c_for_target_program('sort_callback_lowering', '
+module main
+
+struct Def {
+mut:
+	globs []string
+}
+
+struct Issue {
+	created_at int
+}
+
+fn ordered(def Def) Def {
+	mut cloned := def
+	cloned.globs.sort(a < b)
+	return cloned
+}
+
+fn sort_issues(mut issues []Issue) {
+	issues.sort(a.created_at > b.created_at)
+}
+
+fn sorted_globs(def Def) []string {
+	return def.globs.sorted(a < b)
+}
+
+fn sorted_issues(issues []Issue) []Issue {
+	return issues.sorted(a.created_at > b.created_at)
+}
+')
+	assert csrc.contains('array__sort_with_compare(cloned.globs, (FnSortCB)(compare_strings));'), csrc
+	assert csrc.contains('array__sort_with_compare(issues, (FnSortCB)(__sort_cmp_Issue_by_created_at_desc));'), csrc
+	assert csrc.contains('array__sorted_with_compare(def.globs, (FnSortCB)(compare_strings))'), csrc
+	assert csrc.contains('array__sorted_with_compare(issues, (FnSortCB)(__sort_cmp_Issue_by_created_at_desc))'), csrc
+	assert csrc.contains('int __sort_cmp_Issue_by_created_at_desc(Issue* a, Issue* b);'), csrc
+	assert csrc.contains('int __sort_cmp_Issue_by_created_at_desc(Issue* a, Issue* b) {'), csrc
+	assert !csrc.contains('array__sort(&cloned.globs, (a < b))'), csrc
+	assert !csrc.contains('array__sorted(&def.globs, (a < b))'), csrc
+}
+
+fn test_runtime_sort_callback_signature_metadata_expects_fnsortcb() {
+	assert runtime_call_signature_param_type('array__sort_with_compare', 1) == 'FnSortCB'
+	assert runtime_call_signature_param_type('array__sorted_with_compare', 1) == 'FnSortCB'
+	assert runtime_call_signature_param_type('array__sort_with_compare', 0) == ''
+	assert runtime_call_signature_param_type('not_a_runtime_sort_helper', 1) == ''
+}
+
+fn test_generate_c_casts_fn_literal_to_local_function_pointer_alias_param() {
+	csrc := generated_c_for_target_program('local_fn_literal_pointer_alias_cast', '
+module main
+
+type LocalSortCB = fn (a voidptr, b voidptr) int
+
+fn accept_sort_cb(cb LocalSortCB) {}
+
+fn use_local_sort_cb(reverse bool) {
+	accept_sort_cb(fn [reverse] (a voidptr, b voidptr) int {
+		if reverse {
+			return 1
+		}
+		return -1
+	})
+}
+')
+	assert csrc.contains('accept_sort_cb((LocalSortCB)(({'), csrc
+	assert !csrc.contains('accept_sort_cb(({'), csrc
+}
+
+fn test_generate_c_label_before_or_decl_emits_empty_statement() {
+	csrc := generated_c_for_target_program('label_before_or_decl', '
+module main
+
+fn maybe_string() !string {
+	return "ok"
+}
+
+fn label_before_or_decl() string {
+start_no_time:
+	mut s := maybe_string() or { return "" }
+	return s
+}
+')
+	assert csrc.contains('start_no_time:;'), csrc
+	assert csrc.contains('_result_string _or_t'), csrc
+	assert !csrc.contains('start_no_time:\n\t_result_string'), csrc
+}
+
+fn test_generate_c_function_type_alias_result_cast_from_voidptr_uses_alias_value_not_pointer() {
+	csrc := generated_c_for_target_program('fn_alias_result_cast_from_voidptr', '
+module os
+
+type SignalHandler = fn (int)
+
+fn restore_signal_handler(prev_handler voidptr) !SignalHandler {
+	return SignalHandler(prev_handler)
+}
+')
+	assert csrc.contains('_result_os__SignalHandler'), csrc
+	assert csrc.contains('os__SignalHandler _val = ((os__SignalHandler)(prev_handler));'), csrc
+	assert !csrc.contains('_result_os__SignalHandlerptr'), csrc
+	assert !csrc.contains('os__SignalHandler* _val'), csrc
+	assert !csrc.contains('((os__SignalHandler*)'), csrc
+}
+
+fn test_generate_c_function_type_alias_direct_cast_from_voidptr_uses_alias_value_not_pointer() {
+	csrc := generated_c_for_target_program('fn_alias_direct_cast_from_voidptr', '
+module os
+
+type SignalHandler = fn (int)
+
+fn restore_signal_handler(prev_handler voidptr) SignalHandler {
+	return SignalHandler(prev_handler)
+}
+')
+	assert csrc.contains('return ((os__SignalHandler)(prev_handler));'), csrc
+	assert !csrc.contains('((os__SignalHandler*)(prev_handler))'), csrc
+	assert !csrc.contains('((os__SignalHandler*)'), csrc
+}
+
+fn test_generate_c_function_type_alias_collision_uses_qualified_module_not_short_name_fallback() {
+	csrc := generated_c_for_target_sources('fn_alias_short_name_collision', [
+		CleancTargetTestSource{
+			path: 'os/signal.v'
+			code: '
+module os
+
+pub type SignalHandler = fn (int)
+'
+		},
+		CleancTargetTestSource{
+			path: 'other/signal.v'
+			code: '
+module other
+
+pub type SignalHandler = fn (int)
+'
+		},
+		CleancTargetTestSource{
+			path: 'main.v'
+			code: '
+module main
+
+import other
+
+fn restore_other_signal_handler(prev_handler voidptr) !other.SignalHandler {
+	return other.SignalHandler(prev_handler)
+}
+'
+		},
+	])
+	assert csrc.contains('_result_other__SignalHandler'), csrc
+	assert csrc.contains('other__SignalHandler _val = ((other__SignalHandler)(prev_handler));'), csrc
+	assert !csrc.contains('os__SignalHandler _val'), csrc
+	assert !csrc.contains('((os__SignalHandler)(prev_handler))'), csrc
+	assert !csrc.contains('((os__SignalHandler*)(prev_handler))'), csrc
+}
+
+fn test_generate_c_non_function_alias_pointer_keeps_pointer_semantics() {
+	csrc := generated_c_for_target_program('non_fn_alias_pointer_semantics', '
+module main
+
+type Handle = int
+
+struct Holder {
+	handle &Handle
+}
+
+fn holder_from_ptr(handle &Handle) Holder {
+	return Holder{
+		handle: handle
+	}
+}
+')
+	assert csrc.contains('typedef int Handle;'), csrc
+	assert csrc.contains('Handle* handle;'), csrc
+	assert csrc.contains('Holder holder_from_ptr(Handle* handle);'), csrc
+	assert !csrc.contains('Holder holder_from_ptr(Handle handle);'), csrc
+	assert !csrc.contains('Holder holder_from_ptr(main__Handle handle);'), csrc
 }
