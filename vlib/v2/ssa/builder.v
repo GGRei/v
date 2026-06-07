@@ -9652,6 +9652,12 @@ fn (mut b Builder) build_keyword_operator_from_flat(c ast.Cursor) ValueID {
 			}
 			return b.mod.get_or_add_const(b.mod.type_store.get_int(64), '0')
 		}
+		.key_dump {
+			if c.edge_count() > 0 {
+				return b.build_expr_from_flat(c.edge(0))
+			}
+			return b.mod.get_or_add_const(b.mod.type_store.get_int(64), '0')
+		}
 		else {
 			return b.mod.get_or_add_const(b.mod.type_store.get_int(64), '0')
 		}
@@ -17141,6 +17147,12 @@ fn (mut b Builder) build_keyword_operator(kw ast.KeywordOperator) ValueID {
 			// `spawn expr()` - launch an OS thread.
 			if kw.exprs.len > 0 {
 				return b.build_go_or_spawn(kw.exprs[0], .spawn_call)
+			}
+			return b.mod.get_or_add_const(b.mod.type_store.get_int(64), '0')
+		}
+		.key_dump {
+			if kw.exprs.len > 0 {
+				return b.build_expr(kw.exprs[0])
 			}
 			return b.mod.get_or_add_const(b.mod.type_store.get_int(64), '0')
 		}

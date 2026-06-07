@@ -1576,6 +1576,40 @@ fn x64_status_short_circuit_calls_stdout() []u8 {
 '.bytes()
 }
 
+fn x64_dump_operator_identity_source() string {
+	return "module main
+
+fn pass_u32(x u32) u32 {
+	y := x + u32(5)
+	return dump(y)
+}
+
+fn main() {
+	if dump(false) {
+		println('bad-bool')
+		return
+	}
+	mut n := u32(1)
+	old := dump(n++)
+	if old == u32(1) && n == u32(2) && pass_u32(u32(7)) == u32(12) {
+		println('ok')
+	} else {
+		println('bad')
+	}
+}
+"
+}
+
+fn x64_dump_operator_identity_stdout() []u8 {
+	return 'ok
+'.bytes()
+}
+
+fn x64_dump_factorial_example_stdout() []u8 {
+	return '120
+'.bytes()
+}
+
 fn x64_print_stdout_source() string {
 	return "module main
 
@@ -2512,6 +2546,40 @@ fn main() {
 fn x64_string_int_map_literal_lookup_stdout() []u8 {
 	return '11
 22
+'.bytes()
+}
+
+fn x64_map_clone_delete_array_index_delete_source() string {
+	return "module main
+
+fn main() {
+	graph := {
+		'A': ['B', 'C']
+		'B': ['C']
+		'C': []
+	}
+	mut next := graph.clone()
+	next.delete('B')
+	mut path := graph['A'].clone()
+	idx := path.index('B')
+	if idx >= 0 {
+		path.delete(idx)
+	}
+	println('\${graph.len}:\${next.len}:\${'B' in graph}:\${'B' in next}')
+	println('\${idx}:\${path.len}:\${path.index('B')}:\${path[0]}')
+	mut degree := map[string]int{}
+	degree['A'] = 0
+	degree['C'] = 1
+	first := degree.keys().first()
+	println('\${'A' in degree}:\${'B' in degree}:\${first in degree}:\${degree['C']}')
+}
+"
+}
+
+fn x64_map_clone_delete_array_index_delete_stdout() []u8 {
+	return '3:2:true:false
+0:1:-1:C
+true:false:true:1
 '.bytes()
 }
 
@@ -4032,6 +4100,11 @@ fn test_x64_linux_hanoi_example_top_level_stdout_exact_bytes() {
 		'hanoi.v', x64_hanoi_example_stdout())
 }
 
+fn test_x64_linux_dump_factorial_example_top_level_stdout_exact_bytes() {
+	assert_x64_linux_file_stdout_bytes('dump_factorial_example_top_level_exact',
+		x64_examples_dir(), 'dump_factorial.v', x64_dump_factorial_example_stdout())
+}
+
 fn test_x64_linux_sudoku_example_top_level_stdout_exact_bytes() {
 	assert_x64_linux_file_stdout_bytes('sudoku_example_top_level_exact', x64_examples_dir(),
 		'sudoku.v', x64_sudoku_example_stdout())
@@ -4184,6 +4257,11 @@ fn test_x64_linux_dfs_example_top_level_stdout_matches_v_run() {
 fn test_x64_linux_dijkstra_example_top_level_stdout_matches_v_run() {
 	assert_x64_linux_file_stdout_matches_v_run('dijkstra_example_top_level_v_run', os.join_path(x64_examples_dir(),
 		'graphs'), 'dijkstra.v')
+}
+
+fn test_x64_linux_topological_sorting_greedy_example_top_level_stdout_matches_v_run() {
+	assert_x64_linux_file_stdout_matches_v_run('topological_sorting_greedy_example_top_level_v_run', os.join_path(x64_examples_dir(),
+		'graphs'), 'topological_sorting_greedy.v')
 }
 
 fn test_x64_linux_graph_priority_queue_generic_mut_array_normal_required_stdout_exact_bytes() {
@@ -5230,6 +5308,12 @@ fn test_x64_macos_windows_string_int_map_literal_lookup_stdout_exact_bytes() {
 		x64_string_int_map_literal_lookup_source(), x64_string_int_map_literal_lookup_stdout())
 }
 
+fn test_x64_macos_windows_map_clone_delete_array_index_delete_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('map_clone_delete_array_index_delete_exact',
+		x64_map_clone_delete_array_index_delete_source(),
+		x64_map_clone_delete_array_index_delete_stdout())
+}
+
 fn test_x64_windows_noscan_array_grow_free_slice_stdout_exact_bytes() {
 	assert_x64_windows_stdout_bytes('noscan_array_grow_free_slice_exact',
 		x64_windows_noscan_array_grow_free_slice_source(),
@@ -5306,6 +5390,11 @@ fn test_x64_macos_windows_hanoi_example_top_level_stdout_exact_bytes() {
 		'hanoi.v', x64_hanoi_example_stdout())
 }
 
+fn test_x64_macos_windows_dump_factorial_example_top_level_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes('dump_factorial_example_top_level_exact',
+		x64_examples_dir(), 'dump_factorial.v', x64_dump_factorial_example_stdout())
+}
+
 fn test_x64_macos_windows_sudoku_example_top_level_stdout_exact_bytes() {
 	assert_x64_macos_windows_file_stdout_bytes('sudoku_example_top_level_exact',
 		x64_examples_dir(), 'sudoku.v', x64_sudoku_example_stdout())
@@ -5349,6 +5438,11 @@ fn test_x64_macos_windows_dfs_example_top_level_stdout_matches_v_run() {
 fn test_x64_macos_windows_dijkstra_example_top_level_stdout_matches_v_run() {
 	assert_x64_macos_windows_file_stdout_matches_v_run('dijkstra_example_top_level_v_run', os.join_path(x64_examples_dir(),
 		'graphs'), 'dijkstra.v')
+}
+
+fn test_x64_macos_windows_topological_sorting_greedy_example_top_level_stdout_matches_v_run() {
+	assert_x64_macos_windows_file_stdout_matches_v_run('topological_sorting_greedy_example_top_level_v_run', os.join_path(x64_examples_dir(),
+		'graphs'), 'topological_sorting_greedy.v')
 }
 
 fn test_x64_macos_windows_graph_priority_queue_generic_mut_array_stdout_exact_bytes() {
@@ -5411,6 +5505,11 @@ fn test_x64_macos_status_short_circuit_calls_stdout_exact_bytes() {
 fn test_x64_windows_status_short_circuit_calls_stdout_exact_bytes() {
 	assert_x64_windows_stdout_bytes('status_short_circuit_calls_exact',
 		x64_status_short_circuit_calls_source(), x64_status_short_circuit_calls_stdout())
+}
+
+fn test_x64_macos_windows_dump_operator_identity_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('dump_operator_identity_exact',
+		x64_dump_operator_identity_source(), x64_dump_operator_identity_stdout())
 }
 
 fn test_x64_linux_exit_code_stdout_stderr_exact() {
@@ -5709,6 +5808,12 @@ fn test_x64_linux_string_int_map_literal_lookup_stdout_exact_bytes() {
 		x64_string_int_map_literal_lookup_source(), x64_string_int_map_literal_lookup_stdout())
 }
 
+fn test_x64_linux_map_clone_delete_array_index_delete_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('map_clone_delete_array_index_delete_exact',
+		x64_map_clone_delete_array_index_delete_source(),
+		x64_map_clone_delete_array_index_delete_stdout())
+}
+
 fn test_x64_linux_imported_module_init_runs_once_before_use_stdout_exact_bytes() {
 	assert_x64_linux_project_stdout_bytes('module_init_once_exact', x64_module_init_once_sources(),
 		x64_module_init_once_stdout())
@@ -5728,4 +5833,9 @@ fn test_x64_linux_logical_and_backward_false_branch_smoke() {
 fn test_x64_linux_status_short_circuit_calls_stdout_exact_bytes() {
 	assert_x64_linux_stdout_bytes('status_short_circuit_calls_exact',
 		x64_status_short_circuit_calls_source(), x64_status_short_circuit_calls_stdout())
+}
+
+fn test_x64_linux_dump_operator_identity_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('dump_operator_identity_exact',
+		x64_dump_operator_identity_source(), x64_dump_operator_identity_stdout())
 }
