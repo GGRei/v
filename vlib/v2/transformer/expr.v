@@ -2813,8 +2813,8 @@ fn (mut t Transformer) transform_infix_expr(expr ast.InfixExpr) ast.Expr {
 				}
 			}
 
-			// Check if LHS is already a pointer (e.g., mut receiver of type strings.Builder*)
 			lhs_is_ptr := t.is_pointer_type_expr(expr.lhs)
+				&& !t.array_append_lhs_uses_local_array_storage(expr.lhs)
 
 			// Create (array*)&arr or (array*)arr expression depending on whether LHS is already a pointer
 			arr_ptr_expr := if lhs_is_ptr {
@@ -2842,10 +2842,9 @@ fn (mut t Transformer) transform_infix_expr(expr ast.InfixExpr) ast.Expr {
 			if rhs_is_array {
 				// RHS is an array - use array__push_many(array*, val.data, val.len)
 				rhs_transformed := t.transform_expr(expr.rhs)
-				// When RHS contains a call expression, introduce a temporary variable
-				// to avoid evaluating the call twice (once for .data, once for .len).
+				// Materialize RHS values that should not be selected twice as rvalues.
 				// The VarDecl is hoisted via pending_stmts before the current statement.
-				if t.contains_call_expr(expr.rhs) {
+				if t.contains_call_expr(expr.rhs) || expr.rhs is ast.ArrayInitExpr {
 					t.temp_counter++
 					tmp_name := '_pm_t${t.temp_counter}'
 					tmp_ident := ast.Ident{
@@ -2895,14 +2894,18 @@ fn (mut t Transformer) transform_infix_expr(expr ast.InfixExpr) ast.Expr {
 
 			// Create (T[]){ elem } expression for single element push
 			// Note: cleanc will add _MOV wrapper when generating ArrayInitExpr
-			mut transformed_rhs := t.transform_expr(expr.rhs)
-			if t.contains_call_expr(expr.rhs) {
+			push_rhs := t.single_nested_array_append_value(expr.rhs, elem_type_name) or { expr.rhs }
+			mut transformed_rhs := t.transform_expr(push_rhs)
+			rhs_is_nested_array_literal := push_rhs is ast.ArrayInitExpr
+				&& (elem_type_name.starts_with('Array_')
+				|| elem_type_name.starts_with('Array_fixed_'))
+			if t.contains_call_expr(push_rhs) || rhs_is_nested_array_literal {
 				t.temp_counter++
 				tmp_name := '_ap_t${t.temp_counter}'
 				tmp_ident := ast.Ident{
 					name: tmp_name
 				}
-				if rhs_type := t.get_expr_type(expr.rhs) {
+				if rhs_type := t.get_expr_type(push_rhs) {
 					t.register_temp_var(tmp_name, rhs_type)
 				}
 				t.pending_stmts << ast.Stmt(ast.AssignStmt{

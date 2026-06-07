@@ -3752,6 +3752,26 @@ fn (t &Transformer) append_rhs_is_array_value_compatible(lhs_elem string, rhs as
 	return true
 }
 
+fn (t &Transformer) single_nested_array_append_value(rhs ast.Expr, lhs_elem string) ?ast.Expr {
+	if !(lhs_elem.starts_with('Array_') || lhs_elem.starts_with('Array_fixed_')) {
+		return none
+	}
+	if rhs !is ast.ArrayInitExpr {
+		return none
+	}
+	literal := rhs as ast.ArrayInitExpr
+	if literal.exprs.len != 1 {
+		return none
+	}
+	value := literal.exprs[0]
+	value_type := t.get_expr_type(value) or { return none }
+	value_type_name := t.type_to_c_name_resolve_alias(value_type)
+	if !t.array_elem_types_compatible(lhs_elem, value_type_name) {
+		return none
+	}
+	return value
+}
+
 fn (t &Transformer) array_value_elem_type(expr ast.Expr) ?string {
 	if elem_type := t.get_array_elem_type_str(expr) {
 		return elem_type
@@ -4382,6 +4402,25 @@ fn (t &Transformer) is_pointer_type_expr(expr ast.Expr) bool {
 		}
 	}
 	return false
+}
+
+fn (t &Transformer) array_append_lhs_uses_local_array_storage(expr ast.Expr) bool {
+	if expr is ast.ParenExpr {
+		return t.array_append_lhs_uses_local_array_storage(expr.expr)
+	}
+	if expr is ast.ModifierExpr {
+		return t.array_append_lhs_uses_local_array_storage(expr.expr)
+	}
+	if expr !is ast.Ident {
+		return false
+	}
+	ident := expr as ast.Ident
+	decl_type := t.active_local_decl_type_for_expr(ast.Expr(ident)) or { return false }
+	if decl_type !is types.Array {
+		return false
+	}
+	lookup_type := t.lookup_var_type(ident.name) or { return false }
+	return lookup_type is types.Pointer && lookup_type.base_type is types.Array
 }
 
 // get_str_fn_name_for_type returns the str function name for a types.Type
