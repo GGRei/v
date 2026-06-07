@@ -2515,6 +2515,138 @@ fn x64_string_int_map_literal_lookup_stdout() []u8 {
 '.bytes()
 }
 
+fn x64_graph_priority_queue_generic_mut_array_source() string {
+	return "module main
+
+struct Node {
+mut:
+	data     int
+	priority int
+}
+
+fn push_pq[T](mut queue []T, data int, priority int) {
+	mut temp := []T{}
+	mut i := 0
+	for i < queue.len && priority > queue[i].priority {
+		temp << queue[i]
+		i++
+	}
+	temp << Node{data, priority}
+	for i < queue.len {
+		temp << queue[i]
+		i++
+	}
+	queue = temp.clone()
+}
+
+fn update_priority[T](mut queue []T, search int, priority int) {
+	for i in 0 .. queue.len {
+		if queue[i].data == search {
+			queue[i] = Node{search, priority}
+			break
+		}
+	}
+}
+
+fn pop_front[T](mut queue []T) int {
+	value := queue[0].data
+	queue.delete(0)
+	return value
+}
+
+fn all_adjacents[T](g [][]T, v int) []int {
+	mut out := []int{}
+	for i in 0 .. g.len {
+		if g[v][i] > 0 {
+			out << i
+		}
+	}
+	return out
+}
+
+fn main() {
+	mut queue := []Node{}
+	push_pq(mut queue, 7, 20)
+	push_pq(mut queue, 4, 10)
+	push_pq(mut queue, 9, 30)
+	update_priority(mut queue, 7, 15)
+	graph := [
+		[0, 5, 0],
+		[5, 0, 8],
+		[0, 8, 0],
+	]
+	println('\${pop_front(mut queue)}|\${queue[0].data}:\${queue[0].priority}|\${all_adjacents(graph, 1)}')
+}
+"
+}
+
+fn x64_graph_priority_queue_generic_mut_array_stdout() []u8 {
+	return '4|7:15|[0, 2]
+'.bytes()
+}
+
+fn x64_graph_generic_map_edge_relax_source() string {
+	return "module main
+
+const large = 999
+
+struct Edge {
+mut:
+	src    int
+	dest   int
+	weight int
+}
+
+fn build_edges[T](g [][]T) map[T]Edge {
+	n := g.len
+	mut edges := map[int]Edge{}
+	mut edge := 0
+	for i in 0 .. n {
+		for j in 0 .. n {
+			if g[i][j] != 0 {
+				edges[edge] = Edge{i, j, g[i][j]}
+				edge++
+			}
+		}
+	}
+	return edges
+}
+
+fn relax[T](graph [][]T) []int {
+	mut edges := build_edges[int](graph)
+	n_edges := edges.len
+	mut dist := []int{len: graph.len, init: large}
+	dist[0] = 0
+	for _ in 0 .. graph.len {
+		for j in 0 .. n_edges {
+			u := edges[j].src
+			v := edges[j].dest
+			weight := edges[j].weight
+			if dist[u] != large && dist[u] + weight < dist[v] {
+				dist[v] = dist[u] + weight
+			}
+		}
+	}
+	return dist
+}
+
+fn main() {
+	graph := [
+		[0, 3, 10],
+		[0, 0, -2],
+		[0, 0, 0],
+	]
+	dist := relax(graph)
+	println('\${dist[0]},\${dist[1]},\${dist[2]}')
+}
+"
+}
+
+fn x64_graph_generic_map_edge_relax_stdout() []u8 {
+	return '0,3,1
+'.bytes()
+}
+
 fn x64_windows_noscan_array_grow_free_slice_source() string {
 	return "module main
 
@@ -3108,6 +3240,80 @@ fn x64_bfs_example_stdout() []u8 {
 	return "Graph: {'A': ['B', 'C'], 'B': ['A', 'D', 'E'], 'C': ['A', 'F'], 'D': ['B'], 'E': ['B', 'F'], 'F': ['C', 'E']}
 The shortest path from node A to node F is: ['A', 'C', 'F']
 ".bytes()
+}
+
+fn x64_minimal_spann_tree_prim_example_stdout() []u8 {
+	return '
+ Minimal Spanning Tree of graph 1 using PRIM algorithm
+   Edge 	Weight
+
+ 0 <== reference or start node
+ 1 <--> 0 	4
+ 2 <--> 8 	2
+ 3 <--> 2 	7
+ 4 <--> 5 	10
+ 5 <--> 6 	2
+ 6 <--> 7 	1
+ 7 <--> 6 	1
+ 8 <--> 2 	2
+ Minimum Cost Spanning Tree: 29
+
+
+ Minimal Spanning Tree of graph 2 using PRIM algorithm
+   Edge 	Weight
+
+ 0 <== reference or start node
+ 1 <--> 0 	2
+ 2 <--> 1 	3
+ 3 <--> 0 	6
+ 4 <--> 1 	5
+ Minimum Cost Spanning Tree: 16
+
+
+ Minimal Spanning Tree of graph 3 using PRIM algorithm
+   Edge 	Weight
+
+ 0 <== reference or start node
+ 1 <--> 0 	10
+ 2 <--> 0 	6
+ 3 <--> 0 	5
+ Minimum Cost Spanning Tree: 21
+
+
+ BYE -- OK
+'.bytes()
+}
+
+fn x64_bellman_ford_example_stdout() []u8 {
+	return '
+
+ Graph 1 using Bellman-Ford algorithm (source node: 0)
+
+ Vertex   Distance from Source
+   0   -->   0
+   1   -->   -1
+   2   -->   2
+   3   -->   -2
+   4   -->   1
+
+ Graph 2 using Bellman-Ford algorithm (source node: 0)
+
+ Vertex   Distance from Source
+   0   -->   0
+   1   -->   2
+   2   -->   5
+   3   -->   6
+   4   -->   7
+
+ Graph 3 using Bellman-Ford algorithm (source node: 0)
+
+ Vertex   Distance from Source
+   0   -->   0
+   1   -->   10
+   2   -->   6
+   3   -->   5
+ BYE -- OK
+'.bytes()
 }
 
 fn x64_js_hello_world_example_stdout() []u8 {
@@ -3978,6 +4184,43 @@ fn test_x64_linux_dfs_example_top_level_stdout_matches_v_run() {
 fn test_x64_linux_dijkstra_example_top_level_stdout_matches_v_run() {
 	assert_x64_linux_file_stdout_matches_v_run('dijkstra_example_top_level_v_run', os.join_path(x64_examples_dir(),
 		'graphs'), 'dijkstra.v')
+}
+
+fn test_x64_linux_graph_priority_queue_generic_mut_array_normal_required_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('graph_priority_queue_generic_mut_array_normal_required',
+			x64_graph_priority_queue_generic_mut_array_source())
+		assert_x64_linux_hosted_libc_binary(result,
+			x64_graph_priority_queue_generic_mut_array_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_minimal_spann_tree_prim_example_top_level_normal_required_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_file_redirected_auto('minimal_spann_tree_prim_example_normal_required', os.join_path(x64_examples_dir(),
+			'graphs'), 'minimal_spann_tree_prim.v')
+		assert_x64_linux_hosted_libc_binary(result, x64_minimal_spann_tree_prim_example_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_graph_generic_map_edge_relax_normal_required_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('graph_generic_map_edge_relax_normal_required',
+			x64_graph_generic_map_edge_relax_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_graph_generic_map_edge_relax_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_bellman_ford_example_top_level_normal_required_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_file_redirected_auto('bellman_ford_example_normal_required', os.join_path(x64_examples_dir(),
+			'graphs'), 'bellman-ford.v')
+		assert_x64_linux_hosted_libc_binary(result, x64_bellman_ford_example_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
 }
 
 fn test_x64_linux_fizz_buzz_example_auto_tiny_no_libc() {
@@ -5106,6 +5349,27 @@ fn test_x64_macos_windows_dfs_example_top_level_stdout_matches_v_run() {
 fn test_x64_macos_windows_dijkstra_example_top_level_stdout_matches_v_run() {
 	assert_x64_macos_windows_file_stdout_matches_v_run('dijkstra_example_top_level_v_run', os.join_path(x64_examples_dir(),
 		'graphs'), 'dijkstra.v')
+}
+
+fn test_x64_macos_windows_graph_priority_queue_generic_mut_array_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('graph_priority_queue_generic_mut_array_exact',
+		x64_graph_priority_queue_generic_mut_array_source(),
+		x64_graph_priority_queue_generic_mut_array_stdout())
+}
+
+fn test_x64_macos_windows_minimal_spann_tree_prim_example_top_level_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes('minimal_spann_tree_prim_example_top_level_exact', os.join_path(x64_examples_dir(),
+		'graphs'), 'minimal_spann_tree_prim.v', x64_minimal_spann_tree_prim_example_stdout())
+}
+
+fn test_x64_macos_windows_graph_generic_map_edge_relax_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('graph_generic_map_edge_relax_exact',
+		x64_graph_generic_map_edge_relax_source(), x64_graph_generic_map_edge_relax_stdout())
+}
+
+fn test_x64_macos_windows_bellman_ford_example_top_level_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes('bellman_ford_example_top_level_exact', os.join_path(x64_examples_dir(),
+		'graphs'), 'bellman-ford.v', x64_bellman_ford_example_stdout())
 }
 
 fn test_x64_macos_windows_js_hello_world_example_top_level_stdout_exact_bytes() {
