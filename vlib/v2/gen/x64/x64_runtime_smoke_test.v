@@ -2529,6 +2529,62 @@ path: ['A', 'C', 'F']
 ".bytes()
 }
 
+fn x64_mut_array_param_append_source() string {
+	return "module main
+
+fn append_seen(mut seen []string) {
+	seen << 'A'
+	seen << 'B'
+}
+
+fn append_many(mut seen []string, values []string) {
+	seen << values
+}
+
+fn append_path(mut path []string) {
+	path << 'A'
+	path << 'B'
+}
+
+fn append_pattern_value(mut patterns [][]string, path []string) {
+	patterns << path
+}
+
+fn append_pattern_literal(mut patterns [][]string, path []string) {
+	patterns << [path]
+}
+
+fn main() {
+	mut seen := []string{}
+	append_seen(mut seen)
+	println(seen)
+	println(seen.reverse())
+	mut many := []string{}
+	append_many(mut many, ['B', 'A'])
+	println(many)
+	mut path := []string{}
+	append_path(mut path)
+	println(path)
+	mut value_patterns := [][]string{}
+	append_pattern_value(mut value_patterns, path)
+	println(value_patterns)
+	mut literal_patterns := [][]string{}
+	append_pattern_literal(mut literal_patterns, path)
+	println(literal_patterns)
+}
+"
+}
+
+fn x64_mut_array_param_append_stdout() []u8 {
+	return "['A', 'B']
+['B', 'A']
+['B', 'A']
+['A', 'B']
+[['A', 'B']]
+[['A', 'B']]
+".bytes()
+}
+
 fn x64_string_int_map_literal_lookup_source() string {
 	return "module main
 
@@ -4264,6 +4320,16 @@ fn test_x64_linux_topological_sorting_greedy_example_top_level_stdout_matches_v_
 		'graphs'), 'topological_sorting_greedy.v')
 }
 
+fn test_x64_linux_topological_sorting_dfs_example_top_level_stdout_matches_v_run() {
+	assert_x64_linux_file_stdout_matches_v_run('topological_sorting_dfs_example_top_level_v_run', os.join_path(x64_examples_dir(),
+		'graphs'), 'topological_sorting_dfs.v')
+}
+
+fn test_x64_linux_dfs2_example_top_level_stdout_matches_v_run() {
+	assert_x64_linux_file_stdout_matches_v_run('dfs2_example_top_level_v_run', os.join_path(x64_examples_dir(),
+		'graphs'), 'dfs2.v')
+}
+
 fn test_x64_linux_graph_priority_queue_generic_mut_array_normal_required_stdout_exact_bytes() {
 	$if linux {
 		result := run_x64_host_program_redirected_auto('graph_priority_queue_generic_mut_array_normal_required',
@@ -5303,6 +5369,11 @@ fn test_x64_macos_windows_dynamic_string_array_str_stdout_exact_bytes() {
 		x64_dynamic_string_array_str_source(), x64_dynamic_string_array_str_stdout())
 }
 
+fn test_x64_macos_windows_mut_array_param_append_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('mut_array_param_append_exact',
+		x64_mut_array_param_append_source(), x64_mut_array_param_append_stdout())
+}
+
 fn test_x64_macos_windows_string_int_map_literal_lookup_stdout_exact_bytes() {
 	assert_x64_macos_windows_stdout_bytes('string_int_map_literal_lookup_exact',
 		x64_string_int_map_literal_lookup_source(), x64_string_int_map_literal_lookup_stdout())
@@ -5443,6 +5514,16 @@ fn test_x64_macos_windows_dijkstra_example_top_level_stdout_matches_v_run() {
 fn test_x64_macos_windows_topological_sorting_greedy_example_top_level_stdout_matches_v_run() {
 	assert_x64_macos_windows_file_stdout_matches_v_run('topological_sorting_greedy_example_top_level_v_run', os.join_path(x64_examples_dir(),
 		'graphs'), 'topological_sorting_greedy.v')
+}
+
+fn test_x64_macos_windows_topological_sorting_dfs_example_top_level_stdout_matches_v_run() {
+	assert_x64_macos_windows_file_stdout_matches_v_run('topological_sorting_dfs_example_top_level_v_run', os.join_path(x64_examples_dir(),
+		'graphs'), 'topological_sorting_dfs.v')
+}
+
+fn test_x64_macos_windows_dfs2_example_top_level_stdout_matches_v_run() {
+	assert_x64_macos_windows_file_stdout_matches_v_run('dfs2_example_top_level_v_run', os.join_path(x64_examples_dir(),
+		'graphs'), 'dfs2.v')
 }
 
 fn test_x64_macos_windows_graph_priority_queue_generic_mut_array_stdout_exact_bytes() {
@@ -5801,6 +5882,11 @@ fn test_x64_linux_dynamic_string_array_index_stdout_exact_bytes() {
 fn test_x64_linux_dynamic_string_array_str_stdout_exact_bytes() {
 	assert_x64_linux_stdout_bytes('dynamic_string_array_str_exact',
 		x64_dynamic_string_array_str_source(), x64_dynamic_string_array_str_stdout())
+}
+
+fn test_x64_linux_mut_array_param_append_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('mut_array_param_append_exact',
+		x64_mut_array_param_append_source(), x64_mut_array_param_append_stdout())
 }
 
 fn test_x64_linux_string_int_map_literal_lookup_stdout_exact_bytes() {

@@ -321,6 +321,8 @@ jobs:
           write_v_run_expected examples/graphs/bfs.v "$tmp/bfs.expected"
           write_v_run_expected examples/graphs/dfs.v "$tmp/dfs.expected"
           write_v_run_expected examples/graphs/dijkstra.v "$tmp/dijkstra.expected"
+          write_v_run_expected examples/graphs/topological_sorting_dfs.v "$tmp/topological_sorting_dfs.expected"
+          write_v_run_expected examples/graphs/dfs2.v "$tmp/dfs2.expected"
 
           run_native_x64_example examples/hello_world.v hello_world "$tmp/hello_world.expected"
           run_native_x64_example examples/fizz_buzz.v fizz_buzz "$tmp/fizz_buzz.expected"
@@ -336,6 +338,8 @@ jobs:
           run_native_x64_example examples/graphs/bfs.v bfs "$tmp/bfs.expected"
           run_native_x64_example examples/graphs/dfs.v dfs "$tmp/dfs.expected"
           run_native_x64_example examples/graphs/dijkstra.v dijkstra "$tmp/dijkstra.expected"
+          run_native_x64_example examples/graphs/topological_sorting_dfs.v topological_sorting_dfs "$tmp/topological_sorting_dfs.expected"
+          run_native_x64_example examples/graphs/dfs2.v dfs2 "$tmp/dfs2.expected"
       - name: All code is formatted
         run: v run ci/linux_ci.vsh all_code_is_formatted_gcc
       - name: Install dependencies for examples and tools

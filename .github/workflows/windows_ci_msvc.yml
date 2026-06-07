@@ -323,6 +323,12 @@ jobs:
 
           [byte[]] $dijkstra_expected = Get-VRunExpectedBytes 'examples/graphs/dijkstra.v' 'dijkstra'
           Invoke-NativeX64Example 'examples/graphs/dijkstra.v' 'dijkstra' $dijkstra_expected
+
+          [byte[]] $topological_sorting_dfs_expected = Get-VRunExpectedBytes 'examples/graphs/topological_sorting_dfs.v' 'topological_sorting_dfs'
+          Invoke-NativeX64Example 'examples/graphs/topological_sorting_dfs.v' 'topological_sorting_dfs' $topological_sorting_dfs_expected
+
+          [byte[]] $dfs2_expected = Get-VRunExpectedBytes 'examples/graphs/dfs2.v' 'dfs2'
+          Invoke-NativeX64Example 'examples/graphs/dfs2.v' 'dfs2' $dfs2_expected
       - name: Build V with WX
         run: v -cflags /WX self
       - name: All code is formatted
