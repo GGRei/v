@@ -7944,6 +7944,18 @@ fn (mut g Gen) gen_auto_deref_value_param_arg(param_type string, base_arg ast.Ex
 	return true
 }
 
+fn (mut g Gen) gen_sort_fnsortcb_arg(fn_name string, idx int, base_arg ast.Expr) bool {
+	if idx != 1 || fn_name !in ['array__sort_with_compare', 'array__sorted_with_compare'] {
+		return false
+	}
+	if base_arg is ast.Ident && base_arg.name != '' && base_arg.name != 'nil' {
+		g.sb.write_string('(FnSortCB)')
+		g.expr(base_arg)
+		return true
+	}
+	return false
+}
+
 fn (mut g Gen) gen_call_arg(fn_name string, idx int, arg ast.Expr) {
 	base_arg := if arg is ast.ModifierExpr { arg.expr } else { arg }
 	if fn_name == 'json__decode' && idx == 0 {
@@ -7991,6 +8003,9 @@ fn (mut g Gen) gen_call_arg(fn_name string, idx int, arg ast.Expr) {
 				expected_param_type = derived_param_type
 			}
 		}
+	}
+	if g.gen_sort_fnsortcb_arg(fn_name, idx, base_arg) {
+		return
 	}
 	if expected_param_type != '' && g.gen_auto_deref_value_param_arg(expected_param_type, base_arg) {
 		return
@@ -10743,6 +10758,9 @@ fn (mut g Gen) call_expr(lhs ast.Expr, args []ast.Expr) {
 		// Handle C.puts, C.putchar etc.
 		if lhs.lhs is ast.Ident && lhs.lhs.name == 'C' {
 			name = lhs.rhs.name
+			if name == 'gettid' && args.len == 0 && g.should_emit_linux_gettid_compat() {
+				name = 'v_cleanc_gettid'
+			}
 			// With prealloc, free() is redefined as a no-op macro.
 			// C.free calls in prealloc_vcleanup need the real free via _v_cfree.
 			if name == 'free' && g.pref != unsafe { nil } && g.pref.prealloc {
