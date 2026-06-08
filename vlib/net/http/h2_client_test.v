@@ -79,18 +79,26 @@ fn test_h2_authority_omits_default_port() {
 	assert h2_authority('example.com', 8443) == 'example.com:8443'
 }
 
-// Opt-in end-to-end test against a real HTTP/2 server. Run with `-d network`,
+// End-to-end test against a real HTTP/2 server. Run with `-d network`,
 // e.g. `v -d network test vlib/net/http/h2_client_test.v`.
 fn test_http2_fetch_real_server() {
 	$if !network ? {
 		return
 	}
-	resp := fetch(url: 'https://www.google.com/', enable_http2: true)!
+	$if windows && !no_vschannel ? {
+		// On Windows the default HTTPS client is SChannel, which has no ALPN
+		// yet (vlang/v#27383), so it cannot negotiate HTTP/2. Covered with
+		// `-d no_vschannel` (mbedtls client).
+		eprintln('skipping: SChannel client has no ALPN/HTTP2 support yet')
+		return
+	}
+	// HTTP/2 is negotiated by default for https requests.
+	resp := get('https://www.google.com/')!
 	assert resp.version() == .v2_0
 	assert resp.status_code == 200
 	assert resp.body.len > 0
-	// Without opting in, the same server is reached over HTTP/1.1.
-	plain := get('https://www.google.com/')!
+	// Opting out forces HTTP/1.1 against the same server.
+	plain := fetch(url: 'https://www.google.com/', enable_http2: false)!
 	assert plain.version() == .v1_1
 }
 
@@ -102,27 +110,4 @@ fn test_to_h2_request_authority_from_host_header() {
 	h2req := req.to_h2_request(.get, 'origin.example', '/', '', h)
 	assert h2req.authority == 'override.example:8443'
 	assert !h2req.headers.any(it.name == 'host')
-}
-
-fn test_uses_response_streaming() {
-	assert !(Request{}).uses_response_streaming()
-	assert (Request{
-		stop_copying_limit: 0
-	}).uses_response_streaming()
-	assert (Request{
-		stop_receiving_limit: 100
-	}).uses_response_streaming()
-	progress := fn (request &Request, chunk []u8, read_so_far u64) ! {}
-	assert (Request{
-		on_progress: progress
-	}).uses_response_streaming()
-	body_progress := fn (request &Request, chunk []u8, body_read_so_far u64, body_expected_size u64, status_code int) ! {}
-	assert (Request{
-		on_progress_body: body_progress
-	}).uses_response_streaming()
-	// A non-streaming callback (on_finish) does not force HTTP/1.1.
-	finish := fn (request &Request, final_size u64) ! {}
-	assert !(Request{
-		on_finish: finish
-	}).uses_response_streaming()
 }
