@@ -7,6 +7,11 @@ import v2.ast
 import v2.token
 import v2.types
 
+struct ConcreteSumtypeWrapInfo {
+	name     string
+	variants []string
+}
+
 // get_fn_return_type gets the return type for a function
 fn (t &Transformer) get_fn_return_type(fn_name string) ?types.Type {
 	if fn_name.contains('__') {
@@ -493,6 +498,63 @@ fn (t &Transformer) instantiate_generic_type(base types.Type, args []ast.Expr) ?
 		return substitute_type(base, bindings)
 	}
 	return base
+}
+
+fn (t &Transformer) instantiate_generic_sumtype_variant(variant types.Type, bindings map[string]types.Type) types.Type {
+	variant_params := generic_template_type_param_names_from_type(variant)
+	substituted := substitute_type(variant, bindings)
+	suffix := t.generic_specialization_suffix_from_bindings(variant_params, bindings)
+	if suffix == '' {
+		return substituted
+	}
+	if variant is types.Struct && substituted is types.Struct {
+		return types.Type(types.Struct{
+			name:           variant.name + suffix
+			generic_params: substituted.generic_params
+			implements:     substituted.implements
+			embedded:       substituted.embedded
+			fields:         substituted.fields
+			is_soa:         substituted.is_soa
+		})
+	}
+	return substituted
+}
+
+fn (t &Transformer) concrete_sumtype_wrap_info_from_lhs(lhs ast.Expr) ?ConcreteSumtypeWrapInfo {
+	match lhs {
+		ast.GenericArgs {
+			return t.concrete_sumtype_wrap_info_from_generic_parts(lhs.lhs, lhs.args)
+		}
+		ast.GenericArgOrIndexExpr {
+			return t.concrete_sumtype_wrap_info_from_generic_parts(lhs.lhs, [lhs.expr])
+		}
+		else {}
+	}
+
+	return none
+}
+
+fn (t &Transformer) concrete_sumtype_wrap_info_from_generic_parts(lhs ast.Expr, args []ast.Expr) ?ConcreteSumtypeWrapInfo {
+	base := t.lookup_type_from_expr(lhs) or { return none }
+	if base !is types.SumType {
+		return none
+	}
+	generic_params := generic_template_type_param_names_from_type(types.Type(base))
+	bindings := t.generic_type_arg_bindings(generic_params, args) or { return none }
+	suffix := t.generic_specialization_suffix_from_bindings(generic_params, bindings)
+	if suffix == '' {
+		return none
+	}
+	mut variants := []string{cap: base.variants.len}
+	for variant in base.variants {
+		concrete_variant := t.instantiate_generic_sumtype_variant(variant, bindings)
+		variant_name := t.type_to_c_name(concrete_variant)
+		variants << if variant_name != '' { variant_name } else { concrete_variant.name() }
+	}
+	return ConcreteSumtypeWrapInfo{
+		name:     t.type_to_c_name(types.Type(base)) + suffix
+		variants: variants
+	}
 }
 
 fn (t &Transformer) generic_type_arg_bindings(generic_params []string, args []ast.Expr) ?map[string]types.Type {
@@ -5860,20 +5922,39 @@ fn (mut t Transformer) transform_call_or_cast_expr(expr ast.CallOrCastExpr) ast.
 	// Important: do not transform `value` before variant inference, otherwise casts like
 	// `Expr(EmptyExpr(0))` turn into `CastExpr` and variant inference can no longer
 	// recover the variant.
-	mut sumtype_name := t.type_expr_name_full(expr.lhs)
-	if sumtype_name == '' || !t.is_sum_type(sumtype_name) {
-		if lhs_typ := t.get_expr_type(expr.lhs) {
+	mut sumtype_name := ''
+	mut sumtype_variants := []string{}
+	if concrete_info := t.concrete_sumtype_wrap_info_from_lhs(expr.lhs) {
+		sumtype_name = concrete_info.name
+		sumtype_variants = concrete_info.variants.clone()
+	}
+	if sumtype_variants.len == 0 {
+		if lhs_typ := t.lookup_type_from_expr(expr.lhs) {
 			if lhs_typ is types.SumType {
-				sumtype_name = lhs_typ.get_name()
+				sumtype_name = t.type_to_c_name(lhs_typ)
 			}
 		}
 	}
-	if (sumtype_name == '' || !t.is_sum_type(sumtype_name)) && expr.pos.is_valid() {
-		if expr_typ := t.get_expr_type(ast.Expr(expr)) {
-			if expr_typ is types.SumType {
-				sumtype_name = expr_typ.get_name()
+	if sumtype_name == '' {
+		sumtype_name = t.type_expr_name_full(expr.lhs)
+	}
+	if sumtype_variants.len == 0 && (sumtype_name == '' || !t.is_sum_type(sumtype_name)) {
+		if lhs_typ := t.get_expr_type(expr.lhs) {
+			if lhs_typ is types.SumType {
+				sumtype_name = t.type_to_c_name(lhs_typ)
 			}
 		}
+	}
+	if sumtype_variants.len == 0 && (sumtype_name == '' || !t.is_sum_type(sumtype_name))
+		&& expr.pos.is_valid() {
+		if expr_typ := t.get_expr_type(ast.Expr(expr)) {
+			if expr_typ is types.SumType {
+				sumtype_name = t.type_to_c_name(expr_typ)
+			}
+		}
+	}
+	if sumtype_variants.len == 0 && sumtype_name != '' && t.is_sum_type(sumtype_name) {
+		sumtype_variants = t.get_sum_type_variants(sumtype_name)
 	}
 	mut lhs_is_type := t.call_or_cast_lhs_is_type(expr.lhs)
 	if !lhs_is_type && expr.lhs is ast.Ident && t.cur_module != '' {
@@ -5882,14 +5963,16 @@ fn (mut t Transformer) transform_call_or_cast_expr(expr ast.CallOrCastExpr) ast.
 			lhs_is_type = true
 		}
 	}
-	if sumtype_name != '' && lhs_is_type && t.is_sum_type(sumtype_name) {
-		if wrapped := t.wrap_sumtype_value(expr.expr, sumtype_name) {
+	if sumtype_name != '' && lhs_is_type && sumtype_variants.len > 0 {
+		if wrapped := t.wrap_sumtype_value_with_variants(expr.expr, sumtype_name, sumtype_variants) {
 			return wrapped
 		}
 		// Fallback for cases where checker typing of `expr.expr` is already widened
 		// to the target sum type and direct variant inference fails.
 		transformed_sum_arg := t.transform_expr(expr.expr)
-		if wrapped := t.wrap_sumtype_value_transformed(transformed_sum_arg, sumtype_name) {
+		if wrapped := t.wrap_sumtype_value_transformed_with_variants(transformed_sum_arg,
+			sumtype_name, sumtype_variants)
+		{
 			return wrapped
 		}
 	}
@@ -6442,6 +6525,12 @@ fn (t &Transformer) call_or_cast_lhs_is_type(lhs ast.Expr) bool {
 	match lhs {
 		ast.Type {
 			return true
+		}
+		ast.GenericArgs {
+			return t.call_or_cast_lhs_is_type(lhs.lhs)
+		}
+		ast.GenericArgOrIndexExpr {
+			return t.call_or_cast_lhs_is_type(lhs.lhs)
 		}
 		ast.Ident {
 			// Built-in primitive types are always casts, never function calls.

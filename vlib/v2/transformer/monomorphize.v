@@ -1066,8 +1066,83 @@ fn (t &Transformer) generic_bindings_from_type_expr(expr ast.Expr) ?map[string]t
 }
 
 fn (t &Transformer) generic_bindings_from_generic_type_parts(lhs ast.Expr, args []ast.Expr) ?map[string]types.Type {
-	base := t.generic_template_struct_from_type_lhs(lhs) or { return none }
-	return t.generic_type_arg_bindings(base.generic_params, args)
+	generic_params := t.generic_template_type_param_names_from_type_lhs(lhs) or { return none }
+	return t.generic_type_arg_bindings(generic_params, args)
+}
+
+fn (t &Transformer) generic_template_type_param_names_from_type_lhs(lhs ast.Expr) ?[]string {
+	if base := t.generic_template_struct_from_type_lhs(lhs) {
+		return base.generic_params.clone()
+	}
+	match lhs {
+		ast.Ident {
+			return t.generic_template_type_param_names_from_type_name(lhs.name)
+		}
+		ast.ModifierExpr {
+			return t.generic_template_type_param_names_from_type_lhs(lhs.expr)
+		}
+		ast.PrefixExpr {
+			return t.generic_template_type_param_names_from_type_lhs(lhs.expr)
+		}
+		else {}
+	}
+
+	return none
+}
+
+fn (t &Transformer) generic_template_type_param_names_from_type_name(name string) ?[]string {
+	if name == '' {
+		return none
+	}
+	if typ := t.lookup_type(name) {
+		params := generic_template_type_param_names_from_type(typ)
+		if params.len > 0 {
+			return params
+		}
+	}
+	if name.contains('_T_') {
+		return t.generic_template_type_param_names_from_type_name(name.all_before('_T_'))
+	}
+	return none
+}
+
+fn generic_template_type_param_names_from_type(typ types.Type) []string {
+	mut seen := map[string]bool{}
+	mut names := []string{}
+	collect_declared_generic_template_type_param_names(typ, mut seen, mut names)
+	return names
+}
+
+fn collect_declared_generic_template_type_param_names(typ types.Type, mut seen map[string]bool, mut names []string) {
+	match typ {
+		types.Alias {
+			collect_declared_generic_template_type_param_names(typ.base_type, mut seen, mut names)
+		}
+		types.NamedType {
+			name := string(typ)
+			if is_generic_placeholder_ident(name) && name !in seen {
+				seen[name] = true
+				names << name
+			}
+		}
+		types.Struct {
+			for param in typ.generic_params {
+				if is_generic_placeholder_ident(param) && param !in seen {
+					seen[param] = true
+					names << param
+				}
+			}
+			for field in typ.fields {
+				collect_declared_generic_template_type_param_names(field.typ, mut seen, mut names)
+			}
+		}
+		types.SumType {
+			for variant in typ.variants {
+				collect_declared_generic_template_type_param_names(variant, mut seen, mut names)
+			}
+		}
+		else {}
+	}
 }
 
 fn (t &Transformer) generic_template_struct_from_type_lhs(lhs ast.Expr) ?types.Struct {
@@ -3476,12 +3551,16 @@ fn (t &Transformer) generic_bindings_from_generic_init_expr(expr ast.Expr) ?map[
 fn (t &Transformer) generic_bindings_from_generic_init_type_expr(expr ast.Expr) ?map[string]types.Type {
 	match expr {
 		ast.GenericArgs {
-			base := t.generic_template_struct_from_type_lhs(expr.lhs) or { return none }
-			return t.generic_type_arg_bindings(base.generic_params, expr.args)
+			generic_params := t.generic_template_type_param_names_from_type_lhs(expr.lhs) or {
+				return none
+			}
+			return t.generic_type_arg_bindings(generic_params, expr.args)
 		}
 		ast.GenericArgOrIndexExpr {
-			base := t.generic_template_struct_from_type_lhs(expr.lhs) or { return none }
-			return t.generic_type_arg_bindings(base.generic_params, [expr.expr])
+			generic_params := t.generic_template_type_param_names_from_type_lhs(expr.lhs) or {
+				return none
+			}
+			return t.generic_type_arg_bindings(generic_params, [expr.expr])
 		}
 		ast.ModifierExpr {
 			return t.generic_bindings_from_generic_init_type_expr(expr.expr)
@@ -3492,8 +3571,10 @@ fn (t &Transformer) generic_bindings_from_generic_init_type_expr(expr ast.Expr) 
 		ast.Type {
 			match expr {
 				ast.GenericType {
-					base := t.generic_template_struct_from_type_lhs(expr.name) or { return none }
-					return t.generic_type_arg_bindings(base.generic_params, expr.params)
+					generic_params := t.generic_template_type_param_names_from_type_lhs(expr.name) or {
+						return none
+					}
+					return t.generic_type_arg_bindings(generic_params, expr.params)
 				}
 				ast.PointerType {
 					return t.generic_bindings_from_generic_init_type_expr(expr.base_type)
@@ -4692,6 +4773,11 @@ fn (t &Transformer) generic_bindings_from_generic_call_expr(expr ast.Expr) ?map[
 	}
 
 	lhs_parts := generic_call_lhs_parts(lhs)
+	if lhs_parts.args.len > 0 && t.call_or_cast_lhs_is_type(lhs_parts.lhs) {
+		if bindings := t.generic_bindings_from_generic_type_parts(lhs_parts.lhs, lhs_parts.args) {
+			return bindings
+		}
+	}
 	base_name := t.generic_call_base_name(lhs_parts.lhs) or { return none }
 	info_lhs := if lhs_parts.args.len > 0 {
 		ast.Expr(ast.GenericArgs{

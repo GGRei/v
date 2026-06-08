@@ -482,6 +482,72 @@ fn mono_call_names_for_fn(files []ast.File, fn_name string) []string {
 	return names
 }
 
+fn mono_assign_rhs_for_var(files []ast.File, fn_name string, var_name string) ?ast.Expr {
+	for file in files {
+		for stmt in file.stmts {
+			if stmt is ast.FnDecl && stmt.name == fn_name {
+				for nested in stmt.stmts {
+					if nested is ast.AssignStmt {
+						for i, lhs in nested.lhs {
+							if lhs is ast.Ident && lhs.name == var_name && i < nested.rhs.len {
+								return nested.rhs[i]
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return none
+}
+
+fn mono_init_field(init ast.InitExpr, field_name string) ?ast.Expr {
+	for field in init.fields {
+		if field.name == field_name {
+			return field.value
+		}
+	}
+	return none
+}
+
+fn mono_assert_init_ident_name(init ast.InitExpr, expected string) {
+	assert init.typ is ast.Ident, 'expected InitExpr typ ${expected}, got ${init.typ}'
+	assert (init.typ as ast.Ident).name == expected
+}
+
+fn mono_assert_basic_number_expr(expr ast.Expr, expected string) {
+	assert expr is ast.BasicLiteral, 'expected number literal ${expected}, got ${expr}'
+	lit := expr as ast.BasicLiteral
+	assert lit.kind == token.Token.number
+	assert lit.value == expected
+}
+
+fn mono_assert_sumtype_payload_memdup_expr(expr ast.Expr, expected_variant string) {
+	assert expr is ast.CastExpr, 'expected voidptr payload cast for ${expected_variant}, got ${expr}'
+	voidptr_cast := expr as ast.CastExpr
+	assert voidptr_cast.typ is ast.Ident
+	assert (voidptr_cast.typ as ast.Ident).name == 'voidptr'
+	assert voidptr_cast.expr is ast.CallExpr, 'expected memdup payload call, got ${voidptr_cast.expr}'
+	memdup_call := voidptr_cast.expr as ast.CallExpr
+	assert memdup_call.lhs is ast.Ident
+	assert (memdup_call.lhs as ast.Ident).name == 'memdup'
+	assert memdup_call.args.len == 2, 'expected memdup payload and sizeof args, got ${memdup_call.args}'
+	payload_ref := memdup_call.args[0]
+	assert payload_ref is ast.PrefixExpr, 'expected memdup payload address, got ${payload_ref}'
+	payload_prefix := payload_ref as ast.PrefixExpr
+	assert payload_prefix.op == token.Token.amp
+	assert payload_prefix.expr is ast.InitExpr, 'expected concrete variant init payload, got ${payload_prefix.expr}'
+	payload_init := payload_prefix.expr as ast.InitExpr
+	mono_assert_init_ident_name(payload_init, expected_variant)
+	size_arg := memdup_call.args[1]
+	assert size_arg is ast.KeywordOperator, 'expected sizeof payload arg, got ${size_arg}'
+	size_op := size_arg as ast.KeywordOperator
+	assert size_op.op == token.Token.key_sizeof
+	assert size_op.exprs.len == 1
+	assert size_op.exprs[0] is ast.Ident
+	assert (size_op.exprs[0] as ast.Ident).name == expected_variant
+}
+
 fn mono_has_fn(files []ast.File, fn_name string) bool {
 	for file in files {
 		for stmt in file.stmts {
@@ -825,6 +891,179 @@ fn use() bool {
 	mono_assert_method_clone_by_receiver(files, 'Queue_T_Array_string', 'is_empty')
 	assert call_names == ['Queue_T_Array_string__is_empty'], 'expected exact local Queue[[]string].is_empty call, got ${call_names}'
 	mono_assert_no_open_queue_is_empty_names(fn_names, call_names)
+}
+
+fn test_generic_sumtype_cast_init_does_not_lower_to_open_call() {
+	files := mono_transform_sources_for_test([
+		MonoSource{
+			rel:  'main.v'
+			code: '
+module main
+
+struct Empty {}
+
+struct Node[T] {
+	value T
+}
+
+type Tree[T] = Empty | Node[T]
+
+fn use() {
+	tree := Tree[f64](Empty{})
+	_ = tree
+}
+'
+		},
+	])
+	call_names := mono_call_names_for_fn(files, 'use')
+	tree_rhs := mono_assign_rhs_for_var(files, 'use', 'tree') or {
+		assert false, 'missing transformed tree assignment'
+		return
+	}
+	assert tree_rhs is ast.InitExpr, 'generic sumtype cast should lower to InitExpr, got ${typeof(tree_rhs).name}'
+	tree_init := tree_rhs as ast.InitExpr
+	mono_assert_init_ident_name(tree_init, 'Tree_T_f64')
+	tag_value := mono_init_field(tree_init, '_tag') or {
+		assert false, 'missing Tree_T_f64 _tag field in ${tree_init.fields}'
+		return
+	}
+	mono_assert_basic_number_expr(tag_value, '0')
+	assert call_names == [], 'generic sumtype cast should lower to a wrapper, got calls ${call_names}'
+	assert 'Tree_T_f64' !in call_names
+}
+
+fn test_generic_sumtype_concrete_variant_wrap_does_not_lower_to_open_call() {
+	files := mono_transform_sources_for_test([
+		MonoSource{
+			rel:  'main.v'
+			code: '
+module main
+
+struct Empty {}
+
+struct Node[T] {
+	value T
+	left  Tree[T]
+	right Tree[T]
+}
+
+type Tree[T] = Empty | Node[T]
+
+fn use() {
+	empty := Tree[f64](Empty{})
+	tree := Tree[f64](Node[f64]{1.0, empty, empty})
+	_ = tree
+}
+'
+		},
+	])
+	call_names := mono_call_names_for_fn(files, 'use')
+	tree_rhs := mono_assign_rhs_for_var(files, 'use', 'tree') or {
+		assert false, 'missing transformed tree assignment'
+		return
+	}
+	assert tree_rhs is ast.InitExpr, 'generic sumtype variant cast should lower to InitExpr, got ${typeof(tree_rhs).name}'
+	tree_init := tree_rhs as ast.InitExpr
+	mono_assert_init_ident_name(tree_init, 'Tree_T_f64')
+	tag_value := mono_init_field(tree_init, '_tag') or {
+		assert false, 'missing Tree_T_f64 _tag field in ${tree_init.fields}'
+		return
+	}
+	mono_assert_basic_number_expr(tag_value, '1')
+	payload_value := mono_init_field(tree_init, '_data._Node_T_f64') or {
+		assert false, 'missing Tree_T_f64 Node_T_f64 payload field in ${tree_init.fields}'
+		return
+	}
+	mono_assert_sumtype_payload_memdup_expr(payload_value, 'Node_T_f64')
+	assert 'Tree_T_f64' !in call_names, 'generic sumtype cast leaked callable Tree_T_f64 in ${call_names}'
+	assert 'Tree' !in call_names, 'generic sumtype cast leaked callable Tree in ${call_names}'
+	for name in call_names {
+		assert !name.contains('Tree_T_T'), 'generic sumtype cast leaked open generic name ${name} in ${call_names}'
+	}
+}
+
+fn test_generic_sumtype_receiver_no_arg_method_call_is_monomorphized() {
+	files := mono_transform_sources_for_test([
+		MonoSource{
+			rel:  'main.v'
+			code: '
+module main
+
+struct Empty {}
+
+struct Node[T] {
+	value T
+}
+
+type Tree[T] = Empty | Node[T]
+
+fn (tree Tree[T]) size[T]() int {
+	return 0
+}
+
+fn use() int {
+	tree := Tree[f64](Empty{})
+	return tree.size()
+}
+'
+		},
+	])
+	fn_names := mono_fn_names(files)
+	call_names := mono_call_names_for_fn(files, 'use')
+	mono_assert_method_clone_by_receiver(files, 'Tree_T_f64', 'size_T_f64')
+	assert call_names == ['Tree_T_f64__size_T_f64'], 'expected concrete Tree[f64].size call, got ${call_names}'
+	assert 'Tree__size' !in fn_names
+	assert 'Tree__size' !in call_names
+	assert 'Tree_T_f64' !in call_names
+}
+
+fn test_generic_sumtype_receiver_recursive_size_calls_are_monomorphized() {
+	files := mono_transform_sources_for_test([
+		MonoSource{
+			rel:  'main.v'
+			code: '
+module main
+
+struct Empty {}
+
+struct Node[T] {
+	value T
+	left  Tree[T]
+	right Tree[T]
+}
+
+type Tree[T] = Empty | Node[T]
+
+fn (tree Tree[T]) size[T]() int {
+	return match tree {
+		Empty { 0 }
+		Node[T] { 1 + tree.left.size() + tree.right.size() }
+	}
+}
+
+fn use() string {
+	tree := Tree[f64](Empty{})
+	return "size \${tree.size()}"
+}
+'
+		},
+	])
+	fn_names := mono_fn_names(files)
+	use_call_names := mono_call_names_for_fn(files, 'use')
+	size_decl := mono_assert_method_clone_by_receiver(files, 'Tree_T_f64', 'size_T_f64')
+	size_call_names := mono_call_names_for_decl(size_decl)
+	assert 'Tree_T_f64__size_T_f64' in use_call_names, 'interpolation should call concrete Tree[f64].size, got ${use_call_names}'
+	assert size_call_names == [
+		'Tree_T_f64__size_T_f64',
+		'Tree_T_f64__size_T_f64',
+	], 'recursive Tree[f64].size body should call concrete size twice, got ${size_call_names}'
+	assert 'Tree__size' !in fn_names
+	assert 'Tree__size' !in use_call_names
+	assert 'Tree__size' !in size_call_names
+	assert 'Tree_T_T__size_T' !in fn_names
+	assert 'Tree_T_T__size_T' !in use_call_names
+	assert 'Tree_T_T__size_T' !in size_call_names
+	assert 'Tree_T_f64' !in use_call_names
 }
 
 fn test_shadowed_local_receiver_names_keep_distinct_generic_bindings() {

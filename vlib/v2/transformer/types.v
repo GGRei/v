@@ -2232,10 +2232,14 @@ fn (t &Transformer) init_expr_sumtype_variant_name(init_expr ast.InitExpr, varia
 }
 
 fn (mut t Transformer) wrap_sumtype_value(value ast.Expr, sumtype_name string) ?ast.Expr {
+	variants := t.get_sum_type_variants(sumtype_name)
+	return t.wrap_sumtype_value_with_variants(value, sumtype_name, variants)
+}
+
+fn (mut t Transformer) wrap_sumtype_value_with_variants(value ast.Expr, sumtype_name string, variants []string) ?ast.Expr {
 	if t.expr_uses_current_generic_param(value) {
 		return none
 	}
-	variants := t.get_sum_type_variants(sumtype_name)
 	if variants.len == 0 {
 		return none
 	}
@@ -2293,7 +2297,8 @@ fn (mut t Transformer) wrap_sumtype_value(value ast.Expr, sumtype_name string) ?
 	}
 	// Transform the value then wrap
 	transformed_value := t.transform_expr(value)
-	return t.build_sumtype_init(transformed_value, variant_name, sumtype_name)
+	return t.build_sumtype_init_with_variants(transformed_value, variant_name, sumtype_name,
+		variants)
 }
 
 fn (mut t Transformer) transform_declared_sumtype_value(value ast.Expr, sumtype_name string) ?ast.Expr {
@@ -2318,10 +2323,14 @@ fn (mut t Transformer) transform_declared_sumtype_value(value ast.Expr, sumtype_
 
 // wrap_sumtype_value_transformed wraps an already-transformed expression in sum type init
 fn (mut t Transformer) wrap_sumtype_value_transformed(value ast.Expr, sumtype_name string) ?ast.Expr {
+	variants := t.get_sum_type_variants(sumtype_name)
+	return t.wrap_sumtype_value_transformed_with_variants(value, sumtype_name, variants)
+}
+
+fn (mut t Transformer) wrap_sumtype_value_transformed_with_variants(value ast.Expr, sumtype_name string, variants []string) ?ast.Expr {
 	if t.expr_uses_current_generic_param(value) {
 		return none
 	}
-	variants := t.get_sum_type_variants(sumtype_name)
 	if variants.len == 0 {
 		return none
 	}
@@ -2427,12 +2436,17 @@ fn (mut t Transformer) wrap_sumtype_value_transformed(value ast.Expr, sumtype_na
 		return none
 	}
 	// Value is already transformed, just wrap it
-	return t.build_sumtype_init(value, variant_name, sumtype_name)
+	return t.build_sumtype_init_with_variants(value, variant_name, sumtype_name, variants)
 }
 
 // build_sumtype_init creates a sum type initialization expression
 fn (t &Transformer) build_sumtype_init(transformed_value ast.Expr, variant_name string, sumtype_name string) ?ast.Expr {
 	variants := t.get_sum_type_variants(sumtype_name)
+	return t.build_sumtype_init_with_variants(transformed_value, variant_name, sumtype_name,
+		variants)
+}
+
+fn (t &Transformer) build_sumtype_init_with_variants(transformed_value ast.Expr, variant_name string, sumtype_name string, variants []string) ?ast.Expr {
 	// Find the tag value for this variant
 	mut tag_value := -1
 	for i, v in variants {
@@ -2979,7 +2993,7 @@ fn (t &Transformer) get_expr_type(expr ast.Expr) ?types.Type {
 		pos := expr.pos
 		if lhs_type := t.get_expr_type(expr.lhs) {
 			if field_typ := t.field_type_from_receiver_type(lhs_type, expr.rhs.name) {
-				return t.normalize_type(field_typ)
+				return t.normalize_type(substitute_type(field_typ, t.cur_monomorphized_fn_bindings))
 			}
 		}
 		if typ := t.get_synth_type(pos) {
@@ -3078,7 +3092,7 @@ fn (t &Transformer) declared_expr_type_for_method_receiver_inner(expr ast.Expr, 
 			ignored_smartcast_expr)
 		{
 			if field_typ := t.field_type_from_receiver_type(lhs_type, expr.rhs.name) {
-				return field_typ
+				return substitute_type(field_typ, t.cur_monomorphized_fn_bindings)
 			}
 		}
 		return t.get_expr_type(expr)
@@ -3324,6 +3338,28 @@ fn (t &Transformer) generic_specialization_token_from_type(typ types.Type) strin
 			return sanitize_generic_token_part(type_name)
 		}
 	}
+}
+
+fn (t &Transformer) generic_specialization_suffix_from_bindings(generic_params []string, bindings map[string]types.Type) string {
+	if generic_params.len == 0 {
+		return ''
+	}
+	mut all_placeholders := true
+	mut parts := []string{cap: generic_params.len}
+	for param_name in generic_params {
+		concrete := bindings[param_name] or { return '' }
+		parts << t.generic_specialization_token_from_type(concrete)
+		if concrete.name() != param_name {
+			all_placeholders = false
+		}
+	}
+	if parts.len == 0 {
+		return ''
+	}
+	if all_placeholders {
+		return '_' + generic_params.join('_')
+	}
+	return '_T_' + parts.join('_')
 }
 
 fn (t &Transformer) generic_specialization_token(expr ast.Expr) string {
