@@ -184,14 +184,56 @@ fn test_macos_tiny_candidate_native_mir_build_policy_is_sequential_only_for_cand
 }
 
 fn test_macos_tiny_link_command_adds_hygiene_only_for_tiny_object() {
-	normal := macos_native_link_command('/tmp/out', 'main.o', '/SDK Path', 'x86_64', false)
-	tiny := macos_native_link_command('/tmp/out', 'main.o', '/SDK Path', 'x86_64', true)
+	normal := macos_native_link_command('/tmp/out', 'main.o', '/SDK Path', 'x86_64', false, '')
+	tiny := macos_native_link_command('/tmp/out', 'main.o', '/SDK Path', 'x86_64', true, '')
 
 	assert normal == 'ld -o ${os.quoted_path('/tmp/out')} ${os.quoted_path('main.o')} -lSystem -syslibroot ${os.quoted_path('/SDK Path')} -e _main -arch x86_64 -platform_version macos 11.0.0 11.0.0'
 	assert tiny == '${normal} -dead_strip -x -S'
 	assert !normal.contains('-dead_strip')
 	assert !normal.contains(' -x')
 	assert !normal.contains(' -S')
+}
+
+fn test_native_link_commands_append_directive_link_flags() {
+	linux := linux_native_link_command('/tmp/out', 'main.o', '-lm')
+	macos := macos_native_link_command('/tmp/out', 'main.o', '/SDK Path', 'x86_64', false, '-lm')
+
+	assert linux == 'cc ${os.quoted_path('main.o')} -o ${os.quoted_path('/tmp/out')} -no-pie -lm'
+	assert macos == 'ld -o ${os.quoted_path('/tmp/out')} ${os.quoted_path('main.o')} -lm -lSystem -syslibroot ${os.quoted_path('/SDK Path')} -e _main -arch x86_64 -platform_version macos 11.0.0 11.0.0'
+}
+
+fn test_native_link_flags_from_sources_are_not_global() {
+	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_builder_native_link_flags_${os.getpid()}')
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+	no_flag_path := os.join_path(tmp_dir, 'no_flag.v')
+	math_flag_path := os.join_path(tmp_dir, 'math_flag.v')
+	os.write_file(no_flag_path, 'module main\n') or { panic(err) }
+	os.write_file(math_flag_path, 'module main\n#flag -lm\n') or { panic(err) }
+
+	mut prefs := pref.new_preferences()
+	prefs.backend = .x64
+	prefs.arch = .x64
+	prefs.target_os = 'linux'
+	prefs.skip_builtin = true
+
+	mut no_flag_builder := new_builder(&prefs)
+	no_flag_builder.files = [
+		ast.File{
+			name: no_flag_path
+		},
+	]
+	assert no_flag_builder.native_link_flags_from_sources() == ''
+
+	mut math_flag_builder := new_builder(&prefs)
+	math_flag_builder.files = [
+		ast.File{
+			name: math_flag_path
+		},
+	]
+	assert math_flag_builder.native_link_flags_from_sources() == '-lm'
 }
 
 fn test_native_x64_requires_ssa_optimization() {

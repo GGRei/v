@@ -2204,12 +2204,29 @@ fn (b &Builder) uses_macos_x64_tiny_object(arch pref.Arch) bool {
 		&& b.pref.macos_tiny
 }
 
-fn macos_native_link_command(output_binary string, obj_file string, sdk_path string, arch_flag string, tiny_object bool) string {
-	normal_link_cmd := 'ld -o ${os.quoted_path(output_binary)} ${os.quoted_path(obj_file)} -lSystem -syslibroot ${os.quoted_path(sdk_path)} -e _main -arch ${arch_flag} -platform_version macos 11.0.0 11.0.0'
+fn native_link_flags_suffix(link_flags string) string {
+	trimmed := link_flags.trim_space()
+	if trimmed == '' {
+		return ''
+	}
+	return ' ${trimmed}'
+}
+
+fn (b &Builder) native_link_flags_from_sources() string {
+	_, directive_link_flags := split_compile_and_link_flags(b.collect_cflags_from_sources())
+	return directive_link_flags.trim_space()
+}
+
+fn macos_native_link_command(output_binary string, obj_file string, sdk_path string, arch_flag string, tiny_object bool, link_flags string) string {
+	normal_link_cmd := 'ld -o ${os.quoted_path(output_binary)} ${os.quoted_path(obj_file)}${native_link_flags_suffix(link_flags)} -lSystem -syslibroot ${os.quoted_path(sdk_path)} -e _main -arch ${arch_flag} -platform_version macos 11.0.0 11.0.0'
 	if tiny_object {
 		return '${normal_link_cmd} -dead_strip -x -S'
 	}
 	return normal_link_cmd
+}
+
+fn linux_native_link_command(output_binary string, obj_file string, link_flags string) string {
+	return 'cc ${os.quoted_path(obj_file)} -o ${os.quoted_path(output_binary)} -no-pie${native_link_flags_suffix(link_flags)}'
 }
 
 fn native_external_object_file(output_binary string, target_os string) string {
@@ -3297,6 +3314,7 @@ fn (mut b Builder) build_macos_tiny_candidate_mir(arch pref.Arch, target_os stri
 fn (mut b Builder) gen_native(backend_arch pref.Arch) {
 	arch := if backend_arch == .auto { b.pref.get_effective_arch() } else { backend_arch }
 	target_os := b.pref.target_os_or_host()
+	native_link_flags := b.native_link_flags_from_sources()
 
 	mut mir_mod := b.build_native_mir_from_files(b.files, arch, target_os,
 		b.uses_minimal_x64_runtime_roots(), b.used_fn_keys, '')
@@ -3454,9 +3472,9 @@ fn (mut b Builder) gen_native(backend_arch pref.Arch) {
 			sdk_path := sdk_res.output.trim_space()
 			arch_flag := if arch == .arm64 { 'arm64' } else { 'x86_64' }
 			normal_link_cmd := macos_native_link_command(output_binary, obj_file, sdk_path,
-				arch_flag, false)
+				arch_flag, false, native_link_flags)
 			link_cmd := macos_native_link_command(output_binary, obj_file, sdk_path, arch_flag,
-				used_macos_tiny_object)
+				used_macos_tiny_object, native_link_flags)
 			mut link_result := os.execute(link_cmd)
 			if link_result.exit_code != 0 && used_macos_tiny_object {
 				if b.pref.verbose {
@@ -3497,7 +3515,8 @@ fn (mut b Builder) gen_native(backend_arch pref.Arch) {
 			}
 		} else {
 			// Linux linking
-			link_result := os.execute('cc ${obj_file} -o ${output_binary} -no-pie')
+			link_result := os.execute(linux_native_link_command(output_binary, obj_file,
+				native_link_flags))
 			if link_result.exit_code != 0 {
 				eprintln('Link failed:')
 				eprintln(link_result.output)

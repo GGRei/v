@@ -1111,14 +1111,22 @@ fn assert_x64_linux_file_stdout_bytes(name string, source_dir string, source_fil
 }
 
 fn x64_v_run_file_stdout_bytes(source_dir string, source_file string) []u8 {
+	return x64_v_run_file_stdout_bytes_with_args(source_dir, source_file, []string{})
+}
+
+fn x64_v_run_file_stdout_bytes_with_args(source_dir string, source_file string, args []string) []u8 {
 	vexe := x64_vexe_command_path()
 	source_path := os.join_path(source_dir, source_file)
 	mut run := os.new_process(vexe)
 	defer {
 		run.close()
 	}
+	mut run_args := ['run', source_file]
+	for arg in args {
+		run_args << arg
+	}
 	run.set_work_folder(source_dir)
-	run.set_args(['run', source_file])
+	run.set_args(run_args)
 	run.set_redirect_stdio()
 	run.run()
 	run.wait()
@@ -1166,6 +1174,15 @@ fn assert_x64_linux_file_stdout_matches_v_run(name string, source_dir string, so
 	}
 }
 
+fn assert_x64_linux_file_stdout_matches_v_run_with_args(name string, source_dir string, source_file string, args []string) {
+	$if linux {
+		expected_stdout := x64_v_run_file_stdout_bytes_with_args(source_dir, source_file, args)
+		result := run_x64_host_file_redirected_auto_with_args(name, source_dir, source_file, args)
+		assert_x64_linux_hosted_libc_binary(result, expected_stdout)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
 fn assert_x64_macos_windows_file_stdout_matches_v_run(name string, source_dir string, source_file string) {
 	$if macos {
 		expected_stdout := x64_v_run_file_stdout_bytes(source_dir, source_file)
@@ -1174,6 +1191,34 @@ fn assert_x64_macos_windows_file_stdout_matches_v_run(name string, source_dir st
 	$if windows {
 		expected_stdout := x64_v_run_file_stdout_bytes(source_dir, source_file)
 		assert_x64_macos_windows_file_stdout_bytes(name, source_dir, source_file, expected_stdout)
+	}
+}
+
+fn assert_x64_macos_windows_file_stdout_matches_v_run_with_args(name string, source_dir string, source_file string, args []string) {
+	$if macos {
+		expected_stdout := x64_v_run_file_stdout_bytes_with_args(source_dir, source_file, args)
+		result := run_x64_host_file_redirected_macos_auto_tiny_verbose_with_args('macos_${name}',
+			source_dir, source_file, args)
+		context := x64_host_result_context(result)
+		stdout_message := x64_stdout_mismatch_message(name, 'macos', expected_stdout,
+			result.stdout, context)
+		stderr_message := x64_stderr_mismatch_message(name, 'macos', []u8{}, result.stderr, context)
+		assert result.stdout == expected_stdout, stdout_message
+		assert result.stderr == []u8{}, stderr_message
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+	$if windows {
+		expected_stdout := x64_v_run_file_stdout_bytes_with_args(source_dir, source_file, args)
+		result := run_x64_host_file_redirected_auto_with_args('windows_${name}', source_dir,
+			source_file, args)
+		context := x64_host_result_context(result)
+		stdout_message := x64_stdout_mismatch_message(name, 'windows', expected_stdout,
+			result.stdout, context)
+		stderr_message := x64_stderr_mismatch_message(name, 'windows', []u8{}, result.stderr,
+			context)
+		assert result.stdout == expected_stdout, stdout_message
+		assert result.stderr == []u8{}, stderr_message
+		x64_host_cleanup_tmp(result.tmp_dir)
 	}
 }
 
@@ -3076,6 +3121,23 @@ fn x64_arguments_via_function_pointer_stdout() []u8 {
 '.bytes()
 }
 
+fn x64_math_log_20_source() string {
+	return 'module main
+
+import math { log }
+
+fn main() {
+	x := log(20.0)
+	println(x > 2.99 && x < 3.0)
+}
+'
+}
+
+fn x64_math_log_20_stdout() []u8 {
+	return 'true
+'.bytes()
+}
+
 fn x64_hello_world_example_stdout() []u8 {
 	return 'Hello, World!\n'.bytes()
 }
@@ -4200,6 +4262,15 @@ fn test_x64_linux_arguments_via_function_pointer_auto_tiny_falls_back_to_hosted(
 	}
 }
 
+fn test_x64_linux_math_log_20_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('math_log_20_exact',
+			x64_math_log_20_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_math_log_20_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
 fn test_x64_linux_fibonacci_example_arg_10_stdout_exact_bytes() {
 	$if linux {
 		result := run_x64_host_file_redirected_auto_with_args('fibonacci_example_arg_10_exact',
@@ -4207,6 +4278,11 @@ fn test_x64_linux_fibonacci_example_arg_10_stdout_exact_bytes() {
 		assert_x64_linux_hosted_libc_binary(result, x64_fibonacci_10_example_stdout())
 		x64_host_cleanup_tmp(result.tmp_dir)
 	}
+}
+
+fn test_x64_linux_primes_example_arg_20_stdout_matches_v_run() {
+	assert_x64_linux_file_stdout_matches_v_run_with_args('primes_example_arg_20_v_run',
+		x64_examples_dir(), 'primes.v', ['20'])
 }
 
 fn test_x64_linux_fibonacci_example_strict_tiny_rejected() {
@@ -4283,6 +4359,16 @@ fn test_x64_windows_fibonacci_example_arg_10_stdout_exact_bytes() {
 		assert result.stderr == []u8{}, context
 		x64_host_cleanup_tmp(result.tmp_dir)
 	}
+}
+
+fn test_x64_macos_windows_math_log_20_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('math_log_20_exact', x64_math_log_20_source(),
+		x64_math_log_20_stdout())
+}
+
+fn test_x64_macos_windows_primes_example_arg_20_stdout_matches_v_run() {
+	assert_x64_macos_windows_file_stdout_matches_v_run_with_args('primes_example_arg_20_v_run',
+		x64_examples_dir(), 'primes.v', ['20'])
 }
 
 fn test_x64_linux_struct_sumtype_field_init_stdout_exact_bytes() {

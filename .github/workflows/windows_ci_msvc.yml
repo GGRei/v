@@ -109,17 +109,18 @@ jobs:
           $tmp = Join-Path $env:RUNNER_TEMP 'v2_x64_native'
           New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
-          function Get-VRunExpectedBytes([string] $source, [string] $name) {
+          function Get-VRunExpectedBytes([string] $source, [string] $name, [string[]] $program_args = @()) {
             $stdout_path = Join-Path $tmp "$name.vrun.out"
             $stderr_path = Join-Path $tmp "$name.vrun.err"
             Remove-Item -LiteralPath $stdout_path, $stderr_path -Force -ErrorAction SilentlyContinue
 
-            $process = Start-Process -FilePath '.\v.exe' -ArgumentList @('run', $source) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout_path -RedirectStandardError $stderr_path
+            $v_args = @('run', $source) + $program_args
+            $process = Start-Process -FilePath '.\v.exe' -ArgumentList $v_args -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout_path -RedirectStandardError $stderr_path
             if ($process.ExitCode -ne 0) {
               if (Test-Path -LiteralPath $stderr_path) {
                 Get-Content -LiteralPath $stderr_path
               }
-              throw "v run $source failed with code $($process.ExitCode)"
+              throw "v run $source $($program_args -join ' ') failed with code $($process.ExitCode)"
             }
 
             [byte[]] $stderr = if (Test-Path -LiteralPath $stderr_path) { [System.IO.File]::ReadAllBytes($stderr_path) } else { New-Object byte[] 0 }
@@ -320,6 +321,9 @@ jobs:
 
           [byte[]] $bfs3_expected = Get-VRunExpectedBytes 'examples/graphs/bfs3.v' 'bfs3'
           Invoke-NativeX64Example 'examples/graphs/bfs3.v' 'bfs3' $bfs3_expected
+
+          [byte[]] $primes_expected = Get-VRunExpectedBytes 'examples/primes.v' 'primes' @('20')
+          Invoke-NativeX64Example 'examples/primes.v' 'primes' $primes_expected @('20')
 
           [byte[]] $dfs_expected = Get-VRunExpectedBytes 'examples/graphs/dfs.v' 'dfs'
           Invoke-NativeX64Example 'examples/graphs/dfs.v' 'dfs' $dfs_expected

@@ -467,9 +467,42 @@ fn test_pe_linker_adds_direct_kernel32_imports_in_stable_order() {
 	mut linker := PeLinker.new(obj)
 	image := linker.image() or { panic(err) }
 	names := pe_test_import_names(image)
+	dll_names := pe_test_import_dll_names(image)
 
 	assert names == ['ExitProcess', 'GetStdHandle', 'WriteFile']
+	assert dll_names == ['kernel32.dll']
 	assert pe_test_iat_size(image) == u32((names.len + 1) * 8)
+	assert 'ucrtbase.dll' !in dll_names
+}
+
+fn test_pe_linker_imports_ucrt_log_and_patches_call_to_import_thunk() {
+	mut obj := CoffObject.new()
+	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xc3]
+	obj.add_symbol('main', 5, true, 1)
+	log_sym := obj.add_undefined('log')
+	obj.add_text_reloc(1, log_sym, coff_image_rel_amd64_rel32)
+
+	mut linker := PeLinker.new(obj)
+	image := linker.image() or { panic(err) }
+	names := pe_test_import_names(image)
+	dll_names := pe_test_import_dll_names(image)
+
+	assert names == ['ExitProcess', 'log']
+	assert dll_names == ['kernel32.dll', 'ucrtbase.dll']
+	assert pe_test_iat_size(image) == u32((names.len + dll_names.len) * 8)
+
+	text_off := pe_test_section_header(image, '.text')
+	text_rva := pe_test_u32(image, text_off + 12)
+	text_raw := int(pe_test_u32(image, text_off + 20))
+	field_off := text_raw + linker.entry_stub_size() + 1
+	field_rva := text_rva + u32(linker.entry_stub_size() + 1)
+	disp := pe_test_i32(image, field_off)
+	target := u32(i32(field_rva + 4) + disp)
+	import_offsets := linker.import_thunk_offsets(0)
+	log_thunk := import_offsets[pe_ucrtbase_import_key('log')] or {
+		panic('missing ucrtbase log import thunk')
+	}
+	assert target == text_rva + log_thunk
 }
 
 fn test_pe_linker_adds_runtime_kernel32_import_patches_only_when_needed() {
