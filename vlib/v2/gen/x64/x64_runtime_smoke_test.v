@@ -381,7 +381,7 @@ fn run_x64_host_program_redirected_tiny(name string, source string) X64HostRunRe
 		build.close()
 	}
 	build.set_environment(x64_strict_tiny_build_environment(vexe, tmp_dir))
-	build.set_args(['-v2', '-b', 'x64', source_path, '-o', bin_path])
+	build.set_args(['-v2', '-no-parallel', '-b', 'x64', source_path, '-o', bin_path])
 	build.set_redirect_stdio()
 	build.run()
 	build.wait()
@@ -790,7 +790,7 @@ fn run_x64_host_file_redirected_tiny(name string, source_dir string, source_file
 	}
 	build.set_environment(x64_strict_tiny_build_environment(vexe, tmp_dir))
 	build.set_work_folder(source_dir)
-	build.set_args(['-v2', '-b', 'x64', source_file, '-o', bin_path])
+	build.set_args(['-v2', '-no-parallel', '-b', 'x64', source_file, '-o', bin_path])
 	build.set_redirect_stdio()
 	build.run()
 	build.wait()
@@ -841,7 +841,7 @@ fn assert_x64_linux_tiny_file_build_rejected(name string, source_dir string, sou
 		}
 		build.set_environment(x64_strict_tiny_build_environment(vexe, tmp_dir))
 		build.set_work_folder(source_dir)
-		build.set_args(['-v2', '-b', 'x64', source_file, '-o', bin_path])
+		build.set_args(['-v2', '-no-parallel', '-b', 'x64', source_file, '-o', bin_path])
 		build.set_redirect_stdio()
 		build.run()
 		build.wait()
@@ -1283,7 +1283,7 @@ fn assert_x64_linux_tiny_build_rejected(name string, source string, expected_mes
 			build.close()
 		}
 		build.set_environment(x64_strict_tiny_build_environment(vexe, tmp_dir))
-		build.set_args(['-v2', '-b', 'x64', source_path, '-o', bin_path])
+		build.set_args(['-v2', '-no-parallel', '-b', 'x64', source_path, '-o', bin_path])
 		build.set_redirect_stdio()
 		build.run()
 		build.wait()
