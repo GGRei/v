@@ -3965,6 +3965,146 @@ fn (t &Transformer) generic_scan_smartcast_contexts_from_condition(cond ast.Expr
 	return body_smartcasts
 }
 
+fn (mut t Transformer) collect_match_smartcast_branch_variant_info(cond ast.Expr) (string, string, string, bool) {
+	if cond is ast.Ident {
+		c_variant_name := cond.name
+		c_variant_name_full := if t.cur_module != '' && t.cur_module != 'main'
+			&& t.cur_module != 'builtin'
+			&& cond.name !in ['int', 'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'byte', 'rune', 'f32', 'f64', 'usize', 'isize', 'bool', 'string', 'voidptr', 'charptr', 'byteptr'] {
+			'${t.cur_module}__${cond.name}'
+		} else {
+			cond.name
+		}
+		return c_variant_name, c_variant_name_full, '', true
+	}
+	if cond is ast.SelectorExpr {
+		c_variant_name := cond.rhs.name
+		mut c_variant_module := ''
+		c_variant_name_full := if cond.lhs is ast.Ident {
+			c_variant_module = (cond.lhs as ast.Ident).name
+			'${c_variant_module}__${cond.rhs.name}'
+		} else {
+			cond.rhs.name
+		}
+		return c_variant_name, c_variant_name_full, c_variant_module, c_variant_name != ''
+	}
+	if cond is ast.Type {
+		if cond is ast.GenericType {
+			return t.collect_match_smartcast_branch_variant_info_for_generic(cond.name, cond.params)
+		}
+		c_variant_name := t.type_variant_name(cond)
+		return c_variant_name, t.type_variant_name_full(cond), '', c_variant_name != ''
+	}
+	if cond is ast.GenericArgs {
+		return t.collect_match_smartcast_branch_variant_info_for_generic(cond.lhs, cond.args)
+	}
+	if cond is ast.GenericArgOrIndexExpr {
+		return t.collect_match_smartcast_branch_variant_info_for_generic(cond.lhs, [
+			cond.expr,
+		])
+	}
+	return '', '', '', false
+}
+
+fn (mut t Transformer) collect_match_smartcast_branch_variant_info_for_generic(lhs ast.Expr, args []ast.Expr) (string, string, string, bool) {
+	base_name := t.type_expr_name(lhs)
+	base_full := t.type_expr_name_full(lhs)
+	if base_name == '' || base_full == '' {
+		return '', '', '', false
+	}
+	mut substituted_args := []ast.Expr{cap: args.len}
+	for arg in args {
+		substituted := t.substitute_type_in_expr(arg, t.cur_monomorphized_fn_bindings)
+		if generic_type_expr_has_open_placeholder(substituted) {
+			return '', '', '', false
+		}
+		substituted_args << substituted
+	}
+	suffix := t.generic_specialization_suffix(substituted_args)
+	if suffix == '' || suffix == '_' {
+		return '', '', '', false
+	}
+	variant_module := if lhs is ast.SelectorExpr && lhs.lhs is ast.Ident {
+		(lhs.lhs as ast.Ident).name
+	} else {
+		''
+	}
+	return base_name, base_full + suffix, variant_module, true
+}
+
+fn generic_type_expr_has_open_placeholder(expr ast.Expr) bool {
+	match expr {
+		ast.Ident {
+			return is_generic_placeholder_ident(expr.name)
+		}
+		ast.GenericArgs {
+			if generic_type_expr_has_open_placeholder(expr.lhs) {
+				return true
+			}
+			for arg in expr.args {
+				if generic_type_expr_has_open_placeholder(arg) {
+					return true
+				}
+			}
+			return false
+		}
+		ast.GenericArgOrIndexExpr {
+			return generic_type_expr_has_open_placeholder(expr.lhs)
+				|| generic_type_expr_has_open_placeholder(expr.expr)
+		}
+		ast.ModifierExpr {
+			return generic_type_expr_has_open_placeholder(expr.expr)
+		}
+		ast.PrefixExpr {
+			return generic_type_expr_has_open_placeholder(expr.expr)
+		}
+		ast.Type {
+			return generic_type_node_has_open_placeholder(expr)
+		}
+		else {
+			return false
+		}
+	}
+}
+
+fn generic_type_node_has_open_placeholder(typ ast.Type) bool {
+	match typ {
+		ast.ArrayType {
+			return generic_type_expr_has_open_placeholder(typ.elem_type)
+		}
+		ast.ArrayFixedType {
+			return generic_type_expr_has_open_placeholder(typ.elem_type)
+		}
+		ast.MapType {
+			return generic_type_expr_has_open_placeholder(typ.key_type)
+				|| generic_type_expr_has_open_placeholder(typ.value_type)
+		}
+		ast.OptionType {
+			return generic_type_expr_has_open_placeholder(typ.base_type)
+		}
+		ast.ResultType {
+			return generic_type_expr_has_open_placeholder(typ.base_type)
+		}
+		ast.PointerType {
+			return generic_type_expr_has_open_placeholder(typ.base_type)
+		}
+		ast.GenericType {
+			if generic_type_expr_has_open_placeholder(typ.name) {
+				return true
+			}
+			for param in typ.params {
+				if generic_type_expr_has_open_placeholder(param) {
+					return true
+				}
+			}
+			return false
+		}
+		else {
+			return false
+		}
+	}
+}
+
 fn (mut t Transformer) collect_generic_call_specs_in_match_expr_cursor(expr ast.Cursor) {
 	expr_c := expr.edge(0)
 	match_expr := expr_c.expr()
@@ -4070,7 +4210,7 @@ fn is_plain_string_interpolation_cursor(inter ast.Cursor) bool {
 	return !format_expr.is_valid() || format_expr.kind() == .expr_empty
 }
 
-fn (t &Transformer) generic_match_smartcast_contexts(smartcast_expr string, sumtype_name string, conds []ast.Expr) []SmartcastContext {
+fn (mut t Transformer) generic_match_smartcast_contexts(smartcast_expr string, sumtype_name string, conds []ast.Expr) []SmartcastContext {
 	if smartcast_expr == '' {
 		return []SmartcastContext{}
 	}
@@ -4080,31 +4220,9 @@ fn (t &Transformer) generic_match_smartcast_contexts(smartcast_expr string, sumt
 	}
 	mut ctxs := []SmartcastContext{cap: conds.len}
 	for cond in conds {
-		mut c_variant_name := ''
-		mut c_variant_name_full := ''
-		mut c_variant_module := ''
-		if cond is ast.Ident {
-			c_variant_name = cond.name
-			c_variant_name_full = if t.cur_module != '' && t.cur_module != 'main'
-				&& t.cur_module != 'builtin'
-				&& cond.name !in ['int', 'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'byte', 'rune', 'f32', 'f64', 'usize', 'isize', 'bool', 'string', 'voidptr', 'charptr', 'byteptr'] {
-				'${t.cur_module}__${cond.name}'
-			} else {
-				cond.name
-			}
-		} else if cond is ast.SelectorExpr {
-			c_variant_name = cond.rhs.name
-			if cond.lhs is ast.Ident {
-				c_variant_module = (cond.lhs as ast.Ident).name
-				c_variant_name_full = '${c_variant_module}__${cond.rhs.name}'
-			} else {
-				c_variant_name_full = cond.rhs.name
-			}
-		} else if cond is ast.Type {
-			c_variant_name = t.type_variant_name(cond)
-			c_variant_name_full = t.type_variant_name_full(cond)
-		}
-		if c_variant_name == '' {
+		c_variant_name, c_variant_name_full, c_variant_module, ok :=
+			t.collect_match_smartcast_branch_variant_info(cond)
+		if !ok || c_variant_name == '' {
 			return []SmartcastContext{}
 		}
 		qualified_variant := if c_variant_module != '' && !c_variant_name.starts_with('Array_')

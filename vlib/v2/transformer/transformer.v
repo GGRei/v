@@ -12282,7 +12282,11 @@ fn (t &Transformer) return_expr_should_skip_sumtype_wrap(expr ast.Expr) bool {
 }
 
 fn (t &Transformer) return_expr_is_sumtype_variant_init(expr ast.Expr, sumtype_name string) bool {
-	variants := t.get_sum_type_variants(sumtype_name)
+	info := t.sumtype_wrap_info_for_name(sumtype_name) or { return false }
+	return t.return_expr_is_sumtype_variant_init_with_variants(expr, info.name, info.variants)
+}
+
+fn (t &Transformer) return_expr_is_sumtype_variant_init_with_variants(expr ast.Expr, sumtype_name string, variants []string) bool {
 	if variants.len == 0 {
 		return false
 	}
@@ -12315,14 +12319,14 @@ fn (mut t Transformer) transform_return_stmt(stmt ast.ReturnStmt) ast.ReturnStmt
 // `_parts` extraction template established by `transform_fn_decl_parts`
 // (session 4).
 fn (mut t Transformer) transform_return_stmt_parts(stmt ast.ReturnStmt) []ast.Expr {
-	should_wrap_return_sumtype := t.cur_fn_ret_type_name != ''
-		&& t.is_sum_type(t.cur_fn_ret_type_name)
+	return_sumtype_info := t.current_return_sumtype_wrap_info() or { ConcreteSumtypeWrapInfo{} }
+	should_wrap_return_sumtype := return_sumtype_info.name != ''
 	mut exprs := []ast.Expr{cap: stmt.exprs.len}
 	for expr in stmt.exprs {
 		mut skip_return_sumtype_wrap := (t.cur_fn_returns_option || t.cur_fn_returns_result)
 			&& t.return_expr_should_skip_sumtype_wrap(expr)
 		if skip_return_sumtype_wrap && should_wrap_return_sumtype
-			&& t.return_expr_is_sumtype_variant_init(expr, t.cur_fn_ret_type_name) {
+			&& t.return_expr_is_sumtype_variant_init_with_variants(expr, return_sumtype_info.name, return_sumtype_info.variants) {
 			skip_return_sumtype_wrap = false
 		}
 		// Resolve enum shorthands in return expressions (e.g., return .string → token__Token__string)
@@ -12340,7 +12344,7 @@ fn (mut t Transformer) transform_return_stmt_parts(stmt ast.ReturnStmt) []ast.Ex
 		// set sumtype_return_wrap so transform_match_expr wraps each branch value
 		if expr is ast.MatchExpr && should_wrap_return_sumtype && !skip_return_sumtype_wrap {
 			old_wrap := t.sumtype_return_wrap
-			t.sumtype_return_wrap = t.cur_fn_ret_type_name
+			t.sumtype_return_wrap = return_sumtype_info.name
 			transformed := t.transform_expr(expr)
 			t.sumtype_return_wrap = old_wrap
 			exprs << transformed
@@ -12362,7 +12366,7 @@ fn (mut t Transformer) transform_return_stmt_parts(stmt ast.ReturnStmt) []ast.Ex
 				if smartcast_variant != '' {
 					if var_type := t.lookup_var_type(expr.name) {
 						var_c_name := t.type_to_c_name(var_type)
-						if t.is_same_sumtype_name(var_c_name, t.cur_fn_ret_type_name) {
+						if t.is_same_sumtype_name(var_c_name, return_sumtype_info.name) {
 							// Remove smartcast temporarily to prevent transform_expr
 							// from applying the smartcast dereference
 							removed_ctx := t.remove_smartcast_for_expr(expr.name)
@@ -12383,7 +12387,9 @@ fn (mut t Transformer) transform_return_stmt_parts(stmt ast.ReturnStmt) []ast.Ex
 			// wrap_sumtype_value calls transform_expr internally, so the value
 			// is properly transformed.
 			if t.is_native_be {
-				if wrapped := t.wrap_sumtype_value(expr, t.cur_fn_ret_type_name) {
+				if wrapped := t.wrap_sumtype_value_with_variants(expr, return_sumtype_info.name,
+					return_sumtype_info.variants)
+				{
 					exprs << wrapped
 					continue
 				}
@@ -12404,14 +12410,16 @@ fn (mut t Transformer) transform_return_stmt_parts(stmt ast.ReturnStmt) []ast.Ex
 		// Using wrap_sumtype_value would transform the value a second time, causing
 		// double smartcast dereferences (e.g., ((T*)(((T*)(x._data._T))->_data._T))->field).
 		if should_wrap_return_sumtype && !skip_return_sumtype_wrap {
-			if wrapped := t.wrap_sumtype_value_transformed(transformed, t.cur_fn_ret_type_name) {
+			if wrapped := t.wrap_sumtype_value_transformed_with_variants(transformed,
+				return_sumtype_info.name, return_sumtype_info.variants)
+			{
 				exprs << wrapped
 				continue
 			}
 			// If wrapping failed but we have a smartcast context, use the variant from it
 			if smartcast_variant != '' {
-				if wrapped := t.build_sumtype_init(transformed, smartcast_variant,
-					t.cur_fn_ret_type_name)
+				if wrapped := t.build_sumtype_init_with_variants(transformed, smartcast_variant,
+					return_sumtype_info.name, return_sumtype_info.variants)
 				{
 					exprs << wrapped
 					continue

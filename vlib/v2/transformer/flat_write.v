@@ -2463,13 +2463,13 @@ pub fn (mut t Transformer) try_expand_return_match_expr_to_flat(stmt ast.ReturnS
 		return false
 	}
 	match_expr_ast := match_expr as ast.MatchExpr
-	should_wrap_return_sumtype := t.cur_fn_ret_type_name != ''
-		&& t.is_sum_type(t.cur_fn_ret_type_name)
+	return_sumtype_info := t.current_return_sumtype_wrap_info() or { ConcreteSumtypeWrapInfo{} }
+	should_wrap_return_sumtype := return_sumtype_info.name != ''
 	skip_return_sumtype_wrap := (t.cur_fn_returns_option || t.cur_fn_returns_result)
 		&& t.return_expr_should_skip_sumtype_wrap(match_expr)
 	old_wrap := t.sumtype_return_wrap
 	if should_wrap_return_sumtype && !skip_return_sumtype_wrap {
-		t.sumtype_return_wrap = t.cur_fn_ret_type_name
+		t.sumtype_return_wrap = return_sumtype_info.name
 	}
 	old_preserve_match_branch_value := t.preserve_match_branch_value
 	t.preserve_match_branch_value = true

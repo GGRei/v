@@ -2232,8 +2232,8 @@ fn (t &Transformer) init_expr_sumtype_variant_name(init_expr ast.InitExpr, varia
 }
 
 fn (mut t Transformer) wrap_sumtype_value(value ast.Expr, sumtype_name string) ?ast.Expr {
-	variants := t.get_sum_type_variants(sumtype_name)
-	return t.wrap_sumtype_value_with_variants(value, sumtype_name, variants)
+	info := t.sumtype_wrap_info_for_name(sumtype_name) or { return none }
+	return t.wrap_sumtype_value_with_variants(value, info.name, info.variants)
 }
 
 fn (mut t Transformer) wrap_sumtype_value_with_variants(value ast.Expr, sumtype_name string, variants []string) ?ast.Expr {
@@ -2323,8 +2323,8 @@ fn (mut t Transformer) transform_declared_sumtype_value(value ast.Expr, sumtype_
 
 // wrap_sumtype_value_transformed wraps an already-transformed expression in sum type init
 fn (mut t Transformer) wrap_sumtype_value_transformed(value ast.Expr, sumtype_name string) ?ast.Expr {
-	variants := t.get_sum_type_variants(sumtype_name)
-	return t.wrap_sumtype_value_transformed_with_variants(value, sumtype_name, variants)
+	info := t.sumtype_wrap_info_for_name(sumtype_name) or { return none }
+	return t.wrap_sumtype_value_transformed_with_variants(value, info.name, info.variants)
 }
 
 fn (mut t Transformer) wrap_sumtype_value_transformed_with_variants(value ast.Expr, sumtype_name string, variants []string) ?ast.Expr {
@@ -2441,9 +2441,9 @@ fn (mut t Transformer) wrap_sumtype_value_transformed_with_variants(value ast.Ex
 
 // build_sumtype_init creates a sum type initialization expression
 fn (t &Transformer) build_sumtype_init(transformed_value ast.Expr, variant_name string, sumtype_name string) ?ast.Expr {
-	variants := t.get_sum_type_variants(sumtype_name)
-	return t.build_sumtype_init_with_variants(transformed_value, variant_name, sumtype_name,
-		variants)
+	info := t.sumtype_wrap_info_for_name(sumtype_name) or { return none }
+	return t.build_sumtype_init_with_variants(transformed_value, variant_name, info.name,
+		info.variants)
 }
 
 fn (t &Transformer) build_sumtype_init_with_variants(transformed_value ast.Expr, variant_name string, sumtype_name string, variants []string) ?ast.Expr {

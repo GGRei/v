@@ -906,6 +906,139 @@ fn (mut b Builder) struct_name_to_ssa(name string) ?TypeID {
 	return none
 }
 
+fn (b &Builder) generic_type_part_name(expr ast.Expr) string {
+	match expr {
+		ast.Ident {
+			return expr.name.replace('.', '__')
+		}
+		ast.SelectorExpr {
+			return expr.name().replace('.', '__')
+		}
+		else {
+			return ''
+		}
+	}
+}
+
+fn generic_type_name_from_parts(base string, parts []string) string {
+	if base == '' || parts.len == 0 {
+		return ''
+	}
+	return '${base}_T_${parts.join('_')}'
+}
+
+fn (b &Builder) generic_type_name(name ast.Expr, params []ast.Expr) string {
+	base := b.generic_type_part_name(name)
+	mut parts := []string{cap: params.len}
+	for param in params {
+		part := b.generic_type_part_name(param)
+		if part == '' {
+			return ''
+		}
+		parts << part
+	}
+	return generic_type_name_from_parts(base, parts)
+}
+
+fn (mut b Builder) source_base_is_sumtype(name string) bool {
+	if name == '' || b.env == unsafe { nil } {
+		return false
+	}
+	mut lookup_module := b.cur_module
+	mut lookup_name := name
+	if dunder := name.index('__') {
+		lookup_module = name[..dunder]
+		last_dunder := name.last_index('__') or { dunder }
+		lookup_name = name[last_dunder + 2..]
+	}
+	scope := b.env.get_scope(lookup_module) or { return false }
+	obj := scope.lookup_parent(lookup_name, 0) or { return false }
+	return obj.typ() is types.SumType
+}
+
+fn (mut b Builder) generic_sumtype_storage_to_ssa(base_name string, concrete_name string) ?TypeID {
+	if concrete_name == '' || !ssa_string_ok(concrete_name) || !b.source_base_is_sumtype(base_name) {
+		return none
+	}
+	if id := b.struct_name_to_ssa(concrete_name) {
+		return id
+	}
+	i64_t := b.mod.type_store.get_int(64)
+	type_id := b.mod.type_store.register(Type{
+		kind:        .struct_t
+		fields:      [i64_t, i64_t]
+		field_names: ['_tag', '_data']
+	})
+	b.struct_types[concrete_name] = type_id
+	b.mod.c_struct_names[type_id] = concrete_name
+	return type_id
+}
+
+fn (mut b Builder) generic_type_to_ssa(name ast.Expr, params []ast.Expr) TypeID {
+	concrete_name := b.generic_type_name(name, params)
+	if concrete_name == '' || !ssa_string_ok(concrete_name) {
+		return b.mod.type_store.get_int(64)
+	}
+	if id := b.struct_name_to_ssa(concrete_name) {
+		return id
+	}
+	base_name := b.generic_type_part_name(name)
+	if id := b.generic_sumtype_storage_to_ssa(base_name, concrete_name) {
+		return id
+	}
+	return b.mod.type_store.get_int(64)
+}
+
+fn (b &Builder) generic_type_part_name_from_flat(c ast.Cursor) string {
+	match c.kind() {
+		.expr_ident {
+			return c.name().replace('.', '__')
+		}
+		.expr_selector {
+			lhs := c.edge(0)
+			rhs := c.edge(1)
+			if lhs.kind() == .expr_ident && rhs.kind() == .expr_ident {
+				return '${lhs.name().replace('.', '__')}__${rhs.name()}'
+			}
+			return ''
+		}
+		else {
+			return ''
+		}
+	}
+}
+
+fn (b &Builder) generic_type_name_from_flat(c ast.Cursor) string {
+	if c.kind() != .typ_generic || c.edge_count() <= 1 {
+		return ''
+	}
+	base := b.generic_type_part_name_from_flat(c.edge(0))
+	mut parts := []string{cap: c.edge_count() - 1}
+	for i in 1 .. c.edge_count() {
+		part := b.generic_type_part_name_from_flat(c.edge(i))
+		if part == '' {
+			return ''
+		}
+		parts << part
+	}
+	return generic_type_name_from_parts(base, parts)
+}
+
+fn (mut b Builder) generic_type_to_ssa_from_flat(c ast.Cursor) TypeID {
+	concrete_name := b.generic_type_name_from_flat(c)
+	if concrete_name == '' || !ssa_string_ok(concrete_name) {
+		return b.mod.type_store.get_int(64)
+	}
+	if id := b.struct_name_to_ssa(concrete_name) {
+		return id
+	}
+	base_name := b.generic_type_part_name_from_flat(c.edge(0))
+	if id := b.generic_sumtype_storage_to_ssa(base_name, concrete_name) {
+		return id
+	}
+	return b.mod.type_store.get_int(64)
+}
+
 fn (mut b Builder) primitive_type_name_to_ssa(name string) ?TypeID {
 	if !ssa_string_ok(name) {
 		return none
@@ -4104,6 +4237,9 @@ fn (mut b Builder) ast_type_node_to_ssa(typ ast.Type) TypeID {
 			base := b.ast_type_to_ssa(typ.base_type)
 			return b.mod.type_store.get_ptr(base)
 		}
+		ast.GenericType {
+			return b.generic_type_to_ssa(typ.name, typ.params)
+		}
 		ast.TupleType {
 			mut elem_types := []TypeID{cap: typ.types.len}
 			for t in typ.types {
@@ -6651,6 +6787,9 @@ fn (mut b Builder) ast_type_to_ssa_from_flat(c ast.Cursor) TypeID {
 		}
 		.typ_pointer {
 			return b.mod.type_store.get_ptr(b.ast_type_to_ssa_from_flat(c.edge(0)))
+		}
+		.typ_generic {
+			return b.generic_type_to_ssa_from_flat(c)
 		}
 		else {
 			return b.mod.type_store.get_int(64)
@@ -16664,7 +16803,17 @@ fn (mut b Builder) collect_init_expr_values(expr ast.InitExpr) (TypeID, []ValueI
 		}
 	}
 
-	for fi in 0 .. num_fields {
+	mut field_limit := num_fields
+	if typ_info.is_union {
+		field_limit = 0
+		for fi, fname in typ_info.field_names {
+			if _ := initialized_fields[fname] {
+				field_limit = fi + 1
+			}
+		}
+	}
+
+	for fi in 0 .. field_limit {
 		fname := typ_info.field_names[fi]
 		field_type := if fi < typ_info.fields.len {
 			typ_info.fields[fi]
@@ -16783,7 +16932,17 @@ fn (mut b Builder) collect_init_expr_values_from_flat(c ast.Cursor) (TypeID, []V
 		}
 	}
 
-	for fi in 0 .. num_fields {
+	mut field_limit := num_fields
+	if typ_info.is_union {
+		field_limit = 0
+		for fi, fname in typ_info.field_names {
+			if _ := initialized_fields[fname] {
+				field_limit = fi + 1
+			}
+		}
+	}
+
+	for fi in 0 .. field_limit {
 		fname := typ_info.field_names[fi]
 		field_type := if fi < typ_info.fields.len {
 			typ_info.fields[fi]
@@ -16902,7 +17061,6 @@ fn (mut b Builder) build_init_expr(expr ast.InitExpr) ValueID {
 		// Not a known struct or has no fields: fall back to zero constant
 		return b.mod.get_or_add_const(struct_type, '0')
 	}
-	// Diagnostic: check sum type init for zero _data
 	return b.mod.add_instr(.struct_init, b.cur_block, struct_type, field_vals)
 }
 

@@ -1956,6 +1956,266 @@ fn x64_heap_alloc_zeroed_struct_literal_stdout() []u8 {
 '.bytes()
 }
 
+fn x64_generic_sumtype_direct_wrap_source() string {
+	return "module main
+
+struct Empty {}
+
+struct Node[T] {
+	value T
+	left  Tree[T]
+	right Tree[T]
+}
+
+type Tree[T] = Empty | Node[T]
+
+fn tag(tree Tree[f64]) int {
+	return match tree {
+		Empty { 0 }
+		Node[f64] { 1 }
+	}
+}
+
+fn payload_score(tree Tree[f64]) int {
+	return match tree {
+		Empty { 0 }
+		Node[f64] {
+			if tree.value == 8.0 {
+				10 + tag(tree.left) + tag(tree.right)
+			} else {
+				-1
+			}
+		}
+	}
+}
+
+fn main() {
+	empty := Tree[f64](Empty{})
+	tree := Tree[f64](Node[f64]{8.0, empty, empty})
+	if tag(empty) == 0 {
+		print('E')
+	} else {
+		print('e')
+	}
+	if tag(tree) == 1 {
+		print('N')
+	} else {
+		print('n')
+	}
+	if payload_score(tree) == 10 {
+		println('P')
+	} else {
+		println('p')
+	}
+}
+"
+}
+
+fn x64_generic_sumtype_direct_wrap_stdout() []u8 {
+	return 'ENP
+'.bytes()
+}
+
+fn x64_generic_sumtype_receiver_size_source() string {
+	return 'module main
+
+struct Empty {}
+
+struct Node[T] {
+	value T
+	left  Tree[T]
+	right Tree[T]
+}
+
+type Tree[T] = Empty | Node[T]
+
+fn (tree Tree[T]) size[T]() int {
+	return match tree {
+		Empty { 0 }
+		Node[T] { 1 }
+	}
+}
+
+fn main() {
+	empty := Tree[f64](Empty{})
+	tree := Tree[f64](Node[f64]{1.0, empty, empty})
+	println(tree.size())
+}
+'
+}
+
+fn x64_generic_sumtype_receiver_size_stdout() []u8 {
+	return '1
+'.bytes()
+}
+
+fn x64_generic_sumtype_insert_size_source() string {
+	return 'module main
+
+struct Empty {}
+
+struct Node[T] {
+	value T
+	left  Tree[T]
+	right Tree[T]
+}
+
+type Tree[T] = Empty | Node[T]
+
+fn (tree Tree[T]) size[T]() int {
+	return match tree {
+		Empty { 0 }
+		Node[T] { 1 + tree.left.size() + tree.right.size() }
+	}
+}
+
+fn (tree Tree[T]) insert[T](x T) Tree[T] {
+	return match tree {
+		Empty { Node[T]{x, tree, tree} }
+		Node[T] {
+			if x == tree.value {
+				tree
+			} else if x < tree.value {
+				Node[T]{ ...tree, left: tree.left.insert(x) }
+			} else {
+				Node[T]{ ...tree, right: tree.right.insert(x) }
+			}
+		}
+	}
+}
+
+fn main() {
+	mut tree := Tree[f64](Empty{})
+	tree = tree.insert(0.2)
+	tree = tree.insert(0.5)
+	println(tree.size())
+}
+'
+}
+
+fn x64_generic_sumtype_insert_size_stdout() []u8 {
+	return '2
+'.bytes()
+}
+
+fn x64_struct_float_fields_source() string {
+	return "module main
+
+struct FloatBox {
+	a f64
+	b f32
+}
+
+fn make_box() FloatBox {
+	return FloatBox{
+		a: 8.0
+		b: f32(2.5)
+	}
+}
+
+fn main() {
+	box := make_box()
+	if box.a == 8.0 {
+		print('D')
+	} else {
+		print('d')
+	}
+	if box.b == f32(2.5) {
+		println('F')
+	} else {
+		println('f')
+	}
+}
+"
+}
+
+fn x64_struct_float_fields_stdout() []u8 {
+	return 'DF
+'.bytes()
+}
+
+fn x64_union_f64_bits_source() string {
+	return "module main
+
+import strconv
+
+fn main() {
+	marker := 'hosted'.clone()
+	_ = marker
+	x := 0.2
+	u := strconv.Float64u{
+		f: x
+	}
+	unsafe {
+		if u.u == u64(0) {
+			println('f_to_u=zero')
+		} else {
+			println('f_to_u=nonzero')
+		}
+		v := strconv.Float64u{
+			u: u64(4596373779694328218)
+		}
+		if v.f == x {
+			println('u_to_f=ok')
+		} else {
+			println('u_to_f=bad')
+		}
+	}
+}
+"
+}
+
+fn x64_union_f64_bits_stdout() []u8 {
+	return 'f_to_u=nonzero
+u_to_f=ok
+'.bytes()
+}
+
+fn x64_f64_str_interpolation_source() string {
+	return "module main
+
+fn ok_arg(x f64) int {
+	if x == 0.2 {
+		return 1
+	}
+	return 0
+}
+
+fn main() {
+	x := 0.2
+	println(ok_arg(x))
+	println(x.str())
+	println('\${x}')
+}
+"
+}
+
+fn x64_f64_str_interpolation_stdout() []u8 {
+	return '1
+0.2
+0.2
+'.bytes()
+}
+
+fn x64_f64_for_interpolation_source() string {
+	return "module main
+
+fn main() {
+	vals := [0.2, 0.0, 0.5, 0.3, 0.6, 0.8]
+	for i in vals {
+		if i < 0.7 {
+			print('\${i} ')
+		}
+	}
+	println('')
+}
+"
+}
+
+fn x64_f64_for_interpolation_stdout() []u8 {
+	return '0.2 0.0 0.5 0.3 0.6 \n'.bytes()
+}
+
 fn x64_core_int_control_flow_source() string {
 	return "module main
 
@@ -4386,6 +4646,11 @@ fn test_x64_linux_tree_of_nodes_example_top_level_stdout_exact_bytes() {
 		'tree_of_nodes.v', x64_tree_of_nodes_example_stdout())
 }
 
+fn test_x64_linux_binary_search_tree_example_stdout_matches_v_run() {
+	assert_x64_linux_file_stdout_matches_v_run('binary_search_tree_example_top_level_v_run',
+		x64_examples_dir(), 'binary_search_tree.v')
+}
+
 fn test_x64_linux_bfs_example_top_level_stdout_exact_bytes() {
 	assert_x64_linux_file_stdout_bytes('bfs_example_top_level_exact', os.join_path(x64_examples_dir(),
 		'graphs'), 'bfs.v', x64_bfs_example_stdout())
@@ -5726,6 +5991,69 @@ fn test_x64_linux_heap_alloc_zeroed_struct_literal_stdout_exact_bytes() {
 	assert_x64_linux_stdout_bytes('heap_alloc_zeroed_struct_literal_exact',
 		x64_heap_alloc_zeroed_struct_literal_source(),
 		x64_heap_alloc_zeroed_struct_literal_stdout())
+}
+
+fn test_x64_linux_generic_sumtype_direct_wrap_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('generic_sumtype_direct_wrap_exact',
+			x64_generic_sumtype_direct_wrap_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_generic_sumtype_direct_wrap_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_generic_sumtype_receiver_size_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('generic_sumtype_receiver_size_exact',
+			x64_generic_sumtype_receiver_size_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_generic_sumtype_receiver_size_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_generic_sumtype_insert_size_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('generic_sumtype_insert_size_exact',
+			x64_generic_sumtype_insert_size_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_generic_sumtype_insert_size_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_struct_float_fields_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('struct_float_fields_exact',
+			x64_struct_float_fields_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_struct_float_fields_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_union_f64_bits_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('union_f64_bits_exact',
+			x64_union_f64_bits_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_union_f64_bits_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_f64_str_interpolation_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('f64_str_interpolation_exact',
+			x64_f64_str_interpolation_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_f64_str_interpolation_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_f64_for_interpolation_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('f64_for_interpolation_exact',
+			x64_f64_for_interpolation_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_f64_for_interpolation_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
 }
 
 fn test_x64_linux_core_int_control_flow_stdout_exact_bytes() {

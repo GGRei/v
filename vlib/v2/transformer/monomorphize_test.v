@@ -331,6 +331,17 @@ fn mono_collect_call_names_from_expr(expr ast.Expr, mut names []string) {
 			mono_collect_call_names_from_expr(expr.lhs, mut names)
 			mono_collect_call_names_from_expr(expr.rhs, mut names)
 		}
+		ast.MatchExpr {
+			mono_collect_call_names_from_expr(expr.expr, mut names)
+			for branch in expr.branches {
+				for cond in branch.cond {
+					mono_collect_call_names_from_expr(cond, mut names)
+				}
+				for stmt in branch.stmts {
+					mono_collect_call_names_from_stmt(stmt, mut names)
+				}
+			}
+		}
 		ast.ModifierExpr {
 			mono_collect_call_names_from_expr(expr.expr, mut names)
 		}
@@ -548,6 +559,117 @@ fn mono_assert_sumtype_payload_memdup_expr(expr ast.Expr, expected_variant strin
 	assert (size_op.exprs[0] as ast.Ident).name == expected_variant
 }
 
+fn mono_collect_tag_compare_rhs_from_expr(expr ast.Expr, mut values []ast.Expr) {
+	match expr {
+		ast.IfExpr {
+			mono_collect_tag_compare_rhs_from_expr(expr.cond, mut values)
+			for stmt in expr.stmts {
+				mono_collect_tag_compare_rhs_from_stmt(stmt, mut values)
+			}
+			mono_collect_tag_compare_rhs_from_expr(expr.else_expr, mut values)
+		}
+		ast.InfixExpr {
+			if expr.op == token.Token.eq && expr.lhs is ast.SelectorExpr {
+				lhs := expr.lhs as ast.SelectorExpr
+				if lhs.rhs.name == '_tag' {
+					values << expr.rhs
+				}
+			}
+			mono_collect_tag_compare_rhs_from_expr(expr.lhs, mut values)
+			mono_collect_tag_compare_rhs_from_expr(expr.rhs, mut values)
+		}
+		ast.ParenExpr {
+			mono_collect_tag_compare_rhs_from_expr(expr.expr, mut values)
+		}
+		else {}
+	}
+}
+
+fn mono_collect_tag_compare_rhs_from_stmt(stmt ast.Stmt, mut values []ast.Expr) {
+	match stmt {
+		ast.AssignStmt {
+			for expr in stmt.rhs {
+				mono_collect_tag_compare_rhs_from_expr(expr, mut values)
+			}
+		}
+		ast.ExprStmt {
+			mono_collect_tag_compare_rhs_from_expr(stmt.expr, mut values)
+		}
+		ast.ReturnStmt {
+			for expr in stmt.exprs {
+				mono_collect_tag_compare_rhs_from_expr(expr, mut values)
+			}
+		}
+		else {}
+	}
+}
+
+fn mono_collect_return_exprs_from_stmt(stmt ast.Stmt, mut exprs []ast.Expr) {
+	match stmt {
+		ast.BlockStmt {
+			for nested in stmt.stmts {
+				mono_collect_return_exprs_from_stmt(nested, mut exprs)
+			}
+		}
+		ast.ExprStmt {
+			mono_collect_return_exprs_from_expr(stmt.expr, mut exprs)
+		}
+		ast.ForStmt {
+			for nested in stmt.stmts {
+				mono_collect_return_exprs_from_stmt(nested, mut exprs)
+			}
+			mono_collect_return_exprs_from_stmt(stmt.init, mut exprs)
+			mono_collect_return_exprs_from_stmt(stmt.post, mut exprs)
+		}
+		ast.ReturnStmt {
+			exprs << stmt.exprs
+		}
+		else {}
+	}
+}
+
+fn mono_collect_return_exprs_from_expr(expr ast.Expr, mut exprs []ast.Expr) {
+	match expr {
+		ast.IfExpr {
+			for stmt in expr.stmts {
+				mono_collect_return_exprs_from_stmt(stmt, mut exprs)
+			}
+			mono_collect_return_exprs_from_expr(expr.else_expr, mut exprs)
+		}
+		else {}
+	}
+}
+
+fn mono_return_exprs_for_decl(decl ast.FnDecl) []ast.Expr {
+	mut exprs := []ast.Expr{}
+	for stmt in decl.stmts {
+		mono_collect_return_exprs_from_stmt(stmt, mut exprs)
+	}
+	return exprs
+}
+
+fn mono_tag_compare_rhs_for_fn(files []ast.File, fn_name string) []ast.Expr {
+	mut values := []ast.Expr{}
+	for file in files {
+		for stmt in file.stmts {
+			if stmt is ast.FnDecl && stmt.name == fn_name {
+				for nested in stmt.stmts {
+					mono_collect_tag_compare_rhs_from_stmt(nested, mut values)
+				}
+			}
+		}
+	}
+	return values
+}
+
+fn mono_tag_compare_rhs_for_decl(decl ast.FnDecl) []ast.Expr {
+	mut values := []ast.Expr{}
+	for stmt in decl.stmts {
+		mono_collect_tag_compare_rhs_from_stmt(stmt, mut values)
+	}
+	return values
+}
+
 fn mono_has_fn(files []ast.File, fn_name string) bool {
 	for file in files {
 		for stmt in file.stmts {
@@ -605,12 +727,260 @@ fn mono_call_names_for_decl(decl ast.FnDecl) []string {
 	return names
 }
 
+fn mono_call_lhs_shape(expr ast.Expr) string {
+	match expr {
+		ast.GenericArgs {
+			return 'GenericArgs(${mono_call_lhs_shape(expr.lhs)})'
+		}
+		ast.GenericArgOrIndexExpr {
+			return 'GenericArgOrIndexExpr(${mono_call_lhs_shape(expr.lhs)})'
+		}
+		ast.Ident {
+			return 'Ident(${expr.name})'
+		}
+		ast.IndexExpr {
+			return 'IndexExpr(${mono_call_lhs_shape(expr.lhs)})'
+		}
+		ast.SelectorExpr {
+			return 'Selector(${mono_call_lhs_shape(expr.lhs)}.${expr.rhs.name})'
+		}
+		else {
+			return typeof(expr).name
+		}
+	}
+}
+
+fn mono_collect_call_lhs_shapes_from_expr(expr ast.Expr, mut shapes []string) {
+	match expr {
+		ast.CallExpr {
+			shapes << mono_call_lhs_shape(expr.lhs)
+			mono_collect_call_lhs_shapes_from_expr(expr.lhs, mut shapes)
+			for arg in expr.args {
+				mono_collect_call_lhs_shapes_from_expr(arg, mut shapes)
+			}
+		}
+		ast.IfExpr {
+			mono_collect_call_lhs_shapes_from_expr(expr.cond, mut shapes)
+			for stmt in expr.stmts {
+				mono_collect_call_lhs_shapes_from_stmt(stmt, mut shapes)
+			}
+			mono_collect_call_lhs_shapes_from_expr(expr.else_expr, mut shapes)
+		}
+		ast.InfixExpr {
+			mono_collect_call_lhs_shapes_from_expr(expr.lhs, mut shapes)
+			mono_collect_call_lhs_shapes_from_expr(expr.rhs, mut shapes)
+		}
+		ast.MatchExpr {
+			mono_collect_call_lhs_shapes_from_expr(expr.expr, mut shapes)
+			for branch in expr.branches {
+				for cond in branch.cond {
+					mono_collect_call_lhs_shapes_from_expr(cond, mut shapes)
+				}
+				for stmt in branch.stmts {
+					mono_collect_call_lhs_shapes_from_stmt(stmt, mut shapes)
+				}
+			}
+		}
+		ast.ParenExpr {
+			mono_collect_call_lhs_shapes_from_expr(expr.expr, mut shapes)
+		}
+		ast.PrefixExpr {
+			mono_collect_call_lhs_shapes_from_expr(expr.expr, mut shapes)
+		}
+		ast.SelectorExpr {
+			mono_collect_call_lhs_shapes_from_expr(expr.lhs, mut shapes)
+		}
+		else {}
+	}
+}
+
+fn mono_collect_call_lhs_shapes_from_stmt(stmt ast.Stmt, mut shapes []string) {
+	match stmt {
+		ast.AssignStmt {
+			for expr in stmt.rhs {
+				mono_collect_call_lhs_shapes_from_expr(expr, mut shapes)
+			}
+		}
+		ast.ExprStmt {
+			mono_collect_call_lhs_shapes_from_expr(stmt.expr, mut shapes)
+		}
+		ast.ReturnStmt {
+			for expr in stmt.exprs {
+				mono_collect_call_lhs_shapes_from_expr(expr, mut shapes)
+			}
+		}
+		else {}
+	}
+}
+
+fn mono_call_lhs_shapes_for_decl(decl ast.FnDecl) []string {
+	mut shapes := []string{}
+	for stmt in decl.stmts {
+		mono_collect_call_lhs_shapes_from_stmt(stmt, mut shapes)
+	}
+	return shapes
+}
+
+fn mono_raw_call_name(expr ast.Expr) string {
+	match expr {
+		ast.Ident {
+			return expr.name
+		}
+		ast.SelectorExpr {
+			return expr.rhs.name
+		}
+		else {
+			return mono_call_lhs_shape(expr)
+		}
+	}
+}
+
+fn mono_collect_raw_call_names_from_expr(expr ast.Expr, mut names []string) {
+	match expr {
+		ast.CallExpr {
+			names << mono_raw_call_name(expr.lhs)
+			mono_collect_raw_call_names_from_expr(expr.lhs, mut names)
+			for arg in expr.args {
+				mono_collect_raw_call_names_from_expr(arg, mut names)
+			}
+		}
+		ast.IfExpr {
+			mono_collect_raw_call_names_from_expr(expr.cond, mut names)
+			for stmt in expr.stmts {
+				mono_collect_raw_call_names_from_stmt(stmt, mut names)
+			}
+			mono_collect_raw_call_names_from_expr(expr.else_expr, mut names)
+		}
+		ast.InfixExpr {
+			mono_collect_raw_call_names_from_expr(expr.lhs, mut names)
+			mono_collect_raw_call_names_from_expr(expr.rhs, mut names)
+		}
+		ast.MatchExpr {
+			mono_collect_raw_call_names_from_expr(expr.expr, mut names)
+			for branch in expr.branches {
+				for cond in branch.cond {
+					mono_collect_raw_call_names_from_expr(cond, mut names)
+				}
+				for stmt in branch.stmts {
+					mono_collect_raw_call_names_from_stmt(stmt, mut names)
+				}
+			}
+		}
+		ast.ParenExpr {
+			mono_collect_raw_call_names_from_expr(expr.expr, mut names)
+		}
+		ast.PrefixExpr {
+			mono_collect_raw_call_names_from_expr(expr.expr, mut names)
+		}
+		ast.SelectorExpr {
+			mono_collect_raw_call_names_from_expr(expr.lhs, mut names)
+		}
+		else {}
+	}
+}
+
+fn mono_collect_raw_call_names_from_stmt(stmt ast.Stmt, mut names []string) {
+	match stmt {
+		ast.AssignStmt {
+			for expr in stmt.rhs {
+				mono_collect_raw_call_names_from_expr(expr, mut names)
+			}
+		}
+		ast.ExprStmt {
+			mono_collect_raw_call_names_from_expr(stmt.expr, mut names)
+		}
+		ast.ReturnStmt {
+			for expr in stmt.exprs {
+				mono_collect_raw_call_names_from_expr(expr, mut names)
+			}
+		}
+		else {}
+	}
+}
+
+fn mono_raw_call_names_for_decl(decl ast.FnDecl) []string {
+	mut names := []string{}
+	for stmt in decl.stmts {
+		mono_collect_raw_call_names_from_stmt(stmt, mut names)
+	}
+	return names
+}
+
 fn mono_string_literals_for_decl(decl ast.FnDecl) []string {
 	mut values := []string{}
 	for stmt in decl.stmts {
 		mono_collect_string_literals_from_stmt(stmt, mut values)
 	}
 	return values
+}
+
+fn mono_specs_summary(t &Transformer) string {
+	mut keys := t.env.generic_types.keys()
+	keys.sort()
+	mut parts := []string{}
+	for key in keys {
+		bindings_list := t.env.generic_types[key] or { continue }
+		mut sigs := []string{cap: bindings_list.len}
+		for bindings in bindings_list {
+			sigs << generic_bindings_signature(bindings)
+		}
+		sigs.sort()
+		parts << '${key}=[${sigs.join(',')}]'
+	}
+	return parts.join(';')
+}
+
+fn mono_has_spec(t &Transformer, key string, sig string) bool {
+	bindings_list := t.env.generic_types[key] or { return false }
+	for bindings in bindings_list {
+		if generic_bindings_signature(bindings) == sig {
+			return true
+		}
+	}
+	return false
+}
+
+fn mono_decl_label(decl ast.FnDecl) string {
+	if decl.is_method && decl.receiver.typ is ast.Ident {
+		return '${(decl.receiver.typ as ast.Ident).name}__${decl.name}'
+	}
+	return decl.name
+}
+
+fn mono_last_clone_names(t &Transformer) []string {
+	mut names := []string{}
+	for _, stmts in t.last_mono_clones {
+		for stmt in stmts {
+			if stmt is ast.FnDecl {
+				names << mono_decl_label(stmt)
+			}
+		}
+	}
+	names.sort()
+	return names
+}
+
+fn mono_last_clone_decl(t &Transformer, name string) ?ast.FnDecl {
+	for _, stmts in t.last_mono_clones {
+		for stmt in stmts {
+			if stmt is ast.FnDecl && (stmt.name == name || mono_decl_label(stmt) == name) {
+				return stmt
+			}
+		}
+	}
+	return none
+}
+
+fn mono_binding_lookup_summary(t &Transformer, keys []string) string {
+	mut parts := []string{cap: keys.len}
+	for key in keys {
+		if bindings := t.lookup_monomorphized_fn_bindings('main', key) {
+			parts << '${key}=${generic_bindings_signature(bindings)}'
+		} else {
+			parts << '${key}=none'
+		}
+	}
+	return parts.join(';')
 }
 
 fn mono_assert_no_qualified_queue_array_string_fn_decl(fn_names []string, method_name string) {
@@ -656,7 +1026,105 @@ struct MonoSource {
 	code string
 }
 
+struct MonoCheckedSources {
+	files []ast.File
+	trans &Transformer
+}
+
+fn mono_nested_min_source() string {
+	return '
+module main
+
+struct Empty {}
+
+struct Node[T] {
+	value T
+	left  Tree[T]
+	right Tree[T]
+}
+
+type Tree[T] = Empty | Node[T]
+
+fn (tree Tree[T]) min[T]() T {
+	return match tree {
+		Empty { T(1e9) }
+		Node[T] { tree.value }
+	}
+}
+
+fn (tree Tree[T]) take_min[T]() T {
+	return match tree {
+		Empty { T(0) }
+		Node[T] { tree.right.min() }
+	}
+}
+
+fn use() f64 {
+	empty := Tree[f64](Empty{})
+	tree := Tree[f64](Node[f64]{1.0, empty, empty})
+	return tree.take_min()
+}
+'
+}
+
+fn mono_insert_size_source() string {
+	return '
+module main
+
+struct Empty {}
+
+struct Node[T] {
+	value T
+	left  Tree[T]
+	right Tree[T]
+}
+
+type Tree[T] = Empty | Node[T]
+
+fn (tree Tree[T]) size[T]() int {
+	return match tree {
+		Empty { 0 }
+		Node[T] { 1 + tree.left.size() + tree.right.size() }
+	}
+}
+
+fn (tree Tree[T]) insert[T](x T) Tree[T] {
+	return match tree {
+		Empty { Node[T]{x, tree, tree} }
+		Node[T] {
+			if x == tree.value {
+				tree
+			} else if x < tree.value {
+				Node[T]{
+					...tree
+					left: tree.left.insert(x)
+				}
+			} else {
+				Node[T]{
+					...tree
+					right: tree.right.insert(x)
+				}
+			}
+		}
+	}
+}
+
+fn use() int {
+	mut tree := Tree[f64](Empty{})
+	tree = tree.insert(0.2)
+	tree = tree.insert(0.5)
+	return tree.size()
+}
+'
+}
+
 fn mono_transform_sources_for_test(sources []MonoSource) []ast.File {
+	checked := mono_check_sources_for_test(sources)
+	mut trans := checked.trans
+	return trans.transform_files(checked.files)
+}
+
+fn mono_check_sources_for_test(sources []MonoSource) MonoCheckedSources {
 	tmp_dir := os.join_path(os.temp_dir(), 'v2_mono_sources_${os.getpid()}')
 	os.rmdir_all(tmp_dir) or {}
 	os.mkdir_all(tmp_dir) or { panic(err) }
@@ -681,7 +1149,10 @@ fn mono_transform_sources_for_test(sources []MonoSource) []ast.File {
 	mut checker := types.Checker.new(prefs, file_set, env)
 	checker.check_files(files)
 	mut trans := Transformer.new_with_pref(env, prefs)
-	return trans.transform_files(files)
+	return MonoCheckedSources{
+		files: files
+		trans: trans
+	}
 }
 
 fn mono_transform_sources_flat_direct_for_test(sources []MonoSource) []ast.File {
@@ -982,6 +1453,52 @@ fn use() {
 	}
 }
 
+fn test_generic_sumtype_match_lowers_generic_branch_to_numeric_tag() {
+	files := mono_transform_sources_for_test([
+		MonoSource{
+			rel:  'main.v'
+			code: '
+module main
+
+struct Empty {}
+
+struct Node[T] {
+	value T
+	left  Tree[T]
+	right Tree[T]
+}
+
+type Tree[T] = Empty | Node[T]
+
+fn tag(tree Tree[f64]) int {
+	return match tree {
+		Empty { 0 }
+		Node[f64] { 1 }
+	}
+}
+'
+		},
+	])
+	rhs_values := mono_tag_compare_rhs_for_fn(files, 'tag')
+	mut saw_zero := false
+	mut saw_one := false
+	for rhs in rhs_values {
+		assert rhs !is ast.IndexExpr, 'generic sumtype match left index rhs ${rhs}'
+		assert rhs !is ast.GenericArgs, 'generic sumtype match left generic args rhs ${rhs}'
+		assert rhs !is ast.GenericArgOrIndexExpr, 'generic sumtype match left generic arg/index rhs ${rhs}'
+		if rhs is ast.BasicLiteral && rhs.kind == token.Token.number {
+			if rhs.value == '0' {
+				saw_zero = true
+			}
+			if rhs.value == '1' {
+				saw_one = true
+			}
+		}
+	}
+	assert saw_zero, 'generic sumtype match missing Empty tag 0 in ${rhs_values}'
+	assert saw_one, 'generic sumtype match missing Node[f64] tag 1 in ${rhs_values}'
+}
+
 fn test_generic_sumtype_receiver_no_arg_method_call_is_monomorphized() {
 	files := mono_transform_sources_for_test([
 		MonoSource{
@@ -1064,6 +1581,217 @@ fn use() string {
 	assert 'Tree_T_T__size_T' !in use_call_names
 	assert 'Tree_T_T__size_T' !in size_call_names
 	assert 'Tree_T_f64' !in use_call_names
+}
+
+fn test_generic_sumtype_receiver_match_lowers_generic_branch_to_numeric_tag() {
+	files := mono_transform_sources_for_test([
+		MonoSource{
+			rel:  'main.v'
+			code: '
+module main
+
+struct Empty {}
+
+struct Node[T] {
+	value T
+	left  Tree[T]
+	right Tree[T]
+}
+
+type Tree[T] = Empty | Node[T]
+
+fn (tree Tree[T]) size[T]() int {
+	return match tree {
+		Empty { 0 }
+		Node[T] { 1 }
+	}
+}
+
+fn use() int {
+	empty := Tree[f64](Empty{})
+	tree := Tree[f64](Node[f64]{1.0, empty, empty})
+	return tree.size()
+}
+'
+		},
+	])
+	fn_names := mono_fn_names(files)
+	call_names := mono_call_names_for_fn(files, 'use')
+	size_decl := mono_assert_method_clone_by_receiver(files, 'Tree_T_f64', 'size_T_f64')
+	assert call_names == ['Tree_T_f64__size_T_f64'], 'expected concrete Tree[f64].size call, got ${call_names}'
+	assert 'Tree_T_T__size_T' !in fn_names
+	assert 'Tree_T_T__size_T' !in call_names
+	rhs_values := mono_tag_compare_rhs_for_decl(size_decl)
+	mut saw_zero := false
+	mut saw_one := false
+	for rhs in rhs_values {
+		assert rhs !is ast.IndexExpr, 'generic receiver match left index rhs ${rhs}'
+		assert rhs !is ast.GenericArgs, 'generic receiver match left generic args rhs ${rhs}'
+		assert rhs !is ast.GenericArgOrIndexExpr, 'generic receiver match left generic arg/index rhs ${rhs}'
+		if rhs is ast.BasicLiteral && rhs.kind == token.Token.number {
+			if rhs.value == '0' {
+				saw_zero = true
+			}
+			if rhs.value == '1' {
+				saw_one = true
+			}
+		}
+	}
+	assert saw_zero, 'generic receiver match missing Empty tag 0 in ${rhs_values}'
+	assert saw_one, 'generic receiver match missing Node[T] tag 1 in ${rhs_values}'
+}
+
+fn test_generic_sumtype_receiver_nested_min_call_is_monomorphized() {
+	files := mono_transform_sources_for_test([
+		MonoSource{
+			rel:  'main.v'
+			code: mono_nested_min_source()
+		},
+	])
+	fn_names := mono_fn_names(files)
+	use_call_names := mono_call_names_for_fn(files, 'use')
+	take_min_decl := mono_assert_method_clone_by_receiver(files, 'Tree_T_f64', 'take_min_T_f64')
+	take_min_call_names := mono_call_names_for_decl(take_min_decl)
+	assert use_call_names == ['Tree_T_f64__take_min_T_f64'], 'expected use to call only concrete take_min, got ${use_call_names}'
+	assert 'Tree_T_f64__min_T_f64' in take_min_call_names, 'take_min min-call classification: calls=${take_min_call_names}; has_concrete=${'Tree_T_f64__min_T_f64' in take_min_call_names}; has_open_tree=${'Tree__min' in take_min_call_names}; has_open_generic=${'Tree_T_T__min_T' in take_min_call_names}; has_raw_min=${'min' in take_min_call_names}; has_any_min=${take_min_call_names.any(it.contains('min'))}'
+	if _ := mono_method_decl_by_receiver(files, 'Tree_T_f64', 'min_T_f64') {
+	} else {
+		assert false, 'missing concrete method clone Tree_T_f64.min_T_f64; take_min_call_names=${take_min_call_names}; fn_names=${fn_names}; has_concrete_call=${'Tree_T_f64__min_T_f64' in take_min_call_names}; has_open_tree=${'Tree__min' in take_min_call_names}; has_open_generic=${'Tree_T_T__min_T' in take_min_call_names}; has_raw_min=${'min' in take_min_call_names}; has_any_min=${take_min_call_names.any(it.contains('min'))}'
+	}
+	assert 'Tree_T_f64__min_T_f64' in take_min_call_names, 'concrete take_min should call concrete min, got ${take_min_call_names}'
+	for names in [fn_names, use_call_names, take_min_call_names] {
+		assert 'Tree__min' !in names
+		assert 'Tree_T_T__min_T' !in names
+		assert 'Node_T' !in names
+		assert 'Node_T_T' !in names
+		assert 'unknown__min' !in names
+		for name in names {
+			assert !name.contains('unknown__'), 'unresolved generic receiver call leaked in ${names}'
+			assert !name.contains('Tree_T_T__min_T'), 'open generic min call leaked in ${names}'
+			assert !name.contains('Node_T_T'), 'open generic Node leaked in ${names}'
+		}
+	}
+}
+
+fn test_generic_sumtype_receiver_nested_min_collects_smartcast_callee() {
+	checked := mono_check_sources_for_test([
+		MonoSource{
+			rel:  'main.v'
+			code: mono_nested_min_source()
+		},
+	])
+	mut trans := checked.trans
+	files := checked.files
+	trans.env.generic_types = map[string][]map[string]types.Type{}
+	trans.pre_pass(files)
+	trans.collect_declared_method_fns(files)
+	trans.collect_struct_field_generic_decl_types(files)
+	trans.collect_generic_call_specs(files)
+	sig := 'T:f64'
+	before_has_take_min := mono_has_spec(trans, 'Tree__take_min', sig)
+	before_has_min := mono_has_spec(trans, 'Tree__min', sig)
+	before_specs := mono_specs_summary(trans)
+	prepared := trans.monomorphize_pass(files)
+	clone_names := mono_last_clone_names(trans)
+	mut take_min_call_names := []string{}
+	mut take_min_call_shapes := []string{}
+	if take_min_decl := mono_last_clone_decl(trans, 'Tree_T_f64__take_min_T_f64') {
+		take_min_call_names = mono_raw_call_names_for_decl(take_min_decl)
+		take_min_call_shapes = mono_call_lhs_shapes_for_decl(take_min_decl)
+	}
+	binding_summary := mono_binding_lookup_summary(trans, [
+		'Tree_T_f64__take_min_T_f64',
+		'take_min_T_f64',
+		'Tree_T_f64__take_min',
+	])
+	trans.collect_generic_call_specs_in_new_clones(prepared)
+	after_has_min := mono_has_spec(trans, 'Tree__min', sig)
+	after_specs := mono_specs_summary(trans)
+	assert before_has_take_min, 'expected initial take_min spec; before_specs=${before_specs}'
+	assert !before_has_min, 'min spec should be discovered from the first take_min clone, before_specs=${before_specs}'
+	assert 'Tree_T_f64__take_min_T_f64' in clone_names, 'missing first take_min clone; clones=${clone_names}'
+	assert take_min_call_names == ['min'], 'first take_min clone should still contain raw selector call before collect2; calls=${take_min_call_names}; shapes=${take_min_call_shapes}'
+	assert take_min_call_shapes == ['Selector(Selector(Ident(tree).right).min)'], 'unexpected take_min clone call shape before collect2: ${take_min_call_shapes}'
+	assert binding_summary.contains('Tree_T_f64__take_min_T_f64=T:f64'), 'missing take_min clone bindings: ${binding_summary}'
+	assert after_has_min, 'collect2 should discover Tree__min ${sig}; after_specs=${after_specs}'
+	assert after_specs.contains('Tree__min=[${sig}]'), 'missing concrete min spec after collect2; after_specs=${after_specs}'
+	assert !after_specs.contains('Tree_T_T__min_T'), 'open generic min spec leaked after collect2: ${after_specs}'
+	assert !after_specs.contains('unknown__min'), 'unknown min spec leaked after collect2: ${after_specs}'
+}
+
+fn test_generic_sumtype_receiver_insert_return_wraps_concrete_variant() {
+	checked := mono_check_sources_for_test([
+		MonoSource{
+			rel:  'main.v'
+			code: mono_insert_size_source()
+		},
+	])
+	mut trans := checked.trans
+	files := trans.transform_files(checked.files)
+	fn_names := mono_fn_names(files)
+	use_call_names := mono_call_names_for_fn(files, 'use')
+	insert_decl := mono_assert_method_clone_by_receiver(files, 'Tree_T_f64', 'insert_T_f64')
+	binding_summary := mono_binding_lookup_summary(trans, [
+		'Tree_T_f64__insert_T_f64',
+		'insert_T_f64',
+		'Tree_T_f64__insert',
+	])
+	mono_assert_method_clone_by_receiver(files, 'Tree_T_f64', 'size_T_f64')
+	insert_returns := mono_return_exprs_for_decl(insert_decl)
+	mut assoc_type_summary := []string{}
+	for ret_expr in insert_returns {
+		if ret_expr is ast.Ident && ret_expr.name.starts_with('_assoc_t') {
+			assoc_type_summary << if typ := trans.lookup_var_type(ret_expr.name) {
+				'${ret_expr.name}:${trans.type_to_c_name(typ)}'
+			} else {
+				'${ret_expr.name}:<none>'
+			}
+		}
+	}
+	mut node_wrap_count := 0
+	mut saw_node_wrap := false
+	for ret_expr in insert_returns {
+		assert ret_expr !is ast.GenericArgs, 'insert returned open GenericArgs ${ret_expr}'
+		assert ret_expr !is ast.GenericArgOrIndexExpr, 'insert returned open GenericArgOrIndexExpr ${ret_expr}'
+		assert ret_expr !is ast.Ident || (ret_expr as ast.Ident).name != 'Node_T_f64', 'insert returned raw Node_T_f64 variant instead of Tree_T_f64 wrapper'
+
+		if ret_expr is ast.InitExpr {
+			if ret_expr.typ is ast.Ident {
+				assert ret_expr.typ.name != 'Node_T_f64', 'insert returned raw Node_T_f64 init instead of Tree_T_f64 wrapper: ${insert_returns}'
+			}
+		}
+
+		if ret_expr is ast.InitExpr {
+			if ret_expr.typ is ast.Ident && ret_expr.typ.name == 'Tree_T_f64' {
+				tag_value := mono_init_field(ret_expr, '_tag') or { continue }
+				if tag_value is ast.BasicLiteral && tag_value.value == '1' {
+					node_wrap_count++
+					payload_value := mono_init_field(ret_expr, '_data._Node_T_f64') or { continue }
+					if payload_value is ast.CastExpr && payload_value.expr is ast.CallExpr {
+						memdup_call := payload_value.expr as ast.CallExpr
+						if memdup_call.args.len == 2 && memdup_call.args[0] is ast.PrefixExpr {
+							payload_ref := memdup_call.args[0] as ast.PrefixExpr
+							if payload_ref.expr is ast.InitExpr {
+								mono_assert_sumtype_payload_memdup_expr(payload_value, 'Node_T_f64')
+								saw_node_wrap = true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	assert saw_node_wrap, 'Tree_T_f64.insert_T_f64 should wrap Node_T_f64 return with tag 1; return_type=${insert_decl.typ.return_type}; bindings=${binding_summary}; returns=${insert_returns}; fn_names=${fn_names}; use_calls=${use_call_names}'
+	assert node_wrap_count >= 3, 'Tree_T_f64.insert_T_f64 should wrap Empty plus both recursive Node branches; got ${node_wrap_count}; assoc_types=${assoc_type_summary}; returns=${insert_returns}'
+	for names in [fn_names, use_call_names, mono_call_names_for_decl(insert_decl)] {
+		assert 'Tree_T_T__insert_T' !in names
+		assert 'Node_T' !in names
+		assert 'Node_T_T' !in names
+		for name in names {
+			assert !name.contains('Tree_T_T'), 'open Tree generic leaked in ${names}'
+			assert !name.contains('Node_T_T'), 'open Node generic leaked in ${names}'
+		}
+	}
 }
 
 fn test_shadowed_local_receiver_names_keep_distinct_generic_bindings() {
