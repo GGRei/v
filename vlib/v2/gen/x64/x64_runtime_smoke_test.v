@@ -381,7 +381,7 @@ fn run_x64_host_program_redirected_tiny(name string, source string) X64HostRunRe
 		build.close()
 	}
 	build.set_environment(x64_strict_tiny_build_environment(vexe, tmp_dir))
-	build.set_args(['-v2', '-b', 'x64', source_path, '-o', bin_path])
+	build.set_args(['-v2', '-no-parallel', '-b', 'x64', source_path, '-o', bin_path])
 	build.set_redirect_stdio()
 	build.run()
 	build.wait()
@@ -790,7 +790,7 @@ fn run_x64_host_file_redirected_tiny(name string, source_dir string, source_file
 	}
 	build.set_environment(x64_strict_tiny_build_environment(vexe, tmp_dir))
 	build.set_work_folder(source_dir)
-	build.set_args(['-v2', '-b', 'x64', source_file, '-o', bin_path])
+	build.set_args(['-v2', '-no-parallel', '-b', 'x64', source_file, '-o', bin_path])
 	build.set_redirect_stdio()
 	build.run()
 	build.wait()
@@ -841,7 +841,7 @@ fn assert_x64_linux_tiny_file_build_rejected(name string, source_dir string, sou
 		}
 		build.set_environment(x64_strict_tiny_build_environment(vexe, tmp_dir))
 		build.set_work_folder(source_dir)
-		build.set_args(['-v2', '-b', 'x64', source_file, '-o', bin_path])
+		build.set_args(['-v2', '-no-parallel', '-b', 'x64', source_file, '-o', bin_path])
 		build.set_redirect_stdio()
 		build.run()
 		build.wait()
@@ -1111,14 +1111,22 @@ fn assert_x64_linux_file_stdout_bytes(name string, source_dir string, source_fil
 }
 
 fn x64_v_run_file_stdout_bytes(source_dir string, source_file string) []u8 {
+	return x64_v_run_file_stdout_bytes_with_args(source_dir, source_file, []string{})
+}
+
+fn x64_v_run_file_stdout_bytes_with_args(source_dir string, source_file string, args []string) []u8 {
 	vexe := x64_vexe_command_path()
 	source_path := os.join_path(source_dir, source_file)
 	mut run := os.new_process(vexe)
 	defer {
 		run.close()
 	}
+	mut run_args := ['run', source_file]
+	for arg in args {
+		run_args << arg
+	}
 	run.set_work_folder(source_dir)
-	run.set_args(['run', source_file])
+	run.set_args(run_args)
 	run.set_redirect_stdio()
 	run.run()
 	run.wait()
@@ -1166,6 +1174,15 @@ fn assert_x64_linux_file_stdout_matches_v_run(name string, source_dir string, so
 	}
 }
 
+fn assert_x64_linux_file_stdout_matches_v_run_with_args(name string, source_dir string, source_file string, args []string) {
+	$if linux {
+		expected_stdout := x64_v_run_file_stdout_bytes_with_args(source_dir, source_file, args)
+		result := run_x64_host_file_redirected_auto_with_args(name, source_dir, source_file, args)
+		assert_x64_linux_hosted_libc_binary(result, expected_stdout)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
 fn assert_x64_macos_windows_file_stdout_matches_v_run(name string, source_dir string, source_file string) {
 	$if macos {
 		expected_stdout := x64_v_run_file_stdout_bytes(source_dir, source_file)
@@ -1174,6 +1191,34 @@ fn assert_x64_macos_windows_file_stdout_matches_v_run(name string, source_dir st
 	$if windows {
 		expected_stdout := x64_v_run_file_stdout_bytes(source_dir, source_file)
 		assert_x64_macos_windows_file_stdout_bytes(name, source_dir, source_file, expected_stdout)
+	}
+}
+
+fn assert_x64_macos_windows_file_stdout_matches_v_run_with_args(name string, source_dir string, source_file string, args []string) {
+	$if macos {
+		expected_stdout := x64_v_run_file_stdout_bytes_with_args(source_dir, source_file, args)
+		result := run_x64_host_file_redirected_macos_auto_tiny_verbose_with_args('macos_${name}',
+			source_dir, source_file, args)
+		context := x64_host_result_context(result)
+		stdout_message := x64_stdout_mismatch_message(name, 'macos', expected_stdout,
+			result.stdout, context)
+		stderr_message := x64_stderr_mismatch_message(name, 'macos', []u8{}, result.stderr, context)
+		assert result.stdout == expected_stdout, stdout_message
+		assert result.stderr == []u8{}, stderr_message
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+	$if windows {
+		expected_stdout := x64_v_run_file_stdout_bytes_with_args(source_dir, source_file, args)
+		result := run_x64_host_file_redirected_auto_with_args('windows_${name}', source_dir,
+			source_file, args)
+		context := x64_host_result_context(result)
+		stdout_message := x64_stdout_mismatch_message(name, 'windows', expected_stdout,
+			result.stdout, context)
+		stderr_message := x64_stderr_mismatch_message(name, 'windows', []u8{}, result.stderr,
+			context)
+		assert result.stdout == expected_stdout, stdout_message
+		assert result.stderr == []u8{}, stderr_message
+		x64_host_cleanup_tmp(result.tmp_dir)
 	}
 }
 
@@ -1283,7 +1328,7 @@ fn assert_x64_linux_tiny_build_rejected(name string, source string, expected_mes
 			build.close()
 		}
 		build.set_environment(x64_strict_tiny_build_environment(vexe, tmp_dir))
-		build.set_args(['-v2', '-b', 'x64', source_path, '-o', bin_path])
+		build.set_args(['-v2', '-no-parallel', '-b', 'x64', source_path, '-o', bin_path])
 		build.set_redirect_stdio()
 		build.run()
 		build.wait()
@@ -1909,6 +1954,266 @@ fn main() {
 fn x64_heap_alloc_zeroed_struct_literal_stdout() []u8 {
 	return 'AZ
 '.bytes()
+}
+
+fn x64_generic_sumtype_direct_wrap_source() string {
+	return "module main
+
+struct Empty {}
+
+struct Node[T] {
+	value T
+	left  Tree[T]
+	right Tree[T]
+}
+
+type Tree[T] = Empty | Node[T]
+
+fn tag(tree Tree[f64]) int {
+	return match tree {
+		Empty { 0 }
+		Node[f64] { 1 }
+	}
+}
+
+fn payload_score(tree Tree[f64]) int {
+	return match tree {
+		Empty { 0 }
+		Node[f64] {
+			if tree.value == 8.0 {
+				10 + tag(tree.left) + tag(tree.right)
+			} else {
+				-1
+			}
+		}
+	}
+}
+
+fn main() {
+	empty := Tree[f64](Empty{})
+	tree := Tree[f64](Node[f64]{8.0, empty, empty})
+	if tag(empty) == 0 {
+		print('E')
+	} else {
+		print('e')
+	}
+	if tag(tree) == 1 {
+		print('N')
+	} else {
+		print('n')
+	}
+	if payload_score(tree) == 10 {
+		println('P')
+	} else {
+		println('p')
+	}
+}
+"
+}
+
+fn x64_generic_sumtype_direct_wrap_stdout() []u8 {
+	return 'ENP
+'.bytes()
+}
+
+fn x64_generic_sumtype_receiver_size_source() string {
+	return 'module main
+
+struct Empty {}
+
+struct Node[T] {
+	value T
+	left  Tree[T]
+	right Tree[T]
+}
+
+type Tree[T] = Empty | Node[T]
+
+fn (tree Tree[T]) size[T]() int {
+	return match tree {
+		Empty { 0 }
+		Node[T] { 1 }
+	}
+}
+
+fn main() {
+	empty := Tree[f64](Empty{})
+	tree := Tree[f64](Node[f64]{1.0, empty, empty})
+	println(tree.size())
+}
+'
+}
+
+fn x64_generic_sumtype_receiver_size_stdout() []u8 {
+	return '1
+'.bytes()
+}
+
+fn x64_generic_sumtype_insert_size_source() string {
+	return 'module main
+
+struct Empty {}
+
+struct Node[T] {
+	value T
+	left  Tree[T]
+	right Tree[T]
+}
+
+type Tree[T] = Empty | Node[T]
+
+fn (tree Tree[T]) size[T]() int {
+	return match tree {
+		Empty { 0 }
+		Node[T] { 1 + tree.left.size() + tree.right.size() }
+	}
+}
+
+fn (tree Tree[T]) insert[T](x T) Tree[T] {
+	return match tree {
+		Empty { Node[T]{x, tree, tree} }
+		Node[T] {
+			if x == tree.value {
+				tree
+			} else if x < tree.value {
+				Node[T]{ ...tree, left: tree.left.insert(x) }
+			} else {
+				Node[T]{ ...tree, right: tree.right.insert(x) }
+			}
+		}
+	}
+}
+
+fn main() {
+	mut tree := Tree[f64](Empty{})
+	tree = tree.insert(0.2)
+	tree = tree.insert(0.5)
+	println(tree.size())
+}
+'
+}
+
+fn x64_generic_sumtype_insert_size_stdout() []u8 {
+	return '2
+'.bytes()
+}
+
+fn x64_struct_float_fields_source() string {
+	return "module main
+
+struct FloatBox {
+	a f64
+	b f32
+}
+
+fn make_box() FloatBox {
+	return FloatBox{
+		a: 8.0
+		b: f32(2.5)
+	}
+}
+
+fn main() {
+	box := make_box()
+	if box.a == 8.0 {
+		print('D')
+	} else {
+		print('d')
+	}
+	if box.b == f32(2.5) {
+		println('F')
+	} else {
+		println('f')
+	}
+}
+"
+}
+
+fn x64_struct_float_fields_stdout() []u8 {
+	return 'DF
+'.bytes()
+}
+
+fn x64_union_f64_bits_source() string {
+	return "module main
+
+import strconv
+
+fn main() {
+	marker := 'hosted'.clone()
+	_ = marker
+	x := 0.2
+	u := strconv.Float64u{
+		f: x
+	}
+	unsafe {
+		if u.u == u64(0) {
+			println('f_to_u=zero')
+		} else {
+			println('f_to_u=nonzero')
+		}
+		v := strconv.Float64u{
+			u: u64(4596373779694328218)
+		}
+		if v.f == x {
+			println('u_to_f=ok')
+		} else {
+			println('u_to_f=bad')
+		}
+	}
+}
+"
+}
+
+fn x64_union_f64_bits_stdout() []u8 {
+	return 'f_to_u=nonzero
+u_to_f=ok
+'.bytes()
+}
+
+fn x64_f64_str_interpolation_source() string {
+	return "module main
+
+fn ok_arg(x f64) int {
+	if x == 0.2 {
+		return 1
+	}
+	return 0
+}
+
+fn main() {
+	x := 0.2
+	println(ok_arg(x))
+	println(x.str())
+	println('\${x}')
+}
+"
+}
+
+fn x64_f64_str_interpolation_stdout() []u8 {
+	return '1
+0.2
+0.2
+'.bytes()
+}
+
+fn x64_f64_for_interpolation_source() string {
+	return "module main
+
+fn main() {
+	vals := [0.2, 0.0, 0.5, 0.3, 0.6, 0.8]
+	for i in vals {
+		if i < 0.7 {
+			print('\${i} ')
+		}
+	}
+	println('')
+}
+"
+}
+
+fn x64_f64_for_interpolation_stdout() []u8 {
+	return '0.2 0.0 0.5 0.3 0.6 \n'.bytes()
 }
 
 fn x64_core_int_control_flow_source() string {
@@ -3076,6 +3381,23 @@ fn x64_arguments_via_function_pointer_stdout() []u8 {
 '.bytes()
 }
 
+fn x64_math_log_20_source() string {
+	return 'module main
+
+import math { log }
+
+fn main() {
+	x := log(20.0)
+	println(x > 2.99 && x < 3.0)
+}
+'
+}
+
+fn x64_math_log_20_stdout() []u8 {
+	return 'true
+'.bytes()
+}
+
 fn x64_hello_world_example_stdout() []u8 {
 	return 'Hello, World!\n'.bytes()
 }
@@ -4200,6 +4522,15 @@ fn test_x64_linux_arguments_via_function_pointer_auto_tiny_falls_back_to_hosted(
 	}
 }
 
+fn test_x64_linux_math_log_20_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('math_log_20_exact',
+			x64_math_log_20_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_math_log_20_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
 fn test_x64_linux_fibonacci_example_arg_10_stdout_exact_bytes() {
 	$if linux {
 		result := run_x64_host_file_redirected_auto_with_args('fibonacci_example_arg_10_exact',
@@ -4207,6 +4538,11 @@ fn test_x64_linux_fibonacci_example_arg_10_stdout_exact_bytes() {
 		assert_x64_linux_hosted_libc_binary(result, x64_fibonacci_10_example_stdout())
 		x64_host_cleanup_tmp(result.tmp_dir)
 	}
+}
+
+fn test_x64_linux_primes_example_arg_20_stdout_matches_v_run() {
+	assert_x64_linux_file_stdout_matches_v_run_with_args('primes_example_arg_20_v_run',
+		x64_examples_dir(), 'primes.v', ['20'])
 }
 
 fn test_x64_linux_fibonacci_example_strict_tiny_rejected() {
@@ -4285,6 +4621,16 @@ fn test_x64_windows_fibonacci_example_arg_10_stdout_exact_bytes() {
 	}
 }
 
+fn test_x64_macos_windows_math_log_20_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('math_log_20_exact', x64_math_log_20_source(),
+		x64_math_log_20_stdout())
+}
+
+fn test_x64_macos_windows_primes_example_arg_20_stdout_matches_v_run() {
+	assert_x64_macos_windows_file_stdout_matches_v_run_with_args('primes_example_arg_20_v_run',
+		x64_examples_dir(), 'primes.v', ['20'])
+}
+
 fn test_x64_linux_struct_sumtype_field_init_stdout_exact_bytes() {
 	assert_x64_linux_stdout_bytes('struct_sumtype_field_init_exact',
 		x64_struct_sumtype_field_init_source(), x64_struct_sumtype_field_init_stdout())
@@ -4300,9 +4646,19 @@ fn test_x64_linux_tree_of_nodes_example_top_level_stdout_exact_bytes() {
 		'tree_of_nodes.v', x64_tree_of_nodes_example_stdout())
 }
 
+fn test_x64_linux_binary_search_tree_example_stdout_matches_v_run() {
+	assert_x64_linux_file_stdout_matches_v_run('binary_search_tree_example_top_level_v_run',
+		x64_examples_dir(), 'binary_search_tree.v')
+}
+
 fn test_x64_linux_bfs_example_top_level_stdout_exact_bytes() {
 	assert_x64_linux_file_stdout_bytes('bfs_example_top_level_exact', os.join_path(x64_examples_dir(),
 		'graphs'), 'bfs.v', x64_bfs_example_stdout())
+}
+
+fn test_x64_linux_bfs3_example_top_level_stdout_matches_v_run() {
+	assert_x64_linux_file_stdout_matches_v_run('bfs3_example_top_level_v_run', os.join_path(x64_examples_dir(),
+		'graphs'), 'bfs3.v')
 }
 
 fn test_x64_linux_dfs_example_top_level_stdout_matches_v_run() {
@@ -4380,6 +4736,7 @@ fn test_x64_linux_hanoi_example_strict_tiny_no_libc() {
 	$if linux {
 		result := run_x64_host_file_redirected_tiny('hanoi_example_strict_tiny_no_libc',
 			x64_examples_dir(), 'hanoi.v')
+		assert !result.build_output.contains('builtin__malloc_noscan'), '${x64_host_result_context(result)}\nhanoi tiny build kept malloc_noscan fallback:\n${result.build_output}'
 		assert_x64_linux_no_libc_binary(result, x64_hanoi_example_stdout())
 		assert_x64_linux_tiny_load_segment_layout(result, linux_tiny_int_str_arena_metadata_bytes +
 			linux_tiny_string_plus_arena_metadata_bytes)
@@ -4391,6 +4748,7 @@ fn test_x64_linux_hanoi_example_auto_tiny_no_libc() {
 	$if linux {
 		result := run_x64_host_file_redirected_auto('hanoi_example_auto_tiny_no_libc',
 			x64_examples_dir(), 'hanoi.v')
+		assert !result.build_output.contains('builtin__malloc_noscan'), '${x64_host_result_context(result)}\nhanoi tiny build kept malloc_noscan fallback:\n${result.build_output}'
 		assert_x64_linux_no_libc_binary(result, x64_hanoi_example_stdout())
 		assert_x64_linux_tiny_load_segment_layout(result, linux_tiny_int_str_arena_metadata_bytes +
 			linux_tiny_string_plus_arena_metadata_bytes)
@@ -5501,6 +5859,11 @@ fn test_x64_macos_windows_bfs_example_top_level_stdout_exact_bytes() {
 		'graphs'), 'bfs.v', x64_bfs_example_stdout())
 }
 
+fn test_x64_macos_windows_bfs3_example_top_level_stdout_matches_v_run() {
+	assert_x64_macos_windows_file_stdout_matches_v_run('bfs3_example_top_level_v_run', os.join_path(x64_examples_dir(),
+		'graphs'), 'bfs3.v')
+}
+
 fn test_x64_macos_windows_dfs_example_top_level_stdout_matches_v_run() {
 	assert_x64_macos_windows_file_stdout_matches_v_run('dfs_example_top_level_v_run', os.join_path(x64_examples_dir(),
 		'graphs'), 'dfs.v')
@@ -5628,6 +5991,69 @@ fn test_x64_linux_heap_alloc_zeroed_struct_literal_stdout_exact_bytes() {
 	assert_x64_linux_stdout_bytes('heap_alloc_zeroed_struct_literal_exact',
 		x64_heap_alloc_zeroed_struct_literal_source(),
 		x64_heap_alloc_zeroed_struct_literal_stdout())
+}
+
+fn test_x64_linux_generic_sumtype_direct_wrap_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('generic_sumtype_direct_wrap_exact',
+			x64_generic_sumtype_direct_wrap_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_generic_sumtype_direct_wrap_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_generic_sumtype_receiver_size_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('generic_sumtype_receiver_size_exact',
+			x64_generic_sumtype_receiver_size_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_generic_sumtype_receiver_size_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_generic_sumtype_insert_size_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('generic_sumtype_insert_size_exact',
+			x64_generic_sumtype_insert_size_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_generic_sumtype_insert_size_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_struct_float_fields_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('struct_float_fields_exact',
+			x64_struct_float_fields_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_struct_float_fields_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_union_f64_bits_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('union_f64_bits_exact',
+			x64_union_f64_bits_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_union_f64_bits_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_f64_str_interpolation_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('f64_str_interpolation_exact',
+			x64_f64_str_interpolation_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_f64_str_interpolation_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn test_x64_linux_f64_for_interpolation_stdout_exact_bytes() {
+	$if linux {
+		result := run_x64_host_program_redirected_auto('f64_for_interpolation_exact',
+			x64_f64_for_interpolation_source())
+		assert_x64_linux_hosted_libc_binary(result, x64_f64_for_interpolation_stdout())
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
 }
 
 fn test_x64_linux_core_int_control_flow_stdout_exact_bytes() {

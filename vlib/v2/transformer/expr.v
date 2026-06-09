@@ -385,6 +385,28 @@ fn (t &Transformer) amp_type_cast_expr(expr ast.Expr) ?ast.Expr {
 				pos:      expr.pos
 			}
 		}
+		ast.SelectorExpr {
+			if expr.lhs !is ast.CallOrCastExpr {
+				return none
+			}
+			cast_lhs := expr.lhs as ast.CallOrCastExpr
+			if !t.call_or_cast_lhs_is_type(cast_lhs.lhs) {
+				return none
+			}
+			return ast.SelectorExpr{
+				lhs: ast.CastExpr{
+					typ:  ast.PrefixExpr{
+						op:   .amp
+						expr: cast_lhs.lhs
+						pos:  cast_lhs.pos
+					}
+					expr: cast_lhs.expr
+					pos:  cast_lhs.pos
+				}
+				rhs: expr.rhs
+				pos: expr.pos
+			}
+		}
 		else {
 			return none
 		}
@@ -489,33 +511,7 @@ fn (mut t Transformer) transform_index_expr(expr ast.IndexExpr) ast.Expr {
 			mut stmts := []ast.Stmt{}
 
 			// Map arg: map__get expects a pointer to the map.
-			mut map_arg := ast.Expr(ast.empty_expr)
-			lhs_val := t.transform_expr(expr.lhs)
-			if t.is_pointer_type(map_expr_typ) {
-				map_arg = lhs_val
-			} else if t.can_take_address_expr(lhs_val) {
-				map_arg = ast.Expr(ast.PrefixExpr{
-					op:   .amp
-					expr: lhs_val
-				})
-			} else {
-				map_tmp := t.gen_temp_name()
-				map_ident := t.typed_temp_ident(map_tmp, map_expr_typ)
-				mut map_lhs := []ast.Expr{cap: 1}
-				map_lhs << ast.Expr(map_ident)
-				mut map_rhs := []ast.Expr{cap: 1}
-				map_rhs << lhs_val
-				stmts << ast.Stmt(ast.AssignStmt{
-					op:  .decl_assign
-					lhs: map_lhs
-					rhs: map_rhs
-					pos: map_ident.pos
-				})
-				map_arg = ast.Expr(ast.PrefixExpr{
-					op:   .amp
-					expr: map_ident
-				})
-			}
+			map_arg := t.map_expr_to_runtime_ptr(expr.lhs, map_expr_typ, map_type)
 
 			// Key temp (so we can take its address safely for the duration of the whole expression).
 			key_tmp := t.gen_temp_name()
@@ -967,6 +963,76 @@ fn (mut t Transformer) transform_match_expr(expr ast.MatchExpr) ast.Expr {
 	return t.lower_match_expr_to_if(match_expr, branches)
 }
 
+fn sumtype_match_variant_base_name(name string) string {
+	c_name := name.replace('.', '__')
+	if bracket_idx := c_name.index('[') {
+		return c_name[..bracket_idx]
+	}
+	return c_name
+}
+
+fn (t &Transformer) generic_match_branch_variant_info(lhs ast.Expr, args []ast.Expr) (string, string, string, bool) {
+	base_name := t.type_expr_name(lhs)
+	if base_name == '' {
+		return '', '', '', false
+	}
+	base_full := t.type_expr_name_full(lhs)
+	suffix := t.generic_specialization_suffix(args)
+	variant_full := if base_full != '' && suffix != '' { base_full + suffix } else { base_full }
+	variant_module := if lhs is ast.SelectorExpr && lhs.lhs is ast.Ident {
+		(lhs.lhs as ast.Ident).name
+	} else {
+		''
+	}
+	return base_name, variant_full, variant_module, true
+}
+
+fn (t &Transformer) match_branch_variant_info(c ast.Expr) (string, string, string, bool, bool) {
+	if c is ast.Ident {
+		c_variant_name := c.name
+		c_variant_name_full := if t.cur_module != '' && t.cur_module != 'main'
+			&& t.cur_module != 'builtin'
+			&& c.name !in ['int', 'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'byte', 'rune', 'f32', 'f64', 'usize', 'isize', 'bool', 'string', 'voidptr', 'charptr', 'byteptr'] {
+			'${t.cur_module}__${c.name}'
+		} else {
+			c.name
+		}
+		return c_variant_name, c_variant_name_full, '', false, c_variant_name != ''
+	}
+	if c is ast.SelectorExpr {
+		c_variant_name := c.rhs.name
+		mut c_variant_module := ''
+		c_variant_name_full := if c.lhs is ast.Ident {
+			c_variant_module = (c.lhs as ast.Ident).name
+			'${c_variant_module}__${c.rhs.name}'
+		} else {
+			c.rhs.name
+		}
+		return c_variant_name, c_variant_name_full, c_variant_module, false, c_variant_name != ''
+	}
+	if c is ast.Type {
+		if c is ast.GenericType {
+			c_variant_name, c_variant_name_full, c_variant_module, _ := t.generic_match_branch_variant_info(c.name,
+				c.params)
+			return c_variant_name, c_variant_name_full, c_variant_module, true, c_variant_name != ''
+		}
+		c_variant_name := t.type_variant_name(c)
+		return c_variant_name, t.type_variant_name_full(c), '', false, c_variant_name != ''
+	}
+	if c is ast.GenericArgs {
+		c_variant_name, c_variant_name_full, c_variant_module, _ := t.generic_match_branch_variant_info(c.lhs,
+			c.args)
+		return c_variant_name, c_variant_name_full, c_variant_module, true, c_variant_name != ''
+	}
+	if c is ast.GenericArgOrIndexExpr {
+		c_variant_name, c_variant_name_full, c_variant_module, _ := t.generic_match_branch_variant_info(c.lhs, [
+			c.expr,
+		])
+		return c_variant_name, c_variant_name_full, c_variant_module, true, c_variant_name != ''
+	}
+	return '', '', '', false, false
+}
+
 // transform_match_expr_parts returns the two inputs to `lower_match_expr_to_if`
 // — the transformed match expression (either `_tag` access for sumtype matches
 // or the plain transformed `expr.expr` for non-sumtype matches) and the
@@ -1008,34 +1074,9 @@ fn (mut t Transformer) transform_match_expr_parts(expr ast.MatchExpr) (ast.Expr,
 				mut can_split_branch := true
 
 				for c in branch.cond {
-					mut c_variant_name := ''
-					mut c_variant_name_full := ''
-					mut c_variant_module := ''
-
-					if c is ast.Ident {
-						c_variant_name = c.name
-						c_variant_name_full = if t.cur_module != '' && t.cur_module != 'main'
-							&& t.cur_module != 'builtin'
-							&& c.name !in ['int', 'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'byte', 'rune', 'f32', 'f64', 'usize', 'isize', 'bool', 'string', 'voidptr', 'charptr', 'byteptr'] {
-							'${t.cur_module}__${c.name}'
-						} else {
-							c.name
-						}
-					} else if c is ast.SelectorExpr {
-						c_variant_name = c.rhs.name
-						if c.lhs is ast.Ident {
-							c_variant_module = (c.lhs as ast.Ident).name
-							c_variant_name_full = '${c_variant_module}__${c.rhs.name}'
-						} else {
-							c_variant_name_full = c.rhs.name
-						}
-					} else if c is ast.Type {
-						// Handle type variants like []ast.Attribute
-						c_variant_name = t.type_variant_name(c)
-						c_variant_name_full = t.type_variant_name_full(c)
-					}
-
-					if c_variant_name == '' {
+					c_variant_name, c_variant_name_full, c_variant_module, c_variant_is_generic, ok :=
+						t.match_branch_variant_info(c)
+					if !ok {
 						can_split_branch = false
 						break
 					}
@@ -1059,6 +1100,11 @@ fn (mut t Transformer) transform_match_expr_parts(expr ast.MatchExpr) (ast.Expr,
 					mut c_tag := -1
 					for i, v in variants {
 						if sum_type_variant_matches_for_sumtype(sumtype_name, v, qualified_variant) {
+							c_tag = i
+							break
+						}
+						if c_variant_is_generic
+							&& sum_type_variant_matches_for_sumtype(sumtype_name, sumtype_match_variant_base_name(v), qualified_variant) {
 							c_tag = i
 							break
 						}
@@ -1098,7 +1144,11 @@ fn (mut t Transformer) transform_match_expr_parts(expr ast.MatchExpr) (ast.Expr,
 						break
 					}
 					cond_tags << c_tag
-					cond_variants << qualified_variant
+					cond_variants << if c_variant_is_generic && qualified_variant_full != '' {
+						qualified_variant_full
+					} else {
+						qualified_variant
+					}
 					cond_variants_full << qualified_variant_full
 				}
 
@@ -1111,19 +1161,9 @@ fn (mut t Transformer) transform_match_expr_parts(expr ast.MatchExpr) (ast.Expr,
 						t.push_smartcast_full(smartcast_expr, cond_variants[i],
 							cond_variants_full[i], sumtype_name)
 						mut transformed_stmts := t.transform_match_branch_stmts(branch.stmts)
-						if t.sumtype_return_wrap != '' && transformed_stmts.len > 0 {
-							last_idx := transformed_stmts.len - 1
-							last_stmt := transformed_stmts[last_idx]
-							if last_stmt is ast.ExprStmt {
-								last_expr := (last_stmt as ast.ExprStmt).expr
-								if wrapped := t.wrap_sumtype_value_transformed(last_expr,
-									t.sumtype_return_wrap)
-								{
-									transformed_stmts[last_idx] = ast.Stmt(ast.ExprStmt{
-										expr: wrapped
-									})
-								}
-							}
+						if t.sumtype_return_wrap != '' {
+							transformed_stmts = t.wrap_sumtype_return_branch_tail_stmts(transformed_stmts,
+								t.sumtype_return_wrap)
 						}
 						t.smartcast_stack = smartcast_stack_before.clone()
 						t.smartcast_expr_counts = smartcast_counts_before.clone()
@@ -1142,19 +1182,9 @@ fn (mut t Transformer) transform_match_expr_parts(expr ast.MatchExpr) (ast.Expr,
 				} else {
 					// No variant name found, just transform normally
 					mut fallback_stmts := t.transform_match_branch_stmts(branch.stmts)
-					if t.sumtype_return_wrap != '' && fallback_stmts.len > 0 {
-						last_idx := fallback_stmts.len - 1
-						last_stmt := fallback_stmts[last_idx]
-						if last_stmt is ast.ExprStmt {
-							last_expr := (last_stmt as ast.ExprStmt).expr
-							if wrapped := t.wrap_sumtype_value_transformed(last_expr,
-								t.sumtype_return_wrap)
-							{
-								fallback_stmts[last_idx] = ast.Stmt(ast.ExprStmt{
-									expr: wrapped
-								})
-							}
-						}
+					if t.sumtype_return_wrap != '' {
+						fallback_stmts = t.wrap_sumtype_return_branch_tail_stmts(fallback_stmts,
+							t.sumtype_return_wrap)
 					}
 					branches << ast.MatchBranch{
 						cond:  branch.cond
@@ -1165,19 +1195,9 @@ fn (mut t Transformer) transform_match_expr_parts(expr ast.MatchExpr) (ast.Expr,
 			} else {
 				// else branch - no smartcast context
 				mut else_stmts := t.transform_match_branch_stmts(branch.stmts)
-				if t.sumtype_return_wrap != '' && else_stmts.len > 0 {
-					last_idx := else_stmts.len - 1
-					last_stmt := else_stmts[last_idx]
-					if last_stmt is ast.ExprStmt {
-						last_expr := (last_stmt as ast.ExprStmt).expr
-						if wrapped := t.wrap_sumtype_value_transformed(last_expr,
-							t.sumtype_return_wrap)
-						{
-							else_stmts[last_idx] = ast.Stmt(ast.ExprStmt{
-								expr: wrapped
-							})
-						}
-					}
+				if t.sumtype_return_wrap != '' {
+					else_stmts = t.wrap_sumtype_return_branch_tail_stmts(else_stmts,
+						t.sumtype_return_wrap)
 				}
 				branches << ast.MatchBranch{
 					cond:  branch.cond
@@ -1283,6 +1303,146 @@ fn (mut t Transformer) transform_match_branch_stmts(stmts []ast.Stmt) []ast.Stmt
 		return out
 	}
 	return t.transform_stmts(stmts)
+}
+
+fn (mut t Transformer) wrap_sumtype_return_branch_tail_stmts(stmts []ast.Stmt, sumtype_name string) []ast.Stmt {
+	if stmts.len == 0 {
+		return stmts
+	}
+	last_idx := stmts.len - 1
+	last_stmt := stmts[last_idx]
+	if last_stmt !is ast.ExprStmt {
+		return stmts
+	}
+	mut out := stmts.clone()
+	out[last_idx] = ast.Stmt(ast.ExprStmt{
+		expr: t.wrap_sumtype_return_branch_tail_expr((last_stmt as ast.ExprStmt).expr,
+			sumtype_name, stmts[..last_idx])
+	})
+	return out
+}
+
+fn (mut t Transformer) wrap_sumtype_return_branch_tail_expr(expr ast.Expr, sumtype_name string, prefix []ast.Stmt) ast.Expr {
+	if expr is ast.IfExpr {
+		return ast.Expr(ast.IfExpr{
+			cond:      expr.cond
+			stmts:     t.wrap_sumtype_return_branch_tail_stmts(expr.stmts, sumtype_name)
+			else_expr: t.wrap_sumtype_return_branch_tail_expr(expr.else_expr, sumtype_name,
+				[]ast.Stmt{})
+			pos:       expr.pos
+		})
+	}
+	info := t.sumtype_wrap_info_for_name(sumtype_name) or { return expr }
+	return t.wrap_sumtype_return_tail_leaf_expr(expr, info, prefix)
+}
+
+fn (mut t Transformer) wrap_sumtype_return_tail_leaf_expr(expr ast.Expr, info ConcreteSumtypeWrapInfo, prefix []ast.Stmt) ast.Expr {
+	if wrapped := t.wrap_sumtype_value_transformed_with_variants(expr, info.name, info.variants) {
+		return wrapped
+	}
+	if expr is ast.Ident {
+		if typ := t.lookup_var_type(expr.name) {
+			type_name := t.type_to_c_name(typ)
+			if type_name != '' && type_name != 'void'
+				&& !t.is_same_sumtype_name(type_name, info.name) {
+				if variant_name := t.match_variant(type_name, info.variants) {
+					return t.build_sumtype_init_with_variants(expr, variant_name, info.name,
+						info.variants) or { expr }
+				}
+			}
+		}
+		if variant_name := t.sumtype_return_variant_for_tail_ident(expr.name, info, prefix) {
+			return t.build_sumtype_init_with_variants(expr, variant_name, info.name, info.variants) or {
+				expr
+			}
+		}
+	}
+	return expr
+}
+
+fn (mut t Transformer) sumtype_return_variant_for_tail_ident(name string, info ConcreteSumtypeWrapInfo, prefix []ast.Stmt) ?string {
+	if name == '' || prefix.len == 0 {
+		return none
+	}
+	for i := prefix.len - 1; i >= 0; i-- {
+		stmt := prefix[i]
+		if stmt !is ast.AssignStmt {
+			continue
+		}
+		assign := stmt as ast.AssignStmt
+		if assign.lhs.len != 1 || assign.rhs.len != 1 {
+			continue
+		}
+		lhs := assign.lhs[0]
+		if lhs !is ast.Ident || (lhs as ast.Ident).name != name {
+			continue
+		}
+		if typ := t.get_expr_type(lhs) {
+			if variant_name := t.sumtype_return_variant_from_type(typ, info) {
+				return variant_name
+			}
+		}
+		if variant_name := t.sumtype_return_variant_from_expr(assign.rhs[0], info) {
+			return variant_name
+		}
+	}
+	return none
+}
+
+fn (mut t Transformer) sumtype_return_variant_from_expr(expr ast.Expr, info ConcreteSumtypeWrapInfo) ?string {
+	if typ := t.get_expr_type(expr) {
+		if variant_name := t.sumtype_return_variant_from_type(typ, info) {
+			return variant_name
+		}
+	}
+	if expr is ast.InitExpr {
+		init_variant_name := t.init_expr_sumtype_variant_name(expr, info.variants, info.name)
+		if init_variant_name != '' {
+			return init_variant_name
+		}
+	}
+	if expr is ast.CastExpr {
+		return t.sumtype_return_variant_from_type_expr(expr.typ, info)
+	}
+	if expr is ast.ParenExpr {
+		return t.sumtype_return_variant_from_expr(expr.expr, info)
+	}
+	if expr is ast.ModifierExpr {
+		return t.sumtype_return_variant_from_expr(expr.expr, info)
+	}
+	return none
+}
+
+fn (mut t Transformer) sumtype_return_variant_from_type_expr(typ_expr ast.Expr, info ConcreteSumtypeWrapInfo) ?string {
+	concrete_typ_expr := if t.cur_monomorphized_fn_bindings.len > 0 {
+		t.substitute_type_in_expr(typ_expr, t.cur_monomorphized_fn_bindings)
+	} else {
+		typ_expr
+	}
+	if typ := t.type_from_init_expr(ast.InitExpr{
+		typ: concrete_typ_expr
+	})
+	{
+		if variant_name := t.sumtype_return_variant_from_type(typ, info) {
+			return variant_name
+		}
+	}
+	type_name := t.get_init_expr_type_name(concrete_typ_expr)
+	if type_name == '' || t.is_same_sumtype_name(type_name, info.name) {
+		return none
+	}
+	return t.match_variant(type_name, info.variants)
+}
+
+fn (t &Transformer) sumtype_return_variant_from_type(typ types.Type, info ConcreteSumtypeWrapInfo) ?string {
+	mut type_name := t.type_to_c_name(typ)
+	if type_name == '' {
+		type_name = typ.name()
+	}
+	if type_name == '' || type_name == 'void' || t.is_same_sumtype_name(type_name, info.name) {
+		return none
+	}
+	return t.match_variant(type_name, info.variants)
 }
 
 // lower_match_expr_to_if converts a transformed match expression into a nested IfExpr chain.
@@ -1542,21 +1702,30 @@ fn (mut t Transformer) transform_if_expr(expr ast.IfExpr) ast.Expr {
 								} else {
 									variant_name
 								}
-								transformed_lhs := t.transform_tag_check_lhs(lhs_infix.lhs)
+								transformed_lhs := t.transform_tag_check_lhs_for_sumtype(lhs_infix.lhs,
+									sumtype_name)
 								// Push smartcast for body and inner condition
 								smartcast_stack_before := t.smartcast_stack.clone()
 								smartcast_counts_before := t.smartcast_expr_counts.clone()
 								t.push_smartcast_full(smartcast_expr, qualified_variant,
 									qualified_variant_full, sumtype_name)
+								condition_smartcast_stack := t.smartcast_stack.clone()
+								condition_smartcast_counts := t.smartcast_expr_counts.clone()
 								// Check if inner condition (rest) is also an is-check
 								mut inner_cond_lowered := false
 								mut inner_tag_check := ast.Expr(ast.BasicLiteral{
 									kind:  token.Token.number
 									value: '0'
 								})
-								if cond.rhs is ast.InfixExpr
-									&& (cond.rhs as ast.InfixExpr).op in [.key_is, .eq] {
-									orig_inner := cond.rhs as ast.InfixExpr
+								inner_rhs_expr := smartcast_lhs_expr(cond.rhs)
+								if inner_rhs_expr is ast.InfixExpr
+									&& (inner_rhs_expr as ast.InfixExpr).op in [.key_is, .eq] {
+									orig_inner := inner_rhs_expr as ast.InfixExpr
+									mut inner_smartcast_pushed := false
+									if inner_ctx := t.smartcast_context_from_is_check(orig_inner) {
+										t.push_smartcast_ctx(inner_ctx)
+										inner_smartcast_pushed = true
+									}
 									mut inner_vname := ''
 									mut inner_vmodule := ''
 									if orig_inner.rhs is ast.Ident {
@@ -1589,23 +1758,7 @@ fn (mut t Transformer) transform_if_expr(expr ast.IfExpr) ast.Expr {
 													break
 												}
 											}
-											if inner_tag >= 0 {
-												// Transform inner LHS with outer smartcast
-												inner_expr_str := t.expr_to_string(orig_inner.lhs)
-												transformed_inner_lhs := if ctx := t.find_smartcast_for_expr(inner_expr_str) {
-													t.apply_smartcast_direct_ctx(orig_inner.lhs, ctx)
-												} else {
-													t.transform_expr(orig_inner.lhs)
-												}
-												inner_tag_check = ast.Expr(ast.InfixExpr{
-													op:  token.Token.eq
-													lhs: t.synth_selector(transformed_inner_lhs,
-														'_tag', types.Type(types.int_))
-													rhs: ast.BasicLiteral{
-														kind:  token.Token.number
-														value: '${inner_tag}'
-													}
-												})
+											if inner_tag >= 0 && !inner_smartcast_pushed {
 												// Push inner smartcast for body
 												inner_qv := if inner_vmodule != '' {
 													'${inner_vmodule}__${inner_vname}'
@@ -1624,7 +1777,7 @@ fn (mut t Transformer) transform_if_expr(expr ast.IfExpr) ast.Expr {
 												inner_se := t.expr_to_string(orig_inner.lhs)
 												t.push_smartcast_full(inner_se, inner_qv,
 													inner_qvf, inner_stype)
-												inner_cond_lowered = true
+												inner_smartcast_pushed = true
 											}
 										}
 									}
@@ -1636,6 +1789,8 @@ fn (mut t Transformer) transform_if_expr(expr ast.IfExpr) ast.Expr {
 								// nested if, while the outer smartcast is active.
 								saved_rest_pending := t.pending_stmts
 								t.pending_stmts = []ast.Stmt{}
+								t.smartcast_stack = condition_smartcast_stack.clone()
+								t.smartcast_expr_counts = condition_smartcast_counts.clone()
 								transformed_rest := if inner_cond_lowered {
 									inner_tag_check
 								} else {
@@ -1776,7 +1931,7 @@ fn (mut t Transformer) transform_if_expr(expr ast.IfExpr) ast.Expr {
 		if cond.op in [.key_is, .eq] && t.smartcast_context_from_is_check(cond) != none {
 			if ctx := t.smartcast_context_from_is_check(cond) {
 				if tag_value := t.smartcast_context_tag_value(ctx) {
-					transformed_lhs := t.transform_tag_check_lhs(cond.lhs)
+					transformed_lhs := t.transform_tag_check_lhs_for_sumtype(cond.lhs, ctx.sumtype)
 
 					t.push_smartcast_ctx(ctx)
 					transformed_stmts := t.transform_stmts(expr.stmts)
@@ -1875,7 +2030,8 @@ fn (mut t Transformer) transform_if_expr(expr ast.IfExpr) ast.Expr {
 							variant_name
 						}
 
-						transformed_lhs := t.transform_tag_check_lhs(cond.lhs)
+						transformed_lhs := t.transform_tag_check_lhs_for_sumtype(cond.lhs,
+							sumtype_name)
 
 						// Push smart cast context for transforming body (supports nested smartcasts)
 						t.push_smartcast_full(smartcast_expr, qualified_variant,
@@ -2357,7 +2513,7 @@ fn (mut t Transformer) transform_infix_expr(expr ast.InfixExpr) ast.Expr {
 					}
 				}
 				if tag_value >= 0 {
-					transformed_lhs := t.transform_expr(expr.lhs)
+					transformed_lhs := t.transform_tag_check_lhs_for_sumtype(expr.lhs, sumtype_name)
 					cmp_op := if expr.op in [.key_is, .eq] {
 						token.Token.eq
 					} else {
@@ -2538,18 +2694,7 @@ fn (mut t Transformer) transform_infix_expr(expr ast.InfixExpr) ast.Expr {
 						pos: expr.pos
 					}
 				}
-				mut map_ptr := ast.Expr(ast.empty_expr)
-				rhs_trans := t.transform_expr(expr.rhs)
-				if rhs_type is types.Pointer {
-					map_ptr = rhs_trans
-				} else if t.can_take_address_expr(rhs_trans) {
-					map_ptr = ast.Expr(ast.PrefixExpr{
-						op:   .amp
-						expr: rhs_trans
-					})
-				} else {
-					map_ptr = t.addr_of_expr_with_temp(expr.rhs, map_typ)
-				}
+				map_ptr := t.map_expr_to_runtime_ptr(expr.rhs, rhs_type, map_typ)
 				// For the key, declare a temp variable in the same scope as the
 				// map__exists call so the pointer stays valid during the call.
 				// Using addr_of_expr_with_temp would nest the temp inside a
