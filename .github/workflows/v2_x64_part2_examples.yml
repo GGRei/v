@@ -1550,11 +1550,11 @@ jobs:
             )
           }
 
-          function Get-VRunExpectedBytes([string] $source, [string] $name, [string[]] $args = @()) {
+          function Get-VRunExpectedBytes([string] $source, [string] $name, [string[]] $programArgs = @()) {
             $stdoutPath = Join-Path $tmp "$name.expected.out"
             $stderrPath = Join-Path $tmp "$name.expected.err"
             Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
-            $process = Start-Process -FilePath '.\v.exe' -ArgumentList (@('run', $source) + $args) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+            $process = Start-Process -FilePath '.\v.exe' -ArgumentList (@('run', $source) + $programArgs) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
             if ($process.ExitCode -ne 0) {
               if (Test-Path -LiteralPath $stderrPath) {
                 Get-Content -LiteralPath $stderrPath
@@ -1611,7 +1611,11 @@ jobs:
                 return ,([System.Text.Encoding]::UTF8.GetBytes("5`n3`n"))
               }
               'primes' {
-                return ,(Get-VRunExpectedBytes $example.Source $example.Name @('20'))
+                [string[]] $programArgs = @()
+                if ($example.PSObject.Properties.Name -contains 'Args') {
+                  $programArgs = @($example.Args)
+                }
+                return ,(Get-VRunExpectedBytes $example.Source $example.Name $programArgs)
               }
               { $_ -eq 'bfs' -or $_ -eq 'bfs3' -or $_ -eq 'dfs' -or $_ -eq 'dijkstra' -or $_ -eq 'topological_sorting_greedy' -or $_ -eq 'topological_sorting_dfs' -or $_ -eq 'dfs2' -or $_ -eq 'minimal_spann_tree_prim' -or $_ -eq 'bellman_ford' -or $_ -eq 'binary_search_tree' } {
                 return ,(Get-VRunExpectedBytes $example.Source $example.Name)
