@@ -21,12 +21,20 @@ jobs:
       - name: Build V
         run: make -j4
 
-      - name: Run targeted V2 x64 regressions
+      - name: backend x64 regressions
         run: |
           set -euo pipefail
-          VJOBS=1 ./v test vlib/v2/builder/native_test.v vlib/v2/builder/target_os_test.v vlib/v2/gen/x64
+          VJOBS=1 ./v test \
+            vlib/v2/builder/native_test.v \
+            vlib/v2/builder/target_os_test.v \
+            vlib/v2/abi \
+            vlib/v2/gen/x64/x64_abi_test.v \
+            vlib/v2/gen/x64/x64_backend_diagnostics_test.v \
+            vlib/v2/gen/x64/x64_object_format_test.v \
+            vlib/v2/gen/x64/x64_pe_linker_test.v
+          VJOBS=1 ./v test -run-only test_x64_linux_math_log_20_stdout_exact_bytes,test_x64_linux_generic_sumtype_direct_wrap_stdout_exact_bytes,test_x64_linux_generic_sumtype_receiver_size_stdout_exact_bytes,test_x64_linux_generic_sumtype_insert_size_stdout_exact_bytes,test_x64_linux_struct_float_fields_stdout_exact_bytes,test_x64_linux_union_f64_bits_stdout_exact_bytes,test_x64_linux_f64_str_interpolation_stdout_exact_bytes,test_x64_linux_f64_for_interpolation_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
 
-      - name: Compile and run V2 x64 examples
+      - name: backend x64 examples
         run: |
           set -euo pipefail
 
@@ -55,10 +63,18 @@ jobs:
           function_types	examples/function_types.v	1	tiny-fallback	strict_reject_auto_hosted	20	function values; stdout exact
           submodule	examples/submodule/main.v	1	tiny-used	strict_auto_tiny	20	local selective imports; stdout exact
           bfs	examples/graphs/bfs.v	1	tiny-fallback	strict_reject_auto_hosted	20	graph maps/arrays; stdout compared to V normal run
+          bfs3	examples/graphs/bfs3.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph maps/arrays; stdout compared to V normal run
           dfs	examples/graphs/dfs.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph maps/arrays; stdout compared to V normal run
           dijkstra	examples/graphs/dijkstra.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph maps/arrays/generics; stdout compared to V normal run
           fibonacci	examples/fibonacci.v	1	tiny-fallback	strict_reject_auto_hosted	20	arguments() requires hosted argc/argv; strict tiny rejects and auto falls back hosted
+          primes	examples/primes.v	1	tiny-fallback	strict_reject_auto_hosted	20	arguments()/math.log; stdout compared to V normal run
           tree_of_nodes	examples/tree_of_nodes.v	1	tiny-fallback	strict_reject_auto_hosted	20	recursive sumtypes/auto-str; stdout exact
+          topological_sorting_greedy	examples/graphs/topological_sorting_greedy.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph maps/arrays; stdout compared to V normal run
+          topological_sorting_dfs	examples/graphs/topological_sorting_dfs.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph maps/arrays; stdout compared to V normal run
+          dfs2	examples/graphs/dfs2.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph maps/arrays; stdout compared to V normal run
+          minimal_spann_tree_prim	examples/graphs/minimal_spann_tree_prim.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph generics; stdout compared to V normal run
+          bellman_ford	examples/graphs/bellman-ford.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph generics; stdout compared to V normal run
+          binary_search_tree	examples/binary_search_tree.v	1	tiny-fallback	strict_reject_auto_hosted	30	generic sumtype tree; stdout compared to V normal run
           EOF
 
           append_row() {
@@ -185,7 +201,8 @@ jobs:
           write_v_run_expected() {
             source="$1"
             expected="$2"
-            ./v run "$source" > "$expected"
+            shift 2
+            ./v run "$source" "$@" > "$expected"
           }
 
           write_expected_stdout() {
@@ -212,7 +229,10 @@ jobs:
               submodule)
                 printf '5\n3\n' > "$expected"
                 ;;
-              bfs|dfs|dijkstra)
+              primes)
+                write_v_run_expected "$source" "$expected" 20
+                ;;
+              bfs|bfs3|dfs|dijkstra|topological_sorting_greedy|topological_sorting_dfs|dfs2|minimal_spann_tree_prim|bellman_ford|binary_search_tree)
                 write_v_run_expected "$source" "$expected"
                 ;;
               fibonacci)
@@ -374,6 +394,8 @@ jobs:
             run_args=()
             if [ "$source" = "examples/fibonacci.v" ]; then
               run_args=(10)
+            elif [ "$source" = "examples/primes.v" ]; then
+              run_args=(20)
             fi
 
             set +e
@@ -511,6 +533,14 @@ jobs:
                   append_row "linux" "$source" "strict-diagnostic-mismatch" "blocked" "not-run" "$strict_code" "$timeout_seconds" "" "" "expected arguments() tiny rejection diagnostic"
                   exit 1
                 fi
+                if [ "$source" = "examples/primes.v" ] \
+                  && ! grep -q 'arguments() requires hosted argc/argv' "$strict_log"; then
+                  echo "::group::$name Linux strict build log"
+                  cat "$strict_log"
+                  echo "::endgroup::"
+                  append_row "linux" "$source" "strict-diagnostic-mismatch" "blocked" "not-run" "$strict_code" "$timeout_seconds" "" "" "expected arguments() tiny rejection diagnostic"
+                  exit 1
+                fi
 
                 compile_or_fail "auto" "$name" "$source" "$auto_bin" "$timeout_seconds" "$expected_backend_status"
                 auto_status="$(classify_linux_binary "$auto_bin")"
@@ -555,11 +585,6 @@ jobs:
           append_manifest_inventory
           run_manifest_cases
 
-      - name: Run Part 3 V2 x64 example gates
-        run: |
-          set -euo pipefail
-          VJOBS=1 ./v test -run-only test_x64_linux_math_log_20_stdout_exact_bytes,test_x64_linux_primes_example_arg_20_stdout_matches_v_run,test_x64_linux_dump_operator_identity_stdout_exact_bytes,test_x64_linux_dump_factorial_example_top_level_stdout_exact_bytes,test_x64_linux_mut_array_param_append_stdout_exact_bytes,test_x64_linux_map_clone_delete_array_index_delete_stdout_exact_bytes,test_x64_linux_bfs3_example_top_level_stdout_matches_v_run,test_x64_linux_dfs_example_top_level_stdout_matches_v_run,test_x64_linux_dijkstra_example_top_level_stdout_matches_v_run,test_x64_linux_topological_sorting_greedy_example_top_level_stdout_matches_v_run,test_x64_linux_topological_sorting_dfs_example_top_level_stdout_matches_v_run,test_x64_linux_dfs2_example_top_level_stdout_matches_v_run,test_x64_linux_graph_priority_queue_generic_mut_array_normal_required_stdout_exact_bytes,test_x64_linux_minimal_spann_tree_prim_example_top_level_normal_required_stdout_exact_bytes,test_x64_linux_graph_generic_map_edge_relax_normal_required_stdout_exact_bytes,test_x64_linux_bellman_ford_example_top_level_normal_required_stdout_exact_bytes,test_x64_linux_binary_search_tree_example_stdout_matches_v_run,test_x64_linux_generic_sumtype_direct_wrap_stdout_exact_bytes,test_x64_linux_generic_sumtype_receiver_size_stdout_exact_bytes,test_x64_linux_generic_sumtype_insert_size_stdout_exact_bytes,test_x64_linux_struct_float_fields_stdout_exact_bytes,test_x64_linux_union_f64_bits_stdout_exact_bytes,test_x64_linux_f64_str_interpolation_stdout_exact_bytes,test_x64_linux_f64_for_interpolation_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
-
   macos:
     name: macOS Intel x64 examples
     runs-on: macos-15-intel
@@ -570,12 +595,20 @@ jobs:
       - name: Build V
         run: make -j4
 
-      - name: Run targeted V2 x64 regressions
+      - name: backend x64 regressions
         run: |
           set -euo pipefail
-          VJOBS=1 ./v test vlib/v2/builder/native_test.v vlib/v2/builder/target_os_test.v vlib/v2/gen/x64
+          VJOBS=1 ./v test \
+            vlib/v2/builder/native_test.v \
+            vlib/v2/builder/target_os_test.v \
+            vlib/v2/abi \
+            vlib/v2/gen/x64/x64_abi_test.v \
+            vlib/v2/gen/x64/x64_backend_diagnostics_test.v \
+            vlib/v2/gen/x64/x64_object_format_test.v \
+            vlib/v2/gen/x64/x64_pe_linker_test.v
+          VJOBS=1 ./v test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
 
-      - name: Compile and run V2 x64 examples
+      - name: backend x64 examples
         run: |
           set -euo pipefail
 
@@ -604,10 +637,18 @@ jobs:
           function_types	examples/function_types.v	1	normal-required	20	function values; stdout exact
           submodule	examples/submodule/main.v	1	tiny-used	20	local selective imports; stdout exact
           bfs	examples/graphs/bfs.v	1	normal-required	20	graph maps/arrays; stdout compared to V normal run
+          bfs3	examples/graphs/bfs3.v	1	normal-required	30	graph maps/arrays; stdout compared to V normal run
           dfs	examples/graphs/dfs.v	1	normal-required	30	graph maps/arrays; stdout compared to V normal run
           dijkstra	examples/graphs/dijkstra.v	1	normal-required	30	graph maps/arrays/generics; stdout compared to V normal run
           fibonacci	examples/fibonacci.v	1	tiny-fallback	20	arguments() requires hosted argc/argv; auto Mach-O tiny rejects and falls back normal
+          primes	examples/primes.v	1	tiny-fallback	20	arguments()/math.log; stdout compared to V normal run
           tree_of_nodes	examples/tree_of_nodes.v	1	normal-required	20	recursive sumtypes/auto-str; stdout exact
+          topological_sorting_greedy	examples/graphs/topological_sorting_greedy.v	1	normal-required	30	graph maps/arrays; stdout compared to V normal run
+          topological_sorting_dfs	examples/graphs/topological_sorting_dfs.v	1	normal-required	30	graph maps/arrays; stdout compared to V normal run
+          dfs2	examples/graphs/dfs2.v	1	normal-required	30	graph maps/arrays; stdout compared to V normal run
+          minimal_spann_tree_prim	examples/graphs/minimal_spann_tree_prim.v	1	normal-required	30	graph generics; stdout compared to V normal run
+          bellman_ford	examples/graphs/bellman-ford.v	1	normal-required	30	graph generics; stdout compared to V normal run
+          binary_search_tree	examples/binary_search_tree.v	1	normal-required	30	generic sumtype tree; stdout compared to V normal run
           EOF
 
           fizz_expected() {
@@ -717,7 +758,8 @@ jobs:
           write_v_run_expected() {
             source="$1"
             expected="$2"
-            ./v run "$source" > "$expected"
+            shift 2
+            ./v run "$source" "$@" > "$expected"
           }
 
           write_expected_stdout() {
@@ -744,7 +786,10 @@ jobs:
               submodule)
                 printf '5\n3\n' > "$expected"
                 ;;
-              bfs|dfs|dijkstra)
+              primes)
+                write_v_run_expected "$source" "$expected" 20
+                ;;
+              bfs|bfs3|dfs|dijkstra|topological_sorting_greedy|topological_sorting_dfs|dfs2|minimal_spann_tree_prim|bellman_ford|binary_search_tree)
                 write_v_run_expected "$source" "$expected"
                 ;;
               fibonacci)
@@ -835,6 +880,8 @@ jobs:
             run_arg=""
             if [ "$source" = "examples/fibonacci.v" ]; then
               run_arg="10"
+            elif [ "$source" = "examples/primes.v" ]; then
+              run_arg="20"
             fi
 
             set +e
@@ -882,6 +929,15 @@ jobs:
               fi
             fi
             if [ "$source" = "examples/fibonacci.v" ] \
+              && ! grep -q 'arguments() requires hosted argc/argv' "$build_log"; then
+              echo "::group::$name macOS build log"
+              cat "$build_log"
+              echo "::endgroup::"
+              printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+                "macos" "$source" "tiny-diagnostic-mismatch" "$backend_status" "not-run" "" "$timeout_seconds" "" "" "expected arguments() tiny rejection diagnostic" >> "$summary"
+              exit 1
+            fi
+            if [ "$source" = "examples/primes.v" ] \
               && ! grep -q 'arguments() requires hosted argc/argv' "$build_log"; then
               echo "::group::$name macOS build log"
               cat "$build_log"
@@ -998,17 +1054,23 @@ jobs:
           append_manifest_inventory
           run_manifest_cases
 
-      - name: Run Part 3 V2 x64 example gates
-        run: |
-          set -euo pipefail
-          VJOBS=1 ./v test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_primes_example_arg_20_stdout_matches_v_run,test_x64_macos_windows_dump_operator_identity_stdout_exact_bytes,test_x64_macos_windows_dump_factorial_example_top_level_stdout_exact_bytes,test_x64_macos_windows_mut_array_param_append_stdout_exact_bytes,test_x64_macos_windows_map_clone_delete_array_index_delete_stdout_exact_bytes,test_x64_macos_windows_bfs3_example_top_level_stdout_matches_v_run,test_x64_macos_windows_dfs_example_top_level_stdout_matches_v_run,test_x64_macos_windows_dijkstra_example_top_level_stdout_matches_v_run,test_x64_macos_windows_topological_sorting_greedy_example_top_level_stdout_matches_v_run,test_x64_macos_windows_topological_sorting_dfs_example_top_level_stdout_matches_v_run,test_x64_macos_windows_dfs2_example_top_level_stdout_matches_v_run,test_x64_macos_windows_graph_priority_queue_generic_mut_array_stdout_exact_bytes,test_x64_macos_windows_minimal_spann_tree_prim_example_top_level_stdout_exact_bytes,test_x64_macos_windows_graph_generic_map_edge_relax_stdout_exact_bytes,test_x64_macos_windows_bellman_ford_example_top_level_stdout_exact_bytes,test_x64_macos_windows_binary_search_tree_example_stdout_matches_v_run vlib/v2/gen/x64/x64_runtime_smoke_test.v
-
   windows:
     name: Windows x64 examples
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Verify MSVC tools
+        shell: pwsh
+        run: |
+          where.exe cl.exe
+          where.exe link.exe
+          where.exe dumpbin.exe
 
       - name: Build V
         shell: pwsh
@@ -1018,16 +1080,27 @@ jobs:
             throw "makev.bat -msvc failed with exit code $LASTEXITCODE"
           }
 
-      - name: Run targeted V2 x64 regressions
+      - name: backend x64 regressions
         shell: pwsh
         run: |
           $env:VJOBS = '1'
-          .\v.exe test vlib/v2/builder/native_test.v vlib/v2/builder/target_os_test.v vlib/v2/gen/x64
+          .\v.exe test `
+            vlib/v2/builder/native_test.v `
+            vlib/v2/builder/target_os_test.v `
+            vlib/v2/abi `
+            vlib/v2/gen/x64/x64_abi_test.v `
+            vlib/v2/gen/x64/x64_backend_diagnostics_test.v `
+            vlib/v2/gen/x64/x64_object_format_test.v `
+            vlib/v2/gen/x64/x64_pe_linker_test.v
           if ($LASTEXITCODE -ne 0) {
-            throw "targeted V2 x64 regressions failed with exit code $LASTEXITCODE"
+            throw "backend x64 regressions failed with exit code $LASTEXITCODE"
+          }
+          .\v.exe test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
+          if ($LASTEXITCODE -ne 0) {
+            throw "backend x64 regressions failed with exit code $LASTEXITCODE"
           }
 
-      - name: Compile and run V2 x64 examples
+      - name: backend x64 examples
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -1142,6 +1215,62 @@ jobs:
               Notes = 'graph maps/arrays/generics stdout compared to V normal run'
             }
             [pscustomobject]@{
+              Name = 'bfs3'
+              Source = 'examples/graphs/bfs3.v'
+              Enabled = $true
+              BackendStatus = 'normal-required'
+              TimeoutSeconds = 30
+              Notes = 'graph maps/arrays stdout compared to V normal run'
+            }
+            [pscustomobject]@{
+              Name = 'topological_sorting_greedy'
+              Source = 'examples/graphs/topological_sorting_greedy.v'
+              Enabled = $true
+              BackendStatus = 'normal-required'
+              TimeoutSeconds = 30
+              Notes = 'graph maps/arrays stdout compared to V normal run'
+            }
+            [pscustomobject]@{
+              Name = 'topological_sorting_dfs'
+              Source = 'examples/graphs/topological_sorting_dfs.v'
+              Enabled = $true
+              BackendStatus = 'normal-required'
+              TimeoutSeconds = 30
+              Notes = 'graph maps/arrays stdout compared to V normal run'
+            }
+            [pscustomobject]@{
+              Name = 'dfs2'
+              Source = 'examples/graphs/dfs2.v'
+              Enabled = $true
+              BackendStatus = 'normal-required'
+              TimeoutSeconds = 30
+              Notes = 'graph maps/arrays stdout compared to V normal run'
+            }
+            [pscustomobject]@{
+              Name = 'minimal_spann_tree_prim'
+              Source = 'examples/graphs/minimal_spann_tree_prim.v'
+              Enabled = $true
+              BackendStatus = 'normal-required'
+              TimeoutSeconds = 30
+              Notes = 'graph generics stdout compared to V normal run'
+            }
+            [pscustomobject]@{
+              Name = 'bellman_ford'
+              Source = 'examples/graphs/bellman-ford.v'
+              Enabled = $true
+              BackendStatus = 'normal-required'
+              TimeoutSeconds = 30
+              Notes = 'graph generics stdout compared to V normal run'
+            }
+            [pscustomobject]@{
+              Name = 'binary_search_tree'
+              Source = 'examples/binary_search_tree.v'
+              Enabled = $true
+              BackendStatus = 'normal-required'
+              TimeoutSeconds = 30
+              Notes = 'generic sumtype tree stdout compared to V normal run'
+            }
+            [pscustomobject]@{
               Name = 'fibonacci'
               Source = 'examples/fibonacci.v'
               Enabled = $true
@@ -1149,6 +1278,15 @@ jobs:
               TimeoutSeconds = 20
               Args = @('10')
               Notes = 'arguments() argv bootstrap via Shell32; stdout exact'
+            }
+            [pscustomobject]@{
+              Name = 'primes'
+              Source = 'examples/primes.v'
+              Enabled = $true
+              BackendStatus = 'normal-required'
+              TimeoutSeconds = 20
+              Args = @('20')
+              Notes = 'arguments()/math.log requires hosted runtime; stdout compared to V normal run'
             }
             [pscustomobject]@{
               Name = 'tree_of_nodes'
@@ -1207,35 +1345,14 @@ jobs:
               }
             }
 
-            $llvmReadobj = @(
-              'llvm-readobj.exe',
-              'llvm-readobj-20.exe',
-              'llvm-readobj-19.exe',
-              'llvm-readobj-18.exe',
-              'llvm-readobj'
-            ) | ForEach-Object {
-              Get-Command $_ -ErrorAction SilentlyContinue
-            } | Select-Object -First 1
-
-            if ($llvmReadobj) {
-              return [pscustomobject]@{
-                Kind = 'llvm-readobj'
-                Path = $llvmReadobj.Source
-              }
-            }
-
             return $null
           }
 
           function Get-PeImportOutput([pscustomobject] $tool, [string] $exe) {
-            if ($tool.Kind -eq 'dumpbin') {
-              $output = & $tool.Path /imports $exe 2>&1
-            } else {
-              $output = & $tool.Path --coff-imports $exe 2>&1
-            }
+            $output = & $tool.Path /imports $exe 2>&1
             if ($LASTEXITCODE -ne 0) {
               $text = ($output | Out-String).Trim()
-              throw "$($tool.Kind) import inspection failed for $exe with exit code $LASTEXITCODE`n$text"
+              throw "dumpbin import inspection failed for $exe with exit code $LASTEXITCODE`n$text"
             }
             return ,$output
           }
@@ -1244,11 +1361,7 @@ jobs:
             $dlls = [System.Collections.Generic.List[string]]::new()
             foreach ($lineObject in $output) {
               $line = [string] $lineObject
-              if ($tool.Kind -eq 'dumpbin') {
-                if ($line -match '^\s*([A-Za-z0-9_.-]+\.dll)\s*$') {
-                  $dlls.Add($matches[1].ToLowerInvariant())
-                }
-              } elseif ($line -match '^\s*Name:\s*([A-Za-z0-9_.-]+\.dll)\s*$') {
+              if ($line -match '^\s*([A-Za-z0-9_.-]+\.dll)\s*$') {
                 $dlls.Add($matches[1].ToLowerInvariant())
               }
             }
@@ -1266,7 +1379,7 @@ jobs:
 
             $tool = Get-PeImportTool
             if (!$tool) {
-              throw "$name is marked tiny-used, but dumpbin.exe and llvm-readobj are unavailable for PE import validation"
+              throw "$name is marked tiny-used, but dumpbin.exe is unavailable for PE import validation"
             }
 
             $output = Get-PeImportOutput $tool $exe
@@ -1303,7 +1416,7 @@ jobs:
               throw "$name PE import validation missed expected DLL(s): $($missingDlls -join ', ')"
             }
 
-            Write-Output "PE tiny import validation ok for $name via $($tool.Kind): $($dlls -join ', ')"
+            Write-Output "PE tiny import validation ok for $name via dumpbin: $($dlls -join ', ')"
           }
 
           function Write-PeDiagnostics([string] $name, [string] $exe) {
@@ -1311,18 +1424,14 @@ jobs:
             Get-Item -LiteralPath $exe | Format-List FullName,Length
 
             $tool = Get-PeImportTool
-            if ($tool -and $tool.Kind -eq 'dumpbin') {
+            if ($tool) {
               & $tool.Path /headers $exe
               & $tool.Path /imports $exe
               Write-Output "::endgroup::"
               return
             }
 
-            if ($tool -and $tool.Kind -eq 'llvm-readobj') {
-              & $tool.Path --file-headers --sections --coff-imports $exe
-            } else {
-              Write-Output 'No PE diagnostic tool found in PATH: dumpbin.exe and llvm-readobj are unavailable.'
-            }
+            Write-Output 'No PE diagnostic tool found in PATH: dumpbin.exe is unavailable.'
             Write-Output "::endgroup::"
           }
 
@@ -1441,11 +1550,11 @@ jobs:
             )
           }
 
-          function Get-VRunExpectedBytes([string] $source, [string] $name) {
+          function Get-VRunExpectedBytes([string] $source, [string] $name, [string[]] $args = @()) {
             $stdoutPath = Join-Path $tmp "$name.expected.out"
             $stderrPath = Join-Path $tmp "$name.expected.err"
             Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
-            $process = Start-Process -FilePath '.\v.exe' -ArgumentList @('run', $source) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+            $process = Start-Process -FilePath '.\v.exe' -ArgumentList (@('run', $source) + $args) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
             if ($process.ExitCode -ne 0) {
               if (Test-Path -LiteralPath $stderrPath) {
                 Get-Content -LiteralPath $stderrPath
@@ -1501,7 +1610,10 @@ jobs:
               'submodule' {
                 return ,([System.Text.Encoding]::UTF8.GetBytes("5`n3`n"))
               }
-              { $_ -eq 'bfs' -or $_ -eq 'dfs' -or $_ -eq 'dijkstra' } {
+              'primes' {
+                return ,(Get-VRunExpectedBytes $example.Source $example.Name @('20'))
+              }
+              { $_ -eq 'bfs' -or $_ -eq 'bfs3' -or $_ -eq 'dfs' -or $_ -eq 'dijkstra' -or $_ -eq 'topological_sorting_greedy' -or $_ -eq 'topological_sorting_dfs' -or $_ -eq 'dfs2' -or $_ -eq 'minimal_spann_tree_prim' -or $_ -eq 'bellman_ford' -or $_ -eq 'binary_search_tree' } {
                 return ,(Get-VRunExpectedBytes $example.Source $example.Name)
               }
               'fibonacci' {
@@ -1628,13 +1740,4 @@ jobs:
               $programArgs = @($example.Args)
             }
             Invoke-ExampleCase $example.Source $example.Name $expectedStdout $example.TimeoutSeconds $example.BackendStatus $programArgs
-          }
-
-      - name: Run Part 3 V2 x64 example gates
-        shell: pwsh
-        run: |
-          $env:VJOBS = '1'
-          .\v.exe test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_primes_example_arg_20_stdout_matches_v_run,test_x64_macos_windows_dump_operator_identity_stdout_exact_bytes,test_x64_macos_windows_dump_factorial_example_top_level_stdout_exact_bytes,test_x64_macos_windows_mut_array_param_append_stdout_exact_bytes,test_x64_macos_windows_map_clone_delete_array_index_delete_stdout_exact_bytes,test_x64_macos_windows_bfs3_example_top_level_stdout_matches_v_run,test_x64_macos_windows_dfs_example_top_level_stdout_matches_v_run,test_x64_macos_windows_dijkstra_example_top_level_stdout_matches_v_run,test_x64_macos_windows_topological_sorting_greedy_example_top_level_stdout_matches_v_run,test_x64_macos_windows_topological_sorting_dfs_example_top_level_stdout_matches_v_run,test_x64_macos_windows_dfs2_example_top_level_stdout_matches_v_run,test_x64_macos_windows_graph_priority_queue_generic_mut_array_stdout_exact_bytes,test_x64_macos_windows_minimal_spann_tree_prim_example_top_level_stdout_exact_bytes,test_x64_macos_windows_graph_generic_map_edge_relax_stdout_exact_bytes,test_x64_macos_windows_bellman_ford_example_top_level_stdout_exact_bytes,test_x64_macos_windows_binary_search_tree_example_stdout_matches_v_run vlib/v2/gen/x64/x64_runtime_smoke_test.v
-          if ($LASTEXITCODE -ne 0) {
-            throw "Part 3 V2 x64 example gates failed with exit code $LASTEXITCODE"
           }
