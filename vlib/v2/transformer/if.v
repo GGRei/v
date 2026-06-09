@@ -616,13 +616,13 @@ fn (mut t Transformer) try_expand_return_match_expr(stmt ast.ReturnStmt) ?[]ast.
 		return none
 	}
 	match_expr_ast := match_expr as ast.MatchExpr
-	should_wrap_return_sumtype := t.cur_fn_ret_type_name != ''
-		&& t.is_sum_type(t.cur_fn_ret_type_name)
+	return_sumtype_info := t.current_return_sumtype_wrap_info() or { ConcreteSumtypeWrapInfo{} }
+	should_wrap_return_sumtype := return_sumtype_info.name != ''
 	skip_return_sumtype_wrap := (t.cur_fn_returns_option || t.cur_fn_returns_result)
 		&& t.return_expr_should_skip_sumtype_wrap(match_expr)
 	old_wrap := t.sumtype_return_wrap
 	if should_wrap_return_sumtype && !skip_return_sumtype_wrap {
-		t.sumtype_return_wrap = t.cur_fn_ret_type_name
+		t.sumtype_return_wrap = return_sumtype_info.name
 	}
 	old_preserve_match_branch_value := t.preserve_match_branch_value
 	t.preserve_match_branch_value = true
@@ -669,9 +669,14 @@ fn (mut t Transformer) return_stmts_for_branch_expr(expr ast.Expr, allow_empty_e
 			return stmts
 		}
 	}
+	return_expr := if info := t.current_return_sumtype_wrap_info() {
+		t.wrap_sumtype_value_transformed_with_variants(expr, info.name, info.variants) or { expr }
+	} else {
+		expr
+	}
 	return [
 		ast.Stmt(ast.ReturnStmt{
-			exprs: [expr]
+			exprs: [return_expr]
 		}),
 	]
 }
@@ -1375,6 +1380,55 @@ fn (t &Transformer) eval_comptime_cond(cond ast.Expr) bool {
 	return false
 }
 
+fn (t &Transformer) eval_comptime_cond_cursor(cond ast.Cursor) bool {
+	if !cond.is_valid() {
+		return false
+	}
+	match cond.kind() {
+		.expr_ident {
+			return t.eval_comptime_flag(cond.name())
+		}
+		.expr_comptime {
+			return t.eval_comptime_cond_cursor(cond.edge(0))
+		}
+		.expr_call, .expr_call_or_cast {
+			if pkg_name := transformer_pkgconfig_call_name_cursor(cond) {
+				return t.eval_pkgconfig_cond(pkg_name)
+			}
+		}
+		.expr_prefix {
+			op := unsafe { token.Token(int(cond.aux())) }
+			if op == .not {
+				return !t.eval_comptime_cond_cursor(cond.edge(0))
+			}
+		}
+		.expr_infix {
+			op := unsafe { token.Token(int(cond.aux())) }
+			if op == .and {
+				return t.eval_comptime_cond_cursor(cond.edge(0))
+					&& t.eval_comptime_cond_cursor(cond.edge(1))
+			}
+			if op == .logical_or {
+				return t.eval_comptime_cond_cursor(cond.edge(0))
+					|| t.eval_comptime_cond_cursor(cond.edge(1))
+			}
+		}
+		.expr_postfix {
+			op := unsafe { token.Token(int(cond.aux())) }
+			inner := cond.edge(0)
+			if op == .question && inner.is_valid() && inner.kind() == .expr_ident {
+				return pref.comptime_optional_flag_value(t.pref, inner.name())
+			}
+		}
+		.expr_paren {
+			return t.eval_comptime_cond_cursor(cond.edge(0))
+		}
+		else {}
+	}
+
+	return false
+}
+
 fn (t &Transformer) eval_pkgconfig_cond(pkg_name string) bool {
 	if t.pref.is_cross_target() {
 		return false
@@ -1400,11 +1454,39 @@ fn transformer_pkgconfig_call_name(expr ast.Expr) ?string {
 	return none
 }
 
+fn transformer_pkgconfig_call_name_cursor(expr ast.Cursor) ?string {
+	match expr.kind() {
+		.expr_call {
+			lhs := expr.edge(0)
+			if lhs.is_valid() && lhs.kind() == .expr_ident && lhs.name() == 'pkgconfig'
+				&& expr.edge_count() == 2 {
+				return transformer_string_literal_value_cursor(expr.edge(1))
+			}
+		}
+		.expr_call_or_cast {
+			lhs := expr.edge(0)
+			if lhs.is_valid() && lhs.kind() == .expr_ident && lhs.name() == 'pkgconfig' {
+				return transformer_string_literal_value_cursor(expr.edge(1))
+			}
+		}
+		else {}
+	}
+
+	return none
+}
+
 fn transformer_string_literal_value(expr ast.Expr) ?string {
 	if expr is ast.StringLiteral {
 		return transformer_unquote_string_literal_value(expr.value)
 	}
 	return none
+}
+
+fn transformer_string_literal_value_cursor(expr ast.Cursor) ?string {
+	if !expr.is_valid() || expr.kind() != .expr_string {
+		return none
+	}
+	return transformer_unquote_string_literal_value(expr.name())
 }
 
 fn transformer_unquote_string_literal_value(value string) string {

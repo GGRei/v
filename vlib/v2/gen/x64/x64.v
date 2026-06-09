@@ -771,6 +771,12 @@ fn (mut g Gen) gen_instr(val_id int) {
 				g.copy_memory(int(r11), 0, int(r10), 0, src_size)
 			} else {
 				store_size := g.scalar_store_size_for_pointer_destination(dst_id, src_size)
+				if g.value_is_float_type(src_id) && src_size in [4, 8] && store_size == src_size {
+					g.load_val_to_reg(1, dst_id) // Ptr -> RCX
+					g.load_float_val_to_xmm(0, src_id, src_size)
+					asm_store_xmm_mem_base_disp_size(mut g, 0, rcx, 0, src_size)
+					return
+				}
 				g.load_val_to_reg(0, src_id) // Val -> RAX
 				g.load_val_to_reg(1, dst_id) // Ptr -> RCX
 				asm_store_mem_base_disp_reg_size(mut g, rcx, 0, rax, store_size)
@@ -1199,7 +1205,7 @@ fn (mut g Gen) gen_instr(val_id int) {
 			asm_ud2(mut g)
 		}
 		else {
-			x64_unsupported('op ${op} (${instr.selected_op}) in value ${val_id}')
+			x64_unsupported('op ${op} in value ${val_id}')
 		}
 	}
 }
@@ -1515,6 +1521,9 @@ fn (g Gen) struct_field_offset_bytes(struct_typ_id int, field_idx int) int {
 	if typ.kind != .struct_t {
 		return field_idx * 8
 	}
+	if typ.is_union {
+		return 0
+	}
 	mut off := 0
 	for i, field_typ in typ.fields {
 		align := g.type_align(field_typ)
@@ -1732,6 +1741,11 @@ fn (mut g Gen) store_field_value(dst_id int, dst_typ int, field_idx int, src_id 
 		g.copy_memory(int(rbp), dst_off, int(r10), 0, size)
 		return
 	}
+	if g.value_is_float_type(src_id) && size in [4, 8] {
+		g.load_float_val_to_xmm(0, src_id, size)
+		asm_store_xmm_rbp_disp(mut g, 0, dst_off, size)
+		return
+	}
 	g.load_val_to_reg(0, src_id)
 	asm_store_rbp_disp_reg_size(mut g, dst_off, rax, size)
 }
@@ -1752,34 +1766,8 @@ fn (mut g Gen) emit_epilogue() {
 }
 
 fn (g Gen) selected_opcode(instr mir.Instruction) ssa.OpCode {
-	if instr.selected_op == '' {
-		return instr.op
-	}
-	suffix := if instr.selected_op.contains('.') {
-		instr.selected_op.all_after('.')
-	} else {
-		instr.selected_op
-	}
-	return match suffix {
-		'add_rr' { .add }
-		'sub_rr' { .sub }
-		'mul_rr' { .mul }
-		'sdiv_rr' { .sdiv }
-		'and_rr' { .and_ }
-		'or_rr' { .or_ }
-		'xor_rr' { .xor }
-		'load_mr' { .load }
-		'store_rm' { .store }
-		'call' { .call }
-		'call_indirect' { .call_indirect }
-		'call_sret' { .call_sret }
-		'ret' { .ret }
-		'br' { .br }
-		'jmp' { .jmp }
-		'switch' { .switch_ }
-		'copy' { .assign }
-		else { instr.op }
-	}
+	_ = g
+	return instr.op
 }
 
 fn (mut g Gen) emit_jmp(target_idx int) {
@@ -2797,6 +2785,24 @@ fn (g Gen) type_size(typ_id ssa.TypeID) int {
 			return typ.len * g.type_size(typ.elem_type)
 		}
 		.struct_t {
+			if typ.is_union {
+				mut max_size := 0
+				mut max_align := 1
+				for field_typ in typ.fields {
+					field_size := g.type_size(field_typ)
+					if field_size > max_size {
+						max_size = field_size
+					}
+					field_align := g.type_align(field_typ)
+					if field_align > max_align {
+						max_align = field_align
+					}
+				}
+				if max_align > 1 && max_size % max_align != 0 {
+					max_size = (max_size + max_align - 1) & ~(max_align - 1)
+				}
+				return if max_size > 0 { max_size } else { 8 }
+			}
 			mut total := 0
 			mut max_align := 1
 			for field_typ in typ.fields {
@@ -2828,6 +2834,16 @@ fn (g Gen) type_align(typ_id ssa.TypeID) int {
 		typ := g.mod.type_store.types[typ_id]
 		if typ.kind == .array_t {
 			return g.type_align(typ.elem_type)
+		}
+		if typ.kind == .struct_t && typ.is_union {
+			mut max_align := 1
+			for field_typ in typ.fields {
+				align := g.type_align(field_typ)
+				if align > max_align {
+					max_align = align
+				}
+			}
+			return max_align
 		}
 	}
 	size := g.type_size(typ_id)

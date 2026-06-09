@@ -82,21 +82,19 @@ pub fn (mut t Transformer) inject_live_reload_parts_from_flat(flat &ast.FlatAst)
 
 // inject_live_reload_to_flat is the FlatBuilder-side splice counterpart to
 // the legacy `inject_live_reload(mut []ast.File)`. Locates the main file
-// via `inject_live_reload_parts_from_flat`, rehydrates that single file's
-// FnDecl bodies to legacy `ast.Stmt` (via `to_files_range`) so the legacy
-// `inject_live_into_stmts` helper can do the per-stmt call rewriting, then
-// uses the FlatBuilder primitives to splice the result back:
+// via `inject_live_reload_parts_from_flat`, cursor-prescans each non-main
+// function, and materializes only main() plus bodies that may actually need
+// live rewriting, then uses the FlatBuilder primitives to splice the result back:
 //   - `replace_fn_body_stmts(old_fn_id, new_body_ids)` for each rewritten FnDecl
 //   - `replace_file_stmt(file_idx, stmt_idx, new_fn_id)` to rewire the file
 //   - `prepend_file_stmts(file_idx, c_decl_ids + global_decl_ids)` for the
 //     file-level C-extern + GlobalDecl prepend
 //
-// Hybrid hydrate approach: the per-stmt call-rewriting logic
+// Hybrid cursor/decode approach: the per-stmt call-rewriting logic
 // (`rewrite_live_call_in_stmt_b`) stays legacy — porting the recursive
 // CallExpr/Ident/SelectorExpr walk to cursors is a much bigger lift and
-// outside the scope of `inject_live_reload`'s purpose (the rewriting is a
-// stable, well-tested helper). Only the FILE-LEVEL and FN-LEVEL splice
-// (which is what the new primitives address) runs through the flat path.
+// outside the scope of `inject_live_reload`'s purpose. Only the matching
+// FnDecl bodies are decoded; signatures and file splices stay on the flat path.
 //
 // Bit-equal w.r.t. `signature()` to running legacy
 // `inject_live_reload(mut files)` followed by `ast.flatten_files(files)`.
@@ -104,14 +102,6 @@ pub fn (mut t Transformer) inject_live_reload_to_flat(mut out ast.FlatBuilder) {
 	flat_parts := t.inject_live_reload_parts_from_flat(&out.flat) or { return }
 	file_idx := flat_parts.file_idx
 	parts := flat_parts.parts
-
-	// Rehydrate the target file's FnDecls to legacy ast.Stmt so we can run
-	// legacy inject_live_into_stmts (which handles call rewriting) on each.
-	files_range := out.flat.to_files_range(file_idx, file_idx + 1)
-	if files_range.len == 0 {
-		return
-	}
-	legacy_file := files_range[0]
 
 	// Per-FnDecl rewrite: capture (stmt_idx, new_fn_id) replacements; apply
 	// them AFTER the loop while stmt indices are still stable (prepend
@@ -125,15 +115,15 @@ pub fn (mut t Transformer) inject_live_reload_to_flat(mut out ast.FlatBuilder) {
 	mut replacement_ids := []ast.FlatNodeId{}
 
 	for j in 0 .. file_stmts.len() {
-		if j >= legacy_file.stmts.len {
-			break
-		}
-		legacy_stmt := legacy_file.stmts[j]
-		if legacy_stmt !is ast.FnDecl {
+		stmt_cursor := file_stmts.at(j)
+		if !stmt_cursor.is_valid() || stmt_cursor.kind() != .stmt_fn_decl {
 			continue
 		}
-		decl := legacy_stmt as ast.FnDecl
-		is_main := !decl.is_method && decl.name == 'main'
+		is_main := !stmt_cursor.flag(ast.flag_is_method) && stmt_cursor.name() == 'main'
+		if !is_main && !t.fn_body_may_need_live_rewrite_from_flat(stmt_cursor.list_at(3)) {
+			continue
+		}
+		decl := stmt_cursor.fn_decl()
 		mut new_body := []ast.Stmt{}
 		mut had_change := false
 		if is_main {
@@ -162,7 +152,7 @@ pub fn (mut t Transformer) inject_live_reload_to_flat(mut out ast.FlatBuilder) {
 		for ns in new_body {
 			new_body_ids << out.emit_stmt(ns)
 		}
-		old_fn_id := file_stmts.at(j).id
+		old_fn_id := stmt_cursor.id
 		new_fn_id := out.replace_fn_body_stmts(old_fn_id, new_body_ids)
 		replacement_idxs << j
 		replacement_ids << new_fn_id
@@ -180,6 +170,89 @@ pub fn (mut t Transformer) inject_live_reload_to_flat(mut out ast.FlatBuilder) {
 		prepended_ids << out.emit_stmt(gd)
 	}
 	out.prepend_file_stmts(file_idx, prepended_ids)
+}
+
+fn (t &Transformer) fn_body_may_need_live_rewrite_from_flat(stmts ast.CursorList) bool {
+	for i in 0 .. stmts.len() {
+		if t.stmt_may_need_live_rewrite_from_flat(stmts.at(i)) {
+			return true
+		}
+	}
+	return false
+}
+
+fn (t &Transformer) stmt_may_need_live_rewrite_from_flat(stmt_c ast.Cursor) bool {
+	if !stmt_c.is_valid() {
+		return false
+	}
+	match stmt_c.kind() {
+		.stmt_for {
+			return true
+		}
+		.stmt_expr {
+			return t.expr_may_need_live_rewrite_from_flat(stmt_c.edge(0))
+		}
+		.stmt_assign {
+			lhs_len := stmt_c.extra_int()
+			for i in lhs_len .. stmt_c.edge_count() {
+				if t.expr_may_need_live_rewrite_from_flat(stmt_c.edge(i)) {
+					return true
+				}
+			}
+		}
+		else {}
+	}
+
+	return false
+}
+
+fn (t &Transformer) expr_may_need_live_rewrite_from_flat(expr_c ast.Cursor) bool {
+	if !expr_c.is_valid() {
+		return false
+	}
+	match expr_c.kind() {
+		.expr_call {
+			return t.call_lhs_may_need_live_rewrite_from_flat(expr_c.edge(0))
+		}
+		.expr_ident {
+			return t.is_live_plain_fn_name(expr_c.name())
+		}
+		else {}
+	}
+
+	return false
+}
+
+fn (t &Transformer) call_lhs_may_need_live_rewrite_from_flat(lhs ast.Cursor) bool {
+	match lhs.kind() {
+		.expr_ident {
+			return t.is_live_plain_fn_name(lhs.name())
+		}
+		.expr_selector {
+			return t.is_live_method_name(lhs.edge(1).name())
+		}
+		else {}
+	}
+
+	return false
+}
+
+fn (t &Transformer) is_live_plain_fn_name(name string) bool {
+	for lf in t.live_fns {
+		if !lf.is_method && name == lf.decl_name {
+			return true
+		}
+	}
+	return false
+}
+
+fn (t &Transformer) is_live_method_name(name string) bool {
+	for lf in t.live_fns {
+		if lf.is_method && name == lf.decl_name {
+			return true
+		}
+	}
+	return false
 }
 
 // inject_live_reload generates hot code reloading infrastructure for @[live] functions.

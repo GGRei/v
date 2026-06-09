@@ -1,4 +1,4 @@
-name: V2 x64 part 2 examples
+name: V2 x64 examples smoke
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
       - v2-x64-backend-part2-examples-ci
 
 concurrency:
-  group: v2-x64-part2-examples-${{ github.ref }}
+  group: v2-x64-examples-smoke-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -555,6 +555,11 @@ jobs:
           append_manifest_inventory
           run_manifest_cases
 
+      - name: Run Part 3 V2 x64 example gates
+        run: |
+          set -euo pipefail
+          VJOBS=1 ./v test -run-only test_x64_linux_dump_operator_identity_stdout_exact_bytes,test_x64_linux_dump_factorial_example_top_level_stdout_exact_bytes,test_x64_linux_mut_array_param_append_stdout_exact_bytes,test_x64_linux_map_clone_delete_array_index_delete_stdout_exact_bytes,test_x64_linux_bfs3_example_top_level_stdout_matches_v_run,test_x64_linux_dfs_example_top_level_stdout_matches_v_run,test_x64_linux_dijkstra_example_top_level_stdout_matches_v_run,test_x64_linux_topological_sorting_greedy_example_top_level_stdout_matches_v_run,test_x64_linux_topological_sorting_dfs_example_top_level_stdout_matches_v_run,test_x64_linux_dfs2_example_top_level_stdout_matches_v_run,test_x64_linux_graph_priority_queue_generic_mut_array_normal_required_stdout_exact_bytes,test_x64_linux_minimal_spann_tree_prim_example_top_level_normal_required_stdout_exact_bytes,test_x64_linux_graph_generic_map_edge_relax_normal_required_stdout_exact_bytes,test_x64_linux_bellman_ford_example_top_level_normal_required_stdout_exact_bytes,test_x64_linux_binary_search_tree_example_stdout_matches_v_run,test_x64_linux_generic_sumtype_direct_wrap_stdout_exact_bytes,test_x64_linux_generic_sumtype_receiver_size_stdout_exact_bytes,test_x64_linux_generic_sumtype_insert_size_stdout_exact_bytes,test_x64_linux_struct_float_fields_stdout_exact_bytes,test_x64_linux_union_f64_bits_stdout_exact_bytes,test_x64_linux_f64_str_interpolation_stdout_exact_bytes,test_x64_linux_f64_for_interpolation_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
+
   macos:
     name: macOS Intel x64 examples
     runs-on: macos-15-intel
@@ -992,6 +997,11 @@ jobs:
 
           append_manifest_inventory
           run_manifest_cases
+
+      - name: Run Part 3 V2 x64 example gates
+        run: |
+          set -euo pipefail
+          VJOBS=1 ./v test -run-only test_x64_macos_windows_dump_operator_identity_stdout_exact_bytes,test_x64_macos_windows_dump_factorial_example_top_level_stdout_exact_bytes,test_x64_macos_windows_mut_array_param_append_stdout_exact_bytes,test_x64_macos_windows_map_clone_delete_array_index_delete_stdout_exact_bytes,test_x64_macos_windows_bfs3_example_top_level_stdout_matches_v_run,test_x64_macos_windows_dfs_example_top_level_stdout_matches_v_run,test_x64_macos_windows_dijkstra_example_top_level_stdout_matches_v_run,test_x64_macos_windows_topological_sorting_greedy_example_top_level_stdout_matches_v_run,test_x64_macos_windows_topological_sorting_dfs_example_top_level_stdout_matches_v_run,test_x64_macos_windows_dfs2_example_top_level_stdout_matches_v_run,test_x64_macos_windows_graph_priority_queue_generic_mut_array_stdout_exact_bytes,test_x64_macos_windows_minimal_spann_tree_prim_example_top_level_stdout_exact_bytes,test_x64_macos_windows_graph_generic_map_edge_relax_stdout_exact_bytes,test_x64_macos_windows_bellman_ford_example_top_level_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
 
   windows:
     name: Windows x64 examples
@@ -1617,4 +1627,13 @@ jobs:
               $programArgs = @($example.Args)
             }
             Invoke-ExampleCase $example.Source $example.Name $expectedStdout $example.TimeoutSeconds $example.BackendStatus $programArgs
+          }
+
+      - name: Run Part 3 V2 x64 example gates
+        shell: pwsh
+        run: |
+          $env:VJOBS = '1'
+          .\v.exe test -run-only test_x64_macos_windows_dump_operator_identity_stdout_exact_bytes,test_x64_macos_windows_dump_factorial_example_top_level_stdout_exact_bytes,test_x64_macos_windows_mut_array_param_append_stdout_exact_bytes,test_x64_macos_windows_map_clone_delete_array_index_delete_stdout_exact_bytes,test_x64_macos_windows_bfs3_example_top_level_stdout_matches_v_run,test_x64_macos_windows_dfs_example_top_level_stdout_matches_v_run,test_x64_macos_windows_dijkstra_example_top_level_stdout_matches_v_run,test_x64_macos_windows_topological_sorting_greedy_example_top_level_stdout_matches_v_run,test_x64_macos_windows_topological_sorting_dfs_example_top_level_stdout_matches_v_run,test_x64_macos_windows_dfs2_example_top_level_stdout_matches_v_run,test_x64_macos_windows_graph_priority_queue_generic_mut_array_stdout_exact_bytes,test_x64_macos_windows_minimal_spann_tree_prim_example_top_level_stdout_exact_bytes,test_x64_macos_windows_graph_generic_map_edge_relax_stdout_exact_bytes,test_x64_macos_windows_bellman_ford_example_top_level_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
+          if ($LASTEXITCODE -ne 0) {
+            throw "Part 3 V2 x64 example gates failed with exit code $LASTEXITCODE"
           }

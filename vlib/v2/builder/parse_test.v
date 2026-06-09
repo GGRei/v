@@ -5,6 +5,12 @@ import os
 import v2.ast
 import v2.pref
 
+fn parse_files_for_parse_test(mut b Builder, paths []string) []ast.File {
+	b.parse_files(paths)
+	b.flat = b.flat_builder.flat
+	return b.flat.to_files()
+}
+
 fn test_parse_files_keeps_single_file_inputs_isolated() {
 	tmp_dir := os.join_path(os.temp_dir(), 'v2_builder_parse_single_${os.getpid()}')
 	os.rmdir_all(tmp_dir) or {}
@@ -22,7 +28,7 @@ fn test_parse_files_keeps_single_file_inputs_isolated() {
 	prefs.skip_builtin = true
 	prefs.skip_imports = true
 	mut b := new_builder(&prefs)
-	files := b.parse_files([entry_file])
+	files := parse_files_for_parse_test(mut b, [entry_file])
 
 	assert files.len == 1
 }
@@ -44,7 +50,7 @@ fn test_parse_files_expands_directory_inputs() {
 	prefs.skip_builtin = true
 	prefs.skip_imports = true
 	mut b := new_builder(&prefs)
-	files := b.parse_files([tmp_dir])
+	files := parse_files_for_parse_test(mut b, [tmp_dir])
 
 	assert files.len == 2
 }
@@ -75,7 +81,7 @@ fn test_parse_files_expands_same_module_subdirectories() {
 	prefs.skip_builtin = true
 	prefs.skip_imports = true
 	mut b := new_builder(&prefs)
-	files := b.parse_files([tmp_dir])
+	files := parse_files_for_parse_test(mut b, [tmp_dir])
 	names := files.map(os.file_name(it.name))
 
 	assert files.len == 2
@@ -100,7 +106,7 @@ fn test_parse_files_expands_implicit_main_subdirectories() {
 	prefs.skip_builtin = true
 	prefs.skip_imports = true
 	mut b := new_builder(&prefs)
-	files := b.parse_files([tmp_dir])
+	files := parse_files_for_parse_test(mut b, [tmp_dir])
 	names := files.map(os.file_name(it.name))
 
 	assert files.len == 2
@@ -127,7 +133,7 @@ fn test_parse_files_skips_block_commented_non_main_subdirectories() {
 	prefs.skip_builtin = true
 	prefs.skip_imports = true
 	mut b := new_builder(&prefs)
-	files := b.parse_files([tmp_dir])
+	files := parse_files_for_parse_test(mut b, [tmp_dir])
 	names := files.map(os.file_name(it.name))
 
 	assert files.len == 1
@@ -208,7 +214,7 @@ fn test_virtual_main_modules_skip_groups_with_executable_main_from_ast() {
 	prefs.skip_imports = true
 	mut b := new_builder(&prefs)
 	b.user_files = [tmp_dir]
-	b.files = b.parse_files([tmp_dir])
+	b.files = parse_files_for_parse_test(mut b, [tmp_dir])
 	groups := b.collect_virtual_main_modules()
 	names := groups.map(it.name)
 
@@ -234,7 +240,7 @@ fn test_parse_files_expands_non_main_module_files() {
 	prefs.skip_builtin = true
 	prefs.skip_imports = true
 	mut b := new_builder(&prefs)
-	files := b.parse_files([entry_file])
+	files := parse_files_for_parse_test(mut b, [entry_file])
 
 	assert files.len == 2
 }
@@ -263,7 +269,7 @@ fn test_parse_files_resolves_project_root_sibling_import_from_nested_module_file
 	mut prefs := pref.new_preferences()
 	prefs.skip_builtin = true
 	mut b := new_builder(&prefs)
-	files := b.parse_files([entry_file])
+	files := parse_files_for_parse_test(mut b, [entry_file])
 	names := files.map(os.file_name(it.name))
 
 	assert 'complete_test.v' in names
@@ -292,7 +298,7 @@ fn test_parse_files_prefers_project_root_module_over_vlib_module() {
 	mut prefs := pref.new_preferences()
 	prefs.skip_builtin = true
 	mut b := new_builder(&prefs)
-	files := b.parse_files([entry_file])
+	files := parse_files_for_parse_test(mut b, [entry_file])
 
 	assert files.any(it.name == local_regex_file)
 }

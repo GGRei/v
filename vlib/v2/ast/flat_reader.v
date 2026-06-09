@@ -88,18 +88,24 @@ fn (r &FlatReader) read_file(ff FlatFile) File {
 	imports_id := r.edge(n, 1)
 	stmts_id := r.edge(n, 2)
 	mut attrs := []Attribute{}
-	for cid in r.list_children(attrs_id) {
+	attr_children := r.list_children(attrs_id)
+	for cid in attr_children {
 		attrs << r.read_attribute(cid)
 	}
 	mut imports := []ImportStmt{}
-	for cid in r.list_children(imports_id) {
-		s := r.read_stmt(cid)
-		if s is ImportStmt {
-			imports << s
+	import_children := r.list_children(imports_id)
+	for cid in import_children {
+		c := Cursor{
+			flat: r.flat
+			id:   cid
+		}
+		if c.kind() == .stmt_import {
+			imports << c.import_stmt()
 		}
 	}
 	mut stmts := []Stmt{}
-	for cid in r.list_children(stmts_id) {
+	stmt_children := r.list_children(stmts_id)
+	for cid in stmt_children {
 		stmts << r.read_stmt(cid)
 	}
 	return File{
@@ -114,7 +120,7 @@ fn (r &FlatReader) read_file(ff FlatFile) File {
 
 // read_file_imports rehydrates only the static `imports` list of a file
 // without materializing the full File. Consumers that still need to walk
-// comptime-conditional imports can combine this with read_file_stmts.
+// comptime-conditional imports should walk FileCursor.stmts() directly.
 pub fn (flat &FlatAst) read_file_imports(ff FlatFile) []ImportStmt {
 	r := FlatReader{
 		flat: unsafe { flat }
@@ -122,29 +128,17 @@ pub fn (flat &FlatAst) read_file_imports(ff FlatFile) []ImportStmt {
 	n := r.node(ff.file_id)
 	imports_id := r.edge(n, 1)
 	mut imports := []ImportStmt{}
-	for cid in r.list_children(imports_id) {
-		s := r.read_stmt(cid)
-		if s is ImportStmt {
-			imports << s
+	import_children := r.list_children(imports_id)
+	for cid in import_children {
+		c := Cursor{
+			flat: r.flat
+			id:   cid
+		}
+		if c.kind() == .stmt_import {
+			imports << c.import_stmt()
 		}
 	}
 	return imports
-}
-
-// read_file_stmts rehydrates only the top-level statements of a file.
-// Used by consumers that walk file.stmts for comptime-conditional imports
-// or other top-level analysis without needing attrs/imports/selector_names.
-pub fn (flat &FlatAst) read_file_stmts(ff FlatFile) []Stmt {
-	r := FlatReader{
-		flat: unsafe { flat }
-	}
-	n := r.node(ff.file_id)
-	stmts_id := r.edge(n, 2)
-	mut stmts := []Stmt{}
-	for cid in r.list_children(stmts_id) {
-		stmts << r.read_stmt(cid)
-	}
-	return stmts
 }
 
 // decode_stmt rehydrates a single legacy ast.Stmt from a FlatNodeId. Useful
@@ -238,7 +232,8 @@ fn (r &FlatReader) read_field_decl(id FlatNodeId) FieldDecl {
 	n := r.node(id)
 	attrs_id := r.edge(n, 2)
 	mut attrs := []Attribute{}
-	for cid in r.list_children(attrs_id) {
+	attr_children := r.list_children(attrs_id)
+	for cid in attr_children {
 		attrs << r.read_attribute(cid)
 	}
 	return FieldDecl{
@@ -268,11 +263,13 @@ fn (r &FlatReader) read_match_branch(id FlatNodeId) MatchBranch {
 	cond_id := r.edge(n, 0)
 	stmts_id := r.edge(n, 1)
 	mut cond := []Expr{}
-	for cid in r.list_children(cond_id) {
+	cond_children := r.list_children(cond_id)
+	for cid in cond_children {
 		cond << r.read_expr(cid)
 	}
 	mut stmts := []Stmt{}
-	for cid in r.list_children(stmts_id) {
+	stmt_children := r.list_children(stmts_id)
+	for cid in stmt_children {
 		stmts << r.read_stmt(cid)
 	}
 	return MatchBranch{
@@ -318,7 +315,8 @@ fn (r &FlatReader) read_int(id FlatNodeId) int {
 
 fn (r &FlatReader) read_expr_list(id FlatNodeId) []Expr {
 	mut out := []Expr{}
-	for cid in r.list_children(id) {
+	children := r.list_children(id)
+	for cid in children {
 		out << r.read_expr(cid)
 	}
 	return out
@@ -326,7 +324,8 @@ fn (r &FlatReader) read_expr_list(id FlatNodeId) []Expr {
 
 fn (r &FlatReader) read_stmt_list(id FlatNodeId) []Stmt {
 	mut out := []Stmt{}
-	for cid in r.list_children(id) {
+	children := r.list_children(id)
+	for cid in children {
 		out << r.read_stmt(cid)
 	}
 	return out
@@ -334,7 +333,8 @@ fn (r &FlatReader) read_stmt_list(id FlatNodeId) []Stmt {
 
 fn (r &FlatReader) read_attr_list(id FlatNodeId) []Attribute {
 	mut out := []Attribute{}
-	for cid in r.list_children(id) {
+	children := r.list_children(id)
+	for cid in children {
 		out << r.read_attribute(cid)
 	}
 	return out
@@ -342,7 +342,8 @@ fn (r &FlatReader) read_attr_list(id FlatNodeId) []Attribute {
 
 fn (r &FlatReader) read_field_decl_list(id FlatNodeId) []FieldDecl {
 	mut out := []FieldDecl{}
-	for cid in r.list_children(id) {
+	children := r.list_children(id)
+	for cid in children {
 		out << r.read_field_decl(cid)
 	}
 	return out
@@ -350,7 +351,8 @@ fn (r &FlatReader) read_field_decl_list(id FlatNodeId) []FieldDecl {
 
 fn (r &FlatReader) read_field_init_list(id FlatNodeId) []FieldInit {
 	mut out := []FieldInit{}
-	for cid in r.list_children(id) {
+	children := r.list_children(id)
+	for cid in children {
 		out << r.read_field_init(cid)
 	}
 	return out
@@ -358,7 +360,8 @@ fn (r &FlatReader) read_field_init_list(id FlatNodeId) []FieldInit {
 
 fn (r &FlatReader) read_parameter_list(id FlatNodeId) []Parameter {
 	mut out := []Parameter{}
-	for cid in r.list_children(id) {
+	children := r.list_children(id)
+	for cid in children {
 		out << r.read_parameter(cid)
 	}
 	return out
@@ -450,7 +453,8 @@ fn (r &FlatReader) read_string_list(id FlatNodeId) []string {
 
 fn (r &FlatReader) read_string_inter_list(id FlatNodeId) []StringInter {
 	mut out := []StringInter{}
-	for cid in r.list_children(id) {
+	children := r.list_children(id)
+	for cid in children {
 		out << r.read_string_inter(cid)
 	}
 	return out

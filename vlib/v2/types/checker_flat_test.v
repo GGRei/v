@@ -161,3 +161,62 @@ fn pass(id Id) Id {
 	ret := fn_type.get_return_type() or { panic('check_flat missing pass return type') }
 	assert ret.name() == ret_files.name()
 }
+
+fn test_check_flat_preregisters_active_comptime_fn_signatures() {
+	src := 'module main
+
+$if macos {
+fn platform_value() int {
+	return 7
+}
+} $else {
+fn platform_value_else() int {
+	return 9
+}
+}
+
+fn call_platform() int {
+	return platform_value()
+}
+'
+	env_flat := check_via_flat(src)
+	platform_fn := env_flat.lookup_fn('main', 'platform_value') or {
+		panic('check_flat missing active platform_value')
+	}
+	call_fn := env_flat.lookup_fn('main', 'call_platform') or {
+		panic('check_flat missing call_platform')
+	}
+	ret := platform_fn.get_return_type() or { panic('platform_value missing return type') }
+	call_ret := call_fn.get_return_type() or { panic('call_platform missing return type') }
+	assert ret.name() == 'int'
+	assert call_ret.name() == 'int'
+	if _ := env_flat.lookup_fn('main', 'platform_value_else') {
+		assert false, 'check_flat registered inactive platform_value_else'
+	}
+}
+
+fn test_check_flat_matches_check_files_for_unsafe_pointer_selector_lhs() {
+	src := 'module main
+
+struct Node {
+mut:
+	children &voidptr
+	len int
+}
+
+fn node_at(raw voidptr) int {
+	return unsafe { &Node(raw) }.len
+}
+
+fn child_len(n Node, idx int) int {
+	return unsafe { &Node(n.children[idx]) }.len
+}
+'
+	env_files := check_via_files(src)
+	env_flat := check_via_flat(src)
+	fn_files := env_files.lookup_fn('main', 'node_at') or { panic('check_files missing node_at') }
+	fn_flat := env_flat.lookup_fn('main', 'node_at') or { panic('check_flat missing node_at') }
+	ret_files := fn_files.get_return_type() or { panic('check_files missing node_at return type') }
+	ret_flat := fn_flat.get_return_type() or { panic('check_flat missing node_at return type') }
+	assert ret_flat.name() == ret_files.name()
+}

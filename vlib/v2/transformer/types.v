@@ -28,7 +28,16 @@ fn (t &Transformer) get_synth_type(pos token.Pos) ?types.Type {
 fn (t &Transformer) lookup_method_cached(type_name string, method_name string) ?types.FnType {
 	// O(1) via the precomputed base-name index (built in build_cached_method_base_index).
 	// Equivalent to the old linear scan: match by generic base name, first FnType wins.
+	if typ := t.cached_method_base_index['${type_name}#${method_name}'] {
+		if typ is types.FnType {
+			return typ
+		}
+		return none
+	}
 	base_method_name := generic_base_name_without_specialization(method_name)
+	if base_method_name == method_name {
+		return none
+	}
 	typ := t.cached_method_base_index['${type_name}#${base_method_name}'] or { return none }
 	if typ is types.FnType {
 		return typ
@@ -251,25 +260,16 @@ fn (t &Transformer) lookup_imported_var_type(name string) ?types.Type {
 	if name == '' || name.contains('__') || t.cur_module == '' {
 		return none
 	}
-	current_scope := t.get_module_scope(t.cur_module) or { return none }
-	mut keys := current_scope.objects.keys()
-	keys.sort()
+	// The imported-module scope list is precomputed once in cache_env_maps
+	// (build_cached_imported_module_scopes); see the field comment in
+	// transformer.v. Iterate only the imports rather than rescanning and
+	// sorting the whole module symbol table on every lookup. The "found in
+	// exactly one import" / ambiguity semantics are order-independent, so the
+	// dropped per-call sort does not change the result.
+	scopes := t.cached_imported_module_scopes[t.cur_module] or { return none }
 	mut found_type := types.Type(types.void_)
 	mut found := false
-	for key in keys {
-		obj := current_scope.objects[key] or { continue }
-		if obj !is types.Module {
-			continue
-		}
-		module_obj := obj as types.Module
-		module_name := if module_obj.name != '' { module_obj.name } else { key }
-		if module_name == '' || module_name == t.cur_module || module_name == 'C' {
-			continue
-		}
-		mut module_scope := module_obj.scope
-		if module_scope == unsafe { nil } {
-			module_scope = t.get_module_scope(module_name) or { continue }
-		}
+	for module_scope in scopes {
 		typ := module_scope.lookup_var_type(name) or { continue }
 		if found {
 			return none
@@ -404,6 +404,12 @@ fn (t &Transformer) type_from_init_expr(expr ast.InitExpr) ?types.Type {
 		return types.Type(types.Struct{
 			name: generic_type_name
 		})
+	}
+	if typ := t.type_from_param_type_expr(expr.typ, []) {
+		normalized := t.normalize_type(typ)
+		if t.type_to_c_name(normalized) != '' {
+			return normalized
+		}
 	}
 	if typ := t.get_expr_type(expr.typ) {
 		normalized := t.normalize_type(typ)
@@ -2226,10 +2232,14 @@ fn (t &Transformer) init_expr_sumtype_variant_name(init_expr ast.InitExpr, varia
 }
 
 fn (mut t Transformer) wrap_sumtype_value(value ast.Expr, sumtype_name string) ?ast.Expr {
+	info := t.sumtype_wrap_info_for_name(sumtype_name) or { return none }
+	return t.wrap_sumtype_value_with_variants(value, info.name, info.variants)
+}
+
+fn (mut t Transformer) wrap_sumtype_value_with_variants(value ast.Expr, sumtype_name string, variants []string) ?ast.Expr {
 	if t.expr_uses_current_generic_param(value) {
 		return none
 	}
-	variants := t.get_sum_type_variants(sumtype_name)
 	if variants.len == 0 {
 		return none
 	}
@@ -2287,7 +2297,8 @@ fn (mut t Transformer) wrap_sumtype_value(value ast.Expr, sumtype_name string) ?
 	}
 	// Transform the value then wrap
 	transformed_value := t.transform_expr(value)
-	return t.build_sumtype_init(transformed_value, variant_name, sumtype_name)
+	return t.build_sumtype_init_with_variants(transformed_value, variant_name, sumtype_name,
+		variants)
 }
 
 fn (mut t Transformer) transform_declared_sumtype_value(value ast.Expr, sumtype_name string) ?ast.Expr {
@@ -2312,10 +2323,14 @@ fn (mut t Transformer) transform_declared_sumtype_value(value ast.Expr, sumtype_
 
 // wrap_sumtype_value_transformed wraps an already-transformed expression in sum type init
 fn (mut t Transformer) wrap_sumtype_value_transformed(value ast.Expr, sumtype_name string) ?ast.Expr {
+	info := t.sumtype_wrap_info_for_name(sumtype_name) or { return none }
+	return t.wrap_sumtype_value_transformed_with_variants(value, info.name, info.variants)
+}
+
+fn (mut t Transformer) wrap_sumtype_value_transformed_with_variants(value ast.Expr, sumtype_name string, variants []string) ?ast.Expr {
 	if t.expr_uses_current_generic_param(value) {
 		return none
 	}
-	variants := t.get_sum_type_variants(sumtype_name)
 	if variants.len == 0 {
 		return none
 	}
@@ -2421,12 +2436,17 @@ fn (mut t Transformer) wrap_sumtype_value_transformed(value ast.Expr, sumtype_na
 		return none
 	}
 	// Value is already transformed, just wrap it
-	return t.build_sumtype_init(value, variant_name, sumtype_name)
+	return t.build_sumtype_init_with_variants(value, variant_name, sumtype_name, variants)
 }
 
 // build_sumtype_init creates a sum type initialization expression
 fn (t &Transformer) build_sumtype_init(transformed_value ast.Expr, variant_name string, sumtype_name string) ?ast.Expr {
-	variants := t.get_sum_type_variants(sumtype_name)
+	info := t.sumtype_wrap_info_for_name(sumtype_name) or { return none }
+	return t.build_sumtype_init_with_variants(transformed_value, variant_name, info.name,
+		info.variants)
+}
+
+fn (t &Transformer) build_sumtype_init_with_variants(transformed_value ast.Expr, variant_name string, sumtype_name string, variants []string) ?ast.Expr {
 	// Find the tag value for this variant
 	mut tag_value := -1
 	for i, v in variants {
@@ -2973,7 +2993,7 @@ fn (t &Transformer) get_expr_type(expr ast.Expr) ?types.Type {
 		pos := expr.pos
 		if lhs_type := t.get_expr_type(expr.lhs) {
 			if field_typ := t.field_type_from_receiver_type(lhs_type, expr.rhs.name) {
-				return t.normalize_type(field_typ)
+				return t.normalize_type(substitute_type(field_typ, t.cur_monomorphized_fn_bindings))
 			}
 		}
 		if typ := t.get_synth_type(pos) {
@@ -3072,7 +3092,7 @@ fn (t &Transformer) declared_expr_type_for_method_receiver_inner(expr ast.Expr, 
 			ignored_smartcast_expr)
 		{
 			if field_typ := t.field_type_from_receiver_type(lhs_type, expr.rhs.name) {
-				return field_typ
+				return substitute_type(field_typ, t.cur_monomorphized_fn_bindings)
 			}
 		}
 		return t.get_expr_type(expr)
@@ -3320,6 +3340,28 @@ fn (t &Transformer) generic_specialization_token_from_type(typ types.Type) strin
 	}
 }
 
+fn (t &Transformer) generic_specialization_suffix_from_bindings(generic_params []string, bindings map[string]types.Type) string {
+	if generic_params.len == 0 {
+		return ''
+	}
+	mut all_placeholders := true
+	mut parts := []string{cap: generic_params.len}
+	for param_name in generic_params {
+		concrete := bindings[param_name] or { return '' }
+		parts << t.generic_specialization_token_from_type(concrete)
+		if concrete.name() != param_name {
+			all_placeholders = false
+		}
+	}
+	if parts.len == 0 {
+		return ''
+	}
+	if all_placeholders {
+		return '_' + generic_params.join('_')
+	}
+	return '_T_' + parts.join('_')
+}
+
 fn (t &Transformer) generic_specialization_token(expr ast.Expr) string {
 	if expr is ast.Ident {
 		if concrete := t.cur_monomorphized_fn_bindings[expr.name] {
@@ -3474,6 +3516,35 @@ fn (t &Transformer) get_receiver_type_name(typ ast.Expr) string {
 			return t.get_receiver_type_name(typ.name)
 		}
 	}
+	return ''
+}
+
+fn (t &Transformer) get_receiver_type_name_cursor(typ ast.Cursor) string {
+	if !typ.is_valid() {
+		return ''
+	}
+	match typ.kind() {
+		.expr_ident {
+			return typ.name()
+		}
+		.expr_prefix {
+			op := unsafe { token.Token(int(typ.aux())) }
+			if op == .amp {
+				return t.get_receiver_type_name_cursor(typ.edge(0))
+			}
+		}
+		.expr_modifier, .typ_pointer, .typ_generic {
+			return t.get_receiver_type_name_cursor(typ.edge(0))
+		}
+		.expr_selector {
+			rhs := typ.edge(1)
+			if rhs.is_valid() {
+				return rhs.name()
+			}
+		}
+		else {}
+	}
+
 	return ''
 }
 
@@ -3744,6 +3815,26 @@ fn (t &Transformer) append_rhs_is_array_value_compatible(lhs_elem string, rhs as
 		}
 	}
 	return true
+}
+
+fn (t &Transformer) single_nested_array_append_value(rhs ast.Expr, lhs_elem string) ?ast.Expr {
+	if !(lhs_elem.starts_with('Array_') || lhs_elem.starts_with('Array_fixed_')) {
+		return none
+	}
+	if rhs !is ast.ArrayInitExpr {
+		return none
+	}
+	literal := rhs as ast.ArrayInitExpr
+	if literal.exprs.len != 1 {
+		return none
+	}
+	value := literal.exprs[0]
+	value_type := t.get_expr_type(value) or { return none }
+	value_type_name := t.type_to_c_name_resolve_alias(value_type)
+	if !t.array_elem_types_compatible(lhs_elem, value_type_name) {
+		return none
+	}
+	return value
 }
 
 fn (t &Transformer) array_value_elem_type(expr ast.Expr) ?string {
@@ -4376,6 +4467,25 @@ fn (t &Transformer) is_pointer_type_expr(expr ast.Expr) bool {
 		}
 	}
 	return false
+}
+
+fn (t &Transformer) array_append_lhs_uses_local_array_storage(expr ast.Expr) bool {
+	if expr is ast.ParenExpr {
+		return t.array_append_lhs_uses_local_array_storage(expr.expr)
+	}
+	if expr is ast.ModifierExpr {
+		return t.array_append_lhs_uses_local_array_storage(expr.expr)
+	}
+	if expr !is ast.Ident {
+		return false
+	}
+	ident := expr as ast.Ident
+	decl_type := t.active_local_decl_type_for_expr(ast.Expr(ident)) or { return false }
+	if decl_type !is types.Array {
+		return false
+	}
+	lookup_type := t.lookup_var_type(ident.name) or { return false }
+	return lookup_type is types.Pointer && lookup_type.base_type is types.Array
 }
 
 // get_str_fn_name_for_type returns the str function name for a types.Type

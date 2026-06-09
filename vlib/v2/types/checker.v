@@ -26,12 +26,12 @@ pub mut:
 	methods           shared map[string][]&Fn = map[string][]&Fn{}
 	generic_types     map[string][]map[string]Type
 	cur_generic_types []map[string]Type
-	// Expression types - indexed directly by pos.id.
-	// Positive IDs (1-based) come from the parser via token.Pos.id.
-	// Negative IDs come from transformer's synthesized nodes.
-	expr_type_values     []Type // indexed by pos.id for positive IDs
-	expr_type_neg_values []Type // indexed by -pos.id for negative IDs (synth nodes)
-	selector_names       map[int]string
+	// Expression types keyed by token.Pos.id. Positive IDs come from the parser;
+	// negative IDs come from transformer's synthesized nodes. This must stay sparse:
+	// parser position IDs are not dense enough to use as direct array indexes in
+	// large self-host builds.
+	expr_types     map[int]Type
+	selector_names map[int]string
 	// Drop-codegen handoff: per-fn list of bindings whose `drop(mut self)`
 	// method must be called at the fn's natural exit, in declaration order.
 	// Populated by `ownership_snapshot_drops_at_fn_exit` after each fn body
@@ -58,70 +58,59 @@ pub mut:
 
 pub fn Environment.new() &Environment {
 	return &Environment{
-		expr_type_values: []Type{cap: 100_000}
-		selector_names:   map[int]string{}
-		c_scope:          new_scope(unsafe { nil })
-		c_scope_mu:       sync.new_mutex()
+		expr_types:     map[int]Type{}
+		selector_names: map[int]string{}
+		c_scope:        new_scope(unsafe { nil })
+		c_scope_mu:     sync.new_mutex()
 	}
 }
 
 // set_expr_type stores the computed type for an expression by its unique ID.
 pub fn (mut e Environment) set_expr_type(id int, typ Type) {
-	if id >= 0 {
-		if id >= e.expr_type_values.len {
-			// Grow with 2x strategy to amortize reallocation cost
-			mut new_len := if e.expr_type_values.len < 100_000 {
-				100_000
-			} else {
-				e.expr_type_values.len * 2
-			}
-			if new_len <= id {
-				new_len = id + 1
-			}
-			for e.expr_type_values.len < new_len {
-				// Void(1) is the sentinel for "unset"; Void(0) is valid void type.
-				e.expr_type_values << Type(Void(1))
-			}
-		}
-		e.expr_type_values[id] = typ
-	} else {
-		idx := -id
-		if idx >= e.expr_type_neg_values.len {
-			mut new_len := if e.expr_type_neg_values.len == 0 {
-				64
-			} else {
-				e.expr_type_neg_values.len * 2
-			}
-			if new_len <= idx {
-				new_len = idx + 1
-			}
-			for e.expr_type_neg_values.len < new_len {
-				e.expr_type_neg_values << Type(Void(1))
-			}
-		}
-		e.expr_type_neg_values[idx] = typ
-	}
+	e.expr_types[id] = typ
 }
 
 // get_expr_type retrieves the computed type for an expression by its unique ID.
 pub fn (e &Environment) get_expr_type(id int) ?Type {
-	if id > 0 && id < e.expr_type_values.len {
-		typ := e.expr_type_values[id]
-		if typ is Void || type_has_null_data(typ) {
-			return none
-		}
-		return typ
-	} else if id < 0 {
-		idx := -id
-		if idx < e.expr_type_neg_values.len {
-			typ := e.expr_type_neg_values[idx]
-			if typ is Void || type_has_null_data(typ) {
-				return none
-			}
-			return typ
-		}
+	typ := e.expr_types[id] or { return none }
+	if typ is Void || type_has_null_data(typ) {
+		return none
 	}
-	return none
+	return typ
+}
+
+// has_expr_type reports whether an expression has a stored type. Unlike
+// get_expr_type, it treats an explicit `void` type as present.
+pub fn (e &Environment) has_expr_type(id int) bool {
+	typ := e.expr_types[id] or { return false }
+	if typ is Void {
+		return u8(typ) != 1
+	}
+	return !type_has_null_data(typ)
+}
+
+pub fn (e &Environment) expr_type_count() int {
+	return e.expr_types.len
+}
+
+pub fn (e &Environment) all_expr_types() []Type {
+	mut out := []Type{cap: e.expr_types.len}
+	for _, typ in e.expr_types {
+		out << typ
+	}
+	return out
+}
+
+// release_expr_type_cache_after_ssa releases expression-position metadata once
+// SSA has consumed it. Native MIR/codegen keeps type IDs in SSA/MIR values and
+// does not need these maps on the ARM64 path.
+pub fn (mut e Environment) release_expr_type_cache_after_ssa() {
+	unsafe {
+		e.expr_types.free()
+		e.selector_names.free()
+	}
+	e.expr_types = map[int]Type{}
+	e.selector_names = map[int]string{}
 }
 
 // type_has_null_data checks if a Type sumtype has a missing payload.
@@ -600,6 +589,8 @@ struct PendingFnBody {
 	typ           FnType
 	scope_fn_name string
 	module_name   string
+	flat          &ast.FlatAst   = unsafe { nil }
+	flat_decl_id  ast.FlatNodeId = -1
 }
 
 struct Checker {
@@ -616,10 +607,14 @@ mut:
 	// Current file's module name (for saving function scopes)
 	cur_file_module string
 	// Function root scope - used to flatten local variable types for transformer lookup
-	fn_root_scope &Scope = unsafe { nil }
-	fallback_vars map[string]Type
+	fn_root_scope          &Scope = unsafe { nil }
+	fallback_vars          map[string]Type
+	receiver_generic_types map[string]map[string]Type
+	generic_type_params    map[string][]string
 	// when true, function declarations only register signatures and queue body checking
 	collect_fn_signatures_only bool
+	pending_fn_body_flat       &ast.FlatAst   = unsafe { nil }
+	pending_fn_body_flat_id    ast.FlatNodeId = -1
 	pending_const_fields       []PendingConstField
 	pending_interface_decls    []PendingInterfaceDecl
 	pending_struct_decls       []PendingStructDecl
@@ -635,6 +630,9 @@ mut:
 	expr_stack []string
 	// Whether we are inside an unsafe{} block
 	inside_unsafe bool
+	// Whether the currently checked expression is directly inside a return
+	// statement. Used for result error propagation in `or {}` fallbacks.
+	inside_return_stmt bool
 	// Ownership tracking: variables that hold owned values
 	// (from `.to_owned()` for strings, or any non-Copy value for other types).
 	owned_vars map[string]token.Pos // var name -> position where it became owned
@@ -1668,9 +1666,8 @@ pub fn (mut c Checker) get_module_scope(module_name string, parent &Scope) &Scop
 }
 
 // check_flat is the Phase 2 consumer entry point: accepts a FlatAst directly
-// rather than []ast.File. Every step reads from the FlatAst; legacy
-// []ast.File is only materialized for the ownership pass, which still
-// drives off the recursive AST.
+// rather than []ast.File. Top-level passes walk the FlatAst and decode only
+// the legacy nodes they still need internally.
 pub fn (mut c Checker) check_flat(flat &ast.FlatAst) {
 	c.register_selector_names_from_flat(flat)
 	c.preregister_all_scopes_from_flat(flat)
@@ -1707,10 +1704,7 @@ fn (mut c Checker) register_selector_names_from_flat(flat &ast.FlatAst) {
 }
 
 // register_imported_symbols_from_flat mirrors register_imported_symbols but
-// pulls each file's mod + imports + top stmts via the FlatAst readers.
-// Still rehydrates the top stmts so comptime-conditional imports can be
-// evaluated; that walk is contained but unavoidable without a flat
-// comptime-cond evaluator.
+// pulls each file's mod + imports through the FlatAst readers.
 fn (mut c Checker) register_imported_symbols_from_flat(flat &ast.FlatAst) {
 	builtin_scope := c.get_module_scope('builtin', universe)
 	for ff in flat.files {
@@ -1745,7 +1739,7 @@ fn (mut c Checker) register_imported_symbols_from_flat(flat &ast.FlatAst) {
 // currently evaluates true.
 fn (mut c Checker) active_file_imports_from_flat(flat &ast.FlatAst, ff ast.FlatFile) []ast.ImportStmt {
 	// s258: walk the file's top-level statement cursors instead of decoding the
-	// entire file via `read_file_stmts`. This runs per file (preregister_scopes +
+	// entire file via top-level statement decoding. This runs per file (preregister_scopes +
 	// register_imported_symbols), so the full legacy-AST decode was pure churn;
 	// the cursor walk only decodes the tiny comptime `$if` conditions. Mirrors the
 	// builder's s253 cursor-native import collection. Removes a legacy-AST decode
@@ -1771,11 +1765,7 @@ fn (c &Checker) collect_active_imports_from_stmts_cursor(stmts ast.CursorList, m
 fn (c &Checker) collect_active_imports_from_stmt_cursor(s ast.Cursor, mut imports []ast.ImportStmt) {
 	match s.kind() {
 		.stmt_import {
-			// Import nodes are tiny (name/alias/symbols); decode just this one.
-			imp := s.flat.decode_stmt(s.id)
-			if imp is ast.ImportStmt {
-				imports << imp
-			}
+			imports << s.import_stmt()
 		}
 		.stmt_expr {
 			inner := s.edge(0)
@@ -1793,8 +1783,7 @@ fn (c &Checker) collect_active_imports_from_stmt_cursor(s ast.Cursor, mut import
 // collect_active_imports_from_if_cursor mirrors collect_active_imports_from_if_expr.
 // expr_if layout: edge0 = cond, edge1 = else_expr, edge2.. = then-branch stmts.
 fn (c &Checker) collect_active_imports_from_if_cursor(if_c ast.Cursor, mut imports []ast.ImportStmt) {
-	cond := if_c.flat.decode_expr(if_c.edge(0).id)
-	if c.eval_comptime_cond(cond) {
+	if c.eval_comptime_cond_cursor(if_c.edge(0)) {
 		for i in 2 .. if_c.edge_count() {
 			c.collect_active_imports_from_stmt_cursor(if_c.edge(i), mut imports)
 		}
@@ -1810,6 +1799,47 @@ fn (c &Checker) collect_active_imports_from_if_cursor(if_c ast.Cursor, mut impor
 			c.collect_active_imports_from_if_cursor(else_c, mut imports)
 		}
 	}
+}
+
+fn (c &Checker) eval_comptime_cond_cursor(cond ast.Cursor) bool {
+	if !cond.is_valid() {
+		return false
+	}
+	match cond.kind() {
+		.expr_ident {
+			return c.eval_comptime_flag(cond.name())
+		}
+		.expr_prefix {
+			op := unsafe { token.Token(int(cond.aux())) }
+			if op == .not {
+				return !c.eval_comptime_cond_cursor(cond.edge(0))
+			}
+		}
+		.expr_infix {
+			op := unsafe { token.Token(int(cond.aux())) }
+			if op == .and {
+				return c.eval_comptime_cond_cursor(cond.edge(0))
+					&& c.eval_comptime_cond_cursor(cond.edge(1))
+			}
+			if op == .logical_or {
+				return c.eval_comptime_cond_cursor(cond.edge(0))
+					|| c.eval_comptime_cond_cursor(cond.edge(1))
+			}
+		}
+		.expr_postfix {
+			op := unsafe { token.Token(int(cond.aux())) }
+			inner := cond.edge(0)
+			if op == .question && inner.kind() == .expr_ident {
+				return pref.comptime_optional_flag_value(c.pref, inner.name())
+			}
+		}
+		.expr_paren {
+			return c.eval_comptime_cond_cursor(cond.edge(0))
+		}
+		else {}
+	}
+
+	return false
 }
 
 // preregister_all_scopes_from_flat mirrors preregister_all_scopes but pulls
@@ -1867,23 +1897,17 @@ fn (mut c Checker) preregister_types_from_flat(flat &ast.FlatAst, ff ast.FlatFil
 		}
 	}
 	c.scope = mod_scope
-	// s259: skip decoding fn_decls — their bodies are the bulk of the file and
-	// preregister_type_stmt no-ops FnDecl anyway. Decode + dispatch the rest.
 	decls := ast.Cursor{
 		flat: unsafe { flat }
 		id:   ff.file_id
 	}.list_at(2)
 	for di in 0 .. decls.len() {
-		dc := decls.at(di)
-		if dc.kind() == .stmt_fn_decl {
-			continue
-		}
-		c.preregister_type_stmt(flat.decode_stmt(dc.id))
+		c.preregister_decl_stmt_from_flat(decls.at(di), true, false)
 	}
 }
 
 // preregister_all_fn_signatures_from_flat mirrors preregister_all_fn_signatures
-// but reads each file's mod + top-level stmts directly from the FlatAst.
+// but walks each file's top-level stmt cursors directly from the FlatAst.
 fn (mut c Checker) preregister_all_fn_signatures_from_flat(flat &ast.FlatAst) {
 	for ff in flat.files {
 		c.preregister_fn_signatures_from_flat(flat, ff)
@@ -1905,10 +1929,149 @@ fn (mut c Checker) preregister_fn_signatures_from_flat(flat &ast.FlatAst, ff ast
 	c.scope = mod_scope
 	prev_collect := c.collect_fn_signatures_only
 	c.collect_fn_signatures_only = true
-	for stmt in flat.read_file_stmts(ff) {
-		c.preregister_fn_signature_stmt(stmt)
+	decls := ast.Cursor{
+		flat: unsafe { flat }
+		id:   ff.file_id
+	}.list_at(2)
+	for i in 0 .. decls.len() {
+		c.preregister_decl_stmt_from_flat(decls.at(i), false, true)
 	}
 	c.collect_fn_signatures_only = prev_collect
+}
+
+fn (mut c Checker) module_storage_predecl_type_from_flat_field(field_c ast.Cursor) Type {
+	typ_c := field_c.edge(0)
+	if typ_c.is_valid() && typ_c.kind() != .expr_empty {
+		typ_expr := typ_c.type_expr()
+		if typ := c.module_storage_predecl_type_expr(typ_expr) {
+			return typ
+		}
+		return c.type_expr(typ_expr)
+	}
+	value_c := field_c.edge(1)
+	match value_c.kind() {
+		.expr_basic_literal, .expr_string {
+			return c.expr(value_c.attribute_expr())
+		}
+		else {}
+	}
+
+	return Type(int_)
+}
+
+fn (mut c Checker) preregister_module_storage_decl_from_flat(stmt_c ast.Cursor) {
+	decl := stmt_c.global_decl(false)
+	fields := stmt_c.list_at(1)
+	for i in 0 .. fields.len() {
+		field := fields.at(i)
+		field_decl := field.field_decl(false)
+		field_type := c.module_storage_predecl_type_from_flat_field(field)
+		obj := module_storage_object(c.cur_file_module, decl, field_decl, field_type)
+		c.scope.insert(field_decl.name, obj)
+	}
+}
+
+fn (mut c Checker) check_global_decl_from_flat(stmt_c ast.Cursor) {
+	decl := stmt_c.global_decl(false)
+	fields := stmt_c.list_at(1)
+	for i in 0 .. fields.len() {
+		field := fields.at(i)
+		field_decl := field.field_decl(false)
+		field_typ := field.edge(0).type_expr()
+		field_type := if field_typ !is ast.EmptyExpr {
+			c.type_expr(field_typ)
+		} else {
+			value_c := field.edge(1)
+			c.expr(value_c.expr())
+		}
+		obj := module_storage_object(c.cur_file_module, decl, field_decl, field_type)
+		c.scope.insert_or_update(field_decl.name, obj)
+	}
+}
+
+fn (mut c Checker) preregister_decl_stmt_from_flat(stmt_c ast.Cursor, want_types bool, want_fns bool) {
+	match stmt_c.kind() {
+		.stmt_const_decl {
+			if want_types {
+				c.decl(ast.Stmt(stmt_c.const_decl()))
+			}
+		}
+		.stmt_enum_decl {
+			if want_types {
+				c.decl(ast.Stmt(stmt_c.enum_decl(false)))
+			}
+		}
+		.stmt_fn_decl {
+			if want_fns {
+				decl := stmt_c.fn_decl_signature()
+				prev_flat := c.pending_fn_body_flat
+				prev_flat_id := c.pending_fn_body_flat_id
+				c.pending_fn_body_flat = stmt_c.flat
+				c.pending_fn_body_flat_id = stmt_c.id
+				c.preregister_fn_signature_stmt(ast.Stmt(decl))
+				c.pending_fn_body_flat = prev_flat
+				c.pending_fn_body_flat_id = prev_flat_id
+			}
+		}
+		.stmt_global_decl {
+			if want_types {
+				c.preregister_module_storage_decl_from_flat(stmt_c)
+			}
+		}
+		.stmt_interface_decl {
+			if want_types {
+				c.decl(ast.Stmt(stmt_c.interface_decl()))
+			}
+		}
+		.stmt_struct_decl {
+			if want_types {
+				c.decl(ast.Stmt(stmt_c.struct_decl()))
+			}
+		}
+		.stmt_type_decl {
+			if want_types {
+				c.decl(ast.Stmt(stmt_c.type_decl()))
+			}
+		}
+		.stmt_expr {
+			c.preregister_active_comptime_decl_stmt_from_flat(stmt_c, want_types, want_fns)
+		}
+		else {}
+	}
+}
+
+fn (mut c Checker) preregister_active_comptime_decl_stmt_from_flat(stmt_c ast.Cursor, want_types bool, want_fns bool) {
+	if stmt_c.kind() != .stmt_expr {
+		return
+	}
+	inner := stmt_c.edge(0)
+	if inner.kind() != .expr_comptime {
+		return
+	}
+	if_c := inner.edge(0)
+	if if_c.kind() != .expr_if {
+		return
+	}
+	c.preregister_active_if_decl_stmts_from_flat(if_c, want_types, want_fns)
+}
+
+fn (mut c Checker) preregister_active_if_decl_stmts_from_flat(if_c ast.Cursor, want_types bool, want_fns bool) {
+	if c.eval_comptime_cond_cursor(if_c.edge(0)) {
+		for i in 2 .. if_c.edge_count() {
+			c.preregister_decl_stmt_from_flat(if_c.edge(i), want_types, want_fns)
+		}
+		return
+	}
+	else_c := if_c.edge(1)
+	if else_c.kind() == .expr_if {
+		if else_c.edge(0).kind() == .expr_empty {
+			for i in 2 .. else_c.edge_count() {
+				c.preregister_decl_stmt_from_flat(else_c.edge(i), want_types, want_fns)
+			}
+		} else {
+			c.preregister_active_if_decl_stmts_from_flat(else_c, want_types, want_fns)
+		}
+	}
 }
 
 // check_file_from_flat mirrors check_file but pulls mod + stmts straight
@@ -1930,35 +2093,26 @@ pub fn (mut c Checker) check_file_from_flat(flat &ast.FlatAst, ff ast.FlatFile) 
 		}
 	}
 	c.scope = mod_scope
-	// s259: don't decode fn_decls here. Their bodies are checked via
-	// pending_fn_bodies (queued by the signature pass, run by
-	// process_pending_fn_bodies); in both loops below FnDecl is a no-op (the first
-	// `continue`s, c.stmt has no FnDecl arm). read_file_stmts decoded every fn body
-	// a SECOND time (after the sig pass already decoded+queued them) — pure churn.
 	decls := ast.Cursor{
 		flat: unsafe { flat }
 		id:   ff.file_id
 	}.list_at(2)
-	mut stmts := []ast.Stmt{cap: decls.len()}
 	for di in 0 .. decls.len() {
 		dc := decls.at(di)
-		if dc.kind() == .stmt_fn_decl {
-			continue
-		}
-		stmts << flat.decode_stmt(dc.id)
-	}
-	for stmt in stmts {
-		match stmt {
-			ast.ConstDecl, ast.EnumDecl, ast.InterfaceDecl, ast.StructDecl, ast.TypeDecl {
-				continue
+		match dc.kind() {
+			.stmt_const_decl, .stmt_directive, .stmt_empty, .stmt_enum_decl, .stmt_fn_decl,
+			.stmt_import, .stmt_interface_decl, .stmt_module, .stmt_struct_decl, .stmt_type_decl,
+			.stmt_attributes {
+				// Declarations/imports/modules were handled by preregistration, and
+				// c.stmt has no extra work for them.
+			}
+			.stmt_global_decl {
+				c.check_global_decl_from_flat(dc)
 			}
 			else {
-				c.decl(stmt)
+				c.stmt(dc.stmt())
 			}
 		}
-	}
-	for stmt in stmts {
-		c.stmt(stmt)
 	}
 	if c.pref.verbose {
 		check_time := sw.elapsed()
@@ -1981,8 +2135,8 @@ fn (mut c Checker) check_struct_field_defaults_from_flat(flat &ast.FlatAst) {
 		}
 		c.scope = mod_scope
 		c.cur_file_module = mod
-		// s259: decode only struct decls instead of read_file_stmts (whole file,
-		// incl. every fn body). Kind-filter first, decode the matched node only.
+		// Walk struct fields directly from the flat decl; only the field type/value
+		// expressions that actually need checking are materialized.
 		decls := ast.Cursor{
 			flat: unsafe { flat }
 			id:   ff.file_id
@@ -1992,20 +2146,22 @@ fn (mut c Checker) check_struct_field_defaults_from_flat(flat &ast.FlatAst) {
 			if dc.kind() != .stmt_struct_decl {
 				continue
 			}
-			stmt := flat.decode_stmt(dc.id)
-			if stmt is ast.StructDecl {
-				for field in stmt.fields {
-					if field.value !is ast.EmptyExpr {
-						field_typ := c.type_expr(field.typ)
-						prev_expected := c.expected_type
-						c.expected_type = to_optional_type(field_typ)
-						c.expr(field.value)
-						$if ownership ? {
-							c.ownership_consume_expr(field.value, field.value.pos(), 'struct field')
-						}
-						c.expected_type = prev_expected
-					}
+			fields := dc.list_at(4)
+			for fi in 0 .. fields.len() {
+				field := fields.at(fi)
+				value_c := field.edge(1)
+				if !value_c.is_valid() || value_c.kind() == .expr_empty {
+					continue
 				}
+				field_typ := c.type_expr(field.edge(0).type_expr())
+				field_value := value_c.expr()
+				prev_expected := c.expected_type
+				c.expected_type = to_optional_type(field_typ)
+				c.expr(field_value)
+				$if ownership ? {
+					c.ownership_consume_expr(field_value, field_value.pos(), 'struct field')
+				}
+				c.expected_type = prev_expected
 			}
 		}
 	}
@@ -2026,7 +2182,8 @@ fn (mut c Checker) check_enum_field_values_from_flat(flat &ast.FlatAst) {
 		}
 		c.scope = mod_scope
 		c.cur_file_module = mod
-		// s259: decode only enum decls instead of read_file_stmts (whole file).
+		// Walk enum fields directly from the flat decl; only non-empty value
+		// expressions are materialized.
 		decls := ast.Cursor{
 			flat: unsafe { flat }
 			id:   ff.file_id
@@ -2036,12 +2193,12 @@ fn (mut c Checker) check_enum_field_values_from_flat(flat &ast.FlatAst) {
 			if dc.kind() != .stmt_enum_decl {
 				continue
 			}
-			stmt := flat.decode_stmt(dc.id)
-			if stmt is ast.EnumDecl {
-				for field in stmt.fields {
-					if field.value !is ast.EmptyExpr {
-						c.expr(field.value)
-					}
+			fields := dc.list_at(2)
+			for fi in 0 .. fields.len() {
+				field := fields.at(fi)
+				value_c := field.edge(1)
+				if value_c.is_valid() && value_c.kind() != .expr_empty {
+					c.expr(value_c.expr())
 				}
 			}
 		}
@@ -2459,13 +2616,10 @@ fn (mut c Checker) decl(decl ast.Stmt) {
 			} else {
 				c.qualify_type_name(decl.name)
 			}
-			mut generic_params := []string{}
-			for gp in decl.generic_params {
-				if gp is ast.Ident {
-					generic_params << gp.name
-				} else if gp is ast.LifetimeExpr {
-					generic_params << '^' + gp.name
-				}
+			generic_params := generic_param_names_from_exprs(decl.generic_params)
+			if generic_params.len > 0 {
+				c.generic_type_params[decl.name] = generic_params.clone()
+				c.generic_type_params[qualified_name] = generic_params.clone()
 			}
 			obj := Struct{
 				name:           qualified_name
@@ -2486,6 +2640,12 @@ fn (mut c Checker) decl(decl ast.Stmt) {
 			}
 		}
 		ast.TypeDecl {
+			generic_params := generic_param_names_from_exprs(decl.generic_params)
+			if generic_params.len > 0 {
+				qualified_name := c.qualify_type_name(decl.name)
+				c.generic_type_params[decl.name] = generic_params.clone()
+				c.generic_type_params[qualified_name] = generic_params.clone()
+			}
 			// alias
 			if decl.variants.len == 0 {
 				alias_type := Alias{
@@ -2522,9 +2682,12 @@ fn (mut c Checker) check_types(exp_type Type, got_type Type) bool {
 	// Prefer name-based equality first so recursive composite types
 	// (e.g. `map[string]Any` where `Any` contains `map[string]Any`)
 	// do not recurse indefinitely through structural `==`.
+	if same_type_name(exp_type, got_type) {
+		return true
+	}
 	exp_name := exp_type.name()
 	got_name := got_type.name()
-	if exp_name == got_name {
+	if exp_name != '' && exp_name == got_name {
 		return true
 	}
 	if exp_name == 'int' && (got_name == 'Duration' || got_name == 'time__Duration') {
@@ -2795,6 +2958,9 @@ fn (c &Checker) can_or_block_propagate_error(raw_cond_type Type, cond ast.Expr, 
 		expected_is_result = expected_type is ResultType
 	}
 	if raw_cond_type is ResultType {
+		return true
+	}
+	if expected_is_result && c.inside_return_stmt {
 		return true
 	}
 	return expected_is_result && cond is ast.IndexExpr
@@ -4571,9 +4737,12 @@ fn (mut c Checker) stmt(stmt ast.Stmt) {
 		// ast.FnDecl - handled by preregister_all_fn_signatures / process_pending_fn_bodies
 		ast.ReturnStmt {
 			c.log('ReturnStmt:')
+			prev_inside_return_stmt := c.inside_return_stmt
+			c.inside_return_stmt = true
 			for expr in stmt.exprs {
 				c.expr(expr)
 			}
+			c.inside_return_stmt = prev_inside_return_stmt
 			$if ownership ? {
 				c.ownership_check_return(stmt)
 			}
@@ -4969,8 +5138,9 @@ fn (mut c Checker) process_pending_fn_bodies() {
 }
 
 fn (mut c Checker) check_pending_fn_body(pending PendingFnBody) bool {
-	decl_generic_params := collect_fn_generic_params(pending.decl)
-	has_decl_generic_params := pending.decl.typ.generic_params.len > 0
+	signature_decl := pending.decl
+	decl_generic_params := collect_fn_generic_params(signature_decl)
+	has_decl_generic_params := signature_decl.typ.generic_params.len > 0
 	has_generic_params := decl_generic_params.len > 0
 	if has_decl_generic_params {
 		mut generic_types := []map[string]Type{}
@@ -4989,7 +5159,7 @@ fn (mut c Checker) check_pending_fn_body(pending PendingFnBody) bool {
 			} else {
 				base_name
 			}
-			if base_name == pending.decl.name || short_name == pending.decl.name {
+			if base_name == signature_decl.name || short_name == signature_decl.name {
 				generic_types = inferred.clone()
 				has_generic_types = true
 				break
@@ -5002,11 +5172,21 @@ fn (mut c Checker) check_pending_fn_body(pending PendingFnBody) bool {
 		c.env.cur_generic_types << generic_types
 	}
 	if !has_decl_generic_params || c.env.cur_generic_types.len > 0 {
+		mut decl := signature_decl
+		if pending.flat != unsafe { nil } && pending.flat_decl_id >= 0 {
+			flat_decl := ast.Cursor{
+				flat: pending.flat
+				id:   pending.flat_decl_id
+			}.fn_decl()
+			if flat_decl.name != '' {
+				decl = flat_decl
+			}
+		}
 		prev_scope := c.scope
 		prev_module := c.cur_file_module
 		prev_fn_root_scope := c.fn_root_scope
-		prev_fallback_vars := c.fallback_vars.clone()
-		prev_generic_params := c.generic_params.clone()
+		mut prev_fallback_vars := c.fallback_vars.move()
+		prev_generic_params := c.generic_params
 		c.scope = pending.scope
 		c.cur_file_module = pending.module_name
 		c.fn_root_scope = pending.scope
@@ -5016,17 +5196,17 @@ fn (mut c Checker) check_pending_fn_body(pending PendingFnBody) bool {
 				c.fallback_vars[param.name] = param.typ
 			}
 		}
-		if pending.decl.is_method {
-			mut receiver_type := c.type_expr(pending.decl.receiver.typ)
-			if pending.decl.receiver.is_mut && receiver_type !is Pointer {
+		if decl.is_method {
+			mut receiver_type := c.type_expr(decl.receiver.typ)
+			if decl.receiver.is_mut && receiver_type !is Pointer {
 				receiver_type = Type(Pointer{
 					base_type: receiver_type
 				})
 			}
-			c.fallback_vars[pending.decl.receiver.name] = receiver_type
+			c.fallback_vars[decl.receiver.name] = receiver_type
 		}
 		if has_generic_params {
-			c.generic_params = decl_generic_params.clone()
+			c.generic_params = decl_generic_params
 			for gp_name in decl_generic_params {
 				c.scope.insert(gp_name, Type(NamedType(gp_name)))
 			}
@@ -5045,19 +5225,19 @@ fn (mut c Checker) check_pending_fn_body(pending PendingFnBody) bool {
 			prev_owned_types = c.owned_var_types.clone()
 			prev_moved = c.moved_vars.clone()
 			prev_borrowed = c.borrowed_vars.clone()
-			c.ownership_enter_fn(pending.decl.name, pending.decl)
+			c.ownership_enter_fn(decl.name, decl)
 		}
-		c.stmt_list(pending.decl.stmts)
+		c.stmt_list(decl.stmts)
 		$if ownership ? {
-			publish_keys := ownership_publish_keys_for(pending.module_name, pending.decl)
-			c.ownership_snapshot_drops_at_fn_exit(pending.decl.name, publish_keys)
+			publish_keys := ownership_publish_keys_for(pending.module_name, decl)
+			c.ownership_snapshot_drops_at_fn_exit(decl.name, publish_keys)
 			c.ownership_publish_pending_return_drops(publish_keys)
 			c.ownership_leave_fn(prev_ownership_fn, prev_owned, prev_owned_types, prev_moved,
 				prev_borrowed)
 		}
 		c.expected_type = expected_type
 		c.generic_params = prev_generic_params
-		c.fallback_vars = prev_fallback_vars.clone()
+		c.fallback_vars = prev_fallback_vars.move()
 		c.fn_root_scope = prev_fn_root_scope
 		c.env.set_fn_scope(pending.module_name, pending.scope_fn_name, pending.scope)
 		c.scope = prev_scope
@@ -5067,15 +5247,20 @@ fn (mut c Checker) check_pending_fn_body(pending PendingFnBody) bool {
 	return true
 }
 
-fn collect_fn_generic_params(decl ast.FnDecl) []string {
+fn generic_param_names_from_exprs(exprs []ast.Expr) []string {
 	mut params := []string{}
-	for gp in decl.typ.generic_params {
+	for gp in exprs {
 		if gp is ast.Ident && gp.name !in params {
 			params << gp.name
 		} else if gp is ast.LifetimeExpr && '^' + gp.name !in params {
 			params << '^' + gp.name
 		}
 	}
+	return params
+}
+
+fn collect_fn_generic_params(decl ast.FnDecl) []string {
+	mut params := generic_param_names_from_exprs(decl.typ.generic_params)
 	if !decl.is_method {
 		return params
 	}
@@ -5318,6 +5503,7 @@ fn (mut c Checker) assign_stmt(stmt ast.AssignStmt, unwrap_optional bool) {
 					c.fn_root_scope.insert(lx_unwrapped.name, value_obj)
 				}
 			}
+			c.update_receiver_generic_types(lx_unwrapped.name, rx, stmt.op != .decl_assign)
 			// Store the type in expr_types for the lhs ident position
 			// so the transformer can look it up directly
 			lx_pos := lx_unwrapped.pos
@@ -5405,7 +5591,7 @@ fn (mut c Checker) sql_or_fallback_type(expr ast.Expr) ?Type {
 // fn (mut c Checker) assignment(lx ast.Expr, typ Type) {
 fn (mut c Checker) assignment(from_type Type, to_type Type) ! {
 	// same type
-	if from_type.name() == to_type.name() {
+	if same_type_name(from_type, to_type) {
 		return
 	}
 	// numbers literals
@@ -5448,7 +5634,7 @@ fn (mut c Checker) assignment(from_type Type, to_type Type) ! {
 				return
 			}
 			// return c.assignment(from_type.base_type, to_type.base_type)!
-			if from_type.base_type.name() == to_type.base_type.name() {
+			if same_type_name(from_type.base_type, to_type.base_type) {
 				return
 			}
 		}
@@ -5727,13 +5913,13 @@ fn (mut c Checker) fn_decl(decl ast.FnDecl) {
 	// c.expr(decl.typ.return_type)
 	mut prev_scope := c.scope
 	c.open_scope()
-	prev_generic_params := c.generic_params.clone()
+	prev_generic_params := c.generic_params
 	decl_generic_params := collect_fn_generic_params(decl)
 	for gp_name in decl_generic_params {
 		c.scope.insert(gp_name, Type(NamedType(gp_name)))
 	}
 	if decl_generic_params.len > 0 {
-		c.generic_params = decl_generic_params.clone()
+		c.generic_params = decl_generic_params
 	}
 	mut fn_typ := c.fn_type_with_insert_params(decl.typ,
 		FnTypeAttribute.from_ast_attributes(decl.attributes), true)
@@ -5825,6 +6011,8 @@ fn (mut c Checker) fn_decl(decl ast.FnDecl) {
 		typ:           fn_typ
 		scope_fn_name: scope_fn_name
 		module_name:   module_name
+		flat:          c.pending_fn_body_flat
+		flat_decl_id:  c.pending_fn_body_flat_id
 	}
 	if c.collect_fn_signatures_only {
 		c.pending_fn_bodies << pending
@@ -6087,11 +6275,7 @@ fn (mut c Checker) match_expr(expr ast.MatchExpr, used_as_expr bool) Type {
 		for cond in branch.cond {
 			expr_unwrapped := c.unwrap_ident(expr.expr)
 			cond_type := c.expr(cond)
-			if cond is ast.Ident || cond is ast.SelectorExpr || cond is ast.Type {
-				// `.value` enum value (without type)
-				if cond is ast.SelectorExpr && cond.lhs is ast.EmptyExpr {
-					continue
-				}
+			if c.match_branch_cond_smartcasts(cond, cond_type) {
 				c.apply_smartcast(expr_unwrapped, cond_type)
 			}
 		}
@@ -6138,6 +6322,119 @@ fn (mut c Checker) match_expr(expr ast.MatchExpr, used_as_expr bool) Type {
 	return last_stmt_type
 }
 
+fn match_branch_generic_cond_type_is_smartcastable(typ Type) bool {
+	return match typ {
+		Alias, Struct, SumType {
+			true
+		}
+		else {
+			false
+		}
+	}
+}
+
+fn (mut c Checker) match_branch_generic_ident_is_type_name(name string) bool {
+	if builtin_type(name) != none {
+		return true
+	}
+	if obj := universe.lookup_parent(name, 0) {
+		if _ := object_as_type(obj) {
+			return true
+		}
+	}
+	if _ := c.lookup_type_in_scope_chain(name) {
+		return true
+	}
+	if _ := c.lookup_type_in_imported_modules(name) {
+		return true
+	}
+	return false
+}
+
+fn (c &Checker) match_branch_generic_ident_is_active_param(name string) bool {
+	if name in c.generic_params {
+		return true
+	}
+	for generic_types in c.env.cur_generic_types {
+		if name in generic_types {
+			return true
+		}
+	}
+	return false
+}
+
+fn (mut c Checker) match_branch_generic_selector_is_type(expr ast.SelectorExpr) bool {
+	parts := selector_expr_parts(expr)
+	if parts.len < 2 {
+		return false
+	}
+	module_alias := parts[parts.len - 2]
+	type_name := parts[parts.len - 1]
+	if _ := c.lookup_type_in_module(module_alias, type_name) {
+		return true
+	}
+	return false
+}
+
+fn (mut c Checker) match_branch_generic_arg_is_type_pattern(expr ast.Expr) bool {
+	match expr {
+		ast.Ident {
+			return c.match_branch_generic_ident_is_type_name(expr.name)
+				|| c.match_branch_generic_ident_is_active_param(expr.name)
+		}
+		ast.SelectorExpr {
+			return c.match_branch_generic_selector_is_type(expr)
+		}
+		ast.Type {
+			return true
+		}
+		ast.GenericArgs {
+			return c.match_branch_generic_args_is_type_pattern(expr)
+		}
+		ast.LifetimeExpr {
+			return true
+		}
+		else {
+			return false
+		}
+	}
+}
+
+fn (mut c Checker) match_branch_generic_args_is_type_pattern(expr ast.GenericArgs) bool {
+	if !c.match_branch_generic_arg_is_type_pattern(expr.lhs) {
+		return false
+	}
+	for arg in expr.args {
+		if !c.match_branch_generic_arg_is_type_pattern(arg) {
+			return false
+		}
+	}
+	return true
+}
+
+fn (mut c Checker) match_branch_cond_smartcasts(cond ast.Expr, cond_type Type) bool {
+	resolved := c.resolve_expr(cond)
+	return match resolved {
+		ast.Ident {
+			true
+		}
+		ast.SelectorExpr {
+			// `.value` enum value (without type)
+			resolved.lhs !is ast.EmptyExpr
+		}
+		ast.Type {
+			true
+		}
+		ast.GenericArgs {
+			match_branch_generic_cond_type_is_smartcastable(cond_type)
+				&& c.match_branch_generic_args_is_type_pattern(resolved)
+		}
+		else {
+			false
+		}
+	}
+}
+
 // TODO: unwrap ModifierExpr etc
 // fn (mut c Checker) argument() ast.Expr {}
 
@@ -6171,6 +6468,216 @@ fn (c &Checker) generic_struct_template(t Type) ?Struct {
 
 fn (c &Checker) is_generic_struct_type(t Type) bool {
 	return c.generic_struct_template(t) != none
+}
+
+fn receiver_generic_type_key(scope &Scope, name string) string {
+	return '${voidptr(scope)}:${name}'
+}
+
+fn (mut c Checker) generic_type_map_from_init_expr(expr ast.Expr) ?map[string]Type {
+	resolved := c.resolve_expr(expr)
+	match resolved {
+		ast.InitExpr {
+			return c.generic_type_map_from_type_ref(resolved.typ)
+		}
+		ast.AssocExpr {
+			return c.generic_type_map_from_type_ref(resolved.typ)
+		}
+		ast.ArrayInitExpr {
+			if resolved.typ !is ast.EmptyExpr {
+				return c.generic_type_map_from_type_ref(resolved.typ)
+			}
+		}
+		ast.CastExpr {
+			return c.generic_type_map_from_type_ref(resolved.typ)
+		}
+		ast.CallOrCastExpr {
+			if generic_map := c.generic_type_map_from_type_ref(resolved.lhs) {
+				return generic_map
+			}
+			call_or_cast := c.resolve_call_or_cast_expr(resolved)
+			if call_or_cast is ast.CastExpr {
+				return c.generic_type_map_from_type_ref(call_or_cast.typ)
+			}
+		}
+		else {}
+	}
+
+	return none
+}
+
+fn (mut c Checker) generic_param_names_from_type_ref(lhs ast.Expr, base_type Type) []string {
+	if base := c.generic_struct_template(base_type) {
+		return base.generic_params.clone()
+	}
+	mut keys := []string{}
+	type_name := base_type.name()
+	if type_name != '' {
+		keys << type_name
+	}
+	lhs_name := lhs.name()
+	if lhs_name != '' {
+		keys << lhs_name
+		qualified_lhs_name := c.qualify_type_name(lhs_name)
+		if qualified_lhs_name != lhs_name {
+			keys << qualified_lhs_name
+		}
+	}
+	for key in keys {
+		if params := c.generic_type_params[key] {
+			return params.clone()
+		}
+	}
+	return []string{}
+}
+
+fn (mut c Checker) generic_type_map_from_generic_type_parts(lhs ast.Expr, args []ast.Expr) ?map[string]Type {
+	base_type := c.type_expr(lhs)
+	mut generic_type_map := map[string]Type{}
+	mut arg_types := []Type{cap: args.len}
+	for arg in args {
+		arg_types << c.expr(arg)
+	}
+	generic_params := c.generic_param_names_from_type_ref(lhs, base_type)
+	for i, generic_param in generic_params {
+		if i >= arg_types.len {
+			break
+		}
+		generic_type_map[generic_param] = arg_types[i]
+	}
+	if generic_type_map.len > 0 {
+		return generic_type_map
+	}
+	return none
+}
+
+fn (mut c Checker) generic_type_map_from_type_ref(expr ast.Expr) ?map[string]Type {
+	match expr {
+		ast.GenericArgs {
+			return c.generic_type_map_from_generic_type_parts(expr.lhs, expr.args)
+		}
+		ast.GenericArgOrIndexExpr {
+			return c.generic_type_map_from_generic_type_parts(expr.lhs, [expr.expr])
+		}
+		ast.Type {
+			if expr is ast.GenericType {
+				return c.generic_type_map_from_generic_type_parts(expr.name, expr.params)
+			}
+		}
+		else {}
+	}
+
+	resolved := c.resolve_expr(expr)
+	match resolved {
+		ast.GenericArgs {
+			return c.generic_type_map_from_generic_type_parts(resolved.lhs, resolved.args)
+		}
+		ast.Type {
+			if resolved is ast.GenericType {
+				return c.generic_type_map_from_generic_type_parts(resolved.name, resolved.params)
+			}
+		}
+		else {}
+	}
+
+	return none
+}
+
+fn (mut c Checker) update_receiver_generic_types(name string, rhs ast.Expr, preserve_existing bool) {
+	receiver_scope, _ := c.scope.lookup_parent_with_scope(name, 0) or { return }
+	key := receiver_generic_type_key(receiver_scope, name)
+	if generic_type_map := c.generic_type_map_from_init_expr(rhs) {
+		c.receiver_generic_types[key] = generic_type_map.clone()
+		return
+	}
+	if preserve_existing {
+		return
+	}
+	c.receiver_generic_types.delete(key)
+}
+
+fn (mut c Checker) merge_receiver_generic_types(receiver ast.Expr, mut generic_type_map map[string]Type) bool {
+	mut added := false
+	if receiver is ast.Ident {
+		receiver_scope, _ := c.scope.lookup_parent_with_scope(receiver.name, 0) or { return false }
+		key := receiver_generic_type_key(receiver_scope, receiver.name)
+		if receiver_map := c.receiver_generic_types[key] {
+			for generic_param, concrete_type in receiver_map {
+				if generic_param !in generic_type_map {
+					generic_type_map[generic_param] = concrete_type
+					added = true
+				}
+			}
+		}
+	}
+	return added
+}
+
+fn (mut c Checker) type_from_generic_arg_name(name string) ?Type {
+	if typ := builtin_type(name) {
+		return typ
+	}
+	if name.starts_with('[]') {
+		elem_type := c.type_from_generic_arg_name(name[2..]) or { return none }
+		return Type(Array{
+			elem_type: elem_type
+		})
+	}
+	for generic_types in c.env.cur_generic_types {
+		if concrete := generic_types[name] {
+			if concrete.name() != name {
+				return concrete
+			}
+		}
+	}
+	if typ := c.lookup_type_in_scope_chain(name) {
+		return typ
+	}
+	if typ := c.lookup_type_in_imported_modules(name) {
+		return typ
+	}
+	return none
+}
+
+fn (mut c Checker) generic_type_map_from_receiver_type(receiver_type Type) map[string]Type {
+	match receiver_type {
+		Pointer {
+			return c.generic_type_map_from_receiver_type(receiver_type.base_type)
+		}
+		Alias {
+			return c.generic_type_map_from_receiver_type(receiver_type.base_type)
+		}
+		Struct {
+			mut generic_type_map := map[string]Type{}
+			for generic_param in receiver_type.generic_params {
+				arg_type := c.type_from_generic_arg_name(generic_param) or { continue }
+				if arg_type.name() == generic_param {
+					continue
+				}
+				generic_type_map[generic_param] = arg_type
+			}
+			return generic_type_map
+		}
+		else {
+			return map[string]Type{}
+		}
+	}
+}
+
+fn (mut c Checker) merge_receiver_generic_types_from_expr(receiver ast.Expr, fn_type FnType, mut generic_type_map map[string]Type) bool {
+	if receiver is ast.Ident {
+		return false
+	}
+	receiver_type := c.expr_type_without_field_smartcast(receiver) or { return false }
+	receiver_map := c.generic_type_map_from_receiver_type(receiver_type)
+	mut added := false
+	for generic_param, arg_type in receiver_map {
+		if generic_param in fn_type.generic_params && generic_param !in generic_type_map {
+			generic_type_map[generic_param] = arg_type
+			added = true
+		}
+	}
+	return added
 }
 
 fn (mut c Checker) instantiate_generic_struct(base Struct, args []ast.Expr) Type {
@@ -6929,6 +7436,7 @@ fn (mut c Checker) call_expr(expr &ast.CallExpr) Type {
 		}
 		mut checked_array_magic_arg := false
 		mut generic_type_map := map[string]Type{}
+		mut has_call_generic_type_map := false
 		mut checked_sort_cmp_arg := false
 		if lhs_expr is ast.SelectorExpr {
 			if lhs_expr.rhs.name in ['filter', 'map', 'any', 'all', 'count'] {
@@ -6954,6 +7462,7 @@ fn (mut c Checker) call_expr(expr &ast.CallExpr) Type {
 					generic_types << generic_type
 					generic_type_map[generic_param] = generic_type
 				}
+				has_call_generic_type_map = generic_type_map.len > 0
 				// eprintln('GENERIC TYPES: ${expr.lhs.name()}')
 				// dump(generic_types)
 			}
@@ -6977,6 +7486,7 @@ fn (mut c Checker) call_expr(expr &ast.CallExpr) Type {
 					// 	eprintln('should be NamedType but got ${param.typ.name()}')
 					// }
 				}
+				has_call_generic_type_map = generic_type_map.len > 0
 			}
 			// eprintln('## GENERIC TYPE MAP: ${expr.lhs.name()}')
 			// eprintln('========================')
@@ -6989,21 +7499,39 @@ fn (mut c Checker) call_expr(expr &ast.CallExpr) Type {
 			// 		panic('.')
 			// 	}
 			// }
-			// dump(generic_type_map)
-			if generic_type_map.len > 0 {
-				fn_.generic_types << generic_type_map
-				lhs_name := lhs_expr.name()
-				if lhs_name !in c.env.generic_types {
-					empty_generic_types := []map[string]Type{}
-					c.env.generic_types[lhs_name] = empty_generic_types
-				}
-				mut inferred_generic_types := c.env.generic_types[lhs_name]
-				inferred_generic_types << generic_type_map
-				c.env.generic_types[lhs_name] = inferred_generic_types
-			}
 		} else if lhs_expr is ast.GenericArgs {
 			c.error_with_pos('cannot call non generic function with generic argument list',
 				expr.pos)
+		}
+		if lhs_expr is ast.SelectorExpr {
+			if c.merge_receiver_generic_types(lhs_expr.lhs, mut generic_type_map) {
+				has_call_generic_type_map = true
+			}
+			if c.merge_receiver_generic_types_from_expr(lhs_expr.lhs, fn_, mut generic_type_map) {
+				has_call_generic_type_map = true
+			}
+		}
+		if fn_.generic_params.len > 0 {
+			for generic_param in fn_.generic_params {
+				if generic_param !in generic_type_map {
+					c.error_with_pos('cannot infer generic type `${generic_param}`', expr.pos)
+				}
+			}
+		}
+		mut generic_type_map_for_record := map[string]Type{}
+		if has_call_generic_type_map && generic_type_map.len > 0 {
+			generic_type_map_for_record = generic_type_map.clone()
+		}
+		if has_call_generic_type_map && generic_type_map_for_record.len > 0 {
+			fn_.generic_types << generic_type_map_for_record.clone()
+			lhs_name := lhs_expr.name()
+			if lhs_name !in c.env.generic_types {
+				empty_generic_types := []map[string]Type{}
+				c.env.generic_types[lhs_name] = empty_generic_types
+			}
+			mut inferred_generic_types := c.env.generic_types[lhs_name]
+			inferred_generic_types << generic_type_map_for_record.clone()
+			c.env.generic_types[lhs_name] = inferred_generic_types
 		}
 
 		// TODO: is this best place for this?
@@ -7370,6 +7898,17 @@ fn (mut c Checker) ident(ident ast.Ident) Object {
 			})
 		}
 
+		if ident.name in ['error', 'error_posix', 'error_with_code', 'error_win32'] {
+			ierror_type := c.lookup_type_by_name('IError') or {
+				Type(Interface{
+					name: 'IError'
+				})
+			}
+			return Type(FnType{
+				return_type: ierror_type
+			})
+		}
+
 		// typeof, sizeof, isreftype used as identifiers (e.g. typeof[T]())
 		// are builtin keywords handled by the parser, transformer, and backend.
 		// Return a FnType returning a struct with .name (string) field so that
@@ -7561,6 +8100,9 @@ fn (mut c Checker) selector_expr(expr ast.SelectorExpr) Type {
 					}
 					if c.pref.verbose {
 						mod_scope.print(true)
+					}
+					$if dbg_sel ? {
+						eprintln('DBG_SEL lhs.name.len=${expr.lhs.name.len} lhs=[${expr.lhs.name}] rhs.name.len=${expr.rhs.name.len} rhs=[${expr.rhs.name}] modname.len=${lhs_obj.name.len} modname=[${lhs_obj.name}]')
 					}
 					c.error_with_pos('missing ${expr.lhs.name}.${expr.rhs.name}', expr.pos)
 					return Type(void_)
@@ -7992,6 +8534,15 @@ fn (c &Checker) struct_implements_name(st Struct, target string) bool {
 fn (mut c Checker) find_field_or_method(t Type, raw_name string) !Type {
 	// Strip @ prefix used to escape V keywords in field/method names (e.g., @type → type)
 	name := if raw_name.len > 0 && raw_name[0] == `@` { raw_name[1..] } else { raw_name }
+	$if dbg_sel ? {
+		if name == 'write_string' {
+			mut direct_ok := false
+			if _ := c.lookup_method_direct(t, name) {
+				direct_ok = true
+			}
+			eprintln('FFM t.name=[${t.name()}] name=[${name}] em=${c.expecting_method} direct=${direct_ok}')
+		}
+	}
 	if c.expecting_method {
 		if method := c.lookup_method_direct(t, name) {
 			return c.specialize_method_type_for_receiver(method, t, name)
@@ -8469,7 +9020,18 @@ fn (c &Checker) lookup_method_direct(t Type, name string) ?Type {
 		return fn_with_return_type(empty_fn_type(), Type(string_))
 	}
 	if method := intrinsic_container_method_type(base_type, name) {
+		$if dbg_sel ? {
+			if name == 'write_string' {
+				eprintln('LMD_INTRINSIC_RET t.name=[${t.name()}] base=[${base_type.name()}]')
+			}
+		}
 		return method
+	}
+	$if dbg_sel ? {
+		if name == 'write_string' {
+			tns := method_lookup_type_names(t)
+			eprintln('LMD_LOOP t.name=[${t.name()}] base=[${base_type.name()}] tns.len=${tns.len} tns=${tns}')
+		}
 	}
 	for type_name in method_lookup_type_names(t) {
 		if method := c.lookup_method_for_type_name(type_name, name) {
@@ -8828,6 +9390,21 @@ fn method_lookup_string_is_valid(s string) bool {
 }
 
 fn (c &Checker) lookup_method_for_type_name(type_name string, method_name string) ?Type {
+	$if dbg_sel ? {
+		if method_name == 'write_string' {
+			mut dbg_present := false
+			mut dbg_names := []string{}
+			rlock c.env.methods {
+				if type_name in c.env.methods {
+					dbg_present = true
+					for m in c.env.methods[type_name] {
+						dbg_names << m.name
+					}
+				}
+			}
+			eprintln('LMFTN type=[${type_name}] valid=${method_lookup_string_is_valid(type_name)} present=${dbg_present} count=${dbg_names.len} names=${dbg_names}')
+		}
+	}
 	if !method_lookup_string_is_valid(type_name) {
 		return none
 	}
@@ -8856,6 +9433,9 @@ fn (mut c Checker) open_scope() {
 }
 
 fn (mut c Checker) close_scope() {
+	for name, _ in c.scope.objects {
+		c.receiver_generic_types.delete(receiver_generic_type_key(c.scope, name))
+	}
 	c.scope = c.scope.parent
 }
 
@@ -8875,6 +9455,9 @@ fn (mut c Checker) error_message(msg string, kind errors.Kind, pos token.Positio
 
 @[noreturn]
 fn (mut c Checker) error_with_pos(msg string, pos token.Pos) {
+	$if dbg_sel ? {
+		eprintln('ERR_WP msg.len=${msg.len} msg=[${msg}]')
+	}
 	if !pos.is_valid() {
 		// Handle expressions without position info - use current file if available
 		eprintln('error: ${msg} (no position info)')
