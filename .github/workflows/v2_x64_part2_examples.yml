@@ -28,8 +28,6 @@ jobs:
           trap 'rm -rf "$tmp"' EXIT
           src="$tmp/math_log_probe.v"
           bin="$tmp/math_log_probe"
-          delegate="$tmp/v2_delegate"
-          delegate_bin="$tmp/math_log_probe_delegate"
           cat > "$src" <<'EOF'
           module main
 
@@ -45,46 +43,30 @@ jobs:
           }
           EOF
 
-          run_linux_probe_diagnostics() {
-            label="$1"
-            target="$2"
-            echo "::group::linux math.log x64 ${label} output"
-            "$target"
-            echo "::endgroup::"
-
-            echo "::group::linux math.log x64 ${label} native diagnostics"
-            if command -v ldd >/dev/null 2>&1; then
-              ldd "$target" || true
-            fi
-            if command -v nm >/dev/null 2>&1; then
-              nm -an "$target" | grep -E 'math__log|log(@|$)' || true
-              nm -u "$target" | grep -E 'log|libc|m' || true
-            fi
-            if command -v objdump >/dev/null 2>&1; then
-              objdump -d -Mintel "$target" | awk '
-                /<main>:/ { show = 80 }
-                /<math__log>:/ { show = 80 }
-                show > 0 { print; show-- }
-              ' || true
-            fi
-            echo "::endgroup::"
-          }
-
           echo "::group::linux math.log x64 build"
           ./v -v2 -no-parallel -b x64 -o "$bin" "$src"
           echo "::endgroup::"
 
-          run_linux_probe_diagnostics direct "$bin"
-
-          echo "::group::linux math.log x64 delegate build"
-          ./v -o "$delegate" cmd/v2/v2.v
+          echo "::group::linux math.log x64 output"
+          "$bin"
           echo "::endgroup::"
 
-          echo "::group::linux math.log x64 delegate compile"
-          V_V2_EXE="$delegate" ./v -v2 -no-parallel -b x64 -o "$delegate_bin" "$src"
+          echo "::group::linux math.log x64 native diagnostics"
+          if command -v ldd >/dev/null 2>&1; then
+            ldd "$bin" || true
+          fi
+          if command -v nm >/dev/null 2>&1; then
+            nm -an "$bin" | grep -E 'math__log|log(@|$)' || true
+            nm -u "$bin" | grep -E 'log|libc|m' || true
+          fi
+          if command -v objdump >/dev/null 2>&1; then
+            objdump -d -Mintel "$bin" | awk '
+              /<main>:/ { show = 80 }
+              /<math__log>:/ { show = 80 }
+              show > 0 { print; show-- }
+            ' || true
+          fi
           echo "::endgroup::"
-
-          run_linux_probe_diagnostics delegate "$delegate_bin"
 
       - name: backend x64 regressions
         run: |
@@ -667,8 +649,6 @@ jobs:
           trap 'rm -rf "$tmp"' EXIT
           src="$tmp/math_log_probe.v"
           bin="$tmp/math_log_probe"
-          delegate="$tmp/v2_delegate"
-          delegate_bin="$tmp/math_log_probe_delegate"
           cat > "$src" <<'EOF'
           module main
 
@@ -684,44 +664,28 @@ jobs:
           }
           EOF
 
-          run_macos_probe_diagnostics() {
-            label="$1"
-            target="$2"
-            echo "::group::macOS math.log x64 ${label} output"
-            "$target"
-            echo "::endgroup::"
-
-            echo "::group::macOS math.log x64 ${label} native diagnostics"
-            if command -v otool >/dev/null 2>&1; then
-              otool -L "$target" || true
-              otool -tvV "$target" | awk '
-                /_main:/ { show = 80 }
-                /_math__log:/ { show = 80 }
-                show > 0 { print; show-- }
-              ' || true
-            fi
-            if command -v nm >/dev/null 2>&1; then
-              nm -an "$target" | grep -E '_math__log|_log($| )' || true
-              nm -u "$target" | grep -E '_log|libSystem|m' || true
-            fi
-            echo "::endgroup::"
-          }
-
           echo "::group::macOS math.log x64 build"
           ./v -v2 -no-parallel -b x64 -o "$bin" "$src"
           echo "::endgroup::"
 
-          run_macos_probe_diagnostics direct "$bin"
-
-          echo "::group::macOS math.log x64 delegate build"
-          ./v -o "$delegate" cmd/v2/v2.v
+          echo "::group::macOS math.log x64 output"
+          "$bin"
           echo "::endgroup::"
 
-          echo "::group::macOS math.log x64 delegate compile"
-          V_V2_EXE="$delegate" ./v -v2 -no-parallel -b x64 -o "$delegate_bin" "$src"
+          echo "::group::macOS math.log x64 native diagnostics"
+          if command -v otool >/dev/null 2>&1; then
+            otool -L "$bin" || true
+            otool -tvV "$bin" | awk '
+              /_main:/ { show = 80 }
+              /_math__log:/ { show = 80 }
+              show > 0 { print; show-- }
+            ' || true
+          fi
+          if command -v nm >/dev/null 2>&1; then
+            nm -an "$bin" | grep -E '_math__log|_log($| )' || true
+            nm -u "$bin" | grep -E '_log|libSystem|m' || true
+          fi
           echo "::endgroup::"
-
-          run_macos_probe_diagnostics delegate "$delegate_bin"
 
       - name: backend x64 regressions
         run: |
