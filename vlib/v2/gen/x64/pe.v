@@ -57,7 +57,7 @@ const pe_kernel32_imports = ['ExitProcess', 'GetCommandLineW', 'GetStdHandle', '
 	'GetCurrentThreadId', 'GetSystemTimeAsFileTime', 'FileTimeToSystemTime',
 	'SystemTimeToTzSpecificLocalTime']
 const pe_shell32_imports = ['CommandLineToArgvW']
-const pe_ucrtbase_imports = ['log']
+const pe_ucrtbase_imports = ['log', 'ldexp', 'sqrt', 'snprintf']
 
 struct PeImport {
 	dll  string

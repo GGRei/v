@@ -2192,6 +2192,7 @@ fn (mut g Gen) load_call_register_args(instr mir.Instruction, abi_regs []int, st
 
 fn (mut g Gen) load_windows_call_register_args(instr mir.Instruction, stack_args []bool, arg_position_base int) int {
 	mut sse_arg_count := 0
+	duplicate_vararg_float := g.call_needs_windows_vararg_float_duplication(instr)
 	// Load positional Windows arguments from right to left. Some value loaders use
 	// RCX as scratch, so loading arg0 first can corrupt it before the call.
 	for i := instr.operands.len - 1; i >= 1; i-- {
@@ -2207,6 +2208,9 @@ fn (mut g Gen) load_windows_call_register_args(instr mir.Instruction, stack_args
 				g.unsupported_float_abi('stack argument', arg_id)
 			}
 			g.load_float_call_arg_to_xmm(xmm, arg_id)
+			if duplicate_vararg_float {
+				g.duplicate_windows_vararg_float_arg_to_gp(position, xmm)
+			}
 			sse_arg_count++
 			continue
 		}
@@ -2220,6 +2224,43 @@ fn (mut g Gen) load_windows_call_register_args(instr mir.Instruction, stack_args
 		g.load_call_arg_to_reg(reg, arg_id, arg_idx, instr)
 	}
 	return sse_arg_count
+}
+
+fn (g Gen) call_needs_windows_vararg_float_duplication(instr mir.Instruction) bool {
+	if g.abi != .windows || instr.operands.len == 0 {
+		return false
+	}
+	fn_val := g.mod.values[instr.operands[0]]
+	return fn_val.name == 'snprintf'
+}
+
+fn (mut g Gen) duplicate_windows_vararg_float_arg_to_gp(position int, xmm int) {
+	if position >= 4 {
+		return
+	}
+	reg := g.abi.int_arg_reg_for_position(position)
+	if reg == x64_no_arg_reg {
+		return
+	}
+	g.emit_movq_reg_xmm(Reg(reg), xmm)
+}
+
+fn (mut g Gen) emit_movq_reg_xmm(dst Reg, src_xmm int) {
+	dst_hw := g.map_reg(int(dst))
+	mut rex := u8(0x48)
+	if src_xmm >= 8 {
+		rex |= 4
+	}
+	if dst_hw >= 8 {
+		rex |= 1
+	}
+	g.emit(0x66)
+	g.emit(rex)
+	g.emit(0x0f)
+	g.emit(0x7e)
+	src := u8(src_xmm & 7)
+	dst_bits := u8(dst_hw & 7)
+	g.emit(0xc0 | (src << 3) | dst_bits)
 }
 
 fn (mut g Gen) load_float_call_arg_to_xmm(xmm int, val_id int) {
@@ -2660,6 +2701,8 @@ fn (mut g Gen) load_val_to_reg(reg int, val_id int) {
 		asm_lea_reg_rip(mut g, Reg(reg))
 		g.add_rip_reloc(sym_idx)
 		g.emit_u32(0)
+	} else if val.kind == .c_string_literal {
+		g.materialize_c_string_literal(reg, val_id)
 	} else if val.kind == .global {
 		sym_idx := g.add_undefined(val.name)
 		if g.obj_format == .macho && val.index >= 0 && val.index < g.mod.globals.len
@@ -2692,6 +2735,39 @@ fn (mut g Gen) load_val_to_reg(reg int, val_id int) {
 			asm_load_reg_rbp_disp(mut g, Reg(reg), offset)
 		}
 	}
+}
+
+fn (mut g Gen) materialize_c_string_literal(reg int, val_id int) {
+	val := g.mod.values[val_id]
+	mut raw_bytes := []u8{}
+	mut i := 0
+	for i < val.name.len {
+		if val.name[i] == `\\` && i + 1 < val.name.len {
+			match val.name[i + 1] {
+				`n` { raw_bytes << 10 }
+				`t` { raw_bytes << 9 }
+				`r` { raw_bytes << 13 }
+				`\\` { raw_bytes << 92 }
+				`"` { raw_bytes << 34 }
+				`'` { raw_bytes << 39 }
+				`0` { raw_bytes << 0 }
+				else { raw_bytes << val.name[i + 1] }
+			}
+
+			i += 2
+		} else {
+			raw_bytes << val.name[i]
+			i++
+		}
+	}
+	str_offset := g.rodata_len()
+	g.add_rodata(raw_bytes)
+	g.add_rodata_byte(0)
+	sym_name := 'L_cstr_${g.curr_offset}_${str_offset}'
+	sym_idx := g.add_symbol(sym_name, u64(str_offset), false, .rodata)
+	asm_lea_reg_rip(mut g, Reg(reg))
+	g.add_rip_reloc(sym_idx)
+	g.emit_u32(0)
 }
 
 fn (mut g Gen) store_reg_to_val(reg int, val_id int) {

@@ -505,6 +505,96 @@ fn test_pe_linker_imports_ucrt_log_and_patches_call_to_import_thunk() {
 	assert target == text_rva + log_thunk
 }
 
+fn test_pe_linker_imports_ucrt_ldexp_and_patches_call_to_import_thunk() {
+	mut obj := CoffObject.new()
+	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xc3]
+	obj.add_symbol('main', 5, true, 1)
+	ldexp_sym := obj.add_undefined('ldexp')
+	obj.add_text_reloc(1, ldexp_sym, coff_image_rel_amd64_rel32)
+
+	mut linker := PeLinker.new(obj)
+	image := linker.image() or { panic(err) }
+	names := pe_test_import_names(image)
+	dll_names := pe_test_import_dll_names(image)
+
+	assert names == ['ExitProcess', 'ldexp']
+	assert dll_names == ['kernel32.dll', 'ucrtbase.dll']
+	assert pe_test_iat_size(image) == u32((names.len + dll_names.len) * 8)
+
+	text_off := pe_test_section_header(image, '.text')
+	text_rva := pe_test_u32(image, text_off + 12)
+	text_raw := int(pe_test_u32(image, text_off + 20))
+	field_off := text_raw + linker.entry_stub_size() + 1
+	field_rva := text_rva + u32(linker.entry_stub_size() + 1)
+	disp := pe_test_i32(image, field_off)
+	target := u32(i32(field_rva + 4) + disp)
+	import_offsets := linker.import_thunk_offsets(0)
+	ldexp_thunk := import_offsets[pe_ucrtbase_import_key('ldexp')] or {
+		panic('missing ucrtbase ldexp import thunk')
+	}
+	assert target == text_rva + ldexp_thunk
+}
+
+fn test_pe_linker_imports_ucrt_sqrt_and_patches_call_to_import_thunk() {
+	mut obj := CoffObject.new()
+	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xc3]
+	obj.add_symbol('main', 5, true, 1)
+	sqrt_sym := obj.add_undefined('sqrt')
+	obj.add_text_reloc(1, sqrt_sym, coff_image_rel_amd64_rel32)
+
+	mut linker := PeLinker.new(obj)
+	image := linker.image() or { panic(err) }
+	names := pe_test_import_names(image)
+	dll_names := pe_test_import_dll_names(image)
+
+	assert names == ['ExitProcess', 'sqrt']
+	assert dll_names == ['kernel32.dll', 'ucrtbase.dll']
+	assert pe_test_iat_size(image) == u32((names.len + dll_names.len) * 8)
+
+	text_off := pe_test_section_header(image, '.text')
+	text_rva := pe_test_u32(image, text_off + 12)
+	text_raw := int(pe_test_u32(image, text_off + 20))
+	field_off := text_raw + linker.entry_stub_size() + 1
+	field_rva := text_rva + u32(linker.entry_stub_size() + 1)
+	disp := pe_test_i32(image, field_off)
+	target := u32(i32(field_rva + 4) + disp)
+	import_offsets := linker.import_thunk_offsets(0)
+	sqrt_thunk := import_offsets[pe_ucrtbase_import_key('sqrt')] or {
+		panic('missing ucrtbase sqrt import thunk')
+	}
+	assert target == text_rva + sqrt_thunk
+}
+
+fn test_pe_linker_imports_ucrt_snprintf_and_patches_call_to_import_thunk() {
+	mut obj := CoffObject.new()
+	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xc3]
+	obj.add_symbol('main', 5, true, 1)
+	snprintf_sym := obj.add_undefined('snprintf')
+	obj.add_text_reloc(1, snprintf_sym, coff_image_rel_amd64_rel32)
+
+	mut linker := PeLinker.new(obj)
+	image := linker.image() or { panic(err) }
+	names := pe_test_import_names(image)
+	dll_names := pe_test_import_dll_names(image)
+
+	assert names == ['ExitProcess', 'snprintf']
+	assert dll_names == ['kernel32.dll', 'ucrtbase.dll']
+	assert pe_test_iat_size(image) == u32((names.len + dll_names.len) * 8)
+
+	text_off := pe_test_section_header(image, '.text')
+	text_rva := pe_test_u32(image, text_off + 12)
+	text_raw := int(pe_test_u32(image, text_off + 20))
+	field_off := text_raw + linker.entry_stub_size() + 1
+	field_rva := text_rva + u32(linker.entry_stub_size() + 1)
+	disp := pe_test_i32(image, field_off)
+	target := u32(i32(field_rva + 4) + disp)
+	import_offsets := linker.import_thunk_offsets(0)
+	snprintf_thunk := import_offsets[pe_ucrtbase_import_key('snprintf')] or {
+		panic('missing ucrtbase snprintf import thunk')
+	}
+	assert target == text_rva + snprintf_thunk
+}
+
 fn test_pe_linker_adds_runtime_kernel32_import_patches_only_when_needed() {
 	mut obj := CoffObject.new()
 	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xc3]
