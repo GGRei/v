@@ -66,6 +66,7 @@ jobs:
           bfs3	examples/graphs/bfs3.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph maps/arrays; stdout compared to V normal run
           dfs	examples/graphs/dfs.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph maps/arrays; stdout compared to V normal run
           dijkstra	examples/graphs/dijkstra.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph maps/arrays/generics; stdout compared to V normal run
+          dump_factorial	examples/dump_factorial.v	1	tiny-used	strict_auto_tiny	20	dump identity/factorial recursion; stdout exact
           fibonacci	examples/fibonacci.v	1	tiny-fallback	strict_reject_auto_hosted	20	arguments() requires hosted argc/argv; strict tiny rejects and auto falls back hosted
           primes	examples/primes.v	1	tiny-fallback	strict_reject_auto_hosted	20	arguments()/math.log; stdout compared to V normal run
           tree_of_nodes	examples/tree_of_nodes.v	1	tiny-fallback	strict_reject_auto_hosted	20	recursive sumtypes/auto-str; stdout exact
@@ -228,6 +229,9 @@ jobs:
                 ;;
               submodule)
                 printf '5\n3\n' > "$expected"
+                ;;
+              dump_factorial)
+                printf '120\n' > "$expected"
                 ;;
               primes)
                 write_v_run_expected "$source" "$expected" 20
@@ -640,6 +644,7 @@ jobs:
           bfs3	examples/graphs/bfs3.v	1	normal-required	30	graph maps/arrays; stdout compared to V normal run
           dfs	examples/graphs/dfs.v	1	normal-required	30	graph maps/arrays; stdout compared to V normal run
           dijkstra	examples/graphs/dijkstra.v	1	normal-required	30	graph maps/arrays/generics; stdout compared to V normal run
+          dump_factorial	examples/dump_factorial.v	1	tiny-used	20	dump identity/factorial recursion; stdout exact
           fibonacci	examples/fibonacci.v	1	tiny-fallback	20	arguments() requires hosted argc/argv; auto Mach-O tiny rejects and falls back normal
           primes	examples/primes.v	1	tiny-fallback	20	arguments()/math.log; stdout compared to V normal run
           tree_of_nodes	examples/tree_of_nodes.v	1	normal-required	20	recursive sumtypes/auto-str; stdout exact
@@ -785,6 +790,9 @@ jobs:
                 ;;
               submodule)
                 printf '5\n3\n' > "$expected"
+                ;;
+              dump_factorial)
+                printf '120\n' > "$expected"
                 ;;
               primes)
                 write_v_run_expected "$source" "$expected" 20
@@ -1271,6 +1279,14 @@ jobs:
               Notes = 'generic sumtype tree stdout compared to V normal run'
             }
             [pscustomobject]@{
+              Name = 'dump_factorial'
+              Source = 'examples/dump_factorial.v'
+              Enabled = $true
+              BackendStatus = 'tiny-used'
+              TimeoutSeconds = 20
+              Notes = 'dump identity/factorial recursion stdout exact'
+            }
+            [pscustomobject]@{
               Name = 'fibonacci'
               Source = 'examples/fibonacci.v'
               Enabled = $true
@@ -1609,6 +1625,9 @@ jobs:
               }
               'submodule' {
                 return ,([System.Text.Encoding]::UTF8.GetBytes("5`n3`n"))
+              }
+              'dump_factorial' {
+                return ,([System.Text.Encoding]::UTF8.GetBytes("120`n"))
               }
               'primes' {
                 [string[]] $programArgs = @()

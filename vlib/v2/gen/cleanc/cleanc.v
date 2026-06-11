@@ -130,6 +130,10 @@ mut:
 	struct_type_lookup_miss           map[string]bool
 	struct_decl_info_cache            map[string]StructDeclInfo
 	struct_decl_info_miss             map[string]bool
+	flat_struct_decl_exact            map[string]FlatStructDeclInfo
+	flat_struct_decl_short_by_mod     map[string]FlatStructDeclInfo
+	flat_struct_decl_short            map[string]FlatStructDeclInfo
+	flat_struct_decl_indexed          bool
 	alias_base_lookup_cache           map[string]string
 	alias_base_lookup_miss            map[string]bool
 	declared_type_names_all           map[string]bool
@@ -149,6 +153,8 @@ mut:
 	force_emit_fn_names                   map[string]bool   // function C names that must be emitted regardless of mark_used
 	export_fn_names                       map[string]string // V-qualified name → export name (from @[export:] attribute)
 	called_fn_names                       map[string]bool
+	called_specialized_names              map[string]string // base generic C name -> called specialized C name
+	called_specialized_names_indexed      bool
 	declared_fn_names                     map[string]bool // C function names that have a prototype/body head emitted
 	should_emit_fn_decl_cache             map[string]bool
 	generic_body_scan_cache               map[string]bool
@@ -161,6 +167,7 @@ mut:
 	specialized_receiver_methods          map[string]string                  // receiver|method -> single matching specialized method
 	specialized_receiver_method_ambiguous map[string]bool                    // receiver|method keys with multiple matches
 	specialized_receiver_method_miss      map[string]bool                    // receiver|method keys with no matching specialized method
+	specialized_receiver_method_indexed   bool                               // true after existing signature maps have been indexed
 	late_generic_specs                    map[string][]map[string]types.Type // additional comptime-discovered specs
 	anon_fn_defs                          []string        // lifted anonymous function definitions
 	late_struct_defs                      []string        // struct definitions discovered during pass 5 codegen
@@ -249,6 +256,13 @@ struct ExportedConstSymbol {
 
 struct StructDeclInfo {
 	decl      ast.StructDecl
+	mod       string
+	file_name string
+}
+
+struct FlatStructDeclInfo {
+	file_idx  int
+	stmt_idx  int
 	mod       string
 	file_name string
 }
@@ -456,6 +470,10 @@ fn new_gen_with_env_and_pref_impl(env &types.Environment, p &pref.Preferences) &
 		struct_type_lookup_miss:           map[string]bool{}
 		struct_decl_info_cache:            map[string]StructDeclInfo{}
 		struct_decl_info_miss:             map[string]bool{}
+		flat_struct_decl_exact:            map[string]FlatStructDeclInfo{}
+		flat_struct_decl_short_by_mod:     map[string]FlatStructDeclInfo{}
+		flat_struct_decl_short:            map[string]FlatStructDeclInfo{}
+		flat_struct_decl_indexed:          false
 		alias_base_lookup_cache:           map[string]string{}
 		alias_base_lookup_miss:            map[string]bool{}
 		declared_type_names_all:           map[string]bool{}
@@ -503,6 +521,8 @@ fn new_gen_with_env_and_pref_impl(env &types.Environment, p &pref.Preferences) &
 		used_fn_keys:                          map[string]bool{}
 		force_emit_fn_names:                   map[string]bool{}
 		called_fn_names:                       map[string]bool{}
+		called_specialized_names:              map[string]string{}
+		called_specialized_names_indexed:      false
 		declared_fn_names:                     map[string]bool{}
 		should_emit_fn_decl_cache:             map[string]bool{}
 		generic_body_scan_cache:               map[string]bool{}
@@ -512,6 +532,7 @@ fn new_gen_with_env_and_pref_impl(env &types.Environment, p &pref.Preferences) &
 		specialized_receiver_methods:          map[string]string{}
 		specialized_receiver_method_ambiguous: map[string]bool{}
 		specialized_receiver_method_miss:      map[string]bool{}
+		specialized_receiver_method_indexed:   false
 		c_struct_types:                        map[string]bool{}
 		typedef_c_types:                       map[string]bool{}
 		blocked_fn_keys:                       map[string]bool{}
@@ -1120,10 +1141,12 @@ fn (g &Gen) print_cgen_step_time(stats_enabled bool, scope string, step string, 
 
 fn (g &Gen) mark_cgen_step(stats_enabled bool, scope string, mut sw time.StopWatch, stage_start time.Duration, step string) time.Duration {
 	if !stats_enabled {
+		g.print_cgen_mem(step)
 		return stage_start
 	}
 	now := sw.elapsed()
 	g.print_cgen_step_time(true, scope, step, time.Duration(now - stage_start))
+	g.print_cgen_mem(step)
 	return now
 }
 
@@ -1150,7 +1173,6 @@ pub fn (mut g Gen) gen_passes_1_to_4() {
 	g.collect_typedef_c_types()
 	stage_start = g.mark_cgen_step(stats_enabled, stats_scope, mut stats_sw, stage_start,
 		'setup.typedef_c_types')
-	g.build_generic_fn_decl_index()
 	stage_start = g.mark_cgen_step(stats_enabled, stats_scope, mut stats_sw, stage_start,
 		'setup.generic_fn_decl_index')
 	if g.has_generic_setup_snapshot {
@@ -1176,8 +1198,6 @@ pub fn (mut g Gen) gen_passes_1_to_4() {
 	g.generic_struct_bindings['stdatomic__AtomicVal'] = {
 		'T': types.Type(types.int_)
 	}
-	g.discover_direct_generic_call_specs()
-	g.discover_nested_generic_specs()
 	stage_start = g.mark_cgen_step(stats_enabled, stats_scope, mut stats_sw, stage_start,
 		'setup.discover_generic_specs')
 	g.collect_force_emit_sort_fns()
@@ -1403,6 +1423,7 @@ pub fn (mut g Gen) gen_passes_1_to_4() {
 	g.emit_interface_method_wrapper_decls()
 	g.emit_interface_clone_decls()
 	g.emit_array_interface_repeat_decls()
+	g.emit_missing_array_contains_fallback_decls()
 	stage_start = g.mark_cgen_step(stats_enabled, stats_scope, mut stats_sw, stage_start,
 		'pass 4 helper declarations')
 
@@ -1525,7 +1546,12 @@ fn (mut g Gen) emit_pass1_forward_decls() {
 
 fn (mut g Gen) emit_struct_forward_decl(decl ast.StructDecl) {
 	name := g.get_struct_name(decl)
-	if decl.generic_params.len > 0 && name !in g.generic_struct_bindings
+	runtime_generic_params := if decl.generic_params.len > 0 {
+		g.generic_struct_runtime_param_names(name, name)
+	} else {
+		[]string{}
+	}
+	if runtime_generic_params.len > 0 && name !in g.generic_struct_bindings
 		&& name !in g.generic_struct_instances {
 		return
 	}
@@ -1833,7 +1859,7 @@ fn (mut g Gen) emit_fn_forward_decl_for_decl(decl ast.FnDecl, body_len int, file
 	}
 	if g.generic_fn_param_names(decl).len > 0 {
 		gfn_name := g.get_fn_name(decl)
-		specs := g.generic_fn_specializations_for_emit_scope(decl)
+		specs := g.generic_fn_specializations_for_emit_scope_with_receiver_bindings(decl)
 		if specs.len > 0 {
 			prev_generic_types := g.active_generic_types.clone()
 			for spec in specs {
@@ -2154,6 +2180,8 @@ fn (mut g Gen) gen_pass5() {
 	g.selector_field_type_miss = map[string]bool{}
 	g.struct_field_lookup_cache = map[string]string{}
 	g.struct_field_lookup_miss = map[string]bool{}
+	g.ensure_flat_struct_decl_index()
+	g.ensure_called_specialized_name_index()
 	g.collect_force_emit_str_fns()
 	g.emit_pass5_extern_consts_for_non_emit_files()
 	g.emit_pass5_extern_globals()
@@ -2187,6 +2215,8 @@ pub fn (mut g Gen) gen_pass5_pre() []int {
 	g.selector_field_type_miss = map[string]bool{}
 	g.struct_field_lookup_cache = map[string]string{}
 	g.struct_field_lookup_miss = map[string]bool{}
+	g.ensure_flat_struct_decl_index()
+	g.ensure_called_specialized_name_index()
 	g.collect_force_emit_str_fns()
 	g.emit_pass5_extern_consts_for_non_emit_files()
 	g.emit_pass5_extern_globals()
@@ -2315,9 +2345,6 @@ pub fn (mut g Gen) gen_pass5_post() {
 	}
 }
 
-fn (mut g Gen) emit_late_called_generic_specializations() {
-}
-
 fn (mut g Gen) emit_forced_helpers_from_non_emit_files() {
 	if g.emit_files.len == 0 || g.force_emit_fn_names.len == 0 {
 		return
@@ -2358,8 +2385,8 @@ fn (mut g Gen) emit_forced_helpers_from_non_emit_files() {
 				if stmt.kind() != .stmt_fn_decl || !stmt.name().starts_with('__sort_cmp_') {
 					continue
 				}
-				decl := stmt.fn_decl()
-				fn_name := g.get_fn_name(decl)
+				decl_sig := stmt.fn_decl_signature()
+				fn_name := g.get_fn_name(decl_sig)
 				if fn_name == '' || fn_name !in g.force_emit_fn_names || fn_name in emitted {
 					continue
 				}
@@ -2369,6 +2396,7 @@ fn (mut g Gen) emit_forced_helpers_from_non_emit_files() {
 				if 'fn_${fn_name}' in g.fn_owner_file {
 					continue
 				}
+				decl := stmt.fn_decl()
 				g.gen_fn_decl(decl)
 				emitted[fn_name] = true
 			}
@@ -2490,10 +2518,18 @@ fn (mut g Gen) generic_types_from_specialized_fn_name(node ast.FnDecl, fn_name s
 	base_name := g.get_fn_name(node)
 	g.active_generic_types = prev_generic_types.move()
 	prefix := '${base_name}_T_'
-	if !fn_name.starts_with(prefix) {
-		return none
+	mut suffix := ''
+	if fn_name.starts_with(prefix) {
+		suffix = fn_name[prefix.len..]
+	} else {
+		specialized_base := generic_call_base_name_for_specialization(fn_name)
+		specialized_prefix := '${specialized_base}_T_'
+		if specialized_fn_decl_base_name(fn_name) != base_name
+			|| !fn_name.starts_with(specialized_prefix) {
+			return none
+		}
+		suffix = fn_name[specialized_prefix.len..]
 	}
-	suffix := fn_name[prefix.len..]
 	tokens := g.split_specialization_suffix(suffix, generic_params.len) or { return none }
 	mut generic_types := map[string]types.Type{}
 	for i, param_name in generic_params {
@@ -2592,7 +2628,7 @@ fn (g &Gen) pass5_stmt_cost(file_idx int, stmt_idx int) int {
 		if stmt_idx < 0 || stmt_idx >= stmts.len() {
 			return 1
 		}
-		return cleanc_stmt_codegen_cost(stmts.at(stmt_idx).stmt())
+		return cleanc_stmt_cursor_codegen_cost(stmts.at(stmt_idx))
 	}
 	if file_idx < 0 || file_idx >= g.files.len || stmt_idx < 0
 		|| stmt_idx >= g.files[file_idx].stmts.len {
@@ -2744,7 +2780,13 @@ pub fn (g &Gen) print_pass5_file_times(limit int) {
 		return
 	}
 	mut times := g.pass5_file_times.clone()
-	times.sort(a.ms > b.ms)
+	for i := 1; i < times.len; i++ {
+		mut j := i
+		for j > 0 && times[j - 1].ms < times[j].ms {
+			times[j - 1], times[j] = times[j], times[j - 1]
+			j--
+		}
+	}
 	stats_scope := g.cgen_stats_scope_label()
 	n := if times.len < limit { times.len } else { limit }
 	for item in times[..n] {
@@ -2761,7 +2803,7 @@ pub fn (g &Gen) pass5_file_cost(file_idx int) int {
 		mut cost := 1
 		stmts := g.flat.file_cursor(file_idx).stmts()
 		for i in 0 .. stmts.len() {
-			cost += cleanc_stmt_codegen_cost(stmts.at(i).stmt())
+			cost += cleanc_stmt_cursor_codegen_cost(stmts.at(i))
 		}
 		return cost
 	}
@@ -2781,6 +2823,86 @@ fn cleanc_stmts_codegen_cost(stmts []ast.Stmt) int {
 		cost += cleanc_stmt_codegen_cost(stmt)
 	}
 	return cost
+}
+
+fn cleanc_cursor_stmts_codegen_cost(stmts ast.CursorList) int {
+	mut cost := 0
+	for i in 0 .. stmts.len() {
+		cost += cleanc_stmt_cursor_codegen_cost(stmts.at(i))
+	}
+	return cost
+}
+
+fn cleanc_cursor_children_expr_codegen_cost(c ast.Cursor, start int) int {
+	mut cost := 0
+	for i in start .. c.edge_count() {
+		cost += cleanc_expr_cursor_codegen_cost(c.edge(i))
+	}
+	return cost
+}
+
+fn cleanc_cursor_children_stmt_codegen_cost(c ast.Cursor, start int) int {
+	mut cost := 0
+	for i in start .. c.edge_count() {
+		cost += cleanc_stmt_cursor_codegen_cost(c.edge(i))
+	}
+	return cost
+}
+
+fn cleanc_stmt_cursor_codegen_cost(stmt ast.Cursor) int {
+	if !stmt.is_valid() {
+		return 1
+	}
+	match stmt.kind() {
+		.stmt_fn_decl {
+			return 50 + cleanc_cursor_stmts_codegen_cost(stmt.list_at(3))
+		}
+		.stmt_assign {
+			return 12 + cleanc_cursor_children_expr_codegen_cost(stmt, 0)
+		}
+		.stmt_expr {
+			return 4 + cleanc_expr_cursor_codegen_cost(stmt.edge(0))
+		}
+		.stmt_return {
+			return 8 + cleanc_cursor_children_expr_codegen_cost(stmt, 0)
+		}
+		.stmt_for {
+			return 30 + cleanc_stmt_cursor_codegen_cost(stmt.edge(0)) +
+				cleanc_expr_cursor_codegen_cost(stmt.edge(1)) +
+				cleanc_stmt_cursor_codegen_cost(stmt.edge(2)) +
+				cleanc_cursor_children_stmt_codegen_cost(stmt, 3)
+		}
+		.stmt_for_in {
+			return 30 + cleanc_cursor_children_expr_codegen_cost(stmt, 0)
+		}
+		.stmt_block {
+			return 4 + cleanc_cursor_children_stmt_codegen_cost(stmt, 0)
+		}
+		.stmt_defer {
+			return 10 + cleanc_cursor_children_stmt_codegen_cost(stmt, 0)
+		}
+		.stmt_const_decl {
+			return 8 + cleanc_expr_cursor_codegen_cost(stmt.edge(0))
+		}
+		.stmt_global_decl {
+			return 20 + stmt.list_at(1).len() * 8
+		}
+		.stmt_struct_decl {
+			return 8 + stmt.list_at(4).len()
+		}
+		.stmt_interface_decl {
+			return 8 + stmt.list_at(3).len()
+		}
+		.stmt_type_decl {
+			return 8 + stmt.list_at(3).len()
+		}
+		.stmt_comptime, .stmt_label {
+			return 4 + cleanc_stmt_cursor_codegen_cost(stmt.edge(0))
+		}
+		else {
+			return 1
+		}
+	}
 }
 
 fn cleanc_stmt_codegen_cost(stmt ast.Stmt) int {
@@ -2848,6 +2970,65 @@ fn cleanc_stmt_codegen_cost(stmt ast.Stmt) int {
 		}
 		else {
 			return 1
+		}
+	}
+}
+
+fn cleanc_expr_cursor_codegen_cost(expr ast.Cursor) int {
+	if !expr.is_valid() {
+		return 1
+	}
+	match expr.kind() {
+		.aux_list {
+			return cleanc_cursor_children_expr_codegen_cost(expr, 0)
+		}
+		.aux_field_init {
+			return 4 + cleanc_expr_cursor_codegen_cost(expr.edge(0))
+		}
+		.expr_call {
+			return 18 + cleanc_cursor_children_expr_codegen_cost(expr, 0)
+		}
+		.expr_call_or_cast {
+			return 14 + cleanc_cursor_children_expr_codegen_cost(expr, 0)
+		}
+		.expr_init {
+			return 10 + cleanc_cursor_children_expr_codegen_cost(expr, 0)
+		}
+		.expr_array_init {
+			return 6 + cleanc_cursor_children_expr_codegen_cost(expr, 0)
+		}
+		.expr_map_init {
+			return 10 + cleanc_cursor_children_expr_codegen_cost(expr, 0)
+		}
+		.expr_if {
+			return 18 + cleanc_cursor_children_expr_codegen_cost(expr, 0)
+		}
+		.expr_match {
+			return 20 + cleanc_cursor_children_expr_codegen_cost(expr, 0)
+		}
+		.expr_infix {
+			return 6 + cleanc_cursor_children_expr_codegen_cost(expr, 0)
+		}
+		.expr_prefix, .expr_postfix, .expr_selector, .expr_keyword_operator, .expr_range {
+			return 4 + cleanc_cursor_children_expr_codegen_cost(expr, 0)
+		}
+		.expr_index, .expr_cast, .expr_as_cast, .expr_tuple {
+			return 6 + cleanc_cursor_children_expr_codegen_cost(expr, 0)
+		}
+		.expr_paren, .expr_modifier {
+			return cleanc_cursor_children_expr_codegen_cost(expr, 0)
+		}
+		.expr_or, .expr_unsafe {
+			return 12 + cleanc_cursor_children_expr_codegen_cost(expr, 0)
+		}
+		.expr_lock, .expr_fn_literal, .expr_lambda, .expr_sql {
+			return 20 + cleanc_cursor_children_expr_codegen_cost(expr, 0)
+		}
+		.expr_comptime {
+			return 8 + cleanc_cursor_children_expr_codegen_cost(expr, 0)
+		}
+		else {
+			return 1 + cleanc_cursor_children_expr_codegen_cost(expr, 0)
 		}
 	}
 }
@@ -3048,6 +3229,8 @@ pub fn (g &Gen) new_pass5_worker(file_indices []int, worker_id int) &Gen {
 		force_emit_fn_names:                   g.force_emit_fn_names.clone()
 		export_fn_names:                       g.export_fn_names.clone()
 		called_fn_names:                       g.called_fn_names.clone()
+		called_specialized_names:              g.called_specialized_names.clone()
+		called_specialized_names_indexed:      g.called_specialized_names_indexed
 		declared_fn_names:                     g.declared_fn_names.clone()
 		should_emit_fn_decl_cache:             g.should_emit_fn_decl_cache.clone()
 		generic_body_scan_cache:               g.generic_body_scan_cache.clone()
@@ -3058,6 +3241,7 @@ pub fn (g &Gen) new_pass5_worker(file_indices []int, worker_id int) &Gen {
 		specialized_receiver_methods:          g.specialized_receiver_methods.clone()
 		specialized_receiver_method_ambiguous: g.specialized_receiver_method_ambiguous.clone()
 		specialized_receiver_method_miss:      g.specialized_receiver_method_miss.clone()
+		specialized_receiver_method_indexed:   g.specialized_receiver_method_indexed
 		late_generic_specs:                    g.late_generic_specs.clone()
 		generic_scan_called_names:             map[string]bool{}
 		generic_struct_bindings:               g.generic_struct_bindings.clone()
@@ -3067,38 +3251,42 @@ pub fn (g &Gen) new_pass5_worker(file_indices []int, worker_id int) &Gen {
 		// Per-worker mutable state (starts fresh).
 		// Each worker gets a unique tmp_counter offset to avoid name collisions
 		// for generated trampolines (_bound_method_N, _bound_recv_N, etc.).
-		tmp_counter:                 (worker_id + 1) * 100_000
-		pass5_worker_id:             worker_id
-		emitted_types:               worker_emitted
-		blocked_fn_keys:             blocked_fn_keys
-		runtime_local_types:         map[string]string{}
-		runtime_decl_types:          map[string]string{}
-		runtime_fn_pointer_types:    map[string]types.Type{}
-		cur_fn_returned_idents:      map[string]bool{}
-		active_generic_types:        map[string]types.Type{}
-		cur_fn_generic_params:       map[string]string{}
-		cur_fn_scope_miss_key:       ''
-		cur_import_modules:          map[string]string{}
-		is_module_ident_cache:       map[string]bool{}
-		not_local_var_cache:         map[string]bool{}
-		resolved_module_names:       map[string]string{}
-		cur_fn_mut_params:           map[string]bool{}
-		cached_env_scopes:           map[string]voidptr{}
-		selector_field_type_cache:   map[string]string{}
-		selector_field_type_miss:    map[string]bool{}
-		struct_field_lookup_cache:   map[string]string{}
-		struct_field_lookup_miss:    map[string]bool{}
-		struct_type_lookup_cache:    map[string]types.Struct{}
-		struct_type_lookup_miss:     map[string]bool{}
-		struct_decl_info_cache:      map[string]StructDeclInfo{}
-		struct_decl_info_miss:       map[string]bool{}
-		alias_base_lookup_cache:     map[string]string{}
-		alias_base_lookup_miss:      map[string]bool{}
-		needed_interface_wrappers:   map[string]bool{}
-		needed_ierror_wrapper_bases: map[string]bool{}
-		spawned_fns:                 map[string]bool{}
-		exported_const_seen:         map[string]bool{}
-		exported_const_symbols:      []ExportedConstSymbol{}
+		tmp_counter:                   (worker_id + 1) * 100_000
+		pass5_worker_id:               worker_id
+		emitted_types:                 worker_emitted
+		blocked_fn_keys:               blocked_fn_keys
+		runtime_local_types:           map[string]string{}
+		runtime_decl_types:            map[string]string{}
+		runtime_fn_pointer_types:      map[string]types.Type{}
+		cur_fn_returned_idents:        map[string]bool{}
+		active_generic_types:          map[string]types.Type{}
+		cur_fn_generic_params:         map[string]string{}
+		cur_fn_scope_miss_key:         ''
+		cur_import_modules:            map[string]string{}
+		is_module_ident_cache:         map[string]bool{}
+		not_local_var_cache:           map[string]bool{}
+		resolved_module_names:         map[string]string{}
+		cur_fn_mut_params:             map[string]bool{}
+		cached_env_scopes:             map[string]voidptr{}
+		selector_field_type_cache:     map[string]string{}
+		selector_field_type_miss:      map[string]bool{}
+		struct_field_lookup_cache:     map[string]string{}
+		struct_field_lookup_miss:      map[string]bool{}
+		struct_type_lookup_cache:      map[string]types.Struct{}
+		struct_type_lookup_miss:       map[string]bool{}
+		struct_decl_info_cache:        map[string]StructDeclInfo{}
+		struct_decl_info_miss:         map[string]bool{}
+		flat_struct_decl_exact:        g.flat_struct_decl_exact
+		flat_struct_decl_short_by_mod: g.flat_struct_decl_short_by_mod
+		flat_struct_decl_short:        g.flat_struct_decl_short
+		flat_struct_decl_indexed:      g.flat_struct_decl_indexed
+		alias_base_lookup_cache:       map[string]string{}
+		alias_base_lookup_miss:        map[string]bool{}
+		needed_interface_wrappers:     map[string]bool{}
+		needed_ierror_wrapper_bases:   map[string]bool{}
+		spawned_fns:                   map[string]bool{}
+		exported_const_seen:           map[string]bool{}
+		exported_const_symbols:        []ExportedConstSymbol{}
 	}
 }
 
@@ -3129,6 +3317,9 @@ pub fn (mut g Gen) merge_pass5_worker(w &Gen) {
 	}
 	for k, v in w.called_fn_names {
 		g.called_fn_names[k] = v
+		if v {
+			g.remember_called_specialized_name(k)
+		}
 	}
 	// Merge emitted_types so post-pass dedup (e.g. array_contains fallbacks) works
 	for k, v in w.emitted_types {
@@ -3180,11 +3371,26 @@ fn (g &Gen) has_live_reload_functions() bool {
 
 fn (g &Gen) cursor_stmts_have_live_reload_function(stmts ast.CursorList) bool {
 	for i in 0 .. stmts.len() {
-		if g.stmt_has_live_reload_function(stmts.at(i).stmt()) {
+		if g.cursor_stmt_has_live_reload_function(stmts.at(i)) {
 			return true
 		}
 	}
 	return false
+}
+
+fn (g &Gen) cursor_stmt_has_live_reload_function(stmt ast.Cursor) bool {
+	match stmt.kind() {
+		.stmt_fn_decl {
+			decl := stmt.fn_decl_signature()
+			return decl.attributes.has('live') && decl.name != 'main'
+		}
+		.stmt_expr {
+			return g.expr_cursor_has_live_reload_function(stmt.edge(0))
+		}
+		else {
+			return false
+		}
+	}
 }
 
 fn (g &Gen) stmts_have_live_reload_function(stmts []ast.Stmt) bool {
@@ -3206,12 +3412,46 @@ fn (g &Gen) stmt_has_live_reload_function(stmt ast.Stmt) bool {
 	return false
 }
 
+fn (g &Gen) expr_cursor_has_live_reload_function(expr ast.Cursor) bool {
+	if expr.kind() == .expr_comptime {
+		inner := expr.edge(0)
+		if inner.kind() == .expr_if {
+			return g.active_comptime_if_cursor_has_live_reload_function(inner)
+		}
+		return g.expr_cursor_has_live_reload_function(inner)
+	}
+	return false
+}
+
 fn (g &Gen) expr_has_live_reload_function(expr ast.Expr) bool {
 	if expr is ast.ComptimeExpr {
 		if expr.expr is ast.IfExpr {
 			return g.active_comptime_if_has_live_reload_function(expr.expr)
 		}
 		return g.expr_has_live_reload_function(expr.expr)
+	}
+	return false
+}
+
+fn (g &Gen) if_expr_cursor_body_has_live_reload_function(node ast.Cursor) bool {
+	for i in 2 .. node.edge_count() {
+		if g.cursor_stmt_has_live_reload_function(node.edge(i)) {
+			return true
+		}
+	}
+	return false
+}
+
+fn (g &Gen) active_comptime_if_cursor_has_live_reload_function(node ast.Cursor) bool {
+	if g.eval_comptime_cond_cursor(node.edge(0)) {
+		return g.if_expr_cursor_body_has_live_reload_function(node)
+	}
+	else_expr := node.edge(1)
+	if else_expr.kind() == .expr_if {
+		if else_expr.edge(0).kind() == .expr_empty {
+			return g.if_expr_cursor_body_has_live_reload_function(else_expr)
+		}
+		return g.active_comptime_if_cursor_has_live_reload_function(else_expr)
 	}
 	return false
 }
