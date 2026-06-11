@@ -159,6 +159,19 @@ struct SelectorAddr {
 	base_type TypeID
 }
 
+struct EmbeddedFieldSpan {
+	source_type TypeID
+	start       int
+	len         int
+}
+
+struct StructInitFieldPlan {
+	source_idx  int
+	target_idx  int
+	expand_len  int
+	source_type TypeID
+}
+
 struct MatchExprIncoming {
 	value ValueID
 	block BlockID
@@ -209,6 +222,8 @@ mut:
 	loop_stack []LoopInfo
 	// Struct name -> SSA TypeID
 	struct_types map[string]TypeID
+	// Flattened embedded field ranges by owner struct TypeID.
+	struct_embedded_spans map[int][]EmbeddedFieldSpan
 	// Type alias name -> resolved SSA base TypeID
 	type_aliases map[string]TypeID
 	// Enum name -> field values
@@ -222,6 +237,8 @@ mut:
 	fn_refs map[string]ValueID
 	// Current file's selective imports: short symbol name -> mangled function name.
 	selective_import_fn_names map[string]string
+	// Current file's module imports: local alias/tail name -> mangled module name.
+	module_import_aliases map[string]string
 	// Global variable name -> SSA global value
 	global_refs map[string]ValueID
 	// Constant name -> evaluated integer value (for inlining)
@@ -283,6 +300,7 @@ pub fn Builder.new_with_env(mod &Module, env &types.Environment) &Builder {
 		vars:                          map[string]ValueID{}
 		loop_stack:                    []LoopInfo{}
 		struct_types:                  map[string]TypeID{}
+		struct_embedded_spans:         map[int][]EmbeddedFieldSpan{}
 		type_aliases:                  map[string]TypeID{}
 		enum_values:                   map[string]int{}
 		fn_index:                      map[string]int{}
@@ -290,6 +308,7 @@ pub fn Builder.new_with_env(mod &Module, env &types.Environment) &Builder {
 		fn_param_array_elem_types:     map[string][]TypeID{}
 		fn_refs:                       map[string]ValueID{}
 		selective_import_fn_names:     map[string]string{}
+		module_import_aliases:         map[string]string{}
 		global_refs:                   map[string]ValueID{}
 		skip_modules:                  map[string]bool{}
 		skip_module_file_fragments:    map[string]string{}
@@ -322,11 +341,13 @@ pub fn (mut b Builder) new_worker_clone(worker_mod &Module, worker_idx int) &Bui
 		minimal_runtime_roots:           b.minimal_runtime_roots
 		native_backend_bulk_zero_alloca: b.native_backend_bulk_zero_alloca
 		struct_types:                    b.struct_types.clone()
+		struct_embedded_spans:           b.struct_embedded_spans.clone()
 		type_aliases:                    b.type_aliases.clone()
 		enum_values:                     b.enum_values.clone()
 		fn_index:                        b.fn_index.clone()
 		module_fn_names:                 b.module_fn_names.clone()
 		selective_import_fn_names:       b.selective_import_fn_names.clone()
+		module_import_aliases:           b.module_import_aliases.clone()
 		fn_param_array_elem_types:       b.fn_param_array_elem_types.clone()
 		global_refs:                     b.global_refs.clone()
 		const_values:                    b.const_values.clone()
@@ -360,6 +381,21 @@ pub fn imported_symbol_fn_name(module_name string, name string) string {
 
 fn import_module_name(imp ast.ImportStmt) string {
 	return if imp.is_aliased { imp.name.all_after_last('.') } else { imp.alias }
+}
+
+fn module_import_aliases_from_imports(imports []ast.ImportStmt) map[string]string {
+	mut aliases := map[string]string{}
+	for imp in imports {
+		if !ssa_string_ok(imp.alias) || imp.name.len == 0 {
+			continue
+		}
+		module_name := import_module_name(imp)
+		if !ssa_string_ok(module_name) {
+			continue
+		}
+		aliases[imp.alias] = module_name.replace('.', '_')
+	}
+	return aliases
 }
 
 pub fn selective_import_fn_names_from_imports(imports []ast.ImportStmt) map[string]string {
@@ -460,6 +496,13 @@ pub fn (mut b Builder) build_all(files []ast.File) {
 		b.register_type_aliases(file)
 	}
 	// Phase 1d: Fill in struct field types (now all struct names are known)
+	for file in files {
+		b.cur_module = file_module_name(file)
+		b.register_types_pass2(file)
+	}
+	// Embedded structs from imported modules can appear earlier in file order
+	// than the embedded type's own field pass. A second idempotent pass lets
+	// those now-filled embedded fields flatten without expression lowering.
 	for file in files {
 		b.cur_module = file_module_name(file)
 		b.register_types_pass2(file)
@@ -590,6 +633,13 @@ pub fn (mut b Builder) build_all_from_flat(flat &ast.FlatAst) {
 		b.register_type_aliases_from_flat(fc)
 	}
 	// Phase 1d: Fill in struct field types (now all struct names are known)
+	for fi in 0 .. flat.files.len {
+		fc := flat.file_cursor(fi)
+		b.cur_module = fc.mod().replace('.', '_')
+		b.register_types_pass2_from_flat(fc)
+	}
+	// See the AST pass2 note above: imported embedded field layouts may only
+	// become available after the first pass over all files.
 	for fi in 0 .. flat.files.len {
 		fc := flat.file_cursor(fi)
 		b.cur_module = fc.mod().replace('.', '_')
@@ -2231,6 +2281,7 @@ fn (mut b Builder) register_types_pass1_from_flat(file_cursor ast.FileCursor) {
 // so cross-module struct references (e.g., &scanner.Scanner in Parser)
 // resolve correctly to the struct type instead of falling back to i64.
 fn (mut b Builder) register_types_pass2(file ast.File) {
+	b.module_import_aliases = module_import_aliases_from_imports(file.imports)
 	nstmts := file.stmts.len
 	for si in 0 .. nstmts {
 		stmt := file.stmts[si]
@@ -2246,6 +2297,8 @@ fn (mut b Builder) register_types_pass2(file ast.File) {
 // struct field types. Non-StructDecl stmts (ModuleStmt, FnDecl, ConstDecl,
 // EnumDecl, TypeDecl, etc.) are never decoded.
 fn (mut b Builder) register_types_pass2_from_flat(file_cursor ast.FileCursor) {
+	b.module_import_aliases =
+		module_import_aliases_from_imports(file_cursor.imports().import_stmts())
 	stmts := file_cursor.stmts()
 	for si in 0 .. stmts.len() {
 		c := stmts.at(si)
@@ -2334,19 +2387,21 @@ fn (mut b Builder) register_struct_fields(decl ast.StructDecl) {
 	}
 
 	type_id := b.struct_types[name] or { return }
+	n_embedded := decl.embedded.len
 
 	// Skip if fields are already populated (e.g., builtin types registered in Phase 1a)
-	if b.mod.type_store.types[type_id].fields.len > 0 {
+	if b.mod.type_store.types[type_id].fields.len > 0 && n_embedded == 0 {
 		return
 	}
 
 	mut field_types := []TypeID{}
 	mut field_names := []string{}
-	n_embedded := decl.embedded.len
 	n_fields := decl.fields.len
+	b.struct_embedded_spans.delete(int(type_id))
 
 	// Flatten embedded struct fields first (e.g., ObjectCommon in Const)
 	if n_embedded > 0 {
+		b.record_embedded_field_spans(type_id, decl.embedded, field_names.len)
 		b.collect_embedded_fields(decl.embedded, mut field_names, mut field_types)
 	}
 
@@ -2375,19 +2430,21 @@ fn (mut b Builder) register_struct_fields_from_flat(c ast.Cursor) {
 	}
 
 	type_id := b.struct_types[name] or { return }
+	embedded := c.list_at(2)
 
 	// Skip if fields are already populated (e.g., builtin types registered in Phase 1a)
-	if b.mod.type_store.types[type_id].fields.len > 0 {
+	if b.mod.type_store.types[type_id].fields.len > 0 && embedded.len() == 0 {
 		return
 	}
 
 	mut field_types := []TypeID{}
 	mut field_names := []string{}
-	embedded := c.list_at(2)
 	fields := c.list_at(4)
+	b.struct_embedded_spans.delete(int(type_id))
 
 	// Flatten embedded struct fields first (e.g., ObjectCommon in Const)
 	if embedded.len() > 0 {
+		b.record_embedded_field_spans_from_flat(type_id, embedded, field_names.len)
 		b.collect_embedded_fields_from_flat(embedded, mut field_names, mut field_types)
 	}
 
@@ -2498,6 +2555,141 @@ fn (mut b Builder) register_struct_from_flat(c ast.Cursor) {
 	}
 }
 
+fn (mut b Builder) embedded_type_id_from_expr(emb ast.Expr) ?TypeID {
+	if emb is ast.Ident {
+		if !ssa_string_ok(emb.name) {
+			return none
+		}
+		return b.lookup_embedded_type_id_by_name(emb.name)
+	}
+	if emb is ast.SelectorExpr && emb.lhs is ast.Ident {
+		lhs_name := (emb.lhs as ast.Ident).name
+		if !ssa_string_ok(lhs_name) || !ssa_string_ok(emb.rhs.name) {
+			return none
+		}
+		if type_id := b.selector_type_name_to_ssa(lhs_name, emb.rhs.name) {
+			if b.valid_type_id(type_id) {
+				return type_id
+			}
+		}
+		if resolved_mod := b.module_import_aliases[lhs_name] or {
+			b.selector_module_name_for_ident(lhs_name) or { '' }
+		}
+		{
+			if resolved_mod == '' {
+				return none
+			}
+			qualified := '${resolved_mod}__${emb.rhs.name}'
+			if type_id := b.struct_types[qualified] {
+				return type_id
+			}
+			if type_id := b.selector_type_name_to_ssa(resolved_mod, emb.rhs.name) {
+				if b.valid_type_id(type_id) {
+					return type_id
+				}
+			}
+		}
+	}
+	return none
+}
+
+fn (mut b Builder) embedded_type_id_from_flat(emb ast.Cursor) ?TypeID {
+	if emb.kind() == .expr_ident {
+		n := emb.name()
+		if !ssa_string_ok(n) {
+			return none
+		}
+		return b.lookup_embedded_type_id_by_name(n)
+	}
+	if emb.kind() == .expr_selector && emb.edge(0).kind() == .expr_ident {
+		lhs_name := emb.edge(0).name()
+		rhs_name := emb.edge(1).name()
+		if !ssa_string_ok(lhs_name) || !ssa_string_ok(rhs_name) {
+			return none
+		}
+		if type_id := b.selector_type_name_to_ssa(lhs_name, rhs_name) {
+			if b.valid_type_id(type_id) {
+				return type_id
+			}
+		}
+		if resolved_mod := b.module_import_aliases[lhs_name] or {
+			b.selector_module_name_for_ident(lhs_name) or { '' }
+		}
+		{
+			if resolved_mod == '' {
+				return none
+			}
+			qualified := '${resolved_mod}__${rhs_name}'
+			if type_id := b.struct_types[qualified] {
+				return type_id
+			}
+			if type_id := b.selector_type_name_to_ssa(resolved_mod, rhs_name) {
+				if b.valid_type_id(type_id) {
+					return type_id
+				}
+			}
+		}
+	}
+	return none
+}
+
+fn (mut b Builder) lookup_embedded_type_id_by_name(emb_name string) ?TypeID {
+	if b.cur_module != '' && b.cur_module != 'main' {
+		qualified := '${b.cur_module}__${emb_name}'
+		if qualified in b.struct_types {
+			return b.struct_types[qualified]
+		}
+	}
+	if emb_name in b.struct_types {
+		return b.struct_types[emb_name]
+	}
+	return none
+}
+
+fn (mut b Builder) record_embedded_field_spans(owner_type TypeID, embedded []ast.Expr, start_idx int) {
+	mut offset := start_idx
+	for emb in embedded {
+		emb_type_id := b.embedded_type_id_from_expr(emb) or { continue }
+		if emb_type_id <= 0 || emb_type_id >= b.mod.type_store.types.len {
+			continue
+		}
+		emb_typ := b.mod.type_store.types[emb_type_id]
+		if emb_typ.kind != .struct_t || emb_typ.field_names.len == 0 {
+			continue
+		}
+		mut spans := b.struct_embedded_spans[int(owner_type)] or { []EmbeddedFieldSpan{} }
+		spans << EmbeddedFieldSpan{
+			source_type: emb_type_id
+			start:       offset
+			len:         emb_typ.field_names.len
+		}
+		b.struct_embedded_spans[int(owner_type)] = spans
+		offset += emb_typ.field_names.len
+	}
+}
+
+fn (mut b Builder) record_embedded_field_spans_from_flat(owner_type TypeID, embedded ast.CursorList, start_idx int) {
+	mut offset := start_idx
+	for ei in 0 .. embedded.len() {
+		emb_type_id := b.embedded_type_id_from_flat(embedded.at(ei)) or { continue }
+		if emb_type_id <= 0 || emb_type_id >= b.mod.type_store.types.len {
+			continue
+		}
+		emb_typ := b.mod.type_store.types[emb_type_id]
+		if emb_typ.kind != .struct_t || emb_typ.field_names.len == 0 {
+			continue
+		}
+		mut spans := b.struct_embedded_spans[int(owner_type)] or { []EmbeddedFieldSpan{} }
+		spans << EmbeddedFieldSpan{
+			source_type: emb_type_id
+			start:       offset
+			len:         emb_typ.field_names.len
+		}
+		b.struct_embedded_spans[int(owner_type)] = spans
+		offset += emb_typ.field_names.len
+	}
+}
+
 // collect_embedded_fields resolves embedded type expressions and adds their
 // flattened fields to the field_names and field_types lists.
 // Embedded structs (e.g., `ObjectCommon` in `struct Const { ObjectCommon; int_val int }`)
@@ -2505,39 +2697,7 @@ fn (mut b Builder) register_struct_from_flat(c ast.Cursor) {
 // This function looks up each embedded type in struct_types and prepends its fields.
 fn (mut b Builder) collect_embedded_fields(embedded []ast.Expr, mut field_names []string, mut field_types []TypeID) {
 	for emb in embedded {
-		// Get the type name from the embedded expression
-		emb_name := if emb is ast.Ident {
-			if ssa_string_ok(emb.name) { emb.name } else { '' }
-		} else if emb is ast.SelectorExpr && emb.lhs is ast.Ident {
-			lhs_name := (emb.lhs as ast.Ident).name
-			if ssa_string_ok(lhs_name) && ssa_string_ok(emb.rhs.name) {
-				mod_name := lhs_name.replace('.', '_')
-				'${mod_name}__${emb.rhs.name}'
-			} else {
-				''
-			}
-		} else {
-			''
-		}
-		if emb_name == '' {
-			continue
-		}
-		// Look up the embedded struct type, trying module-qualified name first
-		mut emb_type_id := TypeID(0)
-		if b.cur_module != '' && b.cur_module != 'main' {
-			qualified := '${b.cur_module}__${emb_name}'
-			if qualified in b.struct_types {
-				emb_type_id = b.struct_types[qualified]
-			}
-		}
-		if emb_type_id == 0 {
-			if emb_name in b.struct_types {
-				emb_type_id = b.struct_types[emb_name]
-			}
-		}
-		if emb_type_id == 0 {
-			continue
-		}
+		emb_type_id := b.embedded_type_id_from_expr(emb) or { continue }
 		if emb_type_id < b.mod.type_store.types.len {
 			emb_typ := b.mod.type_store.types[emb_type_id]
 			if emb_typ.kind == .struct_t && emb_typ.field_names.len > 0 {
@@ -2561,44 +2721,7 @@ fn (mut b Builder) collect_embedded_fields(embedded []ast.Expr, mut field_names 
 fn (mut b Builder) collect_embedded_fields_from_flat(embedded ast.CursorList, mut field_names []string, mut field_types []TypeID) {
 	for ei in 0 .. embedded.len() {
 		emb := embedded.at(ei)
-		emb_name := if emb.kind() == .expr_ident {
-			n := emb.name()
-			if ssa_string_ok(n) {
-				n
-			} else {
-				''
-			}
-		} else if emb.kind() == .expr_selector && emb.edge(0).kind() == .expr_ident {
-			lhs_name := emb.edge(0).name()
-			rhs_name := emb.edge(1).name()
-			if ssa_string_ok(lhs_name) && ssa_string_ok(rhs_name) {
-				mod_name := lhs_name.replace('.', '_')
-				'${mod_name}__${rhs_name}'
-			} else {
-				''
-			}
-		} else {
-			''
-		}
-		if emb_name == '' {
-			continue
-		}
-		// Look up the embedded struct type, trying module-qualified name first
-		mut emb_type_id := TypeID(0)
-		if b.cur_module != '' && b.cur_module != 'main' {
-			qualified := '${b.cur_module}__${emb_name}'
-			if qualified in b.struct_types {
-				emb_type_id = b.struct_types[qualified]
-			}
-		}
-		if emb_type_id == 0 {
-			if emb_name in b.struct_types {
-				emb_type_id = b.struct_types[emb_name]
-			}
-		}
-		if emb_type_id == 0 {
-			continue
-		}
+		emb_type_id := b.embedded_type_id_from_flat(emb) or { continue }
 		if emb_type_id < b.mod.type_store.types.len {
 			emb_typ := b.mod.type_store.types[emb_type_id]
 			if emb_typ.kind == .struct_t && emb_typ.field_names.len > 0 {
@@ -5096,6 +5219,7 @@ fn (mut b Builder) receiver_type_name_from_flat(typ_c ast.Cursor) string {
 
 pub fn (mut b Builder) build_fn_bodies(file ast.File) {
 	b.selective_import_fn_names = selective_import_fn_names_from_imports(file.imports)
+	b.module_import_aliases = module_import_aliases_from_imports(file.imports)
 	nstmts := file.stmts.len
 	for si in 0 .. nstmts {
 		if file.stmts[si] is ast.FnDecl {
@@ -5130,6 +5254,8 @@ pub fn (mut b Builder) build_fn_bodies_from_flat(file_cursor ast.FileCursor) {
 	file_name := file_cursor.name()
 	b.selective_import_fn_names =
 		selective_import_fn_names_from_imports(file_cursor.imports().import_stmts())
+	b.module_import_aliases =
+		module_import_aliases_from_imports(file_cursor.imports().import_stmts())
 	stmts := file_cursor.stmts()
 	for si in 0 .. stmts.len() {
 		c := stmts.at(si)
@@ -17308,6 +17434,499 @@ fn (mut b Builder) build_array_init_expr(expr ast.ArrayInitExpr) ValueID {
 	return b.mod.get_or_add_const(arr_type, '0')
 }
 
+fn (mut b Builder) zero_struct_init_field_value(field_type TypeID) ValueID {
+	if b.is_wrapper_type(field_type) {
+		return b.build_wrapper_value(field_type, false, 0, false)
+	}
+	return b.mod.get_or_add_const(field_type, '0')
+}
+
+fn (mut b Builder) coerce_struct_init_field_storage_value(field_val ValueID, field_type TypeID) ValueID {
+	if field_val <= 0 || field_val >= b.mod.values.len {
+		return field_val
+	}
+	mut coerced := field_val
+	val_typ_id := b.mod.values[coerced].typ
+	if val_typ_id > 0 && val_typ_id < b.mod.type_store.types.len && field_type > 0
+		&& field_type < b.mod.type_store.types.len {
+		val_typ := b.mod.type_store.types[val_typ_id]
+		fld_typ := b.mod.type_store.types[field_type]
+		if val_typ.kind == .ptr_t && fld_typ.kind == .struct_t {
+			coerced = b.mod.add_instr(.load, b.cur_block, field_type, [coerced])
+		}
+	}
+	return b.coerce_struct_sumtype_field_value(coerced, field_type)
+}
+
+fn (mut b Builder) build_struct_init_field_expr_value(value_expr ast.Expr, field_type TypeID, is_sumtype_data bool) ValueID {
+	if is_sumtype_data {
+		b.in_sumtype_data = true
+	}
+	mut field_val := ValueID(0)
+	if b.ssa_type_is_sumtype(field_type) {
+		addr := b.build_addr(value_expr)
+		if wrapped := b.wrap_address_for_sumtype_target(addr, field_type) {
+			field_val = wrapped
+		}
+	}
+	if field_val == 0 {
+		field_val = b.build_expr(value_expr)
+	}
+	if is_sumtype_data {
+		b.in_sumtype_data = false
+	}
+	if b.is_wrapper_type(field_type) {
+		field_val = b.coerce_wrapper_value(value_expr, field_val, field_type)
+	}
+	return b.coerce_struct_init_field_storage_value(field_val, field_type)
+}
+
+fn (mut b Builder) build_struct_init_field_expr_value_from_flat(value_c ast.Cursor, field_type TypeID, is_sumtype_data bool) ValueID {
+	if is_sumtype_data {
+		b.in_sumtype_data = true
+	}
+	mut field_val := ValueID(0)
+	if b.ssa_type_is_sumtype(field_type) {
+		addr := b.build_addr_from_flat(value_c)
+		if wrapped := b.wrap_address_for_sumtype_target(addr, field_type) {
+			field_val = wrapped
+		}
+	}
+	if field_val == 0 {
+		field_val = b.build_expr_from_flat(value_c)
+	}
+	if is_sumtype_data {
+		b.in_sumtype_data = false
+	}
+	if b.is_wrapper_type(field_type) {
+		field_val = b.coerce_wrapper_value_from_flat(value_c, field_val, field_type)
+	}
+	return b.coerce_struct_init_field_storage_value(field_val, field_type)
+}
+
+fn (b &Builder) embedded_span_for_positional_init(struct_type TypeID, source_type TypeID, target_idx int) ?EmbeddedFieldSpan {
+	if source_type <= 0 || source_type >= b.mod.type_store.types.len {
+		return none
+	}
+	spans := b.struct_embedded_spans[int(struct_type)] or { return none }
+	for span in spans {
+		if span.start != target_idx || span.source_type != source_type || span.len <= 0 {
+			continue
+		}
+		if span.start + span.len > b.mod.type_store.types[struct_type].fields.len {
+			continue
+		}
+		return span
+	}
+	return none
+}
+
+fn (b &Builder) flat_embedded_default_field_name_is_redundant(struct_type TypeID, field_name string) bool {
+	if !field_name.contains('.') {
+		return false
+	}
+	embedded_type_name := field_name.all_before_last('.')
+	embedded_field_name := field_name.all_after_last('.')
+	spans := b.struct_embedded_spans[int(struct_type)] or { return false }
+	for span in spans {
+		if span.source_type <= 0 || span.source_type >= b.mod.type_store.types.len {
+			continue
+		}
+		source_name := b.mod.c_struct_names[span.source_type] or { '' }
+		if embedded_type_name != source_name.all_after_last('__') {
+			continue
+		}
+		source_info := b.mod.type_store.types[span.source_type]
+		for known_field_name in source_info.field_names {
+			if embedded_field_name == known_field_name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+fn (b &Builder) flat_init_has_positional_fields_with_embedded_defaults(c ast.Cursor, struct_type TypeID, nfields int) bool {
+	if nfields == 0 {
+		return false
+	}
+	mut saw_positional := false
+	for i in 0 .. nfields {
+		field_name := c.edge(1 + i).name()
+		if field_name.len == 0 {
+			saw_positional = true
+			continue
+		}
+		if saw_positional
+			&& b.flat_embedded_default_field_name_is_redundant(struct_type, field_name) {
+			continue
+		}
+		return false
+	}
+	return saw_positional
+}
+
+fn (mut b Builder) append_embedded_struct_init_value(mut field_vals []ValueID, field_val ValueID, span EmbeddedFieldSpan) bool {
+	if field_val <= 0 || field_val >= b.mod.values.len {
+		return false
+	}
+	val_type := b.mod.values[field_val].typ
+	i32_t := b.mod.type_store.get_int(32)
+	source_info := b.mod.type_store.types[span.source_type]
+	if val_type == span.source_type {
+		for i in 0 .. span.len {
+			source_field_type := source_info.fields[i]
+			field_vals << b.mod.add_instr(.extractvalue, b.cur_block, source_field_type, [
+				field_val,
+				b.mod.get_or_add_const(i32_t, i.str()),
+			])
+		}
+		return true
+	}
+	if val_type <= 0 || val_type >= b.mod.type_store.types.len {
+		return false
+	}
+	val_type_info := b.mod.type_store.types[val_type]
+	if val_type_info.kind != .ptr_t || val_type_info.elem_type != span.source_type {
+		return false
+	}
+	for i in 0 .. span.len {
+		source_field_type := source_info.fields[i]
+		idx_val := b.mod.get_or_add_const(i32_t, i.str())
+		field_ptr_type := b.mod.type_store.get_ptr(source_field_type)
+		field_ptr := b.mod.add_instr(.get_element_ptr, b.cur_block, field_ptr_type, [
+			field_val,
+			idx_val,
+		])
+		field_vals << b.mod.add_instr(.load, b.cur_block, source_field_type, [
+			field_ptr,
+		])
+	}
+	return true
+}
+
+fn (mut b Builder) embedded_init_selector_call_name(lhs_name string, rhs_name string) string {
+	if lhs_name == '' || rhs_name == '' || !ssa_string_ok(lhs_name) || !ssa_string_ok(rhs_name) {
+		return ''
+	}
+	if resolved_mod := b.module_import_aliases[lhs_name] {
+		qualified := '${resolved_mod}__${rhs_name}'
+		if qualified in b.fn_index {
+			return qualified
+		}
+	}
+	qualified := '${lhs_name}__${rhs_name}'
+	if qualified in b.fn_index {
+		return qualified
+	}
+	if resolved_mod := b.selector_module_name_for_ident(lhs_name) {
+		resolved_qualified := '${resolved_mod}__${rhs_name}'
+		if resolved_qualified in b.fn_index {
+			return resolved_qualified
+		}
+	}
+	return ''
+}
+
+fn (mut b Builder) embedded_init_call_return_type_from_name(fn_name string) TypeID {
+	if fn_idx := b.fn_index[fn_name] {
+		ret_type := b.mod.funcs[fn_idx].typ
+		if b.valid_type_id(ret_type) {
+			return ret_type
+		}
+	}
+	return TypeID(0)
+}
+
+fn (mut b Builder) embedded_init_build_resolved_call(fn_name string, args []ast.Expr) ValueID {
+	call_expr := ast.CallExpr{
+		lhs:  ast.Ident{
+			name: fn_name
+		}
+		args: args
+	}
+	return b.build_call_resolved(fn_name, call_expr)
+}
+
+fn (mut b Builder) embedded_init_build_source_expr_value(value_expr ast.Expr) ValueID {
+	if value_expr is ast.CallExpr {
+		if value_expr.lhs is ast.SelectorExpr {
+			sel := value_expr.lhs as ast.SelectorExpr
+			if sel.lhs is ast.Ident {
+				lhs_name := (sel.lhs as ast.Ident).name
+				fn_name := b.embedded_init_selector_call_name(lhs_name, sel.rhs.name)
+				if fn_name != '' {
+					return b.embedded_init_build_resolved_call(fn_name, value_expr.args)
+				}
+			}
+		}
+	} else if value_expr is ast.CallOrCastExpr {
+		if value_expr.lhs is ast.SelectorExpr {
+			sel := value_expr.lhs as ast.SelectorExpr
+			if sel.lhs is ast.Ident {
+				lhs_name := (sel.lhs as ast.Ident).name
+				fn_name := b.embedded_init_selector_call_name(lhs_name, sel.rhs.name)
+				if fn_name != '' {
+					args := if value_expr.expr is ast.EmptyExpr {
+						[]ast.Expr{}
+					} else {
+						[value_expr.expr]
+					}
+					return b.embedded_init_build_resolved_call(fn_name, args)
+				}
+			}
+		}
+	}
+	return b.build_expr(value_expr)
+}
+
+fn (mut b Builder) embedded_init_build_resolved_call_from_flat(fn_name string, c ast.Cursor) ValueID {
+	ret_type := b.embedded_init_call_return_type_from_name(fn_name)
+	if ret_type == 0 {
+		return b.build_expr_from_flat(c)
+	}
+	n_edges := c.edge_count()
+	n_args := if c.kind() == .expr_call_or_cast && n_edges > 1 && c.edge(1).kind() == .expr_empty {
+		0
+	} else {
+		n_edges - 1
+	}
+	mut args := []ValueID{cap: n_args}
+	for arg_i in 0 .. n_args {
+		args << b.build_call_arg_from_flat(fn_name, arg_i, c.edge(1 + arg_i))
+	}
+	fn_ref := b.get_or_create_fn_ref(fn_name, ret_type)
+	mut operands := []ValueID{cap: args.len + 1}
+	operands << fn_ref
+	operands << args
+	return b.mod.add_instr(.call, b.cur_block, ret_type, operands)
+}
+
+fn (mut b Builder) embedded_init_build_source_expr_value_from_flat(value_c ast.Cursor) ValueID {
+	if value_c.kind() in [.expr_call, .expr_call_or_cast] && value_c.edge_count() > 0 {
+		lhs_c := value_c.edge(0)
+		if lhs_c.kind() == .expr_selector {
+			lhs_expr := lhs_c.edge(0)
+			rhs_expr := lhs_c.edge(1)
+			if lhs_expr.kind() == .expr_ident && rhs_expr.kind() == .expr_ident {
+				fn_name := b.embedded_init_selector_call_name(lhs_expr.name(), rhs_expr.name())
+				if fn_name != '' {
+					return b.embedded_init_build_resolved_call_from_flat(fn_name, value_c)
+				}
+			}
+		}
+	}
+	return b.build_expr_from_flat(value_c)
+}
+
+fn (mut b Builder) struct_init_plan_source_type(value_expr ast.Expr) TypeID {
+	if value_expr is ast.CallExpr {
+		if value_expr.lhs is ast.SelectorExpr {
+			sel := value_expr.lhs as ast.SelectorExpr
+			if sel.lhs is ast.Ident {
+				lhs_name := (sel.lhs as ast.Ident).name
+				fn_name := b.embedded_init_selector_call_name(lhs_name, sel.rhs.name)
+				if fn_name != '' {
+					ret_type := b.embedded_init_call_return_type_from_name(fn_name)
+					if ret_type != 0 {
+						return ret_type
+					}
+				}
+			}
+		}
+		fn_name := b.resolve_call_name(value_expr)
+		ret_type := b.embedded_init_call_return_type_from_name(fn_name)
+		if ret_type != 0 {
+			return ret_type
+		}
+	} else if value_expr is ast.CallOrCastExpr {
+		if value_expr.lhs is ast.SelectorExpr {
+			sel := value_expr.lhs as ast.SelectorExpr
+			if sel.lhs is ast.Ident {
+				lhs_name := (sel.lhs as ast.Ident).name
+				fn_name := b.embedded_init_selector_call_name(lhs_name, sel.rhs.name)
+				if fn_name != '' {
+					ret_type := b.embedded_init_call_return_type_from_name(fn_name)
+					if ret_type != 0 {
+						return ret_type
+					}
+				}
+			}
+		}
+		call_expr := ast.CallExpr{
+			lhs:  value_expr.lhs
+			args: if value_expr.expr is ast.EmptyExpr { []ast.Expr{} } else { [value_expr.expr] }
+		}
+		fn_name := b.resolve_call_name(call_expr)
+		ret_type := b.embedded_init_call_return_type_from_name(fn_name)
+		if ret_type != 0 {
+			return ret_type
+		}
+	}
+	return b.expr_type(value_expr)
+}
+
+fn (mut b Builder) struct_init_plan_source_type_from_flat(value_c ast.Cursor) TypeID {
+	if value_c.kind() in [.expr_call, .expr_call_or_cast] && value_c.edge_count() > 0 {
+		lhs_c := value_c.edge(0)
+		if lhs_c.kind() == .expr_selector {
+			lhs_expr := lhs_c.edge(0)
+			rhs_expr := lhs_c.edge(1)
+			if lhs_expr.kind() == .expr_ident && rhs_expr.kind() == .expr_ident {
+				fn_name := b.embedded_init_selector_call_name(lhs_expr.name(), rhs_expr.name())
+				if fn_name != '' {
+					ret_type := b.embedded_init_call_return_type_from_name(fn_name)
+					if ret_type != 0 {
+						return ret_type
+					}
+				}
+			}
+		}
+		fn_name := b.resolve_call_name_from_flat(lhs_c)
+		ret_type := b.embedded_init_call_return_type_from_name(fn_name)
+		if ret_type != 0 {
+			return ret_type
+		}
+		if value_c.kind() == .expr_call_or_cast && lhs_c.kind() == .expr_ident {
+			fn_name2 := b.resolve_call_name_ident_from_flat(lhs_c)
+			ret_type2 := b.embedded_init_call_return_type_from_name(fn_name2)
+			if ret_type2 != 0 {
+				return ret_type2
+			}
+		}
+	}
+	return b.expr_type_from_flat(value_c)
+}
+
+fn (mut b Builder) plan_positional_flattened_init_expr_values(expr ast.InitExpr, struct_type TypeID, typ_info Type) ?[]StructInitFieldPlan {
+	if expr.fields.len == 0 || typ_info.is_union || typ_info.fields.len == 0 {
+		return none
+	}
+	mut plans := []StructInitFieldPlan{cap: expr.fields.len}
+	mut target_idx := 0
+	mut expanded_any := false
+	for source_idx, field in expr.fields {
+		if target_idx >= typ_info.fields.len {
+			return none
+		}
+		source_type := b.struct_init_plan_source_type(field.value)
+		if span := b.embedded_span_for_positional_init(struct_type, source_type, target_idx) {
+			plans << StructInitFieldPlan{
+				source_idx:  source_idx
+				target_idx:  target_idx
+				expand_len:  span.len
+				source_type: source_type
+			}
+			target_idx += span.len
+			expanded_any = true
+			continue
+		}
+		plans << StructInitFieldPlan{
+			source_idx:  source_idx
+			target_idx:  target_idx
+			expand_len:  0
+			source_type: source_type
+		}
+		target_idx++
+	}
+	if !expanded_any {
+		return none
+	}
+	return plans
+}
+
+fn (mut b Builder) plan_positional_flattened_init_expr_values_from_flat(c ast.Cursor, struct_type TypeID, typ_info Type, nfields int) ?[]StructInitFieldPlan {
+	if nfields == 0 || typ_info.is_union || typ_info.fields.len == 0 {
+		return none
+	}
+	mut plans := []StructInitFieldPlan{cap: nfields}
+	mut target_idx := 0
+	mut expanded_any := false
+	for source_idx in 0 .. nfields {
+		field_c := c.edge(1 + source_idx)
+		field_name := field_c.name()
+		if field_name.len > 0 {
+			if expanded_any
+				&& b.flat_embedded_default_field_name_is_redundant(struct_type, field_name) {
+				continue
+			}
+			return none
+		}
+		if target_idx >= typ_info.fields.len {
+			return none
+		}
+		value_c := field_c.edge(0)
+		source_type := b.struct_init_plan_source_type_from_flat(value_c)
+		if span := b.embedded_span_for_positional_init(struct_type, source_type, target_idx) {
+			plans << StructInitFieldPlan{
+				source_idx:  source_idx
+				target_idx:  target_idx
+				expand_len:  span.len
+				source_type: source_type
+			}
+			target_idx += span.len
+			expanded_any = true
+			continue
+		}
+		plans << StructInitFieldPlan{
+			source_idx:  source_idx
+			target_idx:  target_idx
+			expand_len:  0
+			source_type: source_type
+		}
+		target_idx++
+	}
+	if !expanded_any {
+		return none
+	}
+	return plans
+}
+
+fn (mut b Builder) collect_positional_flattened_init_expr_values(expr ast.InitExpr, struct_type TypeID, typ_info Type, plans []StructInitFieldPlan) ?[]ValueID {
+	mut field_vals := []ValueID{cap: typ_info.fields.len}
+	for plan in plans {
+		field := expr.fields[plan.source_idx]
+		if plan.expand_len > 0 {
+			span := b.embedded_span_for_positional_init(struct_type, plan.source_type,
+				plan.target_idx) or { return none }
+			field_val := b.embedded_init_build_source_expr_value(field.value)
+			if !b.append_embedded_struct_init_value(mut field_vals, field_val, span) {
+				return none
+			}
+			continue
+		}
+		field_type := typ_info.fields[plan.target_idx]
+		field_vals << b.build_struct_init_field_expr_value(field.value, field_type, false)
+	}
+	for field_vals.len < typ_info.fields.len {
+		field_vals << b.zero_struct_init_field_value(typ_info.fields[field_vals.len])
+	}
+	return field_vals
+}
+
+fn (mut b Builder) collect_positional_flattened_init_expr_values_from_flat(c ast.Cursor, struct_type TypeID, typ_info Type, plans []StructInitFieldPlan) ?[]ValueID {
+	mut field_vals := []ValueID{cap: typ_info.fields.len}
+	for plan in plans {
+		field_c := c.edge(1 + plan.source_idx)
+		value_c := field_c.edge(0)
+		if plan.expand_len > 0 {
+			span := b.embedded_span_for_positional_init(struct_type, plan.source_type,
+				plan.target_idx) or { return none }
+			field_val := b.embedded_init_build_source_expr_value_from_flat(value_c)
+			if !b.append_embedded_struct_init_value(mut field_vals, field_val, span) {
+				return none
+			}
+			continue
+		}
+		field_type := typ_info.fields[plan.target_idx]
+		field_vals << b.build_struct_init_field_expr_value_from_flat(value_c, field_type, false)
+	}
+	for field_vals.len < typ_info.fields.len {
+		field_vals << b.zero_struct_init_field_value(typ_info.fields[field_vals.len])
+	}
+	return field_vals
+}
+
 fn (mut b Builder) collect_init_expr_values(expr ast.InitExpr) (TypeID, []ValueID) {
 	// Resolve the struct type
 	mut struct_type := b.ast_type_to_ssa(expr.typ)
@@ -17336,6 +17955,19 @@ fn (mut b Builder) collect_init_expr_values(expr ast.InitExpr) (TypeID, []ValueI
 		if field.name.len > 0 {
 			is_positional = false
 			break
+		}
+	}
+
+	if is_positional {
+		if flattened_plan := b.plan_positional_flattened_init_expr_values(expr, struct_type,
+			typ_info)
+		{
+			if flattened_values := b.collect_positional_flattened_init_expr_values(expr,
+				struct_type, typ_info, flattened_plan)
+			{
+				return struct_type, flattened_values
+			}
+			panic('SSA builder: failed to expand embedded positional struct init')
 		}
 	}
 
@@ -17425,11 +18057,7 @@ fn (mut b Builder) collect_init_expr_values(expr ast.InitExpr) (TypeID, []ValueI
 			}
 		} else {
 			// Zero-initialize unset fields
-			if b.is_wrapper_type(field_type) {
-				field_vals << b.build_wrapper_value(field_type, false, 0, false)
-			} else {
-				field_vals << b.mod.get_or_add_const(field_type, '0')
-			}
+			field_vals << b.zero_struct_init_field_value(field_type)
 		}
 	}
 
@@ -17455,7 +18083,6 @@ fn (mut b Builder) collect_init_expr_values_from_flat(c ast.Cursor) (TypeID, []V
 	if num_fields == 0 {
 		return struct_type, []ValueID{}
 	}
-
 	nfields := c.edge_count() - 1
 
 	mut field_vals := []ValueID{cap: num_fields}
@@ -17467,6 +18094,20 @@ fn (mut b Builder) collect_init_expr_values_from_flat(c ast.Cursor) (TypeID, []V
 		if field_c.name().len > 0 {
 			is_positional = false
 			break
+		}
+	}
+
+	if is_positional
+		|| b.flat_init_has_positional_fields_with_embedded_defaults(c, struct_type, nfields) {
+		if flattened_plan := b.plan_positional_flattened_init_expr_values_from_flat(c, struct_type,
+			typ_info, nfields)
+		{
+			if flattened_values := b.collect_positional_flattened_init_expr_values_from_flat(c,
+				struct_type, typ_info, flattened_plan)
+			{
+				return struct_type, flattened_values
+			}
+			panic('SSA builder: failed to expand embedded positional struct init')
 		}
 	}
 
@@ -17549,11 +18190,7 @@ fn (mut b Builder) collect_init_expr_values_from_flat(c ast.Cursor) (TypeID, []V
 				field_vals << b.mod.get_or_add_const(field_type, '0')
 			}
 		} else {
-			if b.is_wrapper_type(field_type) {
-				field_vals << b.build_wrapper_value(field_type, false, 0, false)
-			} else {
-				field_vals << b.mod.get_or_add_const(field_type, '0')
-			}
+			field_vals << b.zero_struct_init_field_value(field_type)
 		}
 	}
 

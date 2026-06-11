@@ -3865,6 +3865,12 @@ fn x64_mini_calculator_example_stdout() []u8 {
 	return "Please enter the expression you want to calculate, e.g. 1e2+(3-2.5)*6/1.5 .\nEnter 'exit' or 'EXIT' to quit.\n[1] 11.0\n[2] ".bytes()
 }
 
+fn x64_mini_calculator_recursive_descent_example_stdout() []u8 {
+	return 'Enter expressions to calculate, e.g. `2 * (5-1)` or `exit` to quit.
+[1] 11.0
+[2] '.bytes()
+}
+
 fn x64_arguments_index_one_int_source() string {
 	return 'module main
 
@@ -3919,6 +3925,176 @@ fn main() {
 
 fn x64_math_log_20_stdout() []u8 {
 	return 'true
+'.bytes()
+}
+
+fn x64_embedded_scanner_parser_source() string {
+	return "module main
+
+import strings.textscanner
+
+struct Parser {
+	textscanner.TextScanner
+}
+
+fn main() {
+	mut parser := Parser{textscanner.new('3+4*2')}
+	if parser.input == '3+4*2' {
+		println('input')
+	}
+	if parser.ilen == 5 {
+		println('ilen')
+	}
+	if parser.pos == 0 {
+		println('pos0')
+	}
+	if parser.peek_u8() == `3` {
+		println('peek3')
+	}
+	first := parser.next()
+	if first == `3` {
+		println('next3')
+	}
+	if parser.pos == 1 {
+		println('pos1')
+	}
+	if parser.peek_u8() == `+` {
+		println('peek_plus')
+	}
+	start := 0
+	for parser.peek_u8().is_digit() {
+		parser.next()
+	}
+	token := parser.input[start..parser.pos]
+	if token == '3' {
+		println('slice')
+	}
+}
+"
+}
+
+fn x64_embedded_scanner_parser_stdout() []u8 {
+	return 'input
+ilen
+pos0
+peek3
+next3
+pos1
+peek_plus
+slice
+'.bytes()
+}
+
+fn x64_struct_positional_side_effect_source() string {
+	return "module main
+
+struct Sample {
+	x int
+}
+
+fn next() int {
+	println('call')
+	return 7
+}
+
+fn main() {
+	sample := Sample{next()}
+	println(sample.x)
+}
+"
+}
+
+fn x64_struct_positional_side_effect_stdout() []u8 {
+	return 'call
+7
+'.bytes()
+}
+
+fn x64_struct_named_side_effect_source() string {
+	return "module main
+
+struct Sample {
+	x int
+	y int
+}
+
+fn next() int {
+	println('call')
+	return 7
+}
+
+fn main() {
+	sample := Sample{
+		x: next()
+		y: 2
+	}
+	println(sample.x)
+	println(sample.y)
+}
+"
+}
+
+fn x64_struct_named_side_effect_stdout() []u8 {
+	return 'call
+7
+2
+'.bytes()
+}
+
+fn x64_unrelated_same_shape_struct_source() string {
+	return 'module main
+
+struct SameShape {
+	x int
+	y int
+}
+
+struct Holder {
+	item SameShape
+	z    int
+}
+
+fn main() {
+	holder := Holder{SameShape{7, 9}, 2}
+	println(holder.item.x)
+	println(holder.item.y)
+	println(holder.z)
+}
+'
+}
+
+fn x64_unrelated_same_shape_struct_stdout() []u8 {
+	return '7
+9
+2
+'.bytes()
+}
+
+fn x64_named_init_embedded_value_source() string {
+	return 'module main
+
+struct Inner {
+	x int
+}
+
+struct Holder {
+	Inner
+	other Inner
+}
+
+fn main() {
+	holder := Holder{
+		other: Inner{7}
+	}
+	println(holder.x)
+	println(holder.other.x)
+}
+'
+}
+
+fn x64_named_init_embedded_value_stdout() []u8 {
+	return '0
+7
 '.bytes()
 }
 
@@ -5225,6 +5401,12 @@ fn test_x64_linux_mini_calculator_example_stdin_stdout_exact_bytes() {
 		x64_mini_calculator_example_stdout())
 }
 
+fn test_x64_linux_mini_calculator_recursive_descent_example_stdin_stdout_exact_bytes() {
+	assert_x64_linux_file_stdout_bytes_with_stdin('mini_calculator_recursive_descent_example_stdin_exact',
+		x64_examples_dir(), 'mini_calculator_recursive_descent.v',
+		x64_mini_calculator_example_stdin(), x64_mini_calculator_recursive_descent_example_stdout())
+}
+
 fn test_x64_linux_bfs_example_top_level_stdout_exact_bytes() {
 	assert_x64_linux_file_stdout_bytes('bfs_example_top_level_exact', os.join_path(x64_examples_dir(),
 		'graphs'), 'bfs.v', x64_bfs_example_stdout())
@@ -6460,6 +6642,12 @@ fn test_x64_macos_windows_mini_calculator_example_stdin_stdout_exact_bytes() {
 		x64_mini_calculator_example_stdout())
 }
 
+fn test_x64_macos_windows_mini_calculator_recursive_descent_example_stdin_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes_with_stdin('mini_calculator_recursive_descent_example_stdin_exact',
+		x64_examples_dir(), 'mini_calculator_recursive_descent.v',
+		x64_mini_calculator_example_stdin(), x64_mini_calculator_recursive_descent_example_stdout())
+}
+
 fn test_x64_macos_windows_bfs_example_top_level_stdout_exact_bytes() {
 	assert_x64_macos_windows_file_stdout_bytes('bfs_example_top_level_exact', os.join_path(x64_examples_dir(),
 		'graphs'), 'bfs.v', x64_bfs_example_stdout())
@@ -6709,6 +6897,56 @@ fn test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes() 
 fn test_x64_linux_spectral_reduced_formatted_stdout_exact_bytes() {
 	assert_x64_linux_stdout_bytes('spectral_reduced_formatted_exact',
 		x64_spectral_reduced_formatted_source(), x64_spectral_reduced_formatted_stdout())
+}
+
+fn test_x64_linux_textscanner_embedded_parser_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('embedded_scanner_parser_exact',
+		x64_embedded_scanner_parser_source(), x64_embedded_scanner_parser_stdout())
+}
+
+fn test_x64_macos_windows_textscanner_embedded_parser_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('embedded_scanner_parser_exact',
+		x64_embedded_scanner_parser_source(), x64_embedded_scanner_parser_stdout())
+}
+
+fn test_x64_linux_struct_positional_side_effect_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('struct_positional_side_effect_exact',
+		x64_struct_positional_side_effect_source(), x64_struct_positional_side_effect_stdout())
+}
+
+fn test_x64_macos_windows_struct_positional_side_effect_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('struct_positional_side_effect_exact',
+		x64_struct_positional_side_effect_source(), x64_struct_positional_side_effect_stdout())
+}
+
+fn test_x64_linux_struct_named_side_effect_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('struct_named_side_effect_exact',
+		x64_struct_named_side_effect_source(), x64_struct_named_side_effect_stdout())
+}
+
+fn test_x64_macos_windows_struct_named_side_effect_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('struct_named_side_effect_exact',
+		x64_struct_named_side_effect_source(), x64_struct_named_side_effect_stdout())
+}
+
+fn test_x64_linux_unrelated_same_shape_struct_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('unrelated_same_shape_struct_exact',
+		x64_unrelated_same_shape_struct_source(), x64_unrelated_same_shape_struct_stdout())
+}
+
+fn test_x64_macos_windows_unrelated_same_shape_struct_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('unrelated_same_shape_struct_exact',
+		x64_unrelated_same_shape_struct_source(), x64_unrelated_same_shape_struct_stdout())
+}
+
+fn test_x64_linux_named_init_embedded_value_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('named_init_embedded_value_exact',
+		x64_named_init_embedded_value_source(), x64_named_init_embedded_value_stdout())
+}
+
+fn test_x64_macos_windows_named_init_embedded_value_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('named_init_embedded_value_exact',
+		x64_named_init_embedded_value_source(), x64_named_init_embedded_value_stdout())
 }
 
 fn test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes() {

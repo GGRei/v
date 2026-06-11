@@ -66,7 +66,7 @@ jobs:
             vlib/v2/gen/x64/x64_object_format_test.v `
             vlib/v2/gen/x64/x64_pe_linker_test.v
           Assert-LastExit 'stable V2 x64 unit tests'
-          .\v.exe test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_formatted_int_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_f64_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes,test_x64_macos_windows_bits_len32_stdout_exact_bytes,test_x64_macos_windows_rand_u32n_interface_result_stdout_exact_bytes,test_x64_macos_windows_rand_intn_range_interface_result_stdout_exact_bytes,test_x64_macos_windows_get_raw_line_example_stdin_stdout_exact_bytes,test_x64_macos_windows_mini_calculator_example_stdin_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
+          .\v.exe test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_formatted_int_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_f64_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes,test_x64_macos_windows_bits_len32_stdout_exact_bytes,test_x64_macos_windows_rand_u32n_interface_result_stdout_exact_bytes,test_x64_macos_windows_rand_intn_range_interface_result_stdout_exact_bytes,test_x64_macos_windows_get_raw_line_example_stdin_stdout_exact_bytes,test_x64_macos_windows_mini_calculator_example_stdin_stdout_exact_bytes,test_x64_macos_windows_mini_calculator_recursive_descent_example_stdin_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
           Assert-LastExit 'reduced V2 x64 runtime smoke tests'
           Remove-Item Env:\VJOBS -ErrorAction SilentlyContinue
           .\v.exe test vlib/v2/builder/native_test.v vlib/v2/builder/target_os_test.v
@@ -631,6 +631,11 @@ jobs:
           [System.IO.File]::WriteAllText($mini_calculator_input, "3+4*2`nexit`n", [System.Text.UTF8Encoding]::new($false))
           [byte[]] $mini_calculator_expected = Get-VRunExpectedBytesWithStdin 'examples/mini_calculator.v' 'mini_calculator' $mini_calculator_input
           Invoke-NativeX64ExampleWithStdin 'examples/mini_calculator.v' 'mini_calculator' $mini_calculator_expected $mini_calculator_input
+
+          $mini_calculator_recursive_descent_input = Join-Path $tmp 'mini_calculator_recursive_descent.in'
+          [System.IO.File]::WriteAllText($mini_calculator_recursive_descent_input, "3+4*2`nexit`n", [System.Text.UTF8Encoding]::new($false))
+          [byte[]] $mini_calculator_recursive_descent_expected = Get-VRunExpectedBytesWithStdin 'examples/mini_calculator_recursive_descent.v' 'mini_calculator_recursive_descent' $mini_calculator_recursive_descent_input
+          Invoke-NativeX64ExampleWithStdin 'examples/mini_calculator_recursive_descent.v' 'mini_calculator_recursive_descent' $mini_calculator_recursive_descent_expected $mini_calculator_recursive_descent_input
 
           $random_ips_stdout = Invoke-NativeX64ExampleCapture 'examples/random_ips.v' 'random_ips'
           Assert-RandomIpsStdout $random_ips_stdout
