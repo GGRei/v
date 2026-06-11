@@ -2231,7 +2231,7 @@ fn (g Gen) call_needs_windows_vararg_float_duplication(instr mir.Instruction) bo
 		return false
 	}
 	fn_val := g.mod.values[instr.operands[0]]
-	return fn_val.name == 'snprintf'
+	return fn_val.name in ['snprintf', '_scprintf', '_snprintf']
 }
 
 fn (mut g Gen) duplicate_windows_vararg_float_arg_to_gp(position int, xmm int) {

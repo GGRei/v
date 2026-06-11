@@ -10564,13 +10564,20 @@ fn (mut b Builder) build_snprintf_string(val ValueID, fmt string) ValueID {
 	i32_t := b.mod.type_store.get_int(32)
 	i64_t := b.mod.type_store.get_int(64)
 	bool_t := b.mod.type_store.get_int(1)
-	snprintf_ref := b.get_or_create_fn_ref('snprintf', i32_t)
+	len_fn_name := if b.is_windows_target() { '_scprintf' } else { 'snprintf' }
+	write_fn_name := if b.is_windows_target() { '_snprintf' } else { 'snprintf' }
+	len_fn_ref := b.get_or_create_fn_ref(len_fn_name, i32_t)
+	write_fn_ref := b.get_or_create_fn_ref(write_fn_name, i32_t)
 	fmt_val := b.mod.add_value_node(.c_string_literal, ptr_type, fmt, 0)
 	formatted_val := b.prepare_snprintf_arg(val, fmt)
 	null_ptr := b.mod.get_or_add_const(ptr_type, '0')
 	zero_size := b.mod.get_or_add_const(i64_t, '0')
-	sn_len := b.mod.add_instr(.call, b.cur_block, i32_t, [snprintf_ref, null_ptr, zero_size, fmt_val,
-		formatted_val])
+	sn_len := if b.is_windows_target() {
+		b.mod.add_instr(.call, b.cur_block, i32_t, [len_fn_ref, fmt_val, formatted_val])
+	} else {
+		b.mod.add_instr(.call, b.cur_block, i32_t, [len_fn_ref, null_ptr, zero_size, fmt_val,
+			formatted_val])
+	}
 	zero_i32 := b.mod.get_or_add_const(i32_t, '0')
 	is_negative := b.mod.add_instr(.lt, b.cur_block, bool_t, [sn_len, zero_i32])
 	fail_block := b.mod.add_block(b.cur_func, 'snprintf_fail')
@@ -10593,8 +10600,22 @@ fn (mut b Builder) build_snprintf_string(val ValueID, fmt string) ValueID {
 	alloc_len := b.mod.add_instr(.add, b.cur_block, i64_t, [sn_len_i64, one_i64])
 	malloc_ref := b.get_or_create_fn_ref('builtin__malloc_noscan', ptr_type)
 	buf_ptr := b.mod.add_instr(.call, b.cur_block, ptr_type, [malloc_ref, alloc_len])
-	b.mod.add_instr(.call, b.cur_block, i32_t, [snprintf_ref, buf_ptr, alloc_len, fmt_val,
-		formatted_val])
+	write_result := b.mod.add_instr(.call, b.cur_block, i32_t, [write_fn_ref, buf_ptr, alloc_len,
+		fmt_val, formatted_val])
+	write_negative := b.mod.add_instr(.lt, b.cur_block, bool_t, [write_result, zero_i32])
+	write_fail_block := b.mod.add_block(b.cur_func, 'snprintf_write_fail')
+	write_ok_block := b.mod.add_block(b.cur_func, 'snprintf_write_ok')
+	b.mod.add_instr(.br, b.cur_block, 0, [write_negative, b.mod.blocks[write_fail_block].val_id,
+		b.mod.blocks[write_ok_block].val_id])
+	b.add_edge(b.cur_block, write_fail_block)
+	b.add_edge(b.cur_block, write_ok_block)
+
+	b.cur_block = write_fail_block
+	write_fail_end_block := b.cur_block
+	b.mod.add_instr(.jmp, b.cur_block, 0, [b.mod.blocks[merge_block].val_id])
+	b.add_edge(b.cur_block, merge_block)
+
+	b.cur_block = write_ok_block
 	tos_ref := b.get_or_create_fn_ref('builtin__tos', str_type)
 	ok_str := b.mod.add_instr(.call, b.cur_block, str_type, [tos_ref, buf_ptr, sn_len_i64])
 	ok_end_block := b.cur_block
@@ -10603,7 +10624,7 @@ fn (mut b Builder) build_snprintf_string(val ValueID, fmt string) ValueID {
 
 	b.cur_block = merge_block
 	return b.mod.add_instr(.phi, merge_block, str_type, [empty_str, b.mod.blocks[fail_end_block].val_id,
-		ok_str, b.mod.blocks[ok_end_block].val_id])
+		empty_str, b.mod.blocks[write_fail_end_block].val_id, ok_str, b.mod.blocks[ok_end_block].val_id])
 }
 
 fn (mut b Builder) build_string_inter_from_flat(c ast.Cursor) ValueID {

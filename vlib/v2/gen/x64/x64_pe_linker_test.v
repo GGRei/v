@@ -565,34 +565,44 @@ fn test_pe_linker_imports_ucrt_sqrt_and_patches_call_to_import_thunk() {
 	assert target == text_rva + sqrt_thunk
 }
 
-fn test_pe_linker_imports_ucrt_snprintf_and_patches_call_to_import_thunk() {
+fn test_pe_linker_imports_msvcrt_scprintf_snprintf_and_patches_call_to_import_thunks() {
 	mut obj := CoffObject.new()
-	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xc3]
-	obj.add_symbol('main', 5, true, 1)
-	snprintf_sym := obj.add_undefined('snprintf')
-	obj.add_text_reloc(1, snprintf_sym, coff_image_rel_amd64_rel32)
+	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xe8, 0, 0, 0, 0, 0xc3]
+	obj.add_symbol('main', 10, true, 1)
+	scprintf_sym := obj.add_undefined('_scprintf')
+	snprintf_sym := obj.add_undefined('_snprintf')
+	obj.add_text_reloc(1, scprintf_sym, coff_image_rel_amd64_rel32)
+	obj.add_text_reloc(6, snprintf_sym, coff_image_rel_amd64_rel32)
 
 	mut linker := PeLinker.new(obj)
 	image := linker.image() or { panic(err) }
 	names := pe_test_import_names(image)
 	dll_names := pe_test_import_dll_names(image)
 
-	assert names == ['ExitProcess', 'snprintf']
-	assert dll_names == ['kernel32.dll', 'ucrtbase.dll']
+	assert names == ['ExitProcess', '_scprintf', '_snprintf']
+	assert dll_names == ['kernel32.dll', 'msvcrt.dll']
 	assert pe_test_iat_size(image) == u32((names.len + dll_names.len) * 8)
 
 	text_off := pe_test_section_header(image, '.text')
 	text_rva := pe_test_u32(image, text_off + 12)
 	text_raw := int(pe_test_u32(image, text_off + 20))
-	field_off := text_raw + linker.entry_stub_size() + 1
-	field_rva := text_rva + u32(linker.entry_stub_size() + 1)
-	disp := pe_test_i32(image, field_off)
-	target := u32(i32(field_rva + 4) + disp)
 	import_offsets := linker.import_thunk_offsets(0)
-	snprintf_thunk := import_offsets[pe_ucrtbase_import_key('snprintf')] or {
-		panic('missing ucrtbase snprintf import thunk')
+	scprintf_thunk := import_offsets[pe_msvcrt_import_key('_scprintf')] or {
+		panic('missing msvcrt _scprintf import thunk')
 	}
-	assert target == text_rva + snprintf_thunk
+	snprintf_thunk := import_offsets[pe_msvcrt_import_key('_snprintf')] or {
+		panic('missing msvcrt _snprintf import thunk')
+	}
+	scprintf_field_off := text_raw + linker.entry_stub_size() + 1
+	scprintf_field_rva := text_rva + u32(linker.entry_stub_size() + 1)
+	scprintf_disp := pe_test_i32(image, scprintf_field_off)
+	scprintf_target := u32(i32(scprintf_field_rva + 4) + scprintf_disp)
+	assert scprintf_target == text_rva + scprintf_thunk
+	snprintf_field_off := text_raw + linker.entry_stub_size() + 6
+	snprintf_field_rva := text_rva + u32(linker.entry_stub_size() + 6)
+	snprintf_disp := pe_test_i32(image, snprintf_field_off)
+	snprintf_target := u32(i32(snprintf_field_rva + 4) + snprintf_disp)
+	assert snprintf_target == text_rva + snprintf_thunk
 }
 
 fn test_pe_linker_adds_runtime_kernel32_import_patches_only_when_needed() {
@@ -1996,7 +2006,7 @@ fn test_pe_linker_rejects_crt_stdio_symbols_with_minimal_runtime_message() {
 }
 
 fn test_pe_linker_rejects_common_crt_stdio_functions_with_minimal_runtime_message() {
-	for symbol_name in ['setvbuf', 'printf', 'puts', 'fputs', 'fopen'] {
+	for symbol_name in ['setvbuf', 'printf', 'snprintf', 'puts', 'fputs', 'fopen'] {
 		mut obj := CoffObject.new()
 		obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xc3]
 		obj.add_symbol('main', 0, true, 1)

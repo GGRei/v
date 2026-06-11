@@ -51,13 +51,15 @@ const pe_wgetenv_buffer_bytes = pe_wgetenv_buffer_wchars * 2
 const pe_kernel32_dll = 'kernel32.dll'
 const pe_shell32_dll = 'shell32.dll'
 const pe_ucrtbase_dll = 'ucrtbase.dll'
+const pe_msvcrt_dll = 'msvcrt.dll'
 const pe_kernel32_imports = ['ExitProcess', 'GetCommandLineW', 'GetStdHandle', 'GetConsoleMode',
 	'MultiByteToWideChar', 'WideCharToMultiByte', 'GetCurrentDirectoryW', 'GetEnvironmentVariableW',
 	'WriteConsoleW', 'WriteFile', 'GetProcessHeap', 'HeapAlloc', 'HeapReAlloc', 'HeapFree',
 	'GetCurrentThreadId', 'GetSystemTimeAsFileTime', 'FileTimeToSystemTime',
 	'SystemTimeToTzSpecificLocalTime']
 const pe_shell32_imports = ['CommandLineToArgvW']
-const pe_ucrtbase_imports = ['log', 'ldexp', 'sqrt', 'snprintf']
+const pe_ucrtbase_imports = ['log', 'ldexp', 'sqrt']
+const pe_msvcrt_imports = ['_scprintf', '_snprintf']
 
 struct PeImport {
 	dll  string
@@ -446,6 +448,7 @@ fn (l PeLinker) required_pe_imports(runtime_text PeRuntimeText) ![]PeImport {
 	mut required_kernel32 := map[string]bool{}
 	mut required_shell32 := map[string]bool{}
 	mut required_ucrtbase := map[string]bool{}
+	mut required_msvcrt := map[string]bool{}
 	pe_require_kernel32_import(mut required_kernel32, 'ExitProcess')!
 	if l.needs_windows_argv_bootstrap() {
 		pe_require_kernel32_import(mut required_kernel32, 'GetCommandLineW')!
@@ -477,11 +480,13 @@ fn (l PeLinker) required_pe_imports(runtime_text PeRuntimeText) ![]PeImport {
 			required_shell32[sym.name] = true
 		} else if pe_ucrtbase_import_is_known(sym.name) {
 			pe_require_ucrtbase_import(mut required_ucrtbase, sym.name)!
+		} else if pe_msvcrt_import_is_known(sym.name) {
+			pe_require_msvcrt_import(mut required_msvcrt, sym.name)!
 		}
 	}
 
 	mut imports := []PeImport{cap: required_kernel32.len + required_shell32.len +
-		required_ucrtbase.len}
+		required_ucrtbase.len + required_msvcrt.len}
 	for name in pe_kernel32_imports {
 		if required_kernel32[name] {
 			imports << PeImport{
@@ -502,6 +507,14 @@ fn (l PeLinker) required_pe_imports(runtime_text PeRuntimeText) ![]PeImport {
 		if required_ucrtbase[name] {
 			imports << PeImport{
 				dll:  pe_ucrtbase_dll
+				name: name
+			}
+		}
+	}
+	for name in pe_msvcrt_imports {
+		if required_msvcrt[name] {
+			imports << PeImport{
+				dll:  pe_msvcrt_dll
 				name: name
 			}
 		}
@@ -537,6 +550,10 @@ fn pe_ucrtbase_import_key(name string) string {
 	return pe_import_key(pe_ucrtbase_dll, name)
 }
 
+fn pe_msvcrt_import_key(name string) string {
+	return pe_import_key(pe_msvcrt_dll, name)
+}
+
 fn pe_require_kernel32_import(mut required map[string]bool, name string) ! {
 	if !pe_kernel32_import_is_known(name) {
 		return error('PE linker internal error: unknown Kernel32 import `${name}`')
@@ -562,6 +579,22 @@ fn pe_require_ucrtbase_import(mut required map[string]bool, name string) ! {
 
 fn pe_ucrtbase_import_is_known(name string) bool {
 	for known in pe_ucrtbase_imports {
+		if known == name {
+			return true
+		}
+	}
+	return false
+}
+
+fn pe_require_msvcrt_import(mut required map[string]bool, name string) ! {
+	if !pe_msvcrt_import_is_known(name) {
+		return error('PE linker internal error: unknown MSVCRT import `${name}`')
+	}
+	required[name] = true
+}
+
+fn pe_msvcrt_import_is_known(name string) bool {
+	for known in pe_msvcrt_imports {
 		if known == name {
 			return true
 		}
@@ -829,6 +862,9 @@ fn (l PeLinker) import_key_for_external_symbol(name string) ?string {
 	}
 	if pe_ucrtbase_import_is_known(name) {
 		return pe_ucrtbase_import_key(name)
+	}
+	if pe_msvcrt_import_is_known(name) {
+		return pe_msvcrt_import_key(name)
 	}
 	return none
 }
