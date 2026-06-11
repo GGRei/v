@@ -66,7 +66,7 @@ jobs:
           bfs3	examples/graphs/bfs3.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph maps/arrays; stdout compared to V normal run
           dfs	examples/graphs/dfs.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph maps/arrays; stdout compared to V normal run
           dijkstra	examples/graphs/dijkstra.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph maps/arrays/generics; stdout compared to V normal run
-          dump_factorial	examples/dump_factorial.v	1	tiny-used	strict_auto_tiny	20	dump identity/factorial recursion; stdout exact
+          dump_factorial	examples/dump_factorial.v	1	tiny-fallback	strict_reject_auto_hosted	20	dump identity/factorial recursion; stdout exact; dump() requires hosted allocation
           fibonacci	examples/fibonacci.v	1	tiny-fallback	strict_reject_auto_hosted	20	arguments() requires hosted argc/argv; strict tiny rejects and auto falls back hosted
           primes	examples/primes.v	1	tiny-fallback	strict_reject_auto_hosted	20	arguments()/math.log; stdout compared to V normal run
           tree_of_nodes	examples/tree_of_nodes.v	1	tiny-fallback	strict_reject_auto_hosted	20	recursive sumtypes/auto-str; stdout exact
@@ -644,7 +644,7 @@ jobs:
           bfs3	examples/graphs/bfs3.v	1	normal-required	30	graph maps/arrays; stdout compared to V normal run
           dfs	examples/graphs/dfs.v	1	normal-required	30	graph maps/arrays; stdout compared to V normal run
           dijkstra	examples/graphs/dijkstra.v	1	normal-required	30	graph maps/arrays/generics; stdout compared to V normal run
-          dump_factorial	examples/dump_factorial.v	1	tiny-used	20	dump identity/factorial recursion; stdout exact
+          dump_factorial	examples/dump_factorial.v	1	tiny-fallback	20	dump identity/factorial recursion; stdout exact; dump() requires hosted allocation
           fibonacci	examples/fibonacci.v	1	tiny-fallback	20	arguments() requires hosted argc/argv; auto Mach-O tiny rejects and falls back normal
           primes	examples/primes.v	1	tiny-fallback	20	arguments()/math.log; stdout compared to V normal run
           tree_of_nodes	examples/tree_of_nodes.v	1	normal-required	20	recursive sumtypes/auto-str; stdout exact
