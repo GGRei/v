@@ -4550,6 +4550,62 @@ fn main() {
 	exit(37)
 	print('X')
 }
+	"
+}
+
+fn x64_win64_atexit_main_return_source() string {
+	return "module main
+
+fn on_exit() {
+	print('A')
+}
+
+fn main() {
+	at_exit(on_exit) or {
+		exit(91)
+	}
+	print('M')
+}
+"
+}
+
+fn x64_win64_atexit_exit_code_source() string {
+	return "module main
+
+fn on_exit() {
+	print('C')
+}
+
+fn main() {
+	at_exit(on_exit) or {
+		exit(92)
+	}
+	print('B')
+	exit(7)
+}
+"
+}
+
+fn x64_win64_atexit_lifo_source() string {
+	return "module main
+
+fn first() {
+	print('1')
+}
+
+fn second() {
+	print('2')
+}
+
+fn main() {
+	at_exit(first) or {
+		exit(93)
+	}
+	at_exit(second) or {
+		exit(94)
+	}
+	print('M')
+}
 "
 }
 
@@ -6162,6 +6218,21 @@ fn test_x64_windows_rune_array_string_free_stdout_exact_bytes() {
 fn test_x64_macos_windows_exit_code_stdout_stderr_exact() {
 	assert_x64_macos_windows_exit_code_stdout_stderr('exit_37_exact', x64_exit_37_source(), 37,
 		[]u8{}, []u8{})
+}
+
+fn test_x64_windows_atexit_callback_runs_on_main_return_stdout_exact_bytes() {
+	assert_x64_windows_exit_code_stdout_stderr('win64_atexit_main_return_exact',
+		x64_win64_atexit_main_return_source(), 0, 'MA'.bytes(), []u8{})
+}
+
+fn test_x64_windows_atexit_callback_runs_before_exit_with_code_preserved() {
+	assert_x64_windows_exit_code_stdout_stderr('win64_atexit_exit_code_exact',
+		x64_win64_atexit_exit_code_source(), 7, 'BC'.bytes(), []u8{})
+}
+
+fn test_x64_windows_atexit_callbacks_run_lifo_stdout_exact_bytes() {
+	assert_x64_windows_exit_code_stdout_stderr('win64_atexit_lifo_exact',
+		x64_win64_atexit_lifo_source(), 0, 'M21'.bytes(), []u8{})
 }
 
 fn test_x64_windows_entry_call_exit_exact() {
