@@ -54,6 +54,22 @@ fn (g &Gen) result_value_c_type(result_type string) string {
 	return g.option_result_payload_c_type(g.result_value_type(result_type))
 }
 
+fn (g &Gen) c_type_is_fn_pointer_alias(type_name string) bool {
+	name := type_name.trim_space()
+	if name == '' {
+		return false
+	}
+	if name in g.fn_type_aliases {
+		return true
+	}
+	if raw_type := g.lookup_type_by_c_name_const(name) {
+		if raw_type is types.Alias && raw_type.base_type is types.FnType {
+			return true
+		}
+	}
+	return false
+}
+
 fn option_value_type(option_type string) string {
 	if !option_type.starts_with('_option_') {
 		return ''
@@ -1044,10 +1060,10 @@ fn (mut g Gen) collect_runtime_aliases() {
 						// param / return types); decode the body-less signature
 						// so cleanc's type-alias collection never rehydrates a fn
 						// body on the default build path.
-						g.collect_decl_type_aliases_from_stmt(ast.Stmt(stmt.fn_decl_signature()))
+						g.collect_decl_type_aliases_from_stmt_cursor(stmt)
 					}
 					.stmt_struct_decl, .stmt_interface_decl, .stmt_type_decl, .stmt_global_decl {
-						g.collect_decl_type_aliases_from_stmt(stmt.stmt())
+						g.collect_decl_type_aliases_from_stmt_cursor(stmt)
 					}
 					else {}
 				}
@@ -1159,6 +1175,27 @@ fn (mut g Gen) collect_aliases_from_type(t types.Type) {
 		}
 		types.Pointer {
 			g.collect_aliases_from_type(t.base_type)
+		}
+		else {}
+	}
+}
+
+fn (mut g Gen) collect_decl_type_aliases_from_stmt_cursor(stmt ast.Cursor) {
+	match stmt.kind() {
+		.stmt_struct_decl {
+			g.collect_decl_type_aliases_from_stmt(ast.Stmt(stmt.struct_decl()))
+		}
+		.stmt_interface_decl {
+			g.collect_decl_type_aliases_from_stmt(ast.Stmt(stmt.interface_decl()))
+		}
+		.stmt_type_decl {
+			g.collect_decl_type_aliases_from_stmt(ast.Stmt(stmt.type_decl()))
+		}
+		.stmt_fn_decl {
+			g.collect_decl_type_aliases_from_stmt(ast.Stmt(stmt.fn_decl_signature()))
+		}
+		.stmt_global_decl {
+			g.collect_decl_type_aliases_from_stmt(ast.Stmt(stmt.global_decl(false)))
 		}
 		else {}
 	}
@@ -1410,7 +1447,7 @@ fn (g &Gen) option_result_payload_is_unbound_generic_struct(val_type string) boo
 	}
 	typ := g.lookup_type_by_c_name_const(base) or { return false }
 	if typ is types.Struct {
-		return typ.generic_params.len > 0
+		return runtime_generic_param_names(typ.generic_params).len > 0
 	}
 	return false
 }
@@ -2530,6 +2567,20 @@ fn embedded_owner_field_name(type_name string) string {
 	return base
 }
 
+fn flat_struct_decl_c_name(module_name string, decl_name string) string {
+	if decl_name.contains('__') {
+		return decl_name
+	}
+	if module_name != '' && module_name != 'main' && module_name != 'builtin' {
+		return '${module_name}__${decl_name}'
+	}
+	return decl_name
+}
+
+fn flat_struct_short_key(module_name string, short_name string) string {
+	return '${module_name}\x01${short_name}'
+}
+
 fn (mut g Gen) lookup_embedded_field_info_in_struct(st types.Struct, field_name string) ?EmbeddedFieldLookupInfo {
 	for embedded in st.embedded {
 		embedded_c_type := g.types_type_to_c(embedded)
@@ -2558,37 +2609,86 @@ fn (mut g Gen) lookup_embedded_field_info_in_struct(st types.Struct, field_name 
 	return none
 }
 
-fn (mut g Gen) find_struct_decl_info_in_flat(c_name string, saved_module string, current_module_only bool, exact bool) ?StructDeclInfo {
-	for i in 0 .. g.flat.files.len {
-		fc := g.flat.file_cursor(i)
-		g.set_file_cursor_module(fc)
-		if current_module_only && g.cur_module != saved_module {
-			continue
-		}
+fn (mut g Gen) ensure_flat_struct_decl_index() {
+	if g.flat_struct_decl_indexed || !g.has_flat() {
+		return
+	}
+	g.flat_struct_decl_exact = map[string]FlatStructDeclInfo{}
+	g.flat_struct_decl_short_by_mod = map[string]FlatStructDeclInfo{}
+	g.flat_struct_decl_short = map[string]FlatStructDeclInfo{}
+	for file_idx in 0 .. g.flat.files.len {
+		fc := g.flat.file_cursor(file_idx)
+		module_name := flat_file_module_name(fc)
+		file_name := fc.name()
 		stmts := fc.stmts()
-		for j in 0 .. stmts.len() {
-			stmt := stmts.at(j)
+		for stmt_idx in 0 .. stmts.len() {
+			stmt := stmts.at(stmt_idx)
 			if stmt.kind() != .stmt_struct_decl {
 				continue
 			}
-			decl := stmt.struct_decl()
-			if decl.language != .v {
+			language := unsafe { ast.Language(int(stmt.aux())) }
+			if language != .v {
 				continue
 			}
-			struct_name := g.get_struct_name(decl)
-			matches := if exact {
-				struct_name == c_name
-			} else {
-				short_type_name(struct_name) == c_name
+			decl_name := stmt.name()
+			c_name := flat_struct_decl_c_name(module_name, decl_name)
+			short_name := short_type_name(c_name)
+			info := FlatStructDeclInfo{
+				file_idx:  file_idx
+				stmt_idx:  stmt_idx
+				mod:       module_name
+				file_name: file_name
 			}
-			if matches {
-				return StructDeclInfo{
-					decl:      decl
-					mod:       g.cur_module
-					file_name: fc.name()
-				}
+			if c_name !in g.flat_struct_decl_exact {
+				g.flat_struct_decl_exact[c_name] = info
+			}
+			mod_key := flat_struct_short_key(module_name, short_name)
+			if mod_key !in g.flat_struct_decl_short_by_mod {
+				g.flat_struct_decl_short_by_mod[mod_key] = info
+			}
+			if short_name !in g.flat_struct_decl_short {
+				g.flat_struct_decl_short[short_name] = info
 			}
 		}
+	}
+	g.flat_struct_decl_indexed = true
+}
+
+fn (g &Gen) struct_decl_info_from_flat_info(info FlatStructDeclInfo) ?StructDeclInfo {
+	if !g.has_flat() || info.file_idx < 0 || info.file_idx >= g.flat.files.len {
+		return none
+	}
+	stmts := g.flat.file_cursor(info.file_idx).stmts()
+	if info.stmt_idx < 0 || info.stmt_idx >= stmts.len() {
+		return none
+	}
+	stmt := stmts.at(info.stmt_idx)
+	if stmt.kind() != .stmt_struct_decl {
+		return none
+	}
+	return StructDeclInfo{
+		decl:      stmt.struct_decl()
+		mod:       info.mod
+		file_name: info.file_name
+	}
+}
+
+fn (mut g Gen) find_struct_decl_info_in_flat(c_name string, saved_module string, current_module_only bool, exact bool) ?StructDeclInfo {
+	g.ensure_flat_struct_decl_index()
+	if exact {
+		if info := g.flat_struct_decl_exact[c_name] {
+			return g.struct_decl_info_from_flat_info(info)
+		}
+		return none
+	}
+	if current_module_only {
+		if info := g.flat_struct_decl_short_by_mod[flat_struct_short_key(saved_module, c_name)] {
+			return g.struct_decl_info_from_flat_info(info)
+		}
+		return none
+	}
+	if info := g.flat_struct_decl_short[c_name] {
+		return g.struct_decl_info_from_flat_info(info)
 	}
 	return none
 }
@@ -3119,6 +3219,22 @@ fn (g &Gen) get_expr_type_from_env(e ast.Expr) ?string {
 	return none
 }
 
+fn (g &Gen) get_expr_cursor_type_from_env(e ast.Cursor) ?string {
+	if g.env == unsafe { nil } || !e.is_valid() {
+		return none
+	}
+	pos := e.pos()
+	if pos.id != 0 {
+		if typ := g.env.get_expr_type(pos.id) {
+			if typ is types.Alias {
+				return none
+			}
+			return g.types_type_to_c(typ)
+		}
+	}
+	return none
+}
+
 // get_env_c_type retrieves the C type string for an expression from the Environment
 // without filtering aliases.  This is safe for selector field types where the alias
 // (e.g. strings__Builder, ssa__TypeID) is the correct type for the field.
@@ -3389,6 +3505,11 @@ fn (mut g Gen) builtin_string_field_lhs_type(lhs ast.Expr, field_name string) st
 
 fn is_float_like_c_type_name(typ string) bool {
 	return typ in ['f32', 'f64', 'float_literal']
+}
+
+fn is_numeric_literal_c_type_name(typ string) bool {
+	return typ in ['int', 'int_literal', 'i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64',
+		'usize', 'isize', 'byte', 'rune', 'f32', 'f64', 'float_literal']
 }
 
 fn promote_numeric_c_types(lhs string, rhs string) string {
@@ -3692,7 +3813,17 @@ fn (mut g Gen) get_expr_type_from_env_checked(node ast.Expr, t string) ?string {
 	if checked := g.get_expr_type_from_env_call_checked(node) {
 		return checked
 	}
-	if t == 'bool' && node is ast.BasicLiteral && node.kind == .number {
+	if node is ast.BasicLiteral && node.kind == .number {
+		if t == 'bool' {
+			return 'int'
+		}
+		if is_numeric_literal_c_type_name(t) {
+			return t
+		}
+		numeric_type := g.infer_numeric_expr_type(node)
+		if numeric_type != '' {
+			return numeric_type
+		}
 		return 'int'
 	}
 	match node {
@@ -5463,6 +5594,10 @@ fn (mut g Gen) emit_late_generic_struct(base_name string, inst GenericStructInst
 	prev_active := g.active_generic_types.clone()
 	g.active_generic_types = inst.bindings.clone()
 	mut def := strings.new_builder(256)
+	for field in struct_node.fields {
+		field_type := g.struct_field_type_for_emit(inst.c_name, field)
+		g.emit_late_generic_struct_dependency_for_type(field_type)
+	}
 	// Emit typedef forward declarations so self-referential pointer fields
 	// (e.g. linked-list `next` pointers) and other generic-instance field
 	// types can be resolved without `struct` tag inside the body.
@@ -5472,7 +5607,7 @@ fn (mut g Gen) emit_late_generic_struct(base_name string, inst GenericStructInst
 	def.writeln('typedef ${keyword} ${inst.c_name} ${inst.c_name};')
 	mut seen_field_typedef := map[string]bool{}
 	for field in struct_node.fields {
-		ft := g.qualify_owner_local_field_type(inst.c_name, g.expr_type_to_c(field.typ))
+		ft := g.struct_field_type_for_emit(inst.c_name, field)
 		fbase := ft.trim_right('*')
 		if fbase != inst.c_name && fbase.contains('_T_') && !fbase.starts_with('Array_')
 			&& !fbase.starts_with('Map_') && fbase !in seen_field_typedef {
@@ -5482,8 +5617,15 @@ fn (mut g Gen) emit_late_generic_struct(base_name string, inst GenericStructInst
 	}
 	def.writeln('${keyword} ${inst.c_name} {')
 	for field in struct_node.fields {
-		field_type := g.qualify_owner_local_field_type(inst.c_name, g.expr_type_to_c(field.typ))
+		field_type := g.struct_field_type_for_emit(inst.c_name, field)
 		field_name := if field.name.len > 0 { field.name } else { 'value' }
+		if decl := g.struct_fn_field_decl_for_emit(field, field_name) {
+			def.writeln('\t${decl};')
+			g.struct_field_types['${inst.c_name}.${field_name}'] = g.struct_fn_field_lookup_type_for_emit(field) or {
+				'void*'
+			}
+			continue
+		}
 		def.writeln('\t${field_type} ${field_name};')
 		g.struct_field_types['${inst.c_name}.${field_name}'] = field_type
 	}
@@ -5502,25 +5644,69 @@ fn (mut g Gen) emit_late_generic_struct(base_name string, inst GenericStructInst
 	g.late_struct_defs << def.str()
 }
 
+fn (mut g Gen) emit_late_generic_struct_dependency_for_type(type_name string) {
+	mut base := g.canonical_generic_struct_type_for_emit(type_name).trim_space()
+	for base.ends_with('*') {
+		base = base[..base.len - 1].trim_space()
+	}
+	if base == '' || !base.contains('_T_') || base.starts_with('Array_') || base.starts_with('Map_')
+		|| base.starts_with('_option_') || base.starts_with('_result_') {
+		return
+	}
+	body_key := 'body_${base}'
+	if body_key in g.emitted_types || body_key in g.pending_late_body_keys {
+		return
+	}
+	for struct_base, instances in g.generic_struct_instances {
+		for dep in instances {
+			if dep.c_name == base {
+				g.emit_late_generic_struct(struct_base, dep)
+				return
+			}
+		}
+	}
+	g.emit_late_concrete_struct_dependency_by_c_name(base)
+}
+
+fn (mut g Gen) emit_late_concrete_struct_dependency_by_c_name(c_name string) {
+	body_key := 'body_${c_name}'
+	if body_key in g.emitted_types || body_key in g.pending_late_body_keys {
+		return
+	}
+	node := g.find_struct_node_by_c_name(c_name) or { return }
+	g.emit_late_concrete_struct_decl(node, c_name)
+}
+
+fn (mut g Gen) find_struct_node_by_c_name(c_name string) ?ast.StructDecl {
+	prev_module := g.cur_module
+	prev_file_name := g.cur_file_name
+	defer {
+		g.cur_module = prev_module
+		g.cur_file_name = prev_file_name
+	}
+	if g.has_flat() {
+		if info := g.find_struct_decl_info_by_c_name(c_name) {
+			return info.decl
+		}
+		return none
+	}
+	for file in g.files {
+		g.set_file_module(file)
+		for stmt in file.stmts {
+			if stmt is ast.StructDecl && g.get_struct_name(stmt) == c_name {
+				return stmt
+			}
+		}
+	}
+	return none
+}
+
 // find_generic_struct_node finds the AST StructDecl for a given C struct name.
 fn (mut g Gen) find_generic_struct_node(c_name string) ?ast.StructDecl {
 	if g.has_flat() {
-		for i in 0 .. g.flat.files.len {
-			fc := g.flat.file_cursor(i)
-			g.set_file_cursor_module(fc)
-			stmts := fc.stmts()
-			for j in 0 .. stmts.len() {
-				stmt := stmts.at(j)
-				if stmt.kind() != .stmt_struct_decl {
-					continue
-				}
-				decl := stmt.struct_decl()
-				if decl.generic_params.len > 0 {
-					name := g.get_struct_name(decl)
-					if name == c_name {
-						return decl
-					}
-				}
+		if info := g.find_struct_decl_info_by_c_name(c_name) {
+			if info.decl.generic_params.len > 0 {
+				return info.decl
 			}
 		}
 		return none

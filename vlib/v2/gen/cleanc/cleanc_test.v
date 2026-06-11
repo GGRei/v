@@ -920,6 +920,9 @@ fn test_fn_head_emits_forward_typedef_for_concrete_generic_receiver() {
 	}
 	fn_name := 'printer__CounterWriter_T_string__count'
 	g.fn_param_types[fn_name] = ['printer__CounterWriter_T_string']
+	// Forward typedefs for concrete generic signature types are emitted by the
+	// centralized signature pass (not inline by each fn head).
+	g.emit_forward_typedefs_for_signature_types()
 	g.gen_fn_head_with_name(count_method, fn_name)
 	g.sb.writeln(';')
 	csrc := g.sb.str()
@@ -4114,7 +4117,8 @@ mut:
 	g.type_modules['json2'] = true
 	g.collect_generic_struct_bindings()
 
-	assert g.generic_struct_instances.len == 0
+	assert g.generic_struct_instances['json2__LinkedList'].len == 1
+	assert g.generic_struct_instances['json2__Node'].len == 1
 	mut gen := Gen.new_with_env_and_pref(transformed_files, env, prefs)
 	gen.cache_bundle_name = 'imports'
 	gen.emit_modules['json2'] = true
