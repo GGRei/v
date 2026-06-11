@@ -76,6 +76,7 @@ jobs:
           minimal_spann_tree_prim	examples/graphs/minimal_spann_tree_prim.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph generics; stdout compared to V normal run
           bellman_ford	examples/graphs/bellman-ford.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph generics; stdout compared to V normal run
           binary_search_tree	examples/binary_search_tree.v	1	tiny-fallback	strict_reject_auto_hosted	30	generic sumtype tree; stdout compared to V normal run
+          errors	examples/errors.v	1	tiny-fallback	strict_reject_auto_hosted	20	IError/custom errors; stdout exact
           custom_error	examples/custom_error.v	1	tiny-fallback	strict_reject_auto_hosted	20	IError/custom errors; stdout compared to V normal run
           spectral	examples/spectral.v	1	tiny-fallback	strict_reject_auto_hosted	30	spectral norm/math.sqrt/formatted f64 interpolation; stdout compared to V normal run with arg 10
           EOF
@@ -234,6 +235,9 @@ jobs:
                 ;;
               dump_factorial)
                 printf '120\n' > "$expected"
+                ;;
+              errors)
+                printf 'wrong format\nempty input\n' > "$expected"
                 ;;
               primes)
                 write_v_run_expected "$source" "$expected" 20
@@ -661,6 +665,7 @@ jobs:
           minimal_spann_tree_prim	examples/graphs/minimal_spann_tree_prim.v	1	normal-required	30	graph generics; stdout compared to V normal run
           bellman_ford	examples/graphs/bellman-ford.v	1	normal-required	30	graph generics; stdout compared to V normal run
           binary_search_tree	examples/binary_search_tree.v	1	normal-required	30	generic sumtype tree; stdout compared to V normal run
+          errors	examples/errors.v	1	normal-required	20	IError/custom errors; stdout exact
           custom_error	examples/custom_error.v	1	normal-required	20	IError/custom errors; stdout compared to V normal run
           spectral	examples/spectral.v	1	normal-required	30	spectral norm/math.sqrt/formatted f64 interpolation; stdout compared to V normal run with arg 10
           EOF
@@ -802,6 +807,9 @@ jobs:
                 ;;
               dump_factorial)
                 printf '120\n' > "$expected"
+                ;;
+              errors)
+                printf 'wrong format\nempty input\n' > "$expected"
                 ;;
               primes)
                 write_v_run_expected "$source" "$expected" 20
@@ -1293,6 +1301,14 @@ jobs:
               Notes = 'generic sumtype tree stdout compared to V normal run'
             }
             [pscustomobject]@{
+              Name = 'errors'
+              Source = 'examples/errors.v'
+              Enabled = $true
+              BackendStatus = 'normal-required'
+              TimeoutSeconds = 20
+              Notes = 'IError/custom errors stdout exact'
+            }
+            [pscustomobject]@{
               Name = 'custom_error'
               Source = 'examples/custom_error.v'
               Enabled = $true
@@ -1659,6 +1675,9 @@ jobs:
               }
               'dump_factorial' {
                 return ,([System.Text.Encoding]::UTF8.GetBytes("120`n"))
+              }
+              'errors' {
+                return ,([System.Text.Encoding]::UTF8.GetBytes("wrong format`nempty input`n"))
               }
               'primes' {
                 [string[]] $programArgs = @()
