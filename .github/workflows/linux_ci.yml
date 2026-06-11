@@ -341,6 +341,7 @@ jobs:
           write_v_run_expected examples/graphs/minimal_spann_tree_prim.v "$tmp/minimal_spann_tree_prim.expected"
           write_v_run_expected examples/graphs/bellman-ford.v "$tmp/bellman_ford.expected"
           write_v_run_expected examples/binary_search_tree.v "$tmp/binary_search_tree.expected"
+          write_v_run_expected examples/custom_error.v "$tmp/custom_error.expected"
 
           run_native_x64_example examples/hello_world.v hello_world "$tmp/hello_world.expected"
           run_native_x64_example examples/fizz_buzz.v fizz_buzz "$tmp/fizz_buzz.expected"
@@ -365,6 +366,7 @@ jobs:
           run_native_x64_example examples/graphs/minimal_spann_tree_prim.v minimal_spann_tree_prim "$tmp/minimal_spann_tree_prim.expected"
           run_native_x64_example examples/graphs/bellman-ford.v bellman_ford "$tmp/bellman_ford.expected"
           run_native_x64_example examples/binary_search_tree.v binary_search_tree "$tmp/binary_search_tree.expected"
+          run_native_x64_example examples/custom_error.v custom_error "$tmp/custom_error.expected"
       - name: All code is formatted
         run: v run ci/linux_ci.vsh all_code_is_formatted_gcc
       - name: Install dependencies for examples and tools

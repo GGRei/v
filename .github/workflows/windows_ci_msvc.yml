@@ -426,6 +426,10 @@ jobs:
 
           [byte[]] $binary_search_tree_expected = Get-VRunExpectedBytes 'examples/binary_search_tree.v' 'binary_search_tree'
           Invoke-NativeX64Example 'examples/binary_search_tree.v' 'binary_search_tree' $binary_search_tree_expected
+
+          # normal-required: IError/custom errors
+          [byte[]] $custom_error_expected = Get-VRunExpectedBytes 'examples/custom_error.v' 'custom_error'
+          Invoke-NativeX64Example 'examples/custom_error.v' 'custom_error' $custom_error_expected
       - name: Build V with WX
         run: v -cflags /WX self
       - name: All code is formatted

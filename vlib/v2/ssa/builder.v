@@ -1535,6 +1535,302 @@ fn (b &Builder) is_error_expr(expr ast.Expr) bool {
 	}
 }
 
+fn (b &Builder) module_scope_has_direct_type(module_name string, type_name string) bool {
+	if b.env == unsafe { nil } {
+		return false
+	}
+	if scope := b.env.get_scope(module_name) {
+		if _ := scope.lookup_type(type_name) {
+			return true
+		}
+	}
+	return false
+}
+
+fn (b &Builder) short_type_name_is_unshadowed_builtin(name string) bool {
+	if name == '' || !b.module_scope_has_direct_type('builtin', name) {
+		return false
+	}
+	if b.cur_module != '' && b.cur_module != 'builtin'
+		&& b.module_scope_has_direct_type(b.cur_module, name) {
+		return false
+	}
+	return true
+}
+
+fn (b &Builder) type_name_is_builtin_ierror(name string) bool {
+	if name == 'builtin__IError' || name == 'builtin.IError' {
+		return b.module_scope_has_direct_type('builtin', 'IError')
+	}
+	if name == 'IError' {
+		return b.short_type_name_is_unshadowed_builtin('IError')
+	}
+	return false
+}
+
+fn (b &Builder) type_name_is_builtin_error(name string) bool {
+	if name == 'builtin__Error' || name == 'builtin.Error' {
+		return b.module_scope_has_direct_type('builtin', 'Error')
+	}
+	if name == 'Error' {
+		return b.short_type_name_is_unshadowed_builtin('Error')
+	}
+	return false
+}
+
+fn (mut b Builder) type_is_ierror_like(typ types.Type) bool {
+	unwrapped := b.unwrap_alias_type(typ)
+	match unwrapped {
+		types.Interface {
+			return b.type_name_is_builtin_ierror(unwrapped.name)
+		}
+		types.Pointer {
+			return b.type_is_ierror_like(unwrapped.base_type)
+		}
+		types.Struct {
+			if b.type_name_is_builtin_error(unwrapped.name) {
+				return true
+			}
+			for embedded in unwrapped.embedded {
+				if b.type_name_is_builtin_error(embedded.name) {
+					return true
+				}
+			}
+			return false
+		}
+		else {
+			return false
+		}
+	}
+}
+
+fn (mut b Builder) expr_is_ierror_like(expr ast.Expr) bool {
+	typ := b.get_checked_expr_type(expr) or { return false }
+	return b.type_is_ierror_like(typ)
+}
+
+fn (mut b Builder) cursor_is_ierror_like(c ast.Cursor) bool {
+	typ := b.get_checked_expr_type_from_flat(c) or { return false }
+	return b.type_is_ierror_like(typ)
+}
+
+fn (mut b Builder) type_is_ierror_interface(typ types.Type) bool {
+	unwrapped := b.unwrap_alias_type(typ)
+	match unwrapped {
+		types.Interface {
+			return b.type_name_is_builtin_ierror(unwrapped.name)
+		}
+		else {
+			return false
+		}
+	}
+}
+
+fn (mut b Builder) type_is_concrete_ierror(typ types.Type) bool {
+	unwrapped := b.unwrap_alias_type(typ)
+	match unwrapped {
+		types.Pointer {
+			return b.type_is_concrete_ierror(unwrapped.base_type)
+		}
+		types.Struct {
+			if b.type_name_is_builtin_error(unwrapped.name) {
+				return true
+			}
+			for embedded in unwrapped.embedded {
+				if b.type_name_is_builtin_error(embedded.name) {
+					return true
+				}
+			}
+			return false
+		}
+		else {
+			return false
+		}
+	}
+}
+
+fn (mut b Builder) checked_type_for_ssa_type(type_id TypeID) ?types.Type {
+	if !b.valid_type_id(type_id) {
+		return none
+	}
+	type_name := b.mod.c_struct_names[int(type_id)] or { return none }
+	return b.lookup_checked_type_by_name(type_name)
+}
+
+fn (mut b Builder) ierror_tag_for_checked_type(typ types.Type) ?ValueID {
+	if !b.type_is_concrete_ierror(typ) {
+		return none
+	}
+	unwrapped := b.unwrap_alias_type(typ)
+	concrete_type := match unwrapped {
+		types.Pointer {
+			b.unwrap_alias_type(unwrapped.base_type)
+		}
+		else {
+			unwrapped
+		}
+	}
+
+	type_id := b.type_to_ssa(concrete_type)
+	if !b.valid_type_id(type_id) || int(type_id) == 0 {
+		return none
+	}
+	i64_t := b.mod.type_store.get_int(64)
+	return b.mod.get_or_add_const(i64_t, int(type_id).str())
+}
+
+fn (mut b Builder) ierror_tag_for_ssa_type(type_id TypeID) ?ValueID {
+	typ := b.checked_type_for_ssa_type(type_id) or { return none }
+	return b.ierror_tag_for_checked_type(typ)
+}
+
+fn (mut b Builder) ierror_tag_for_type_expr(expr ast.Expr) ?ValueID {
+	type_id := b.ast_type_to_ssa(expr)
+	return b.ierror_tag_for_ssa_type(type_id)
+}
+
+fn (mut b Builder) ierror_tag_for_type_cursor(c ast.Cursor) ?ValueID {
+	type_id := b.ast_type_to_ssa_from_flat(c)
+	return b.ierror_tag_for_ssa_type(type_id)
+}
+
+fn (mut b Builder) type_expr_is_ierror_interface(expr ast.Expr) bool {
+	name := match expr {
+		ast.Ident {
+			expr.name
+		}
+		ast.SelectorExpr {
+			expr.name().replace('.', '__')
+		}
+		else {
+			''
+		}
+	}
+
+	if b.type_name_is_builtin_ierror(name) {
+		return true
+	}
+	if name != '' {
+		return false
+	}
+	typ := b.get_checked_expr_type(expr) or { return false }
+	return b.type_is_ierror_interface(typ)
+}
+
+fn (mut b Builder) type_cursor_is_ierror_interface(c ast.Cursor) bool {
+	name := match c.kind() {
+		.expr_ident {
+			c.name()
+		}
+		.expr_selector {
+			lhs := c.edge(0)
+			rhs := c.edge(1)
+			if lhs.kind() == .expr_ident {
+				'${lhs.name()}__${rhs.name()}'
+			} else {
+				rhs.name()
+			}
+		}
+		else {
+			''
+		}
+	}
+
+	if b.type_name_is_builtin_ierror(name) {
+		return true
+	}
+	if name != '' {
+		return false
+	}
+	typ := b.get_checked_expr_type_from_flat(c) or { return false }
+	return b.type_is_ierror_interface(typ)
+}
+
+fn (mut b Builder) ierror_tag_for_expr(expr ast.Expr) ?ValueID {
+	match expr {
+		ast.CallOrCastExpr {
+			if b.type_expr_is_ierror_interface(expr.lhs) {
+				return b.ierror_tag_for_expr(expr.expr)
+			}
+		}
+		ast.CastExpr {
+			if b.type_expr_is_ierror_interface(expr.typ) {
+				return b.ierror_tag_for_expr(expr.expr)
+			}
+		}
+		ast.ParenExpr {
+			return b.ierror_tag_for_expr(expr.expr)
+		}
+		ast.ModifierExpr {
+			return b.ierror_tag_for_expr(expr.expr)
+		}
+		else {}
+	}
+
+	typ := b.get_checked_expr_type(expr) or { return none }
+	return b.ierror_tag_for_checked_type(typ)
+}
+
+fn (mut b Builder) ierror_tag_for_cursor(c ast.Cursor) ?ValueID {
+	match c.kind() {
+		.expr_call_or_cast {
+			if b.type_cursor_is_ierror_interface(c.edge(0)) {
+				return b.ierror_tag_for_cursor(c.edge(1))
+			}
+		}
+		.expr_cast {
+			if b.type_cursor_is_ierror_interface(c.edge(0)) {
+				return b.ierror_tag_for_cursor(c.edge(1))
+			}
+		}
+		.expr_paren, .expr_modifier {
+			return b.ierror_tag_for_cursor(c.edge(0))
+		}
+		else {}
+	}
+
+	typ := b.get_checked_expr_type_from_flat(c) or { return none }
+	return b.ierror_tag_for_checked_type(typ)
+}
+
+fn (mut b Builder) build_ierror_concrete_compare(subject ValueID, subject_expr ast.Expr, variant_expr ast.Expr, op token.Token) ?ValueID {
+	if op !in [.eq, .ne, .key_is, .not_is] {
+		return none
+	}
+	subject_type := b.get_checked_expr_type(subject_expr) or { return none }
+	if !b.type_is_ierror_interface(subject_type) {
+		return none
+	}
+	expected := b.ierror_tag_for_type_expr(variant_expr) or { return none }
+	bool_type := b.mod.type_store.get_int(1)
+	cmp_op := if op in [.eq, .key_is] { OpCode.eq } else { OpCode.ne }
+	return b.mod.add_instr(cmp_op, b.cur_block, bool_type, [subject, expected])
+}
+
+fn (mut b Builder) build_ierror_concrete_compare_from_flat(subject ValueID, subject_c ast.Cursor, variant_c ast.Cursor, op token.Token) ?ValueID {
+	if op !in [.eq, .ne, .key_is, .not_is] {
+		return none
+	}
+	subject_type := b.get_checked_expr_type_from_flat(subject_c) or { return none }
+	if !b.type_is_ierror_interface(subject_type) {
+		return none
+	}
+	expected := b.ierror_tag_for_type_cursor(variant_c) or { return none }
+	bool_type := b.mod.type_store.get_int(1)
+	cmp_op := if op in [.eq, .key_is] { OpCode.eq } else { OpCode.ne }
+	return b.mod.add_instr(cmp_op, b.cur_block, bool_type, [subject, expected])
+}
+
+fn (mut b Builder) wrapper_value_is_valid_payload(val ValueID, wrapper_type TypeID) bool {
+	if !b.wrapper_has_data(wrapper_type) {
+		return false
+	}
+	if val <= 0 || val >= b.mod.values.len {
+		return false
+	}
+	return b.mod.values[val].typ == b.wrapper_data_type(wrapper_type)
+}
+
 fn (mut b Builder) build_wrapper_value(wrapper_type TypeID, success bool, payload ValueID, has_payload bool) ValueID {
 	if wrapper_type <= 0 || wrapper_type >= b.mod.type_store.types.len {
 		return payload
@@ -1591,6 +1887,11 @@ fn (mut b Builder) coerce_wrapper_value(expr ast.Expr, val ValueID, wrapper_type
 	}
 	if b.is_error_expr(expr) {
 		return b.build_wrapper_value(wrapper_type, false, val, false)
+	}
+	if b.is_result_wrapper_type(wrapper_type) && b.expr_is_ierror_like(expr)
+		&& !b.wrapper_value_is_valid_payload(val, wrapper_type) {
+		err_payload := b.ierror_tag_for_expr(expr) or { val }
+		return b.build_wrapper_value(wrapper_type, false, err_payload, false)
 	}
 	if val > 0 && val < b.mod.values.len && b.mod.values[val].typ == wrapper_type {
 		if payload := b.wrapper_payload_bitcast_source(val, wrapper_type) {
@@ -5443,6 +5744,11 @@ fn (mut b Builder) coerce_wrapper_value_from_flat(c ast.Cursor, val ValueID, wra
 	if b.is_error_expr_from_flat(c) {
 		return b.build_wrapper_value(wrapper_type, false, val, false)
 	}
+	if b.is_result_wrapper_type(wrapper_type) && b.cursor_is_ierror_like(c)
+		&& !b.wrapper_value_is_valid_payload(val, wrapper_type) {
+		err_payload := b.ierror_tag_for_cursor(c) or { val }
+		return b.build_wrapper_value(wrapper_type, false, err_payload, false)
+	}
 	if val > 0 && val < b.mod.values.len && b.mod.values[val].typ == wrapper_type {
 		if payload := b.wrapper_payload_bitcast_source(val, wrapper_type) {
 			return b.build_wrapper_value(wrapper_type, true, payload, true)
@@ -8940,6 +9246,11 @@ fn (mut b Builder) track_array_value_elem_type_from_selector_from_flat(c ast.Cur
 fn (mut b Builder) build_cast_from_flat(c ast.Cursor) ValueID {
 	typ_c := c.edge(0)
 	val_c := c.edge(1)
+	if b.type_cursor_is_ierror_interface(typ_c) {
+		if tag := b.ierror_tag_for_cursor(val_c) {
+			return tag
+		}
+	}
 	target_type := b.ast_type_to_ssa_from_flat(typ_c)
 	addr := b.build_addr_from_flat(val_c)
 	if addr != 0 {
@@ -9109,6 +9420,9 @@ fn (mut b Builder) build_infix_from_flat(c ast.Cursor) ValueID {
 	}
 
 	lhs := b.build_expr_from_flat(lhs_c)
+	if tag_cmp := b.build_ierror_concrete_compare_from_flat(lhs, lhs_c, rhs_c, op) {
+		return tag_cmp
+	}
 	if tag_cmp := b.build_sumtype_variant_compare_expr_from_flat(lhs, rhs_c, op) {
 		return tag_cmp
 	}
@@ -10449,6 +10763,11 @@ fn (mut b Builder) build_call_or_cast_from_flat(c ast.Cursor) ValueID {
 		}
 	}
 	target_type := b.ast_type_to_ssa_from_flat(lhs_c)
+	if b.type_cursor_is_ierror_interface(lhs_c) {
+		if tag := b.ierror_tag_for_cursor(expr_c) {
+			return tag
+		}
+	}
 	addr := b.build_addr_from_flat(expr_c)
 	if addr != 0 {
 		if wrapped := b.wrap_address_for_sumtype_target(addr, target_type) {
@@ -11225,6 +11544,9 @@ fn (mut b Builder) build_infix(expr ast.InfixExpr) ValueID {
 	}
 
 	lhs := b.build_expr(expr.lhs)
+	if tag_cmp := b.build_ierror_concrete_compare(lhs, expr.lhs, expr.rhs, expr.op) {
+		return tag_cmp
+	}
 	if tag_cmp := b.build_sumtype_variant_compare_expr(lhs, expr.rhs, expr.op) {
 		return tag_cmp
 	}
@@ -17373,6 +17695,11 @@ fn (mut b Builder) build_cast_value_to_type(val ValueID, target_type TypeID) Val
 }
 
 fn (mut b Builder) build_cast(expr ast.CastExpr) ValueID {
+	if b.type_expr_is_ierror_interface(expr.typ) {
+		if tag := b.ierror_tag_for_expr(expr.expr) {
+			return tag
+		}
+	}
 	target_type := b.ast_type_to_ssa(expr.typ)
 	addr := b.build_addr(expr.expr)
 	if addr != 0 {
@@ -17426,6 +17753,11 @@ fn (mut b Builder) build_call_or_cast(expr ast.CallOrCastExpr) ValueID {
 		}
 	}
 	target_type := b.ast_type_to_ssa(expr.lhs)
+	if b.type_expr_is_ierror_interface(expr.lhs) {
+		if tag := b.ierror_tag_for_expr(expr.expr) {
+			return tag
+		}
+	}
 	addr := b.build_addr(expr.expr)
 	if addr != 0 {
 		if wrapped := b.wrap_address_for_sumtype_target(addr, target_type) {
