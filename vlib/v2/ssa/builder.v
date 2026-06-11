@@ -12202,6 +12202,137 @@ fn (mut b Builder) call_param_type(fn_name string, param_idx int) ?TypeID {
 	return b.mod.values[param_val].typ
 }
 
+fn (mut b Builder) call_param_count(fn_name string) int {
+	fn_idx := b.fn_index[fn_name] or { return -1 }
+	return b.mod.funcs[fn_idx].params.len
+}
+
+fn selector_receiver_path(expr ast.Expr) string {
+	return match expr {
+		ast.Ident {
+			expr.name
+		}
+		ast.SelectorExpr {
+			lhs := selector_receiver_path(expr.lhs)
+			if lhs == '' {
+				''
+			} else {
+				'${lhs}.${expr.rhs.name}'
+			}
+		}
+		ast.ParenExpr {
+			selector_receiver_path(expr.expr)
+		}
+		else {
+			''
+		}
+	}
+}
+
+fn selector_receiver_path_from_flat(c ast.Cursor) string {
+	return match c.kind() {
+		.expr_ident {
+			c.name()
+		}
+		.expr_selector {
+			lhs := selector_receiver_path_from_flat(c.edge(0))
+			rhs := c.edge(1).name()
+			if lhs == '' || rhs == '' {
+				''
+			} else {
+				'${lhs}.${rhs}'
+			}
+		}
+		.expr_paren {
+			selector_receiver_path_from_flat(c.edge(0))
+		}
+		else {
+			''
+		}
+	}
+}
+
+fn (mut b Builder) build_transformed_interface_receiver_value(expr ast.Expr) ValueID {
+	if expr is ast.Ident {
+		if ptr := b.vars[expr.name] {
+			ptr_typ := b.mod.values[ptr].typ
+			if b.valid_type_id(ptr_typ) {
+				elem_typ := b.mod.type_store.types[ptr_typ].elem_type
+				if elem_typ > 0 {
+					return b.mod.add_instr(.load, b.cur_block, elem_typ, [ptr])
+				}
+			}
+		}
+	}
+	return b.build_expr(expr)
+}
+
+fn (mut b Builder) build_transformed_interface_receiver_value_from_flat(c ast.Cursor) ValueID {
+	if c.kind() == .expr_ident {
+		if ptr := b.vars[c.name()] {
+			ptr_typ := b.mod.values[ptr].typ
+			if b.valid_type_id(ptr_typ) {
+				elem_typ := b.mod.type_store.types[ptr_typ].elem_type
+				if elem_typ > 0 {
+					return b.mod.add_instr(.load, b.cur_block, elem_typ, [ptr])
+				}
+			}
+		}
+	}
+	return b.build_expr_from_flat(c)
+}
+
+fn (mut b Builder) build_mut_ptr_param_value_for_type(name string, expected_type TypeID) ?ValueID {
+	if name !in b.mut_ptr_params || expected_type == 0 {
+		return none
+	}
+	ptr := b.vars[name] or { return none }
+	ptr_typ := b.mod.values[ptr].typ
+	if !b.valid_type_id(ptr_typ) {
+		return none
+	}
+	elem_typ := b.mod.type_store.types[ptr_typ].elem_type
+	if elem_typ == expected_type {
+		return b.mod.add_instr(.load, b.cur_block, elem_typ, [ptr])
+	}
+	return none
+}
+
+fn (mut b Builder) should_skip_transformed_interface_object_arg(fn_name string, receiver_expr ast.Expr, call_arg_count int, first_arg ast.Expr) bool {
+	if call_arg_count == 0 || !b.selector_receiver_is_interface(receiver_expr) {
+		return false
+	}
+	param_count := b.call_param_count(fn_name)
+	if param_count < 0 || call_arg_count != param_count {
+		return false
+	}
+	if first_arg is ast.SelectorExpr {
+		receiver_path := selector_receiver_path(receiver_expr)
+		object_path := selector_receiver_path(first_arg.lhs)
+		return first_arg.rhs.name == '_object' && b.selector_receiver_is_interface(first_arg.lhs)
+			&& receiver_path != '' && receiver_path == object_path
+	}
+	return false
+}
+
+fn (mut b Builder) should_skip_transformed_interface_object_arg_from_flat(fn_name string, receiver_c ast.Cursor, call_arg_count int, first_arg_c ast.Cursor) bool {
+	if call_arg_count == 0 || !b.selector_receiver_is_interface_from_flat(receiver_c) {
+		return false
+	}
+	param_count := b.call_param_count(fn_name)
+	if param_count < 0 || call_arg_count != param_count {
+		return false
+	}
+	if first_arg_c.kind() == .expr_selector {
+		receiver_path := selector_receiver_path_from_flat(receiver_c)
+		object_path := selector_receiver_path_from_flat(first_arg_c.edge(0))
+		return first_arg_c.edge(1).name() == '_object'
+			&& b.selector_receiver_is_interface_from_flat(first_arg_c.edge(0))
+			&& receiver_path != '' && receiver_path == object_path
+	}
+	return false
+}
+
 fn (mut b Builder) call_param_array_elem_type(fn_name string, param_idx int) ?TypeID {
 	if param_idx < 0 {
 		return none
@@ -12356,6 +12487,15 @@ fn (mut b Builder) build_call_arg(fn_name string, param_idx int, arg ast.Expr) V
 	if is_map_init_buffer_arg {
 		b.array_literal_as_element_buffer = true
 	}
+	if expected_type := b.call_param_type(fn_name, param_idx) {
+		if arg is ast.Ident {
+			if val := b.build_mut_ptr_param_value_for_type(arg.name, expected_type) {
+				b.array_literal_elem_type_hint = old_hint
+				b.array_literal_as_element_buffer = old_as_element_buffer
+				return val
+			}
+		}
+	}
 	mut val := b.build_expr(arg)
 	b.array_literal_elem_type_hint = old_hint
 	b.array_literal_as_element_buffer = old_as_element_buffer
@@ -12401,6 +12541,15 @@ fn (mut b Builder) build_call_arg_from_flat(fn_name string, param_idx int, arg_c
 	}
 	if is_map_init_buffer_arg {
 		b.array_literal_as_element_buffer = true
+	}
+	if expected_type := b.call_param_type(fn_name, param_idx) {
+		if arg_c.kind() == .expr_ident {
+			if val := b.build_mut_ptr_param_value_for_type(arg_c.name(), expected_type) {
+				b.array_literal_elem_type_hint = old_hint
+				b.array_literal_as_element_buffer = old_as_element_buffer
+				return val
+			}
+		}
 	}
 	mut val := b.build_expr_from_flat(arg_c)
 	b.array_literal_elem_type_hint = old_hint
@@ -12557,7 +12706,9 @@ fn (mut b Builder) build_call_resolved(fn_name_in string, expr ast.CallExpr) Val
 					}
 				}
 			}
-			mut receiver := if expects_ptr {
+			mut receiver := if b.selector_receiver_is_interface(sel.lhs) {
+				b.build_transformed_interface_receiver_value(sel.lhs)
+			} else if expects_ptr {
 				receiver_val := b.build_expr(sel.lhs)
 				receiver_typ := b.mod.values[receiver_val].typ
 				expected_receiver_typ := b.call_param_type(fn_name, 0) or { TypeID(0) }
@@ -12630,7 +12781,20 @@ fn (mut b Builder) build_call_resolved(fn_name_in string, expr ast.CallExpr) Val
 	// Read from the function signature directly instead of cloning the params
 	// array; this path is used while compiling the compiler itself, so it must
 	// not depend on dynamic-array element inference for local bookkeeping.
-	for arg in expr.args {
+	skip_first_transformed_interface_arg := if expr.lhs is ast.SelectorExpr && expr.args.len > 0 {
+		b.should_skip_transformed_interface_object_arg(fn_name, expr.lhs.lhs, expr.args.len,
+			expr.args[0])
+	} else {
+		false
+	}
+	if skip_first_transformed_interface_arg && args.len > 0 && expr.args[0] is ast.SelectorExpr {
+		first_arg := expr.args[0] as ast.SelectorExpr
+		args[0] = b.build_transformed_interface_receiver_value(first_arg.lhs)
+	}
+	for arg_idx, arg in expr.args {
+		if skip_first_transformed_interface_arg && arg_idx == 0 {
+			continue
+		}
 		// For mut arguments, pass the address (pointer) instead of the value.
 		// But if the value is already a pointer (e.g., &FileSet field or parameter),
 		// pass it directly instead of creating an extra level of indirection.
@@ -13063,7 +13227,9 @@ fn (mut b Builder) build_call_resolved_from_flat(fn_name_in string, c ast.Cursor
 					}
 				}
 			}
-			mut receiver := if expects_ptr {
+			mut receiver := if b.selector_receiver_is_interface_from_flat(sel_lhs_c) {
+				b.build_transformed_interface_receiver_value_from_flat(sel_lhs_c)
+			} else if expects_ptr {
 				addr := b.build_addr_from_flat(sel_lhs_c)
 				if addr != 0 {
 					addr_typ := b.mod.values[addr].typ
@@ -13117,7 +13283,19 @@ fn (mut b Builder) build_call_resolved_from_flat(fn_name_in string, c ast.Cursor
 			args << receiver
 		}
 	}
+	skip_first_transformed_interface_arg := if is_selector && n_args > 0 {
+		b.should_skip_transformed_interface_object_arg_from_flat(fn_name, sel_lhs_c, n_args,
+			c.edge(1))
+	} else {
+		false
+	}
+	if skip_first_transformed_interface_arg && args.len > 0 && c.edge(1).kind() == .expr_selector {
+		args[0] = b.build_transformed_interface_receiver_value_from_flat(c.edge(1).edge(0))
+	}
 	for arg_i in 0 .. n_args {
+		if skip_first_transformed_interface_arg && arg_i == 0 {
+			continue
+		}
 		arg_c := c.edge(1 + arg_i)
 		// For mut arguments, pass the address (pointer) instead of the value.
 		if arg_c.kind() == .expr_modifier && unsafe { token.Token(int(arg_c.aux())) } == .key_mut {
