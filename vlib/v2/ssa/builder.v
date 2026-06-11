@@ -66,6 +66,29 @@ fn (mut b Builder) build_c_errno_addr() ?ValueID {
 	return b.mod.add_instr(.call, b.cur_block, ptr_i32, [err_fn])
 }
 
+fn (mut b Builder) build_windows_c_macro_const(name string) ?ValueID {
+	if !b.is_windows_target() {
+		return none
+	}
+	// WinAPI GetStdHandle constants are DWORD macros, not linkable symbols.
+	win_std_handle_val := match name {
+		'STD_INPUT_HANDLE' { '4294967286' }
+		'STD_OUTPUT_HANDLE' { '4294967285' }
+		'STD_ERROR_HANDLE' { '4294967284' }
+		else { '' }
+	}
+
+	if win_std_handle_val.len > 0 {
+		return b.mod.get_or_add_const(b.mod.type_store.get_uint(32), win_std_handle_val)
+	}
+	if name == 'INVALID_HANDLE_VALUE' {
+		i8_t := b.mod.type_store.get_int(8)
+		voidptr_t := b.mod.type_store.get_ptr(i8_t)
+		return b.mod.get_or_add_const(voidptr_t, '-1')
+	}
+	return none
+}
+
 fn (mut b Builder) build_raw_c_global_addr(name string, typ TypeID) ValueID {
 	if glob_id := b.find_global(name) {
 		return glob_id
@@ -8832,18 +8855,8 @@ fn (mut b Builder) build_selector_from_flat(c ast.Cursor) ValueID {
 	// C.<name>
 	if lhs_kind == .expr_ident && lhs_name == 'C' {
 		c_name := rhs_name
-		if b.is_windows_target() {
-			// WinAPI GetStdHandle constants are DWORD macros, not linkable symbols.
-			win_const_val := match c_name {
-				'STD_INPUT_HANDLE' { '4294967286' }
-				'STD_OUTPUT_HANDLE' { '4294967285' }
-				'STD_ERROR_HANDLE' { '4294967284' }
-				else { '' }
-			}
-
-			if win_const_val.len > 0 {
-				return b.mod.get_or_add_const(b.mod.type_store.get_uint(32), win_const_val)
-			}
+		if win_const := b.build_windows_c_macro_const(c_name) {
+			return win_const
 		}
 		c_const_val := match c_name {
 			'SEEK_SET' { '0' }
@@ -14852,18 +14865,8 @@ fn (mut b Builder) build_selector(expr ast.SelectorExpr) ValueID {
 	// C constant/global access: C.SEEK_END, C.stdout, C.stderr, etc.
 	if expr.lhs is ast.Ident && expr.lhs.name == 'C' {
 		c_name := expr.rhs.name
-		if b.is_windows_target() {
-			// WinAPI GetStdHandle constants are DWORD macros, not linkable symbols.
-			win_const_val := match c_name {
-				'STD_INPUT_HANDLE' { '4294967286' }
-				'STD_OUTPUT_HANDLE' { '4294967285' }
-				'STD_ERROR_HANDLE' { '4294967284' }
-				else { '' }
-			}
-
-			if win_const_val.len > 0 {
-				return b.mod.get_or_add_const(b.mod.type_store.get_uint(32), win_const_val)
-			}
+		if win_const := b.build_windows_c_macro_const(c_name) {
+			return win_const
 		}
 		// Well-known C preprocessor constants — emit inline integer values
 		// since the native backend cannot resolve C macros.

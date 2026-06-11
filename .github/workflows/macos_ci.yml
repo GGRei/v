@@ -111,7 +111,7 @@ jobs:
             vlib/v2/gen/x64/x64_backend_diagnostics_test.v \
             vlib/v2/gen/x64/x64_object_format_test.v \
             vlib/v2/gen/x64/x64_pe_linker_test.v
-          VJOBS=1 ./v test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_formatted_int_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_f64_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes,test_x64_macos_windows_bits_len32_stdout_exact_bytes,test_x64_macos_windows_rand_u32n_interface_result_stdout_exact_bytes,test_x64_macos_windows_rand_intn_range_interface_result_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
+          VJOBS=1 ./v test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_formatted_int_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_f64_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes,test_x64_macos_windows_bits_len32_stdout_exact_bytes,test_x64_macos_windows_rand_u32n_interface_result_stdout_exact_bytes,test_x64_macos_windows_rand_intn_range_interface_result_stdout_exact_bytes,test_x64_macos_windows_get_raw_line_example_stdin_stdout_exact_bytes,test_x64_macos_windows_mini_calculator_example_stdin_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
           ./v test vlib/v2/builder/native_test.v vlib/v2/builder/target_os_test.v
           ./v test vlib/v2/ssa/optimize
           V2_VERIFY_STRICT=1 ./v test vlib/v2/ssa/optimize
@@ -178,6 +178,19 @@ jobs:
 
             ./v -v2 -no-parallel -b x64 "$source" -o "$tmp/$name"
             "$tmp/$name" "$@" > "$tmp/$name.out" 2> "$tmp/$name.err"
+            check_empty_stderr "$name" "$tmp/$name.err"
+            check_stdout "$name" "$expected" "$tmp/$name.out"
+          }
+
+          run_native_x64_example_with_stdin() {
+            source="$1"
+            name="$2"
+            input="$3"
+            expected="$4"
+            shift 4
+
+            ./v -v2 -no-parallel -b x64 "$source" -o "$tmp/$name"
+            "$tmp/$name" "$@" < "$input" > "$tmp/$name.out" 2> "$tmp/$name.err"
             check_empty_stderr "$name" "$tmp/$name.err"
             check_stdout "$name" "$expected" "$tmp/$name.out"
           }
@@ -263,6 +276,16 @@ jobs:
             shift 2
             stderr="$tmp/$(basename "$expected").stderr"
             ./v run "$source" "$@" > "$expected" 2> "$stderr"
+            check_v_run_stderr "v run $source $*" "$stderr"
+          }
+
+          write_v_run_expected_with_stdin() {
+            source="$1"
+            input="$2"
+            expected="$3"
+            shift 3
+            stderr="$tmp/$(basename "$expected").stderr"
+            ./v run "$source" "$@" < "$input" > "$expected" 2> "$stderr"
             check_v_run_stderr "v run $source $*" "$stderr"
           }
 
@@ -448,6 +471,10 @@ jobs:
           write_v_run_expected examples/custom_error.v "$tmp/custom_error.expected"
           write_v_run_expected examples/spectral.v "$tmp/spectral_10.expected" 10
           printf 'length of random array is 1000\nbefore quick sort whether array is sorted: false\nafter quick sort whether array is sorted: true\n' > "$tmp/quick_sort.expected"
+          printf 'hello\nworld\n' > "$tmp/get_raw_line.in"
+          write_v_run_expected_with_stdin examples/get_raw_line.v "$tmp/get_raw_line.in" "$tmp/get_raw_line.expected"
+          printf '3+4*2\nexit\n' > "$tmp/mini_calculator.in"
+          write_v_run_expected_with_stdin examples/mini_calculator.v "$tmp/mini_calculator.in" "$tmp/mini_calculator.expected"
 
           run_native_x64_example examples/hello_world.v hello_world "$tmp/hello_world.expected"
           run_native_x64_example examples/fizz_buzz.v fizz_buzz "$tmp/fizz_buzz.expected"
@@ -476,6 +503,8 @@ jobs:
           run_native_x64_example examples/custom_error.v custom_error "$tmp/custom_error.expected"
           run_native_x64_example examples/spectral.v spectral "$tmp/spectral_10.expected" 10
           run_native_x64_example examples/quick_sort.v quick_sort "$tmp/quick_sort.expected"
+          run_native_x64_example_with_stdin examples/get_raw_line.v get_raw_line "$tmp/get_raw_line.in" "$tmp/get_raw_line.expected"
+          run_native_x64_example_with_stdin examples/mini_calculator.v mini_calculator "$tmp/mini_calculator.in" "$tmp/mini_calculator.expected"
           run_native_x64_example_capture examples/random_ips.v random_ips
           check_random_ips_stdout random_ips "$tmp/random_ips.out"
           run_native_x64_example_capture examples/rule110.v rule110 31

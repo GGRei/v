@@ -56,9 +56,10 @@ const pe_ucrtbase_dll = 'ucrtbase.dll'
 const pe_msvcrt_dll = 'msvcrt.dll'
 const pe_kernel32_imports = ['ExitProcess', 'GetCommandLineW', 'GetStdHandle', 'GetConsoleMode',
 	'MultiByteToWideChar', 'WideCharToMultiByte', 'GetCurrentDirectoryW', 'GetEnvironmentVariableW',
-	'WriteConsoleW', 'WriteFile', 'GetProcessHeap', 'HeapAlloc', 'HeapReAlloc', 'HeapFree',
-	'GetCurrentThreadId', 'GetSystemTimeAsFileTime', 'FileTimeToSystemTime',
-	'SystemTimeToTzSpecificLocalTime', 'QueryPerformanceFrequency', 'QueryPerformanceCounter']
+	'ReadConsoleW', 'ReadFile', 'WriteConsoleW', 'WriteFile', 'GetProcessHeap', 'HeapAlloc',
+	'HeapReAlloc', 'HeapFree', 'GetCurrentThreadId', 'GetSystemTimeAsFileTime',
+	'FileTimeToSystemTime', 'SystemTimeToTzSpecificLocalTime', 'QueryPerformanceFrequency',
+	'QueryPerformanceCounter']
 const pe_shell32_imports = ['CommandLineToArgvW']
 const pe_ucrtbase_imports = ['log', 'ldexp', 'sqrt', '_time64', '_localtime64']
 const pe_msvcrt_imports = ['_scprintf', '_snprintf']
@@ -484,8 +485,8 @@ fn (l PeLinker) required_pe_imports(runtime_text PeRuntimeText) ![]PeImport {
 		if _ := runtime_text.symbols[sym.name] {
 			continue
 		}
-		if pe_kernel32_import_is_known(sym.name) {
-			required_kernel32[sym.name] = true
+		if kernel32_name := pe_kernel32_import_name_for_external_symbol(sym.name) {
+			required_kernel32[kernel32_name] = true
 		} else if pe_shell32_import_is_known(sym.name) {
 			required_shell32[sym.name] = true
 		} else if ucrt_name := pe_ucrtbase_import_name_for_external_symbol(sym.name) {
@@ -578,6 +579,21 @@ fn pe_kernel32_import_is_known(name string) bool {
 		}
 	}
 	return false
+}
+
+fn pe_kernel32_import_name_for_external_symbol(name string) ?string {
+	return match name {
+		'ReadConsole' {
+			'ReadConsoleW'
+		}
+		else {
+			if pe_kernel32_import_is_known(name) {
+				name
+			} else {
+				none
+			}
+		}
+	}
 }
 
 fn pe_require_ucrtbase_import(mut required map[string]bool, name string) ! {
@@ -882,8 +898,8 @@ fn (l PeLinker) import_thunk_rvas(text_rva u32, runtime_text_size int) map[strin
 }
 
 fn (l PeLinker) import_key_for_external_symbol(name string) ?string {
-	if pe_kernel32_import_is_known(name) {
-		return pe_kernel32_import_key(name)
+	if kernel32_name := pe_kernel32_import_name_for_external_symbol(name) {
+		return pe_kernel32_import_key(kernel32_name)
 	}
 	if pe_shell32_import_is_known(name) {
 		return pe_shell32_import_key(name)

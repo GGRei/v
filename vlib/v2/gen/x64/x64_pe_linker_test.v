@@ -497,6 +497,45 @@ fn test_pe_linker_adds_direct_kernel32_imports_in_stable_order() {
 	assert 'ucrtbase.dll' !in dll_names
 }
 
+fn test_pe_linker_imports_kernel32_readconsole_readfile_and_patches_call_to_import_thunks() {
+	mut obj := CoffObject.new()
+	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xe8, 0, 0, 0, 0, 0xc3]
+	obj.add_symbol('main', 10, true, 1)
+	read_console_sym := obj.add_undefined('ReadConsole')
+	read_file_sym := obj.add_undefined('ReadFile')
+	obj.add_text_reloc(1, read_console_sym, coff_image_rel_amd64_rel32)
+	obj.add_text_reloc(6, read_file_sym, coff_image_rel_amd64_rel32)
+
+	mut linker := PeLinker.new(obj)
+	image := linker.image() or { panic(err) }
+	names := pe_test_import_names(image)
+	dll_names := pe_test_import_dll_names(image)
+
+	assert names == ['ExitProcess', 'ReadConsoleW', 'ReadFile']
+	assert dll_names == ['kernel32.dll']
+	assert pe_test_iat_size(image) == u32((names.len + 1) * 8)
+
+	text_off := pe_test_section_header(image, '.text')
+	text_rva := pe_test_u32(image, text_off + 12)
+	text_raw := int(pe_test_u32(image, text_off + 20))
+	read_console_thunk := pe_test_import_thunk_rva(image, text_rva, text_raw,
+
+		linker.entry_stub_size() + obj.text_data.len, 'ReadConsoleW')
+	read_file_thunk := pe_test_import_thunk_rva(image, text_rva, text_raw,
+
+		linker.entry_stub_size() + obj.text_data.len, 'ReadFile')
+	read_console_field_off := text_raw + linker.entry_stub_size() + 1
+	read_console_field_rva := text_rva + u32(linker.entry_stub_size() + 1)
+	read_console_disp := pe_test_i32(image, read_console_field_off)
+	read_console_target := u32(i32(read_console_field_rva + 4) + read_console_disp)
+	assert read_console_target == read_console_thunk
+	read_file_field_off := text_raw + linker.entry_stub_size() + 6
+	read_file_field_rva := text_rva + u32(linker.entry_stub_size() + 6)
+	read_file_disp := pe_test_i32(image, read_file_field_off)
+	read_file_target := u32(i32(read_file_field_rva + 4) + read_file_disp)
+	assert read_file_target == read_file_thunk
+}
+
 fn test_pe_linker_imports_ucrt_log_and_patches_call_to_import_thunk() {
 	mut obj := CoffObject.new()
 	obj.text_data << [u8(0xe8), 0, 0, 0, 0, 0xc3]
