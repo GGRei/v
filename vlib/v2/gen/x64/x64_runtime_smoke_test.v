@@ -2345,6 +2345,92 @@ fn x64_spectral_reduced_formatted_stdout() []u8 {
 	return '1.271844019\n'.bytes()
 }
 
+fn x64_bits_len32_source() string {
+	return 'module main
+
+import math.bits
+
+fn main() {
+	println(bits.len_32(10))
+	println(bits.len_32(1))
+	println(bits.len_32(0))
+}
+'
+}
+
+fn x64_bits_len32_stdout() []u8 {
+	return '4\n1\n0\n'.bytes()
+}
+
+fn x64_rand_u32n_interface_result_source() string {
+	return 'module main
+
+import rand
+
+fn via_rng_u32n(mut rng rand.PRNG, max u32) !u32 {
+	return rng.u32n(max)
+}
+
+fn main() {
+	rand.seed([u32(1), 2])
+	mut rng := rand.get_current_rng()
+	println("rng.u32n255")
+	for _ in 0 .. 8 {
+		println(rng.u32n(255) or { 999999 })
+	}
+	rand.seed([u32(1), 2])
+	println("rand.u32n255")
+	for _ in 0 .. 8 {
+		println(rand.u32n(255) or { 999999 })
+	}
+	rand.seed([u32(1), 2])
+	mut via_rng := rand.get_current_rng()
+	println("via_rng_u32n255")
+	for _ in 0 .. 8 {
+		println(via_rng_u32n(mut via_rng, 255) or { 999999 })
+	}
+}
+'
+}
+
+fn x64_rand_u32n_interface_result_stdout() []u8 {
+	return 'rng.u32n255\n72\n99\n113\n97\n151\n9\n250\n120\nrand.u32n255\n72\n99\n113\n97\n151\n9\n250\n120\nvia_rng_u32n255\n72\n99\n113\n97\n151\n9\n250\n120\n'.bytes()
+}
+
+fn x64_rand_intn_range_interface_result_source() string {
+	return 'module main
+
+import rand
+
+fn main() {
+	rand.seed([u32(1), 2])
+	mut rng_direct := rand.get_current_rng()
+	println("direct.int.from.rng.u32n255")
+	println(int(rng_direct.u32n(u32(255)) or { 999999 }))
+	rand.seed([u32(1), 2])
+	mut rng_intn := rand.get_current_rng()
+	println("rng.intn255")
+	for _ in 0 .. 8 {
+		println(rng_intn.intn(255) or { 999999 })
+	}
+	rand.seed([u32(1), 2])
+	println("rand.intn255")
+	for _ in 0 .. 8 {
+		println(rand.intn(255) or { 999999 })
+	}
+	rand.seed([u32(1), 2])
+	println("rand.int_in_range_5_15")
+	for _ in 0 .. 8 {
+		println(rand.int_in_range(5, 15) or { 999999 })
+	}
+}
+'
+}
+
+fn x64_rand_intn_range_interface_result_stdout() []u8 {
+	return 'direct.int.from.rng.u32n255\n72\nrng.intn255\n72\n99\n113\n97\n151\n9\n250\n120\nrand.intn255\n72\n99\n113\n97\n151\n9\n250\n120\nrand.int_in_range_5_15\n13\n8\n6\n14\n8\n9\n5\n11\n'.bytes()
+}
+
 fn x64_custom_error_result_or_block_source() string {
 	return 'module main
 
@@ -6432,6 +6518,38 @@ fn test_x64_linux_spectral_reduced_formatted_stdout_exact_bytes() {
 fn test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes() {
 	assert_x64_macos_windows_stdout_bytes('spectral_reduced_formatted_exact',
 		x64_spectral_reduced_formatted_source(), x64_spectral_reduced_formatted_stdout())
+}
+
+fn test_x64_linux_bits_len32_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('bits_len32_exact', x64_bits_len32_source(),
+		x64_bits_len32_stdout())
+}
+
+fn test_x64_macos_windows_bits_len32_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('bits_len32_exact', x64_bits_len32_source(),
+		x64_bits_len32_stdout())
+}
+
+fn test_x64_linux_rand_u32n_interface_result_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('rand_u32n_interface_result_exact',
+		x64_rand_u32n_interface_result_source(), x64_rand_u32n_interface_result_stdout())
+}
+
+fn test_x64_macos_windows_rand_u32n_interface_result_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('rand_u32n_interface_result_exact',
+		x64_rand_u32n_interface_result_source(), x64_rand_u32n_interface_result_stdout())
+}
+
+fn test_x64_linux_rand_intn_range_interface_result_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('rand_intn_range_interface_result_exact',
+		x64_rand_intn_range_interface_result_source(),
+		x64_rand_intn_range_interface_result_stdout())
+}
+
+fn test_x64_macos_windows_rand_intn_range_interface_result_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('rand_intn_range_interface_result_exact',
+		x64_rand_intn_range_interface_result_source(),
+		x64_rand_intn_range_interface_result_stdout())
 }
 
 fn test_x64_linux_custom_error_result_runs_or_block() {

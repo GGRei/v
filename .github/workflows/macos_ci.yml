@@ -111,7 +111,7 @@ jobs:
             vlib/v2/gen/x64/x64_backend_diagnostics_test.v \
             vlib/v2/gen/x64/x64_object_format_test.v \
             vlib/v2/gen/x64/x64_pe_linker_test.v
-          VJOBS=1 ./v test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_formatted_int_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_f64_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
+          VJOBS=1 ./v test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_formatted_int_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_f64_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes,test_x64_macos_windows_bits_len32_stdout_exact_bytes,test_x64_macos_windows_rand_u32n_interface_result_stdout_exact_bytes,test_x64_macos_windows_rand_intn_range_interface_result_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
           ./v test vlib/v2/builder/native_test.v vlib/v2/builder/target_os_test.v
           ./v test vlib/v2/ssa/optimize
           V2_VERIFY_STRICT=1 ./v test vlib/v2/ssa/optimize
@@ -180,6 +180,81 @@ jobs:
             "$tmp/$name" "$@" > "$tmp/$name.out" 2> "$tmp/$name.err"
             check_empty_stderr "$name" "$tmp/$name.err"
             check_stdout "$name" "$expected" "$tmp/$name.out"
+          }
+
+          run_native_x64_example_capture() {
+            source="$1"
+            name="$2"
+            shift 2
+
+            ./v -v2 -no-parallel -b x64 "$source" -o "$tmp/$name"
+            "$tmp/$name" "$@" > "$tmp/$name.out" 2> "$tmp/$name.err"
+            check_empty_stderr "$name" "$tmp/$name.err"
+          }
+
+          check_random_ips_stdout() {
+            label="$1"
+            actual="$2"
+            python3 - "$label" "$actual" <<'PY'
+          import sys
+
+          label = sys.argv[1]
+          path = sys.argv[2]
+          lines = open(path, "r", encoding="utf-8").read().splitlines()
+          if len(lines) != 10:
+              raise SystemExit(f"{label}: expected 10 lines, got {len(lines)}")
+          rows = []
+          for line in lines:
+              parts = line.split(".")
+              if len(parts) != 4:
+                  raise SystemExit(f"{label}: invalid IPv4 shape: {line!r}")
+              row = []
+              for part in parts:
+                  if not part.isdigit():
+                      raise SystemExit(f"{label}: non-numeric octet in {line!r}")
+                  value = int(part)
+                  if value < 0 or value > 254:
+                      raise SystemExit(f"{label}: octet out of range in {line!r}")
+                  row.append(value)
+              rows.append(tuple(row))
+          if len(set(rows)) < 3:
+              raise SystemExit(f"{label}: output has too little row diversity")
+          if all(row[1] == 0 for row in rows) and all(row[3] == 0 for row in rows):
+              raise SystemExit(f"{label}: suspicious old x.0.x.0 pattern")
+          PY
+          }
+
+          check_rule110_stdout() {
+            label="$1"
+            actual="$2"
+            width="$3"
+            python3 - "$label" "$actual" "$width" <<'PY'
+          import sys
+
+          label = sys.argv[1]
+          path = sys.argv[2]
+          width = int(sys.argv[3])
+          lines = open(path, "r", encoding="utf-8").read().splitlines()
+          title = "Rule 110 V Implementation"
+          title_lines = [idx for idx, line in enumerate(lines) if title in line]
+          if not title_lines:
+              raise SystemExit(f"{label}: missing title")
+          idx = title_lines[0]
+          generations = lines[idx + 1:]
+          if generations and generations[0] == "":
+              generations = generations[1:]
+          if len(generations) != width:
+              raise SystemExit(f"{label}: expected {width} generation lines, got {len(generations)}")
+          for line in generations:
+              if len(line) != width:
+                  raise SystemExit(f"{label}: generation line has width {len(line)}, expected {width}: {line!r}")
+              if any(ch not in " *" for ch in line):
+                  raise SystemExit(f"{label}: invalid generation chars: {line!r}")
+          if not any("*" in line for line in generations):
+              raise SystemExit(f"{label}: expected at least one live cell")
+          if len(set(generations)) < 3:
+              raise SystemExit(f"{label}: expected at least 3 distinct generation lines")
+          PY
           }
 
           write_v_run_expected() {
@@ -372,6 +447,7 @@ jobs:
           printf 'wrong format\nempty input\n' > "$tmp/errors.expected"
           write_v_run_expected examples/custom_error.v "$tmp/custom_error.expected"
           write_v_run_expected examples/spectral.v "$tmp/spectral_10.expected" 10
+          printf 'length of random array is 1000\nbefore quick sort whether array is sorted: false\nafter quick sort whether array is sorted: true\n' > "$tmp/quick_sort.expected"
 
           run_native_x64_example examples/hello_world.v hello_world "$tmp/hello_world.expected"
           run_native_x64_example examples/fizz_buzz.v fizz_buzz "$tmp/fizz_buzz.expected"
@@ -399,3 +475,8 @@ jobs:
           run_native_x64_example examples/errors.v errors "$tmp/errors.expected"
           run_native_x64_example examples/custom_error.v custom_error "$tmp/custom_error.expected"
           run_native_x64_example examples/spectral.v spectral "$tmp/spectral_10.expected" 10
+          run_native_x64_example examples/quick_sort.v quick_sort "$tmp/quick_sort.expected"
+          run_native_x64_example_capture examples/random_ips.v random_ips
+          check_random_ips_stdout random_ips "$tmp/random_ips.out"
+          run_native_x64_example_capture examples/rule110.v rule110 31
+          check_rule110_stdout rule110 "$tmp/rule110.out" 31

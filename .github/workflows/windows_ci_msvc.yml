@@ -66,7 +66,7 @@ jobs:
             vlib/v2/gen/x64/x64_object_format_test.v `
             vlib/v2/gen/x64/x64_pe_linker_test.v
           Assert-LastExit 'stable V2 x64 unit tests'
-          .\v.exe test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_formatted_int_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_f64_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
+          .\v.exe test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_formatted_int_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_f64_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes,test_x64_macos_windows_bits_len32_stdout_exact_bytes,test_x64_macos_windows_rand_u32n_interface_result_stdout_exact_bytes,test_x64_macos_windows_rand_intn_range_interface_result_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
           Assert-LastExit 'reduced V2 x64 runtime smoke tests'
           Remove-Item Env:\VJOBS -ErrorAction SilentlyContinue
           .\v.exe test vlib/v2/builder/native_test.v vlib/v2/builder/target_os_test.v
@@ -157,8 +157,14 @@ jobs:
             $stdout_path = Join-Path $tmp "$name.out"
             $stderr_path = Join-Path $tmp "$name.err"
 
-            .\v.exe -v2 -no-parallel -b x64 $source -o $exe
-            Assert-LastExit "compile $source"
+            $compile_output = & .\v.exe -v2 -no-parallel -b x64 $source -o $exe 2>&1
+            $compile_exit = $LASTEXITCODE
+            foreach ($line in $compile_output) {
+              Write-Host $line
+            }
+            if ($compile_exit -ne 0) {
+              throw "compile $source failed with exit code $compile_exit"
+            }
             Assert-TinyPeImports $name $exe $pe_import_mode
 
             Remove-Item -LiteralPath $stdout_path, $stderr_path -Force -ErrorAction SilentlyContinue
@@ -179,6 +185,126 @@ jobs:
             $empty = New-Object byte[] 0
             Assert-ByteArrayEqual $stdout $expected_stdout "$source stdout"
             Assert-ByteArrayEqual $stderr $empty "$source stderr"
+          }
+
+          function Invoke-NativeX64ExampleCapture([string] $source, [string] $name, [string[]] $program_args = @()) {
+            $exe = Join-Path $tmp "$name.exe"
+            $stdout_path = Join-Path $tmp "$name.out"
+            $stderr_path = Join-Path $tmp "$name.err"
+
+            $compile_output = & .\v.exe -v2 -no-parallel -b x64 $source -o $exe 2>&1
+            $compile_exit = $LASTEXITCODE
+            foreach ($line in $compile_output) {
+              Write-Host $line
+            }
+            if ($compile_exit -ne 0) {
+              throw "compile $source failed with exit code $compile_exit"
+            }
+
+            Remove-Item -LiteralPath $stdout_path, $stderr_path -Force -ErrorAction SilentlyContinue
+            if ($program_args.Count -gt 0) {
+              $process = Start-Process -FilePath $exe -ArgumentList $program_args -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout_path -RedirectStandardError $stderr_path
+            } else {
+              $process = Start-Process -FilePath $exe -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout_path -RedirectStandardError $stderr_path
+            }
+            if ($process.ExitCode -ne 0) {
+              if (Test-Path -LiteralPath $stderr_path) {
+                Get-Content -LiteralPath $stderr_path
+              }
+              throw "$source exited with code $($process.ExitCode)"
+            }
+
+            [byte[]] $stderr = if (Test-Path -LiteralPath $stderr_path) { [System.IO.File]::ReadAllBytes($stderr_path) } else { New-Object byte[] 0 }
+            $empty = New-Object byte[] 0
+            Assert-ByteArrayEqual $stderr $empty "$source stderr"
+            return $stdout_path
+          }
+
+          function Assert-RandomIpsStdout([string] $path) {
+            [string[]] $lines = [System.IO.File]::ReadAllLines($path)
+            if ($lines.Count -ne 10) {
+              throw "random_ips expected 10 lines, got $($lines.Count)"
+            }
+            $rows = [System.Collections.Generic.List[string]]::new()
+            $all_second_zero = $true
+            $all_fourth_zero = $true
+            foreach ($line in $lines) {
+              [string[]] $parts = $line.Split('.')
+              if ($parts.Count -ne 4) {
+                throw "random_ips invalid IPv4 shape: $line"
+              }
+              [int[]] $octets = @()
+              foreach ($part in $parts) {
+                if ($part -notmatch '^[0-9]+$') {
+                  throw "random_ips non-numeric octet: $line"
+                }
+                $value = [int] $part
+                if ($value -lt 0 -or $value -gt 254) {
+                  throw "random_ips octet out of range: $line"
+                }
+                $octets += $value
+              }
+              if ($octets[1] -ne 0) {
+                $all_second_zero = $false
+              }
+              if ($octets[3] -ne 0) {
+                $all_fourth_zero = $false
+              }
+              $rows.Add(($octets -join '.'))
+            }
+            if (($rows | Sort-Object -Unique).Count -lt 3) {
+              throw 'random_ips output has too little row diversity'
+            }
+            if ($all_second_zero -and $all_fourth_zero) {
+              throw 'random_ips suspicious old x.0.x.0 pattern'
+            }
+          }
+
+          function Assert-Rule110Stdout([string] $path, [int] $width) {
+            [string[]] $lines = [System.IO.File]::ReadAllLines($path)
+            $title = 'Rule 110 V Implementation'
+            $idx = -1
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+              if ($lines[$i].Contains($title)) {
+                $idx = $i
+                break
+              }
+            }
+            if ($idx -lt 0) {
+              throw 'rule110 missing title'
+            }
+            [string[]] $generations = @()
+            if ($idx + 1 -lt $lines.Count) {
+              $generations = @($lines[($idx + 1)..($lines.Count - 1)])
+            }
+            if ($generations.Count -gt 0 -and $generations[0] -eq '') {
+              if ($generations.Count -eq 1) {
+                $generations = @()
+              } else {
+                $generations = @($generations[1..($generations.Count - 1)])
+              }
+            }
+            if ($generations.Count -ne $width) {
+              throw "rule110 expected $width generation lines, got $($generations.Count)"
+            }
+            $has_live_cell = $false
+            foreach ($line in $generations) {
+              if ($line.Length -ne $width) {
+                throw "rule110 generation line has width $($line.Length), expected $width`: '$line'"
+              }
+              if ($line -match '[^ *]') {
+                throw "rule110 invalid generation chars: '$line'"
+              }
+              if ($line.Contains('*')) {
+                $has_live_cell = $true
+              }
+            }
+            if (-not $has_live_cell) {
+              throw 'rule110 expected at least one live cell'
+            }
+            if (($generations | Sort-Object -Unique).Count -lt 3) {
+              throw 'rule110 expected at least 3 distinct generation lines'
+            }
           }
 
           $tmp = Join-Path $env:RUNNER_TEMP 'v2_x64_native'
@@ -437,6 +563,15 @@ jobs:
           # normal-required: spectral norm/math.sqrt/formatted f64 interpolation
           [byte[]] $spectral_expected = Get-VRunExpectedBytes 'examples/spectral.v' 'spectral' @('10')
           Invoke-NativeX64Example 'examples/spectral.v' 'spectral' $spectral_expected '' @('10')
+
+          [byte[]] $quick_sort_expected = [System.Text.Encoding]::UTF8.GetBytes("length of random array is 1000`nbefore quick sort whether array is sorted: false`nafter quick sort whether array is sorted: true`n")
+          Invoke-NativeX64Example 'examples/quick_sort.v' 'quick_sort' $quick_sort_expected
+
+          $random_ips_stdout = Invoke-NativeX64ExampleCapture 'examples/random_ips.v' 'random_ips'
+          Assert-RandomIpsStdout $random_ips_stdout
+
+          $rule110_stdout = Invoke-NativeX64ExampleCapture 'examples/rule110.v' 'rule110' @('31')
+          Assert-Rule110Stdout $rule110_stdout 31
       - name: Build V with WX
         run: v -cflags /WX self
       - name: All code is formatted
