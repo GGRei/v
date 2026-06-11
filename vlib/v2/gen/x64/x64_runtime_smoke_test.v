@@ -952,6 +952,56 @@ fn run_x64_host_file_redirected_auto_with_args(name string, source_dir string, s
 	}
 }
 
+fn x64_shell_redirect_args(args []string) string {
+	mut quoted := []string{cap: args.len}
+	for arg in args {
+		quoted << os.quoted_path(arg)
+	}
+	return quoted.join(' ')
+}
+
+fn run_x64_host_file_redirected_auto_with_stdin_and_args(name string, source_dir string, source_file string, stdin_text string, args []string) X64HostRunResult {
+	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_x64_runtime_${name}_${os.getpid()}')
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	source_path := os.join_path(source_dir, source_file)
+	source_text := 'source file: ${source_path}\nstdin text:\n${stdin_text}'
+	bin_path := x64_host_bin_path(tmp_dir, name)
+	stdin_path := os.join_path(tmp_dir, '${name}.in')
+	stdout_path := os.join_path(tmp_dir, '${name}.out')
+	stderr_path := os.join_path(tmp_dir, '${name}.err')
+	os.write_file(stdin_path, stdin_text) or { panic(err) }
+	vexe := x64_vexe_command_path()
+	build := x64_build_file_from_dir(vexe, source_dir, source_file, bin_path)
+	build_output := build.output
+	if build.exit_code != 0 {
+		assert false, x64_host_build_failure_message(name, tmp_dir, source_path, source_text,
+			bin_path, build.exit_code, build.output)
+	}
+	arg_text := x64_shell_redirect_args(args)
+	mut command := os.quoted_path(bin_path)
+	if arg_text != '' {
+		command += ' ${arg_text}'
+	}
+	command += ' < ${os.quoted_path(stdin_path)} > ${os.quoted_path(stdout_path)} 2> ${os.quoted_path(stderr_path)}'
+	run := os.execute(command)
+	stdout := os.read_bytes(stdout_path) or { panic(err) }
+	stderr := os.read_bytes(stderr_path) or { panic(err) }
+	if run.exit_code != 0 {
+		assert false, x64_host_run_failure_message(name, tmp_dir, source_path, source_text,
+			bin_path, build_output, run.exit_code, stdout, stderr)
+	}
+	return X64HostRunResult{
+		name:         name
+		tmp_dir:      tmp_dir
+		source_path:  source_path
+		source_text:  source_text
+		bin_path:     bin_path
+		build_output: build_output
+		stdout:       stdout
+		stderr:       stderr
+	}
+}
+
 fn run_x64_host_file_redirected_macos_auto_tiny_verbose_with_args(name string, source_dir string, source_file string, args []string) X64HostRunResult {
 	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_x64_runtime_${name}_${os.getpid()}')
 	os.mkdir_all(tmp_dir) or { panic(err) }
@@ -1183,6 +1233,15 @@ fn assert_x64_linux_file_stdout_matches_v_run_with_args(name string, source_dir 
 	}
 }
 
+fn assert_x64_linux_file_stdout_bytes_with_stdin(name string, source_dir string, source_file string, stdin_text string, expected_stdout []u8) {
+	$if linux {
+		result := run_x64_host_file_redirected_auto_with_stdin_and_args(name, source_dir,
+			source_file, stdin_text, []string{})
+		assert_x64_linux_hosted_libc_binary(result, expected_stdout)
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
 fn assert_x64_macos_windows_file_stdout_matches_v_run(name string, source_dir string, source_file string) {
 	$if macos {
 		expected_stdout := x64_v_run_file_stdout_bytes(source_dir, source_file)
@@ -1211,6 +1270,32 @@ fn assert_x64_macos_windows_file_stdout_matches_v_run_with_args(name string, sou
 		expected_stdout := x64_v_run_file_stdout_bytes_with_args(source_dir, source_file, args)
 		result := run_x64_host_file_redirected_auto_with_args('windows_${name}', source_dir,
 			source_file, args)
+		context := x64_host_result_context(result)
+		stdout_message := x64_stdout_mismatch_message(name, 'windows', expected_stdout,
+			result.stdout, context)
+		stderr_message := x64_stderr_mismatch_message(name, 'windows', []u8{}, result.stderr,
+			context)
+		assert result.stdout == expected_stdout, stdout_message
+		assert result.stderr == []u8{}, stderr_message
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+}
+
+fn assert_x64_macos_windows_file_stdout_bytes_with_stdin(name string, source_dir string, source_file string, stdin_text string, expected_stdout []u8) {
+	$if macos {
+		result := run_x64_host_file_redirected_auto_with_stdin_and_args('macos_${name}',
+			source_dir, source_file, stdin_text, []string{})
+		context := x64_host_result_context(result)
+		stdout_message := x64_stdout_mismatch_message(name, 'macos', expected_stdout,
+			result.stdout, context)
+		stderr_message := x64_stderr_mismatch_message(name, 'macos', []u8{}, result.stderr, context)
+		assert result.stdout == expected_stdout, stdout_message
+		assert result.stderr == []u8{}, stderr_message
+		x64_host_cleanup_tmp(result.tmp_dir)
+	}
+	$if windows {
+		result := run_x64_host_file_redirected_auto_with_stdin_and_args('windows_${name}',
+			source_dir, source_file, stdin_text, []string{})
 		context := x64_host_result_context(result)
 		stdout_message := x64_stdout_mismatch_message(name, 'windows', expected_stdout,
 			result.stdout, context)
@@ -3764,6 +3849,22 @@ fn x64_examples_dir() string {
 	return os.join_path(@VMODROOT, 'examples')
 }
 
+fn x64_get_raw_line_example_stdin() string {
+	return 'hello\nworld\n'
+}
+
+fn x64_get_raw_line_example_stdout() []u8 {
+	return 'Press Ctrl+D(Linux) or Ctrl+Z(Windows) at line begin to exit\n1: hello\n\n2: world\n\n'.bytes()
+}
+
+fn x64_mini_calculator_example_stdin() string {
+	return '3+4*2\nexit\n'
+}
+
+fn x64_mini_calculator_example_stdout() []u8 {
+	return "Please enter the expression you want to calculate, e.g. 1e2+(3-2.5)*6/1.5 .\nEnter 'exit' or 'EXIT' to quit.\n[1] 11.0\n[2] ".bytes()
+}
+
 fn x64_arguments_index_one_int_source() string {
 	return 'module main
 
@@ -5112,6 +5213,18 @@ fn test_x64_linux_binary_search_tree_example_stdout_matches_v_run() {
 		x64_examples_dir(), 'binary_search_tree.v')
 }
 
+fn test_x64_linux_get_raw_line_example_stdin_stdout_exact_bytes() {
+	assert_x64_linux_file_stdout_bytes_with_stdin('get_raw_line_example_stdin_exact',
+		x64_examples_dir(), 'get_raw_line.v', x64_get_raw_line_example_stdin(),
+		x64_get_raw_line_example_stdout())
+}
+
+fn test_x64_linux_mini_calculator_example_stdin_stdout_exact_bytes() {
+	assert_x64_linux_file_stdout_bytes_with_stdin('mini_calculator_example_stdin_exact',
+		x64_examples_dir(), 'mini_calculator.v', x64_mini_calculator_example_stdin(),
+		x64_mini_calculator_example_stdout())
+}
+
 fn test_x64_linux_bfs_example_top_level_stdout_exact_bytes() {
 	assert_x64_linux_file_stdout_bytes('bfs_example_top_level_exact', os.join_path(x64_examples_dir(),
 		'graphs'), 'bfs.v', x64_bfs_example_stdout())
@@ -6333,6 +6446,18 @@ fn test_x64_macos_windows_tree_of_nodes_example_top_level_stdout_exact_bytes() {
 fn test_x64_macos_windows_binary_search_tree_example_stdout_matches_v_run() {
 	assert_x64_macos_windows_file_stdout_matches_v_run('binary_search_tree_example_top_level_v_run',
 		x64_examples_dir(), 'binary_search_tree.v')
+}
+
+fn test_x64_macos_windows_get_raw_line_example_stdin_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes_with_stdin('get_raw_line_example_stdin_exact',
+		x64_examples_dir(), 'get_raw_line.v', x64_get_raw_line_example_stdin(),
+		x64_get_raw_line_example_stdout())
+}
+
+fn test_x64_macos_windows_mini_calculator_example_stdin_stdout_exact_bytes() {
+	assert_x64_macos_windows_file_stdout_bytes_with_stdin('mini_calculator_example_stdin_exact',
+		x64_examples_dir(), 'mini_calculator.v', x64_mini_calculator_example_stdin(),
+		x64_mini_calculator_example_stdout())
 }
 
 fn test_x64_macos_windows_bfs_example_top_level_stdout_exact_bytes() {
