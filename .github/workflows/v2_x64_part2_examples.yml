@@ -32,7 +32,7 @@ jobs:
             vlib/v2/gen/x64/x64_backend_diagnostics_test.v \
             vlib/v2/gen/x64/x64_object_format_test.v \
             vlib/v2/gen/x64/x64_pe_linker_test.v
-          VJOBS=1 ./v test -run-only test_x64_linux_math_log_20_stdout_exact_bytes,test_x64_linux_generic_sumtype_direct_wrap_stdout_exact_bytes,test_x64_linux_generic_sumtype_receiver_size_stdout_exact_bytes,test_x64_linux_generic_sumtype_insert_size_stdout_exact_bytes,test_x64_linux_struct_float_fields_stdout_exact_bytes,test_x64_linux_union_f64_bits_stdout_exact_bytes,test_x64_linux_f64_str_interpolation_stdout_exact_bytes,test_x64_linux_f64_for_interpolation_stdout_exact_bytes,test_x64_linux_formatted_int_interpolation_stdout_exact_bytes,test_x64_linux_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_linux_formatted_f64_interpolation_stdout_exact_bytes,test_x64_linux_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_linux_spectral_reduced_formatted_stdout_exact_bytes,test_x64_linux_bits_len32_stdout_exact_bytes,test_x64_linux_rand_u32n_interface_result_stdout_exact_bytes,test_x64_linux_rand_intn_range_interface_result_stdout_exact_bytes,test_x64_linux_get_raw_line_example_stdin_stdout_exact_bytes,test_x64_linux_mini_calculator_example_stdin_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
+          VJOBS=1 ./v test -run-only test_x64_linux_math_log_20_stdout_exact_bytes,test_x64_linux_generic_sumtype_direct_wrap_stdout_exact_bytes,test_x64_linux_generic_sumtype_receiver_size_stdout_exact_bytes,test_x64_linux_generic_sumtype_insert_size_stdout_exact_bytes,test_x64_linux_struct_float_fields_stdout_exact_bytes,test_x64_linux_union_f64_bits_stdout_exact_bytes,test_x64_linux_f64_str_interpolation_stdout_exact_bytes,test_x64_linux_f64_for_interpolation_stdout_exact_bytes,test_x64_linux_formatted_int_interpolation_stdout_exact_bytes,test_x64_linux_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_linux_formatted_f64_interpolation_stdout_exact_bytes,test_x64_linux_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_linux_spectral_reduced_formatted_stdout_exact_bytes,test_x64_linux_bits_len32_stdout_exact_bytes,test_x64_linux_rand_u32n_interface_result_stdout_exact_bytes,test_x64_linux_rand_intn_range_interface_result_stdout_exact_bytes,test_x64_linux_get_raw_line_example_stdin_stdout_exact_bytes,test_x64_linux_mini_calculator_example_stdin_stdout_exact_bytes,test_x64_linux_mini_calculator_recursive_descent_example_stdin_stdout_exact_bytes,test_x64_linux_textscanner_embedded_parser_stdout_exact_bytes,test_x64_linux_struct_positional_side_effect_stdout_exact_bytes,test_x64_linux_struct_named_side_effect_stdout_exact_bytes,test_x64_linux_unrelated_same_shape_struct_stdout_exact_bytes,test_x64_linux_named_init_embedded_value_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
 
       - name: backend x64 examples
         run: |
@@ -84,6 +84,7 @@ jobs:
           rule110	examples/rule110.v	1	tiny-fallback	strict_reject_auto_hosted	30	rand interface calls/cellular automaton; structural stdout validation width 31
           get_raw_line	examples/get_raw_line.v	1	tiny-fallback	strict_reject_auto_hosted	20	stdin line reader; stdout compared to V normal run with redirected stdin
           mini_calculator	examples/mini_calculator.v	1	tiny-fallback	strict_reject_auto_hosted	20	stdin parser/calculator; stdout compared to V normal run with redirected stdin
+          mini_calculator_recursive_descent	examples/mini_calculator_recursive_descent.v	1	tiny-fallback	strict_reject_auto_hosted	20	stdin recursive descent parser/TextScanner embedded; stdout compared to V normal run with redirected stdin
           EOF
 
           append_row() {
@@ -336,6 +337,11 @@ jobs:
                 printf '3+4*2\nexit\n' > "$input"
                 write_v_run_expected_with_stdin "$source" "$expected" "$input"
                 ;;
+              mini_calculator_recursive_descent)
+                input="$tmp/mini_calculator_recursive_descent.in"
+                printf '3+4*2\nexit\n' > "$input"
+                write_v_run_expected_with_stdin "$source" "$expected" "$input"
+                ;;
               quick_sort)
                 printf 'length of random array is 1000\nbefore quick sort whether array is sorted: false\nafter quick sort whether array is sorted: true\n' > "$expected"
                 ;;
@@ -513,6 +519,8 @@ jobs:
               stdin_arg="$tmp/get_raw_line.in"
             elif [ "$source" = "examples/mini_calculator.v" ]; then
               stdin_arg="$tmp/mini_calculator.in"
+            elif [ "$source" = "examples/mini_calculator_recursive_descent.v" ]; then
+              stdin_arg="$tmp/mini_calculator_recursive_descent.in"
             fi
 
             set +e
@@ -731,7 +739,7 @@ jobs:
             vlib/v2/gen/x64/x64_backend_diagnostics_test.v \
             vlib/v2/gen/x64/x64_object_format_test.v \
             vlib/v2/gen/x64/x64_pe_linker_test.v
-          VJOBS=1 ./v test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_formatted_int_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_f64_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes,test_x64_macos_windows_bits_len32_stdout_exact_bytes,test_x64_macos_windows_rand_u32n_interface_result_stdout_exact_bytes,test_x64_macos_windows_rand_intn_range_interface_result_stdout_exact_bytes,test_x64_macos_windows_get_raw_line_example_stdin_stdout_exact_bytes,test_x64_macos_windows_mini_calculator_example_stdin_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
+          VJOBS=1 ./v test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_formatted_int_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_f64_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes,test_x64_macos_windows_bits_len32_stdout_exact_bytes,test_x64_macos_windows_rand_u32n_interface_result_stdout_exact_bytes,test_x64_macos_windows_rand_intn_range_interface_result_stdout_exact_bytes,test_x64_macos_windows_get_raw_line_example_stdin_stdout_exact_bytes,test_x64_macos_windows_mini_calculator_example_stdin_stdout_exact_bytes,test_x64_macos_windows_mini_calculator_recursive_descent_example_stdin_stdout_exact_bytes,test_x64_macos_windows_textscanner_embedded_parser_stdout_exact_bytes,test_x64_macos_windows_struct_positional_side_effect_stdout_exact_bytes,test_x64_macos_windows_struct_named_side_effect_stdout_exact_bytes,test_x64_macos_windows_unrelated_same_shape_struct_stdout_exact_bytes,test_x64_macos_windows_named_init_embedded_value_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
 
       - name: backend x64 examples
         run: |
@@ -783,6 +791,7 @@ jobs:
           rule110	examples/rule110.v	1	normal-required	30	rand interface calls/cellular automaton; structural stdout validation width 31
           get_raw_line	examples/get_raw_line.v	1	normal-required	20	stdin line reader; stdout compared to V normal run with redirected stdin
           mini_calculator	examples/mini_calculator.v	1	normal-required	20	stdin parser/calculator; stdout compared to V normal run with redirected stdin
+          mini_calculator_recursive_descent	examples/mini_calculator_recursive_descent.v	1	normal-required	20	stdin recursive descent parser/TextScanner embedded; stdout compared to V normal run with redirected stdin
           EOF
 
           fizz_expected() {
@@ -1018,6 +1027,11 @@ jobs:
                 printf '3+4*2\nexit\n' > "$input"
                 write_v_run_expected_with_stdin "$source" "$expected" "$input"
                 ;;
+              mini_calculator_recursive_descent)
+                input="$tmp/mini_calculator_recursive_descent.in"
+                printf '3+4*2\nexit\n' > "$input"
+                write_v_run_expected_with_stdin "$source" "$expected" "$input"
+                ;;
               quick_sort)
                 printf 'length of random array is 1000\nbefore quick sort whether array is sorted: false\nafter quick sort whether array is sorted: true\n' > "$expected"
                 ;;
@@ -1124,6 +1138,8 @@ jobs:
               stdin_arg="$tmp/get_raw_line.in"
             elif [ "$source" = "examples/mini_calculator.v" ]; then
               stdin_arg="$tmp/mini_calculator.in"
+            elif [ "$source" = "examples/mini_calculator_recursive_descent.v" ]; then
+              stdin_arg="$tmp/mini_calculator_recursive_descent.in"
             fi
 
             set +e
@@ -1347,7 +1363,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "backend x64 regressions failed with exit code $LASTEXITCODE"
           }
-          .\v.exe test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_formatted_int_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_f64_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes,test_x64_macos_windows_bits_len32_stdout_exact_bytes,test_x64_macos_windows_rand_u32n_interface_result_stdout_exact_bytes,test_x64_macos_windows_rand_intn_range_interface_result_stdout_exact_bytes,test_x64_macos_windows_get_raw_line_example_stdin_stdout_exact_bytes,test_x64_macos_windows_mini_calculator_example_stdin_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
+          .\v.exe test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_formatted_int_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_f64_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes,test_x64_macos_windows_bits_len32_stdout_exact_bytes,test_x64_macos_windows_rand_u32n_interface_result_stdout_exact_bytes,test_x64_macos_windows_rand_intn_range_interface_result_stdout_exact_bytes,test_x64_macos_windows_get_raw_line_example_stdin_stdout_exact_bytes,test_x64_macos_windows_mini_calculator_example_stdin_stdout_exact_bytes,test_x64_macos_windows_mini_calculator_recursive_descent_example_stdin_stdout_exact_bytes,test_x64_macos_windows_textscanner_embedded_parser_stdout_exact_bytes,test_x64_macos_windows_struct_positional_side_effect_stdout_exact_bytes,test_x64_macos_windows_struct_named_side_effect_stdout_exact_bytes,test_x64_macos_windows_unrelated_same_shape_struct_stdout_exact_bytes,test_x64_macos_windows_named_init_embedded_value_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
           if ($LASTEXITCODE -ne 0) {
             throw "backend x64 regressions failed with exit code $LASTEXITCODE"
           }
@@ -1598,6 +1614,15 @@ jobs:
               TimeoutSeconds = 20
               Stdin = "3+4*2`nexit`n"
               Notes = 'stdin parser/calculator stdout compared to V normal run'
+            }
+            [pscustomobject]@{
+              Name = 'mini_calculator_recursive_descent'
+              Source = 'examples/mini_calculator_recursive_descent.v'
+              Enabled = $true
+              BackendStatus = 'normal-required'
+              TimeoutSeconds = 20
+              Stdin = "3+4*2`nexit`n"
+              Notes = 'stdin recursive descent parser/TextScanner embedded stdout compared to V normal run'
             }
             [pscustomobject]@{
               Name = 'random_ips'
@@ -2073,7 +2098,7 @@ jobs:
                 }
                 return ,(Get-VRunExpectedBytes $example.Source $example.Name $programArgs)
               }
-              { $_ -eq 'get_raw_line' -or $_ -eq 'mini_calculator' } {
+              { $_ -eq 'get_raw_line' -or $_ -eq 'mini_calculator' -or $_ -eq 'mini_calculator_recursive_descent' } {
                 [string[]] $programArgs = @()
                 if ($example.PSObject.Properties.Name -contains 'Args') {
                   $programArgs = @($example.Args)
