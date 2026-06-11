@@ -10557,10 +10557,58 @@ fn (mut b Builder) build_array_init_from_flat(c ast.Cursor) ValueID {
 	return b.mod.get_or_add_const(arr_type, '0')
 }
 
+fn (mut b Builder) build_snprintf_string(val ValueID, fmt string) ValueID {
+	str_type := b.get_string_type()
+	i8_t := b.mod.type_store.get_int(8)
+	ptr_type := b.mod.type_store.get_ptr(i8_t)
+	i32_t := b.mod.type_store.get_int(32)
+	i64_t := b.mod.type_store.get_int(64)
+	bool_t := b.mod.type_store.get_int(1)
+	snprintf_ref := b.get_or_create_fn_ref('snprintf', i32_t)
+	fmt_val := b.mod.add_value_node(.c_string_literal, ptr_type, fmt, 0)
+	formatted_val := b.prepare_snprintf_arg(val, fmt)
+	null_ptr := b.mod.get_or_add_const(ptr_type, '0')
+	zero_size := b.mod.get_or_add_const(i64_t, '0')
+	sn_len := b.mod.add_instr(.call, b.cur_block, i32_t, [snprintf_ref, null_ptr, zero_size, fmt_val,
+		formatted_val])
+	zero_i32 := b.mod.get_or_add_const(i32_t, '0')
+	is_negative := b.mod.add_instr(.lt, b.cur_block, bool_t, [sn_len, zero_i32])
+	fail_block := b.mod.add_block(b.cur_func, 'snprintf_fail')
+	ok_block := b.mod.add_block(b.cur_func, 'snprintf_ok')
+	merge_block := b.mod.add_block(b.cur_func, 'snprintf_merge')
+	b.mod.add_instr(.br, b.cur_block, 0,
+		[is_negative, b.mod.blocks[fail_block].val_id, b.mod.blocks[ok_block].val_id])
+	b.add_edge(b.cur_block, fail_block)
+	b.add_edge(b.cur_block, ok_block)
+
+	b.cur_block = fail_block
+	empty_str := b.mod.add_value_node(.string_literal, str_type, '', 0)
+	fail_end_block := b.cur_block
+	b.mod.add_instr(.jmp, b.cur_block, 0, [b.mod.blocks[merge_block].val_id])
+	b.add_edge(b.cur_block, merge_block)
+
+	b.cur_block = ok_block
+	sn_len_i64 := b.mod.add_instr(.sext, b.cur_block, i64_t, [sn_len])
+	one_i64 := b.mod.get_or_add_const(i64_t, '1')
+	alloc_len := b.mod.add_instr(.add, b.cur_block, i64_t, [sn_len_i64, one_i64])
+	malloc_ref := b.get_or_create_fn_ref('builtin__malloc_noscan', ptr_type)
+	buf_ptr := b.mod.add_instr(.call, b.cur_block, ptr_type, [malloc_ref, alloc_len])
+	b.mod.add_instr(.call, b.cur_block, i32_t, [snprintf_ref, buf_ptr, alloc_len, fmt_val,
+		formatted_val])
+	tos_ref := b.get_or_create_fn_ref('builtin__tos', str_type)
+	ok_str := b.mod.add_instr(.call, b.cur_block, str_type, [tos_ref, buf_ptr, sn_len_i64])
+	ok_end_block := b.cur_block
+	b.mod.add_instr(.jmp, b.cur_block, 0, [b.mod.blocks[merge_block].val_id])
+	b.add_edge(b.cur_block, merge_block)
+
+	b.cur_block = merge_block
+	return b.mod.add_instr(.phi, merge_block, str_type, [empty_str, b.mod.blocks[fail_end_block].val_id,
+		ok_str, b.mod.blocks[ok_end_block].val_id])
+}
+
 fn (mut b Builder) build_string_inter_from_flat(c ast.Cursor) ValueID {
 	str_type := b.get_string_type()
 	plus_fn := b.get_or_create_fn_ref('builtin__string__+', str_type)
-
 	values_l := c.list_at(0)
 	inters_l := c.list_at(1)
 	nvalues := values_l.len()
@@ -10586,21 +10634,8 @@ fn (mut b Builder) build_string_inter_from_flat(c ast.Cursor) ValueID {
 			expr_c := inter_c.edge(0)
 			needs_snprintf := format != .unformatted && format != .string && resolved_fmt.len > 0
 			if needs_snprintf {
-				i8_t := b.mod.type_store.get_int(8)
-				ptr_type := b.mod.type_store.get_ptr(i8_t)
-				count_64 := b.mod.get_or_add_const(i8_t, '64')
-				buf_ptr := b.mod.add_instr(.alloca, b.cur_block, ptr_type, [count_64])
 				inter_val := b.build_expr_from_flat(expr_c)
-				formatted_val := b.prepare_snprintf_arg(inter_val, resolved_fmt)
-				i32_t := b.mod.type_store.get_int(32)
-				snprintf_ref := b.get_or_create_fn_ref('snprintf', i32_t)
-				size_val := b.mod.get_or_add_const(i32_t, '64')
-				fmt_val := b.mod.add_value_node(.c_string_literal, ptr_type, resolved_fmt, 0)
-				sn_len := b.mod.add_instr(.call, b.cur_block, i32_t, [snprintf_ref, buf_ptr, size_val,
-					fmt_val, formatted_val])
-				tos_ref := b.get_or_create_fn_ref('builtin__tos', str_type)
-				str_val := b.mod.add_instr(.call, b.cur_block, str_type, [tos_ref, buf_ptr, sn_len])
-				parts << str_val
+				parts << b.build_snprintf_string(inter_val, resolved_fmt)
 			} else {
 				mut use_expr_c := expr_c
 				if expr_c.kind() == .expr_selector {
@@ -11095,26 +11130,8 @@ fn (mut b Builder) build_string_inter_literal(expr ast.StringInterLiteral) Value
 			needs_snprintf := inter.format != .unformatted && inter.format != .string
 				&& inter.resolved_fmt.len > 0
 			if needs_snprintf {
-				// Use C.snprintf to format the value with the resolved format string.
-				// 1. Allocate a stack buffer (64 bytes)
-				i8_t := b.mod.type_store.get_int(8)
-				ptr_type := b.mod.type_store.get_ptr(i8_t)
-				count_64 := b.mod.get_or_add_const(i8_t, '64')
-				buf_ptr := b.mod.add_instr(.alloca, b.cur_block, ptr_type, [count_64])
-				// 2. Build the value expression (use raw value, not str()-converted)
 				inter_val := b.build_expr(inter.expr)
-				formatted_val := b.prepare_snprintf_arg(inter_val, inter.resolved_fmt)
-				// 3. Call snprintf(buf, 64, fmt, val)
-				i32_t := b.mod.type_store.get_int(32)
-				snprintf_ref := b.get_or_create_fn_ref('snprintf', i32_t)
-				size_val := b.mod.get_or_add_const(i32_t, '64')
-				fmt_val := b.mod.add_value_node(.c_string_literal, ptr_type, inter.resolved_fmt, 0)
-				sn_len := b.mod.add_instr(.call, b.cur_block, i32_t, [snprintf_ref, buf_ptr, size_val,
-					fmt_val, formatted_val])
-				// 4. Call builtin__tos(buf_ptr, len) to make a V string
-				tos_ref := b.get_or_create_fn_ref('builtin__tos', str_type)
-				str_val := b.mod.add_instr(.call, b.cur_block, str_type, [tos_ref, buf_ptr, sn_len])
-				parts << str_val
+				parts << b.build_snprintf_string(inter_val, inter.resolved_fmt)
 			} else {
 				// Unformatted or simple format: use string concatenation.
 				// If the inter.expr is a SelectorExpr accessing '.str' on a string,

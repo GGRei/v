@@ -111,7 +111,7 @@ jobs:
             vlib/v2/gen/x64/x64_backend_diagnostics_test.v \
             vlib/v2/gen/x64/x64_object_format_test.v \
             vlib/v2/gen/x64/x64_pe_linker_test.v
-          VJOBS=1 ./v test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
+          VJOBS=1 ./v test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_formatted_int_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_f64_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
           ./v test vlib/v2/builder/native_test.v vlib/v2/builder/target_os_test.v
           ./v test vlib/v2/ssa/optimize
           V2_VERIFY_STRICT=1 ./v test vlib/v2/ssa/optimize
@@ -370,6 +370,7 @@ jobs:
           write_v_run_expected examples/graphs/bellman-ford.v "$tmp/bellman_ford.expected"
           write_v_run_expected examples/binary_search_tree.v "$tmp/binary_search_tree.expected"
           write_v_run_expected examples/custom_error.v "$tmp/custom_error.expected"
+          write_v_run_expected examples/spectral.v "$tmp/spectral_10.expected" 10
 
           run_native_x64_example examples/hello_world.v hello_world "$tmp/hello_world.expected"
           run_native_x64_example examples/fizz_buzz.v fizz_buzz "$tmp/fizz_buzz.expected"
@@ -395,3 +396,4 @@ jobs:
           run_native_x64_example examples/graphs/bellman-ford.v bellman_ford "$tmp/bellman_ford.expected"
           run_native_x64_example examples/binary_search_tree.v binary_search_tree "$tmp/binary_search_tree.expected"
           run_native_x64_example examples/custom_error.v custom_error "$tmp/custom_error.expected"
+          run_native_x64_example examples/spectral.v spectral "$tmp/spectral_10.expected" 10

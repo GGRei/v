@@ -2216,6 +2216,135 @@ fn x64_f64_for_interpolation_stdout() []u8 {
 	return '0.2 0.0 0.5 0.3 0.6 \n'.bytes()
 }
 
+fn x64_formatted_int_interpolation_source() string {
+	return 'module main
+
+fn main() {
+	println("\${42:04d}")
+}
+'
+}
+
+fn x64_formatted_int_interpolation_stdout() []u8 {
+	return '0042\n'.bytes()
+}
+
+fn x64_formatted_int_width_100_interpolation_source() string {
+	return 'module main
+
+fn main() {
+	println("\${42:0100d}")
+}
+'
+}
+
+fn x64_formatted_int_width_100_interpolation_stdout() []u8 {
+	return ('0'.repeat(98) + '42\n').bytes()
+}
+
+fn x64_formatted_f64_interpolation_source() string {
+	return 'module main
+
+fn main() {
+	x := 1.271844019
+	println("\${x:0.9f}")
+}
+'
+}
+
+fn x64_formatted_f64_interpolation_stdout() []u8 {
+	return '1.271844019\n'.bytes()
+}
+
+fn x64_formatted_string_return_lifetime_source() string {
+	return 'module main
+
+fn make_formatted() string {
+	return "\${42:04d}"
+}
+
+fn clobber_stack() int {
+	mut data := [256]u8{}
+	for i in 0 .. data.len {
+		data[i] = u8(65 + i % 26)
+	}
+	return int(data[0]) + int(data[255])
+}
+
+fn main() {
+	s := make_formatted()
+	guard := clobber_stack()
+	if guard == 0 {
+		println("bad")
+	}
+	println(s)
+}
+'
+}
+
+fn x64_formatted_string_return_lifetime_stdout() []u8 {
+	return '0042\n'.bytes()
+}
+
+fn x64_spectral_reduced_formatted_source() string {
+	return 'module main
+
+import math
+
+fn evala(i int, j int) int {
+	return (i + j) * (i + j + 1) / 2 + i + 1
+}
+
+fn times(mut v []f64, u []f64) {
+	for i in 0 .. v.len {
+		mut a := f64(0)
+		for j in 0 .. u.len {
+			a += u[j] / f64(evala(i, j))
+		}
+		v[i] = a
+	}
+}
+
+fn times_trans(mut v []f64, u []f64) {
+	for i in 0 .. v.len {
+		mut a := f64(0)
+		for j in 0 .. u.len {
+			a += u[j] / f64(evala(j, i))
+		}
+		v[i] = a
+	}
+}
+
+fn a_times_transp(mut v []f64, u []f64) {
+	mut x := []f64{len: u.len, init: 0}
+	times(mut x, u)
+	times_trans(mut v, x)
+}
+
+fn main() {
+	n := 10
+	mut u := []f64{len: n, init: 1}
+	mut v := []f64{len: n, init: 1}
+	for _ in 0 .. 10 {
+		a_times_transp(mut v, u)
+		a_times_transp(mut u, v)
+	}
+	mut vbv := f64(0)
+	mut vv := f64(0)
+	for i in 0 .. n {
+		vbv += u[i] * v[i]
+		vv += v[i] * v[i]
+	}
+	ans := math.sqrt(vbv / vv)
+	println("\${ans:0.9f}")
+}
+'
+}
+
+fn x64_spectral_reduced_formatted_stdout() []u8 {
+	return '1.271844019\n'.bytes()
+}
+
 fn x64_custom_error_result_or_block_source() string {
 	return 'module main
 
@@ -6249,6 +6378,60 @@ fn test_x64_linux_f64_for_interpolation_stdout_exact_bytes() {
 		assert_x64_linux_hosted_libc_binary(result, x64_f64_for_interpolation_stdout())
 		x64_host_cleanup_tmp(result.tmp_dir)
 	}
+}
+
+fn test_x64_linux_formatted_int_interpolation_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('formatted_int_interpolation_exact',
+		x64_formatted_int_interpolation_source(), x64_formatted_int_interpolation_stdout())
+}
+
+fn test_x64_macos_windows_formatted_int_interpolation_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('formatted_int_interpolation_exact',
+		x64_formatted_int_interpolation_source(), x64_formatted_int_interpolation_stdout())
+}
+
+fn test_x64_linux_formatted_int_width_100_interpolation_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('formatted_int_width_100_interpolation_exact',
+		x64_formatted_int_width_100_interpolation_source(),
+		x64_formatted_int_width_100_interpolation_stdout())
+}
+
+fn test_x64_macos_windows_formatted_int_width_100_interpolation_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('formatted_int_width_100_interpolation_exact',
+		x64_formatted_int_width_100_interpolation_source(),
+		x64_formatted_int_width_100_interpolation_stdout())
+}
+
+fn test_x64_linux_formatted_f64_interpolation_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('formatted_f64_interpolation_exact',
+		x64_formatted_f64_interpolation_source(), x64_formatted_f64_interpolation_stdout())
+}
+
+fn test_x64_macos_windows_formatted_f64_interpolation_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('formatted_f64_interpolation_exact',
+		x64_formatted_f64_interpolation_source(), x64_formatted_f64_interpolation_stdout())
+}
+
+fn test_x64_linux_formatted_string_return_lifetime_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('formatted_string_return_lifetime_exact',
+		x64_formatted_string_return_lifetime_source(),
+		x64_formatted_string_return_lifetime_stdout())
+}
+
+fn test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('formatted_string_return_lifetime_exact',
+		x64_formatted_string_return_lifetime_source(),
+		x64_formatted_string_return_lifetime_stdout())
+}
+
+fn test_x64_linux_spectral_reduced_formatted_stdout_exact_bytes() {
+	assert_x64_linux_stdout_bytes('spectral_reduced_formatted_exact',
+		x64_spectral_reduced_formatted_source(), x64_spectral_reduced_formatted_stdout())
+}
+
+fn test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes() {
+	assert_x64_macos_windows_stdout_bytes('spectral_reduced_formatted_exact',
+		x64_spectral_reduced_formatted_source(), x64_spectral_reduced_formatted_stdout())
 }
 
 fn test_x64_linux_custom_error_result_runs_or_block() {

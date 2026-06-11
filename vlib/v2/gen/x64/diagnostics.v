@@ -8,10 +8,10 @@ const x64_backend_feature_prefix = 'backend feature: '
 pub const x64_backend_limitation_hint = 'x64: native backend limitation: retry with the C backend or reduce the source to supported x64 features'
 
 const x64_minimal_unsupported_crt_stdio_symbols = ['stdin', 'stdout', 'stderr', 'printf', 'fprintf',
-	'dprintf', 'sprintf', 'snprintf', 'wprintf', 'puts', 'fputs', 'setvbuf', 'fflush', 'fopen',
-	'_wfopen', 'fdopen', 'freopen', '_wfreopen', 'fclose', 'pclose', '_pclose', 'fread', 'fwrite',
-	'fgets', 'getc', 'feof', 'ferror', 'fseek', 'ftell', 'rewind', 'fileno', '_fileno',
-	'_get_osfhandle', '_open_osfhandle', 'fgetpos']
+	'dprintf', 'sprintf', 'wprintf', 'puts', 'fputs', 'setvbuf', 'fflush', 'fopen', '_wfopen',
+	'fdopen', 'freopen', '_wfreopen', 'fclose', 'pclose', '_pclose', 'fread', 'fwrite', 'fgets',
+	'getc', 'feof', 'ferror', 'fseek', 'ftell', 'rewind', 'fileno', '_fileno', '_get_osfhandle',
+	'_open_osfhandle', 'fgetpos']
 
 const x64_unsupported_captured_fn_literal_symbol = 'v2_unsupported_captured_fn_literal'
 const x64_missing_v_runtime_helpers = ['builtin__Map_string_int__keys']

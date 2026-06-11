@@ -66,7 +66,7 @@ jobs:
             vlib/v2/gen/x64/x64_object_format_test.v `
             vlib/v2/gen/x64/x64_pe_linker_test.v
           Assert-LastExit 'stable V2 x64 unit tests'
-          .\v.exe test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
+          .\v.exe test -run-only test_x64_macos_windows_math_log_20_stdout_exact_bytes,test_x64_macos_windows_formatted_int_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_int_width_100_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_f64_interpolation_stdout_exact_bytes,test_x64_macos_windows_formatted_string_return_lifetime_stdout_exact_bytes,test_x64_macos_windows_spectral_reduced_formatted_stdout_exact_bytes vlib/v2/gen/x64/x64_runtime_smoke_test.v
           Assert-LastExit 'reduced V2 x64 runtime smoke tests'
           Remove-Item Env:\VJOBS -ErrorAction SilentlyContinue
           .\v.exe test vlib/v2/builder/native_test.v vlib/v2/builder/target_os_test.v
@@ -430,6 +430,10 @@ jobs:
           # normal-required: IError/custom errors
           [byte[]] $custom_error_expected = Get-VRunExpectedBytes 'examples/custom_error.v' 'custom_error'
           Invoke-NativeX64Example 'examples/custom_error.v' 'custom_error' $custom_error_expected
+
+          # normal-required: spectral norm/math.sqrt/formatted f64 interpolation
+          [byte[]] $spectral_expected = Get-VRunExpectedBytes 'examples/spectral.v' 'spectral' @('10')
+          Invoke-NativeX64Example 'examples/spectral.v' 'spectral' $spectral_expected '' @('10')
       - name: Build V with WX
         run: v -cflags /WX self
       - name: All code is formatted
