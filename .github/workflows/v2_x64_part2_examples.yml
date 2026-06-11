@@ -76,6 +76,7 @@ jobs:
           minimal_spann_tree_prim	examples/graphs/minimal_spann_tree_prim.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph generics; stdout compared to V normal run
           bellman_ford	examples/graphs/bellman-ford.v	1	tiny-fallback	strict_reject_auto_hosted	30	graph generics; stdout compared to V normal run
           binary_search_tree	examples/binary_search_tree.v	1	tiny-fallback	strict_reject_auto_hosted	30	generic sumtype tree; stdout compared to V normal run
+          custom_error	examples/custom_error.v	1	tiny-fallback	strict_reject_auto_hosted	20	IError/custom errors; stdout compared to V normal run
           EOF
 
           append_row() {
@@ -236,7 +237,7 @@ jobs:
               primes)
                 write_v_run_expected "$source" "$expected" 20
                 ;;
-              bfs|bfs3|dfs|dijkstra|topological_sorting_greedy|topological_sorting_dfs|dfs2|minimal_spann_tree_prim|bellman_ford|binary_search_tree)
+              bfs|bfs3|dfs|dijkstra|topological_sorting_greedy|topological_sorting_dfs|dfs2|minimal_spann_tree_prim|bellman_ford|binary_search_tree|custom_error)
                 write_v_run_expected "$source" "$expected"
                 ;;
               fibonacci)
@@ -654,6 +655,7 @@ jobs:
           minimal_spann_tree_prim	examples/graphs/minimal_spann_tree_prim.v	1	normal-required	30	graph generics; stdout compared to V normal run
           bellman_ford	examples/graphs/bellman-ford.v	1	normal-required	30	graph generics; stdout compared to V normal run
           binary_search_tree	examples/binary_search_tree.v	1	normal-required	30	generic sumtype tree; stdout compared to V normal run
+          custom_error	examples/custom_error.v	1	normal-required	20	IError/custom errors; stdout compared to V normal run
           EOF
 
           fizz_expected() {
@@ -797,7 +799,7 @@ jobs:
               primes)
                 write_v_run_expected "$source" "$expected" 20
                 ;;
-              bfs|bfs3|dfs|dijkstra|topological_sorting_greedy|topological_sorting_dfs|dfs2|minimal_spann_tree_prim|bellman_ford|binary_search_tree)
+              bfs|bfs3|dfs|dijkstra|topological_sorting_greedy|topological_sorting_dfs|dfs2|minimal_spann_tree_prim|bellman_ford|binary_search_tree|custom_error)
                 write_v_run_expected "$source" "$expected"
                 ;;
               fibonacci)
@@ -1279,6 +1281,14 @@ jobs:
               Notes = 'generic sumtype tree stdout compared to V normal run'
             }
             [pscustomobject]@{
+              Name = 'custom_error'
+              Source = 'examples/custom_error.v'
+              Enabled = $true
+              BackendStatus = 'normal-required'
+              TimeoutSeconds = 20
+              Notes = 'IError/custom errors'
+            }
+            [pscustomobject]@{
               Name = 'dump_factorial'
               Source = 'examples/dump_factorial.v'
               Enabled = $true
@@ -1636,7 +1646,7 @@ jobs:
                 }
                 return ,(Get-VRunExpectedBytes $example.Source $example.Name $programArgs)
               }
-              { $_ -eq 'bfs' -or $_ -eq 'bfs3' -or $_ -eq 'dfs' -or $_ -eq 'dijkstra' -or $_ -eq 'topological_sorting_greedy' -or $_ -eq 'topological_sorting_dfs' -or $_ -eq 'dfs2' -or $_ -eq 'minimal_spann_tree_prim' -or $_ -eq 'bellman_ford' -or $_ -eq 'binary_search_tree' } {
+              { $_ -eq 'bfs' -or $_ -eq 'bfs3' -or $_ -eq 'dfs' -or $_ -eq 'dijkstra' -or $_ -eq 'topological_sorting_greedy' -or $_ -eq 'topological_sorting_dfs' -or $_ -eq 'dfs2' -or $_ -eq 'minimal_spann_tree_prim' -or $_ -eq 'bellman_ford' -or $_ -eq 'binary_search_tree' -or $_ -eq 'custom_error' } {
                 return ,(Get-VRunExpectedBytes $example.Source $example.Name)
               }
               'fibonacci' {

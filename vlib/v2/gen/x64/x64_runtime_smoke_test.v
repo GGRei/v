@@ -2216,6 +2216,214 @@ fn x64_f64_for_interpolation_stdout() []u8 {
 	return '0.2 0.0 0.5 0.3 0.6 \n'.bytes()
 }
 
+fn x64_custom_error_result_or_block_source() string {
+	return 'module main
+
+struct MyErr {
+	Error
+}
+
+struct OtherErr {
+	Error
+}
+
+struct MessageLike {}
+
+fn (m MessageLike) msg() string {
+	return "message-like"
+}
+
+fn fail_direct() !int {
+	return &MyErr{}
+}
+
+fn fail_cast() !int {
+	return IError(&MyErr{})
+}
+
+fn fail_other() !int {
+	return &OtherErr{}
+}
+
+fn fail_builtin() !int {
+	return error("x")
+}
+
+fn inner() !int {
+	return &MyErr{}
+}
+
+fn propagate() !int {
+	inner() or {
+		return err
+	}
+	return 0
+}
+
+fn ok_ierror(e IError) !IError {
+	return e
+}
+
+fn ok_option_ierror(e IError) ?IError {
+	return e
+}
+
+fn classify_my_only(err IError) string {
+	match err {
+		MyErr {
+			return "my"
+		}
+		else {
+			return "not-my"
+		}
+	}
+}
+
+fn classify_full(err IError) string {
+	match err {
+		MyErr {
+			return "my"
+		}
+		OtherErr {
+			return "other"
+		}
+		else {
+			return "builtin"
+		}
+	}
+}
+
+fn classify_is_my(err IError) string {
+	if err is MyErr {
+		return "is-my"
+	}
+	return "not-is-my"
+}
+
+fn classify_not_my(err IError) string {
+	if err !is MyErr {
+		return "not-is-my"
+	}
+	return "is-my"
+}
+
+fn main() {
+	fail_direct() or {
+		println("direct:" + classify_my_only(err))
+		println("direct-is:" + classify_is_my(err))
+	}
+	fail_cast() or {
+		println("cast:" + classify_my_only(err))
+	}
+	fail_other() or {
+		println("other:" + classify_my_only(err))
+		println("other-full:" + classify_full(err))
+		println("other-not-is:" + classify_not_my(err))
+	}
+	fail_builtin() or {
+		println("builtin:" + classify_my_only(err))
+		println("builtin-full:" + classify_full(err))
+	}
+	propagate() or {
+		println("propagate:" + classify_my_only(err))
+	}
+	ok_ierror(IError(&MyErr{})) or {
+		println("bad-result-ierror")
+		return
+	}
+	println("result-ierror:ok")
+	ok_option_ierror(IError(&MyErr{})) or {
+		println("bad-option-ierror")
+		return
+	}
+	println("option-ierror:ok")
+	msg_like := MessageLike{}
+	println("message-like:" + msg_like.msg())
+	println("done")
+}
+'
+}
+
+fn x64_custom_error_result_or_block_stdout() []u8 {
+	return 'direct:my\ndirect-is:is-my\ncast:my\nother:not-my\nother-full:other\nother-not-is:not-is-my\nbuiltin:not-my\nbuiltin-full:builtin\npropagate:my\nresult-ierror:ok\noption-ierror:ok\nmessage-like:message-like\ndone\n'.bytes()
+}
+
+fn x64_custom_error_imported_type_match_sources() map[string]string {
+	return {
+		'main.v':    'module main
+
+import dep
+
+struct LocalErr {
+	Error
+}
+
+fn fail_local() !int {
+	return &LocalErr{}
+}
+
+fn fail_import_cast() !int {
+	return IError(&dep.ForeignErr{})
+}
+
+fn classify(err IError) string {
+	match err {
+		dep.ForeignErr {
+			return "dep.ForeignErr"
+		}
+		dep.LocalErr {
+			return "dep.LocalErr"
+		}
+		LocalErr {
+			return "main.LocalErr"
+		}
+		else {
+			return "other"
+		}
+	}
+}
+
+fn main() {
+	dep.fail_foreign() or {
+		println("foreign:" + classify(err))
+	}
+	fail_import_cast() or {
+		println("foreign-cast:" + classify(err))
+	}
+	dep.fail_local() or {
+		println("dep-local:" + classify(err))
+	}
+	fail_local() or {
+		println("local:" + classify(err))
+	}
+	println("done")
+}
+'
+		'dep/dep.v': 'module dep
+
+pub struct ForeignErr {
+	Error
+}
+
+pub struct LocalErr {
+	Error
+}
+
+pub fn fail_foreign() !int {
+	return &ForeignErr{}
+}
+
+pub fn fail_local() !int {
+	return &LocalErr{}
+}
+'
+	}
+}
+
+fn x64_custom_error_imported_type_match_stdout() []u8 {
+	return 'foreign:dep.ForeignErr\nforeign-cast:dep.ForeignErr\ndep-local:dep.LocalErr\nlocal:main.LocalErr\ndone\n'.bytes()
+}
+
 fn x64_core_int_control_flow_source() string {
 	return "module main
 
@@ -4268,35 +4476,17 @@ fn main() {
 
 fn test_x64_linux_getwd_clone_runtime_smoke() {
 	$if linux {
-		tmp_dir := os.join_path(os.vtmp_dir(), 'v2_x64_getwd_clone_${os.getpid()}')
-		os.mkdir_all(tmp_dir) or { panic(err) }
-		defer {
-			os.rmdir_all(tmp_dir) or {}
-		}
-		source_path := os.join_path(tmp_dir, 'getwd_clone.v')
-		bin_path := os.join_path(tmp_dir, 'getwd_clone')
-		os.write_file(source_path, "module main
-
-import os
-
-fn main() {
-	wd := os.getwd()
-	if wd.len > 0 {
-		println('ok')
-	} else {
-		println('bad')
-	}
-}
-") or {
-			panic(err)
-		}
-		vexe := os.getenv_opt('VEXE') or { @VEXE }
-		build :=
-			os.execute('${os.quoted_path(vexe)} -v2 -no-parallel -b x64 ${os.quoted_path(source_path)} -o ${os.quoted_path(bin_path)}')
-		assert build.exit_code == 0, build.output
-		run := os.execute(os.quoted_path(bin_path))
-		assert run.exit_code == 0, run.output
-		assert run.output.trim_space() == 'ok'
+		result := run_x64_host_program_redirected_auto('getwd_clone_runtime_smoke',
+			x64_getwd_clone_source())
+		expected_stdout := x64_getwd_clone_stdout()
+		context := x64_host_result_context(result)
+		stdout_message := x64_stdout_mismatch_message('getwd_clone_runtime_smoke', 'linux',
+			expected_stdout, result.stdout, context)
+		stderr_message := x64_stderr_mismatch_message('getwd_clone_runtime_smoke', 'linux', []u8{},
+			result.stderr, context)
+		assert result.stdout == expected_stdout, stdout_message
+		assert result.stderr == []u8{}, stderr_message
+		x64_host_cleanup_tmp(result.tmp_dir)
 	}
 }
 
@@ -6059,6 +6249,28 @@ fn test_x64_linux_f64_for_interpolation_stdout_exact_bytes() {
 		assert_x64_linux_hosted_libc_binary(result, x64_f64_for_interpolation_stdout())
 		x64_host_cleanup_tmp(result.tmp_dir)
 	}
+}
+
+fn test_x64_linux_custom_error_result_runs_or_block() {
+	assert_x64_linux_stdout_bytes('custom_error_result_or_block',
+		x64_custom_error_result_or_block_source(), x64_custom_error_result_or_block_stdout())
+}
+
+fn test_x64_macos_windows_custom_error_result_runs_or_block() {
+	assert_x64_macos_windows_stdout_bytes('custom_error_result_or_block',
+		x64_custom_error_result_or_block_source(), x64_custom_error_result_or_block_stdout())
+}
+
+fn test_x64_linux_custom_error_imported_type_match() {
+	assert_x64_linux_project_stdout_bytes('custom_error_imported_type_match',
+		x64_custom_error_imported_type_match_sources(),
+		x64_custom_error_imported_type_match_stdout())
+}
+
+fn test_x64_macos_windows_custom_error_imported_type_match() {
+	assert_x64_macos_windows_project_stdout_bytes('custom_error_imported_type_match',
+		x64_custom_error_imported_type_match_sources(),
+		x64_custom_error_imported_type_match_stdout())
 }
 
 fn test_x64_linux_core_int_control_flow_stdout_exact_bytes() {
