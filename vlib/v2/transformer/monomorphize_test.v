@@ -2003,6 +2003,49 @@ fn tag(value Value) int {
 	assert_generic_sumtype_repeated_base_string_tag(files, 'flat direct')
 }
 
+fn test_generic_sumtype_match_smartcast_scans_full_specialization_body() {
+	files := mono_transform_sources_for_test([
+		MonoSource{
+			rel:  'main.v'
+			code: generic_sumtype_repeated_base_smartcast_source()
+		},
+	])
+	assert_generic_sumtype_repeated_base_smartcast_echo(files, 'legacy')
+}
+
+fn test_flat_direct_generic_sumtype_match_smartcast_scans_full_specialization_body() {
+	files := mono_transform_sources_flat_direct_for_test([
+		MonoSource{
+			rel:  'main.v'
+			code: generic_sumtype_repeated_base_smartcast_source()
+		},
+	])
+	assert_generic_sumtype_repeated_base_smartcast_echo(files, 'flat direct')
+}
+
+fn generic_sumtype_repeated_base_smartcast_source() string {
+	return '
+module main
+
+struct Box[T] {
+	value T
+}
+
+type Value = Box[int] | Box[string]
+
+fn echo[T](value T) T {
+	return value
+}
+
+fn use(value Value) string {
+	return match value {
+		Box[string] { echo(value.value) }
+		else { "" }
+	}
+}
+'
+}
+
 fn assert_generic_sumtype_repeated_base_string_tag(files []ast.File, label string) {
 	rhs_values := mono_tag_compare_rhs_for_fn(files, 'tag')
 	mut saw_string_tag := false
@@ -2018,6 +2061,15 @@ fn assert_generic_sumtype_repeated_base_string_tag(files []ast.File, label strin
 		}
 	}
 	assert saw_string_tag, '${label}: Box[string] branch should match the second generic specialization tag, got ${rhs_values}'
+}
+
+fn assert_generic_sumtype_repeated_base_smartcast_echo(files []ast.File, label string) {
+	fn_names := mono_fn_names(files)
+	assert 'echo_T_string' in fn_names, '${label}: smartcasted Box[string] branch did not collect echo[string], got ${fn_names}'
+	assert 'echo_T_int' !in fn_names, '${label}: Box[string] branch collected wrong echo[int] specialization, got ${fn_names}'
+	call_names := mono_call_names_for_fn(files, 'use')
+	assert 'echo_T_string' in call_names, '${label}: use() should call echo_T_string from Box[string] branch, got ${call_names}'
+	assert 'echo' !in call_names, '${label}: open echo call leaked in ${call_names}'
 }
 
 fn test_generic_sumtype_receiver_no_arg_method_call_is_monomorphized() {

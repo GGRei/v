@@ -17274,7 +17274,7 @@ fn (b &Builder) sumtype_variant_generic_candidate_names_from_flat(base ast.Curso
 	base_name := b.generic_type_part_name_from_flat(base)
 	mut parts := []string{cap: params.len}
 	for param in params {
-		part := b.generic_type_part_name_from_flat(param)
+		part := b.generic_type_arg_part_name_from_flat(param)
 		if part == '' {
 			return []string{}
 		}
@@ -19407,12 +19407,9 @@ fn (b &Builder) checked_module_names_for_ssa_module(module_name string) []string
 		return candidates
 	}
 	for import_alias, imported_module in b.module_import_aliases {
-		if module_name_to_ssa_name(import_alias) == module_name {
-			if import_alias !in candidates {
-				candidates << import_alias
-			}
-		}
-		if module_name_to_ssa_name(imported_module) == module_name {
+		alias_matches := module_name_to_ssa_name(import_alias) == module_name
+		imported_matches := module_name_to_ssa_name(imported_module) == module_name
+		if alias_matches || imported_matches {
 			if imported_module !in candidates {
 				candidates << imported_module
 			}
@@ -19425,14 +19422,6 @@ fn (b &Builder) checked_module_names_for_ssa_module(module_name string) []string
 		candidates << b.cur_module
 	}
 	return candidates
-}
-
-fn (b &Builder) checked_module_name_for_ssa_module(module_name string) ?string {
-	candidates := b.checked_module_names_for_ssa_module(module_name)
-	if candidates.len == 1 {
-		return candidates[0]
-	}
-	return none
 }
 
 fn (b &Builder) lookup_checked_type_by_name(name string) ?types.Type {
