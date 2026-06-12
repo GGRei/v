@@ -7793,9 +7793,7 @@ fn (mut c Checker) call_expr(expr &ast.CallExpr) Type {
 			if generic_type_map.len > 0 {
 				resolved_return_type := c.substitute_generic_type_with_stack(return_type,
 					generic_type_map, [])
-				if resolved_return_type.name() != return_type.name() {
-					return resolved_return_type
-				}
+				return resolved_return_type
 			}
 			if return_type is NamedType && generic_type_map.len > 0 {
 				if resolved := generic_type_map[string(return_type)] {

@@ -784,12 +784,16 @@ fn make_box[T](value T) Box[T] {
 
 fn main() {
 	b := make_box[int](7)
+	y := b.value
 	x := b.get()
+	_ = y + 1
 	_ = x + 1
 }
 ')
 	scope := env.get_fn_scope('main', 'main') or { panic('missing main scope') }
+	y := scope.lookup_parent('y', 0) or { panic('missing y local') }
 	x := scope.lookup_parent('x', 0) or { panic('missing x local') }
+	assert y.typ().name() == 'int'
 	assert x.typ().name() == 'int'
 }
 
