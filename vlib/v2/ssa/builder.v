@@ -384,6 +384,20 @@ pub fn imported_symbol_fn_name(module_name string, name string) string {
 	return '${normalized_module_name}__${name}'
 }
 
+fn (b &Builder) resolve_module_call_fn_name(module_name string, name string) string {
+	full_name := imported_symbol_fn_name(module_name, name)
+	if full_name in b.fn_index {
+		return full_name
+	}
+	if module_name.contains('.') {
+		leaf_name := imported_symbol_fn_name(module_name.all_after_last('.'), name)
+		if leaf_name in b.fn_index {
+			return leaf_name
+		}
+	}
+	return full_name
+}
+
 fn module_name_to_ssa_name(module_name string) string {
 	return module_name.replace('.', '_')
 }
@@ -1741,6 +1755,9 @@ fn (mut b Builder) named_type_to_ssa(name string) TypeID {
 fn (b &Builder) selector_module_name_for_ident(mod_name string) ?string {
 	if mod_name == 'C' {
 		return 'C'
+	}
+	if resolved_mod := b.module_import_aliases[mod_name] {
+		return resolved_mod
 	}
 	if b.env != unsafe { nil } {
 		if scope := b.env.get_scope(b.cur_module) {
@@ -14972,11 +14989,7 @@ fn (mut b Builder) resolve_call_name(expr ast.CallExpr) string {
 				if mod_name == 'C' {
 					return sel.rhs.name
 				}
-				qualified := '${mod_name}__${sel.rhs.name}'
-				if qualified in b.fn_index {
-					return qualified
-				}
-				return qualified
+				return b.resolve_module_call_fn_name(mod_name, sel.rhs.name)
 			}
 			if typed_method := b.resolve_method_name_from_checked_type(sel.lhs, sel.rhs.name) {
 				return typed_method
@@ -15020,11 +15033,7 @@ fn (mut b Builder) resolve_call_name_from_flat(c ast.Cursor) string {
 				if mod_name == 'C' {
 					return rhs_name
 				}
-				qualified := '${mod_name}__${rhs_name}'
-				if qualified in b.fn_index {
-					return qualified
-				}
-				return qualified
+				return b.resolve_module_call_fn_name(mod_name, rhs_name)
 			}
 			if typed_method := b.resolve_method_name_from_checked_type_from_flat(c.edge(0),
 				rhs_name)
@@ -19397,7 +19406,12 @@ fn (b &Builder) checked_module_names_for_ssa_module(module_name string) []string
 	if module_name == '' || b.env == unsafe { nil } {
 		return candidates
 	}
-	for _, imported_module in b.module_import_aliases {
+	for import_alias, imported_module in b.module_import_aliases {
+		if module_name_to_ssa_name(import_alias) == module_name {
+			if import_alias !in candidates {
+				candidates << import_alias
+			}
+		}
 		if module_name_to_ssa_name(imported_module) == module_name {
 			if imported_module !in candidates {
 				candidates << imported_module
