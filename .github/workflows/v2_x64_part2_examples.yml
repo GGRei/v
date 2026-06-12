@@ -26,6 +26,7 @@ jobs:
           set -euo pipefail
           VJOBS=1 ./v test \
             vlib/v2/builder/native_test.v \
+            vlib/v2/builder/ssa_build_parallel_test.v \
             vlib/v2/builder/target_os_test.v \
             vlib/v2/abi \
             vlib/v2/gen/x64/x64_abi_test.v \
@@ -738,6 +739,7 @@ jobs:
           set -euo pipefail
           VJOBS=1 ./v test \
             vlib/v2/builder/native_test.v \
+            vlib/v2/builder/ssa_build_parallel_test.v \
             vlib/v2/builder/target_os_test.v \
             vlib/v2/abi \
             vlib/v2/gen/x64/x64_abi_test.v \
