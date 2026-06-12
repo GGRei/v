@@ -2209,6 +2209,42 @@ fn macos_native_link_command(output_binary string, obj_file string, sdk_path str
 	return normal_link_cmd
 }
 
+fn macos_sdk_path_from_xcrun_output(output string) !string {
+	mut sdk_path := ''
+	for raw_line in output.split_into_lines() {
+		line := raw_line.trim(' \t\r')
+		if line == '' {
+			continue
+		}
+		if is_clean_macos_sdk_path_line(line) {
+			sdk_path = line
+		}
+	}
+	if sdk_path == '' {
+		return error('could not find a clean macOS SDK path in xcrun output')
+	}
+	return sdk_path
+}
+
+fn is_clean_macos_sdk_path_line(path string) bool {
+	if !os.is_abs_path(path) {
+		return false
+	}
+	base := os.file_name(path)
+	return base.starts_with('MacOSX') && base.ends_with('.sdk')
+}
+
+fn validate_macos_sdk_path_for_native_link(sdk_path string) ! {
+	if !os.is_dir(sdk_path) {
+		return error('macOS SDK path does not exist: ${sdk_path}')
+	}
+	libsystem_tbd := os.join_path(sdk_path, 'usr', 'lib', 'libSystem.tbd')
+	libsystem_dylib := os.join_path(sdk_path, 'usr', 'lib', 'libSystem.dylib')
+	if !os.exists(libsystem_tbd) && !os.exists(libsystem_dylib) {
+		return error('macOS SDK path is missing usr/lib/libSystem.tbd or usr/lib/libSystem.dylib: ${sdk_path}')
+	}
+}
+
 fn linux_native_link_command(output_binary string, obj_file string, link_flags string) string {
 	return 'cc ${os.quoted_path(obj_file)} -o ${os.quoted_path(output_binary)} -no-pie${native_link_flags_suffix(link_flags)}'
 }
@@ -3453,7 +3489,24 @@ fn (mut b Builder) gen_native(backend_arch pref.Arch) {
 		// Link the object file into an executable
 		if is_macos_native_target(target_os) {
 			sdk_res := os.execute('xcrun -sdk macosx --show-sdk-path')
-			sdk_path := sdk_res.output.trim_space()
+			if sdk_res.exit_code != 0 {
+				eprintln('Link failed:')
+				eprintln('failed to resolve macOS SDK path with xcrun:')
+				eprintln(sdk_res.output)
+				exit(1)
+			}
+			sdk_path := macos_sdk_path_from_xcrun_output(sdk_res.output) or {
+				eprintln('Link failed:')
+				eprintln(err.msg())
+				eprintln('xcrun output:')
+				eprintln(sdk_res.output)
+				exit(1)
+			}
+			validate_macos_sdk_path_for_native_link(sdk_path) or {
+				eprintln('Link failed:')
+				eprintln(err.msg())
+				exit(1)
+			}
 			arch_flag := if arch == .arm64 { 'arm64' } else { 'x86_64' }
 			normal_link_cmd := macos_native_link_command(output_binary, obj_file, sdk_path,
 				arch_flag, false, native_link_flags)
