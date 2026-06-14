@@ -276,6 +276,12 @@ pub fn (mut b Builder) build(files []string) {
 	} else {
 		b.flat = b.transform_files_parallel_flat_direct(mut trans)
 	}
+	// Autofree facts are bound to the final post-transform FlatAst. Keep this
+	// common to sequential and default parallel transforms, before markused/codegen.
+	b.env.reset_autofree_facts_for_flat(&b.flat)
+	if b.pref.autofree && b.pref.backend == .cleanc {
+		b.env.collect_autofree_facts_from_flat(&b.flat)
+	}
 	b.files = []ast.File{}
 	transform_time := time.Duration(sw.elapsed() - transform_start)
 	print_time('Transform', transform_time)

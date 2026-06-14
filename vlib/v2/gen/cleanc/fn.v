@@ -6772,11 +6772,12 @@ fn (mut g Gen) gen_fn_decl_with_name_ptr(node &ast.FnDecl, fn_name string) {
 		g.sb.writeln('__v_live_init();')
 	}
 	g.gen_stmts(node.stmts)
+	g.autofree_emit_statement_cleanup_context(fn_name, node)
 
 	// Drop/RAII: invoke `Type__drop(&var)` for each still-owned binding
 	// the checker scheduled. Only emitted at the natural fn exit (no
 	// early-return support yet) and skipped when the body ends in an
-	// explicit `return` (those drops would be unreachable). Phase 1B
+	// explicit `return` (those drops would be unreachable). Future work
 	// will weave drops through every return point.
 	g.emit_scheduled_drops(node.stmts, fn_name)
 

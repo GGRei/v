@@ -48,8 +48,24 @@ pub mut:
 	// excluded by the checker — the return moves them. Only populated when
 	// the checker runs with `-d ownership`; empty under plain V.
 	drop_at_returns map[string][][]DropEntry
-	// Shared C-language scope. Phase 1 workers register C struct decls into
-	// here under c_scope_mu; phase 2 (sequential) registers C fn signatures.
+	// Autofree fact handoff: V2-only ownership/free facts computed from the
+	// final post-transform FlatAst. These are intentionally separate from the
+	// explicit `-d ownership` DropEntry path so CleanC never infers ownership
+	// from C type shape or names.
+	autofree_pipeline                             AutofreePipelineFact
+	autofree_bindings_by_fn_key                   map[string][]AutofreeBindingFact
+	autofree_fresh_locals_by_fn_key               map[string][]AutofreeFreshLocalFact
+	autofree_move_proofs_by_fn_key                map[string][]AutofreeMoveProofFact
+	autofree_natural_release_candidates_by_fn_key map[string][]AutofreeNaturalReleaseCandidateFact
+	autofree_release_plans_by_fn_key              map[string][]AutofreeReleasePlanFact
+	autofree_release_preflights_by_fn_key         map[string][]AutofreeReleasePreflightFact
+	autofree_release_insertion_points_by_fn_key   map[string][]AutofreeReleaseInsertionPointFact
+	autofree_transfers_by_fn_key                  map[string][]AutofreeTransferFact
+	autofree_release_eligibility_by_fn_key        map[string][]AutofreeReleaseEligibilityFact
+	autofree_releases_by_fn_key                   map[string][]AutofreeReleaseFact
+	autofree_helper_roots                         []AutofreeHelperRootFact
+	// Shared C-language scope. Early workers register C struct decls into
+	// here under c_scope_mu; the later sequential pass registers C fn signatures.
 	// All checkers point their per-checker `c_scope` field at this instance
 	// so that the `C` Module pasted into each module scope resolves uniformly.
 	c_scope    &Scope      = unsafe { nil }
@@ -979,7 +995,7 @@ fn (obj Global) is_module_storage() bool {
 
 fn (obj Global) requires_explicit_module_storage_mut() bool {
 	_ = obj
-	// This V2 palier keeps legacy `__global name` mutable on purpose, so
+	// This V2 compatibility path keeps legacy `__global name` mutable on purpose, so
 	// existing V2/runtime sources do not need syntax that the V1 parser/vfmt
 	// still rejects. `is_mut` remains source metadata for the explicit spelling.
 	return false
@@ -1676,7 +1692,7 @@ pub fn (mut c Checker) get_module_scope(module_name string, parent &Scope) &Scop
 	return scope
 }
 
-// check_flat is the Phase 2 consumer entry point: accepts a FlatAst directly
+// check_flat is the flat consumer entry point: accepts a FlatAst directly
 // rather than []ast.File. Top-level passes walk the FlatAst and decode only
 // the legacy nodes they still need internally.
 pub fn (mut c Checker) check_flat(flat &ast.FlatAst) {
@@ -1704,8 +1720,8 @@ pub fn (mut c Checker) check_flat(flat &ast.FlatAst) {
 }
 
 // register_selector_names_from_flat reads selector_names directly from
-// FlatFile entries without rehydrating to legacy ast.File. First example of
-// a Phase 2 consumer reading the flat representation in place.
+// FlatFile entries without rehydrating to legacy ast.File. This reads the flat
+// representation in place.
 fn (mut c Checker) register_selector_names_from_flat(flat &ast.FlatAst) {
 	for ff in flat.files {
 		for id, name in ff.selector_names {

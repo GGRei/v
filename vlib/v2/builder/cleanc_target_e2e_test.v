@@ -299,6 +299,184 @@ fn assert_cli_failure_contains(res CleancCliResult, expected string) {
 	}
 }
 
+fn autofree_array_cleanup_source() string {
+	return 'module main
+
+fn build_empty_array() {
+	items := []int{}
+}
+
+fn main() {
+	build_empty_array()
+}
+'
+}
+
+fn autofree_mut_array_cleanup_source() string {
+	return 'module main
+
+fn build_mut_empty_array() {
+	mut items := []int{}
+}
+
+fn main() {
+	build_mut_empty_array()
+}
+'
+}
+
+fn autofree_string_array_cleanup_source() string {
+	return 'module main
+
+fn build_empty_string_array() {
+	items := []string{}
+}
+
+fn main() {
+	build_empty_string_array()
+}
+'
+}
+
+fn autofree_mut_string_array_cleanup_source() string {
+	return 'module main
+
+fn build_mut_empty_string_array() {
+	mut items := []string{}
+}
+
+fn main() {
+	build_mut_empty_string_array()
+}
+'
+}
+
+fn autofree_prefixed_array_cleanup_source() string {
+	return 'module main
+
+fn build_empty_array_after_scalar() {
+	_n := 1
+	items := []int{}
+}
+
+fn build_empty_string_array_after_scalar() {
+	_n := 1
+	items := []string{}
+}
+
+fn main() {
+	build_empty_array_after_scalar()
+	build_empty_string_array_after_scalar()
+}
+'
+}
+
+fn autofree_transfer_prefixed_array_cleanup_source() string {
+	return 'module main
+
+fn build_empty_array_after_transfer(source []int) {
+	copy := source
+	items := []int{}
+}
+
+fn build_empty_string_array_after_transfer(source []string) {
+	copy := source
+	items := []string{}
+}
+
+fn main() {
+	build_empty_array_after_transfer([]int{})
+	build_empty_string_array_after_transfer([]string{})
+}
+'
+}
+
+fn generated_c_function_body(c_source string, fn_name string) ?string {
+	signature := 'void ${fn_name}('
+	mut search_from := 0
+	for {
+		fn_idx := c_source_find_line_prefix_after(c_source, signature, search_from) or {
+			return none
+		}
+		body_start := c_source.index_after('{', fn_idx) or { return none }
+		prototype_end := c_source.index_after(';', fn_idx) or { c_source.len }
+		if body_start < prototype_end {
+			body_end := c_source.index_after('\n}', body_start) or { return none }
+			return c_source[body_start + 1..body_end]
+		}
+		search_from = fn_idx + signature.len
+	}
+	return none
+}
+
+fn generated_c_function_body_or_fail(res CleancCliResult, fn_name string) string {
+	body := generated_c_function_body(res.c_source, fn_name) or {
+		assert false, res.c_source
+		return ''
+	}
+	return body
+}
+
+fn assert_autofree_array_cleanup_present_in_fn(res CleancCliResult, fn_name string) {
+	assert_cli_success(res)
+	body := generated_c_function_body_or_fail(res, fn_name)
+	assert body.contains('array__free(&items);'), res.c_source
+	assert !body.contains('string__free'), res.c_source
+}
+
+fn assert_autofree_array_cleanup_absent_in_fn(res CleancCliResult, fn_name string) {
+	assert res.exit_code == 0, res.output
+	assert res.c_source.len > 0, res.output
+	body := generated_c_function_body_or_fail(res, fn_name)
+	assert !body.contains('array__free(&items);'), res.c_source
+	assert !body.contains('string__free'), res.c_source
+}
+
+fn assert_autofree_transfer_prefix_cleanup_present_in_fn(res CleancCliResult, fn_name string) {
+	assert_cli_success(res)
+	body := generated_c_function_body_or_fail(res, fn_name)
+	assert body.contains('array__free(&items);'), res.c_source
+	assert !body.contains('array__free(&copy);'), res.c_source
+	assert !body.contains('array__free(&source);'), res.c_source
+	assert !body.contains('string__free'), res.c_source
+}
+
+fn assert_autofree_transfer_prefix_cleanup_absent_in_fn(res CleancCliResult, fn_name string) {
+	assert res.exit_code == 0, res.output
+	assert res.c_source.len > 0, res.output
+	body := generated_c_function_body_or_fail(res, fn_name)
+	assert !body.contains('array__free(&items);'), res.c_source
+	assert !body.contains('array__free(&copy);'), res.c_source
+	assert !body.contains('array__free(&source);'), res.c_source
+	assert !body.contains('string__free'), res.c_source
+}
+
+fn assert_autofree_array_cleanup_present(res CleancCliResult) {
+	assert_autofree_array_cleanup_present_in_fn(res, 'build_empty_array')
+}
+
+fn assert_autofree_array_cleanup_absent(res CleancCliResult) {
+	assert_autofree_array_cleanup_absent_in_fn(res, 'build_empty_array')
+}
+
+fn test_generated_c_function_body_skips_prototype() {
+	c_source := 'void build_empty_array();
+void unrelated_block() {
+	ignored();
+}
+void build_empty_array() {
+	Array_int items = __new_array(0, 0, sizeof(int));
+	array__free(&items);
+}
+'
+	body := generated_c_function_body(c_source, 'build_empty_array') or {
+		assert false, c_source
+		return
+	}
+	assert body.contains('array__free(&items);'), body
+	assert !body.contains('ignored();'), body
+}
+
 fn host_cc_available() bool {
 	$if windows {
 		return false
@@ -2406,6 +2584,242 @@ fn main() {}
 		'-freestanding -os cross is not supported')
 	assert !os.exists(rejected_freestanding_cross_res.c_path), rejected_freestanding_cross_res.output
 	assert !os.exists(rejected_freestanding_cross_res.out_path), rejected_freestanding_cross_res.output
+}
+
+fn test_cleanc_autofree_array_cleanup_respects_target_runtime_contract() {
+	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_cleanc_autofree_target_${os.getpid()}')
+	os.rmdir_all(tmp_dir) or {}
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+	v2_binary := build_v2_for_target_e2e(tmp_dir)
+	source := autofree_array_cleanup_source()
+	mut_source := autofree_mut_array_cleanup_source()
+	string_source := autofree_string_array_cleanup_source()
+	mut_string_source := autofree_mut_string_array_cleanup_source()
+	prefixed_source := autofree_prefixed_array_cleanup_source()
+	transfer_prefixed_source := autofree_transfer_prefixed_array_cleanup_source()
+
+	hosted_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_cleanup_hosted', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+	], source, os.join_path(tmp_dir, 'autofree_cleanup_hosted.c'))
+	assert_autofree_array_cleanup_present(hosted_res)
+
+	cross_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_cleanup_cross', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+		'-os',
+		'cross',
+	], source, os.join_path(tmp_dir, 'autofree_cleanup_cross.c'))
+	assert_autofree_array_cleanup_present(cross_res)
+
+	mut_hosted_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_mut_cleanup_hosted', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+	], mut_source, os.join_path(tmp_dir, 'autofree_mut_cleanup_hosted.c'))
+	assert_autofree_array_cleanup_present_in_fn(mut_hosted_res, 'build_mut_empty_array')
+
+	freestanding_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_cleanup_freestanding', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+		'-freestanding',
+		'-os',
+		'linux',
+	], source, os.join_path(tmp_dir, 'autofree_cleanup_freestanding.c'))
+	assert_autofree_array_cleanup_absent(freestanding_res)
+
+	none_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_cleanup_none', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+		'-freestanding',
+		'-os',
+		'none',
+	], source, os.join_path(tmp_dir, 'autofree_cleanup_none.c'))
+	assert_autofree_array_cleanup_absent(none_res)
+
+	string_hosted_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_string_cleanup_hosted', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+	], string_source, os.join_path(tmp_dir, 'autofree_string_cleanup_hosted.c'))
+	assert_autofree_array_cleanup_present_in_fn(string_hosted_res, 'build_empty_string_array')
+
+	string_cross_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_string_cleanup_cross', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+		'-os',
+		'cross',
+	], string_source, os.join_path(tmp_dir, 'autofree_string_cleanup_cross.c'))
+	assert_autofree_array_cleanup_present_in_fn(string_cross_res, 'build_empty_string_array')
+
+	mut_string_hosted_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_mut_string_cleanup_hosted', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+	], mut_string_source, os.join_path(tmp_dir, 'autofree_mut_string_cleanup_hosted.c'))
+	assert_autofree_array_cleanup_present_in_fn(mut_string_hosted_res,
+		'build_mut_empty_string_array')
+
+	string_no_autofree_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_string_cleanup_disabled', [
+		'-backend',
+		'cleanc',
+	], string_source, os.join_path(tmp_dir, 'autofree_string_cleanup_disabled.c'))
+	assert_autofree_array_cleanup_absent_in_fn(string_no_autofree_res, 'build_empty_string_array')
+
+	string_freestanding_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_string_cleanup_freestanding', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+		'-freestanding',
+		'-os',
+		'linux',
+	], string_source, os.join_path(tmp_dir, 'autofree_string_cleanup_freestanding.c'))
+	assert_autofree_array_cleanup_absent_in_fn(string_freestanding_res, 'build_empty_string_array')
+
+	string_none_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_string_cleanup_none', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+		'-freestanding',
+		'-os',
+		'none',
+	], string_source, os.join_path(tmp_dir, 'autofree_string_cleanup_none.c'))
+	assert_autofree_array_cleanup_absent_in_fn(string_none_res, 'build_empty_string_array')
+
+	prefixed_hosted_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_prefixed_cleanup_hosted', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+	], prefixed_source, os.join_path(tmp_dir, 'autofree_prefixed_cleanup_hosted.c'))
+	assert_autofree_array_cleanup_present_in_fn(prefixed_hosted_res,
+		'build_empty_array_after_scalar')
+	assert_autofree_array_cleanup_present_in_fn(prefixed_hosted_res,
+		'build_empty_string_array_after_scalar')
+
+	prefixed_cross_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_prefixed_cleanup_cross', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+		'-os',
+		'cross',
+	], prefixed_source, os.join_path(tmp_dir, 'autofree_prefixed_cleanup_cross.c'))
+	assert_autofree_array_cleanup_present_in_fn(prefixed_cross_res,
+		'build_empty_array_after_scalar')
+	assert_autofree_array_cleanup_present_in_fn(prefixed_cross_res,
+		'build_empty_string_array_after_scalar')
+
+	prefixed_no_autofree_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_prefixed_cleanup_disabled', [
+		'-backend',
+		'cleanc',
+	], prefixed_source, os.join_path(tmp_dir, 'autofree_prefixed_cleanup_disabled.c'))
+	assert_autofree_array_cleanup_absent_in_fn(prefixed_no_autofree_res,
+		'build_empty_array_after_scalar')
+	assert_autofree_array_cleanup_absent_in_fn(prefixed_no_autofree_res,
+		'build_empty_string_array_after_scalar')
+
+	prefixed_freestanding_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_prefixed_cleanup_freestanding', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+		'-freestanding',
+		'-os',
+		'linux',
+	], prefixed_source, os.join_path(tmp_dir, 'autofree_prefixed_cleanup_freestanding.c'))
+	assert_autofree_array_cleanup_absent_in_fn(prefixed_freestanding_res,
+		'build_empty_array_after_scalar')
+	assert_autofree_array_cleanup_absent_in_fn(prefixed_freestanding_res,
+		'build_empty_string_array_after_scalar')
+
+	prefixed_none_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_prefixed_cleanup_none', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+		'-freestanding',
+		'-os',
+		'none',
+	], prefixed_source, os.join_path(tmp_dir, 'autofree_prefixed_cleanup_none.c'))
+	assert_autofree_array_cleanup_absent_in_fn(prefixed_none_res, 'build_empty_array_after_scalar')
+	assert_autofree_array_cleanup_absent_in_fn(prefixed_none_res,
+		'build_empty_string_array_after_scalar')
+
+	transfer_prefixed_hosted_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_transfer_prefixed_cleanup_hosted', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+	], transfer_prefixed_source, os.join_path(tmp_dir,
+		'autofree_transfer_prefixed_cleanup_hosted.c'))
+	assert_autofree_transfer_prefix_cleanup_present_in_fn(transfer_prefixed_hosted_res,
+		'build_empty_array_after_transfer')
+	assert_autofree_transfer_prefix_cleanup_present_in_fn(transfer_prefixed_hosted_res,
+		'build_empty_string_array_after_transfer')
+
+	transfer_prefixed_cross_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_transfer_prefixed_cleanup_cross', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+		'-os',
+		'cross',
+	], transfer_prefixed_source,
+		os.join_path(tmp_dir, 'autofree_transfer_prefixed_cleanup_cross.c'))
+	assert_autofree_transfer_prefix_cleanup_present_in_fn(transfer_prefixed_cross_res,
+		'build_empty_array_after_transfer')
+	assert_autofree_transfer_prefix_cleanup_present_in_fn(transfer_prefixed_cross_res,
+		'build_empty_string_array_after_transfer')
+
+	transfer_prefixed_no_autofree_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_transfer_prefixed_cleanup_disabled', [
+		'-backend',
+		'cleanc',
+	], transfer_prefixed_source, os.join_path(tmp_dir,
+		'autofree_transfer_prefixed_cleanup_disabled.c'))
+	assert_autofree_transfer_prefix_cleanup_absent_in_fn(transfer_prefixed_no_autofree_res,
+		'build_empty_array_after_transfer')
+	assert_autofree_transfer_prefix_cleanup_absent_in_fn(transfer_prefixed_no_autofree_res,
+		'build_empty_string_array_after_transfer')
+
+	transfer_prefixed_freestanding_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_transfer_prefixed_cleanup_freestanding', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+		'-freestanding',
+		'-os',
+		'linux',
+	], transfer_prefixed_source, os.join_path(tmp_dir,
+		'autofree_transfer_prefixed_cleanup_freestanding.c'))
+	assert_autofree_transfer_prefix_cleanup_absent_in_fn(transfer_prefixed_freestanding_res,
+		'build_empty_array_after_transfer')
+	assert_autofree_transfer_prefix_cleanup_absent_in_fn(transfer_prefixed_freestanding_res,
+		'build_empty_string_array_after_transfer')
+
+	transfer_prefixed_none_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_transfer_prefixed_cleanup_none', [
+		'-autofree',
+		'-backend',
+		'cleanc',
+		'-freestanding',
+		'-os',
+		'none',
+	], transfer_prefixed_source, os.join_path(tmp_dir, 'autofree_transfer_prefixed_cleanup_none.c'))
+	assert_autofree_transfer_prefix_cleanup_absent_in_fn(transfer_prefixed_none_res,
+		'build_empty_array_after_transfer')
+	assert_autofree_transfer_prefix_cleanup_absent_in_fn(transfer_prefixed_none_res,
+		'build_empty_string_array_after_transfer')
 }
 
 fn test_cleanc_cli_does_not_auto_run_stale_test_binary_for_generation_only_target() {

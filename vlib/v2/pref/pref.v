@@ -35,6 +35,7 @@ pub mut:
 	debug                 bool
 	verbose               bool
 	ownership             bool // -ownership: enable ownership checking for strings
+	autofree              bool // -autofree: enable target-program autofree mode
 	skip_genv             bool
 	skip_builtin          bool
 	skip_imports          bool
@@ -510,6 +511,8 @@ pub fn new_preferences_from_args(args []string) Preferences {
 	}
 	macos_tiny := '-no-mos-tiny' !in options
 
+	autofree := '-autofree' in options
+
 	// Parse -ownership flag (must be after options is declared)
 	mut ownership := false
 	$if ownership ? {
@@ -527,7 +530,8 @@ pub fn new_preferences_from_args(args []string) Preferences {
 		'--nocache', '-nomarkused', '--nomarkused', '-showcc', '--showcc', '-stats', '--stats',
 		'-print-parsed-files', '--print-parsed-files', '-keepc', '--profile-alloc', '-profile-alloc',
 		'-enable-globals', '--enable-globals', '-shared', '--shared', '-O0', '--single-backend',
-		'-single-backend', '-prod', '-prealloc', '-freestanding', '--freestanding', '-no-mos-tiny']
+		'-single-backend', '-prod', '-prealloc', '-freestanding', '--freestanding', '-no-mos-tiny',
+		'-autofree']
 	$if ownership ? {
 		known_boolean_flags << '-ownership'
 	}
@@ -550,6 +554,7 @@ pub fn new_preferences_from_args(args []string) Preferences {
 			eprintln('  -enable-globals        Accepted for v1 compatibility')
 			eprintln('  -prod                  Production build: enable SSA optimization + -O3 -flto')
 			eprintln('  -prealloc              Use arena allocation (faster, not thread-safe)')
+			eprintln('  -autofree              Enable target-program autofree mode')
 			eprintln('  -freestanding          Generate for a freestanding platform contract')
 			eprintln('  -fhooks <values>       Advanced freestanding hooks for --skip-builtin --skip-type-check stubs')
 			eprintln('                         Values: output, panic, alloc, minimal')
@@ -592,6 +597,7 @@ pub fn new_preferences_from_args(args []string) Preferences {
 		prealloc:              '-prealloc' in options
 		single_backend:        '--single-backend' in options || '-single-backend' in options
 		ownership:             ownership
+		autofree:              autofree
 		gc_mode:               gc_mode
 		backend:               backend
 		arch:                  arch
@@ -673,6 +679,7 @@ pub fn new_preferences_using_options(options []string) Preferences {
 		exit(1)
 	}
 	mut user_defines := []string{}
+	autofree := '-autofree' in options
 	if output_cross_c {
 		user_defines << 'cross'
 	}
@@ -703,6 +710,7 @@ pub fn new_preferences_using_options(options []string) Preferences {
 		is_prod:               '-prod' in options
 		prealloc:              '-prealloc' in options
 		single_backend:        '--single-backend' in options || '-single-backend' in options
+		autofree:              autofree
 		backend:               backend
 		arch:                  arch
 		target_os:             target_os

@@ -31,8 +31,15 @@ mut:
 	// checker. Indexed positionally by `cur_fn_return_index`, which the
 	// ReturnStmt handler increments. Reset at every fn entry. Empty for
 	// fns the checker didn't see (e.g., plain V without `-d ownership`).
-	cur_fn_return_drops [][]types.DropEntry
-	cur_fn_return_index int
+	cur_fn_return_drops                    [][]types.DropEntry
+	cur_fn_return_index                    int
+	autofree_cleanup_emit_context          AutofreeCleanCStatementCleanupEmitContextFact
+	has_autofree_cleanup_emit_context      bool
+	autofree_cleanup_emit_context_consumed bool
+	autofree_cleanup_emit_context_prepared bool
+	autofree_cleanup_emit_fn_key           string
+	autofree_cleanup_emit_fn_node_id       ast.FlatNodeId
+	autofree_cleanup_emit_fn_pos_id        int
 	// Set true while gen_return_if_branch synthesizes ReturnStmts for
 	// `return if cond { x } else { y }`. The synthesized statements go
 	// through the same ReturnStmt handler, but they represent the SAME
@@ -648,8 +655,8 @@ fn (mut g Gen) gen_file_cursor(fc ast.FileCursor) {
 	}
 	for fi in fn_indices {
 		g.restore_file_module_context(file_name, file_module, file_import_modules)
-		fn_decl := stmts.at(fi).fn_decl()
-		g.gen_fn_decl_ptr(&fn_decl)
+		fn_cursor := stmts.at(fi)
+		g.gen_fn_decl_ptr_with_autofree_cleanup_context(fc, fn_cursor)
 	}
 }
 
@@ -669,8 +676,8 @@ fn (mut g Gen) gen_file_cursor_range(fc ast.FileCursor, fn_stmt_indices []int, e
 	}
 	for fi in fn_stmt_indices {
 		g.restore_file_module_context(file_name, file_module, file_import_modules)
-		fn_decl := stmts.at(fi).fn_decl()
-		g.gen_fn_decl_ptr(&fn_decl)
+		fn_cursor := stmts.at(fi)
+		g.gen_fn_decl_ptr_with_autofree_cleanup_context(fc, fn_cursor)
 	}
 }
 
