@@ -2591,82 +2591,75 @@ fn test_collect_autofree_array_element_store_transfers_skip_multi_assign() {
 	autofree_test_assert_no_array_element_store_or_releases(env, fn_name)
 }
 
-fn test_collect_autofree_array_element_store_transfers_skip_rhs_literal() {
-	mut env := Environment.new()
-	fn_name := 'array_element_store_rhs_literal'
-	flat := autofree_test_flat_with_fresh_array_element_store_params(fn_name, autofree_test_empty_array_expr('int',
-		autofree_test_rhs_pos), autofree_test_slots_params(), autofree_test_int_expr('0',
-		autofree_test_slots_index_pos), autofree_test_string_expr('literal',
-		autofree_test_second_rhs_pos))
-	array_type := autofree_test_move_proof_array_type()
-	slots_type := autofree_test_array_element_root_type(array_type)
-	autofree_test_add_scope_with_slots(mut env, fn_name, slots_type)
-	autofree_test_set_array_element_store_expr_types(mut env, array_type, array_type, slots_type,
-		Type(int_), array_type, Type(string_))
-
-	autofree_test_collect_array_element_store_transfers_and_eligibility(mut env, &flat)
-
-	autofree_test_assert_no_array_element_store_or_releases(env, fn_name)
+struct AutofreeArrayElementStoreInvalidRhsCase {
+	name               string
+	rhs                ast.Expr
+	store_lhs_type     Type
+	store_rhs_type     Type
+	needs_holder_scope bool
 }
 
-fn test_collect_autofree_array_element_store_transfers_skip_rhs_call() {
+fn autofree_test_assert_array_element_store_invalid_rhs_rejected(invalid_case AutofreeArrayElementStoreInvalidRhsCase) {
 	mut env := Environment.new()
-	fn_name := 'array_element_store_rhs_call'
-	flat := autofree_test_flat_with_fresh_array_element_store_params(fn_name, autofree_test_empty_array_expr('int',
+	flat := autofree_test_flat_with_fresh_array_element_store_params(invalid_case.name, autofree_test_empty_array_expr('int',
 		autofree_test_rhs_pos), autofree_test_slots_params(), autofree_test_int_expr('0',
-		autofree_test_slots_index_pos), autofree_test_call_expr('make_items', autofree_test_ident_expr('seed',
-		autofree_test_other_rhs_pos), autofree_test_second_rhs_pos))
+		autofree_test_slots_index_pos), invalid_case.rhs)
 	array_type := autofree_test_move_proof_array_type()
 	slots_type := autofree_test_array_element_root_type(array_type)
-	autofree_test_add_scope_with_slots(mut env, fn_name, slots_type)
+	if invalid_case.needs_holder_scope {
+		holder_type := autofree_test_holder_type(array_type)
+		autofree_test_add_scope_with_var_types(mut env, invalid_case.name, {
+			'holder': holder_type
+			'slots':  slots_type
+		})
+		env.set_expr_type(autofree_test_holder_root_pos, holder_type)
+	} else {
+		autofree_test_add_scope_with_slots(mut env, invalid_case.name, slots_type)
+	}
 	autofree_test_set_array_element_store_expr_types(mut env, array_type, array_type, slots_type,
-		Type(int_), array_type, array_type)
+		Type(int_), invalid_case.store_lhs_type, invalid_case.store_rhs_type)
 
 	autofree_test_collect_array_element_store_transfers_and_eligibility(mut env, &flat)
 
-	autofree_test_assert_no_array_element_store_or_releases(env, fn_name)
+	autofree_test_assert_no_array_element_store_or_releases(env, invalid_case.name)
 }
 
-fn test_collect_autofree_array_element_store_transfers_skip_rhs_selector() {
-	mut env := Environment.new()
-	fn_name := 'array_element_store_rhs_selector'
-	flat := autofree_test_flat_with_fresh_array_element_store_params(fn_name, autofree_test_empty_array_expr('int',
-		autofree_test_rhs_pos), autofree_test_slots_params(), autofree_test_int_expr('0',
-		autofree_test_slots_index_pos), autofree_test_selector_expr_with_root_pos('holder',
-		'items', autofree_test_holder_root_pos, autofree_test_field_pos,
-		autofree_test_second_rhs_pos))
+fn test_collect_autofree_array_element_store_transfers_skip_invalid_rhs_shapes() {
 	array_type := autofree_test_move_proof_array_type()
-	slots_type := autofree_test_array_element_root_type(array_type)
-	holder_type := autofree_test_holder_type(array_type)
-	autofree_test_add_scope_with_var_types(mut env, fn_name, {
-		'holder': holder_type
-		'slots':  slots_type
-	})
-	autofree_test_set_array_element_store_expr_types(mut env, array_type, array_type, slots_type,
-		Type(int_), array_type, array_type)
-	env.set_expr_type(autofree_test_holder_root_pos, holder_type)
-
-	autofree_test_collect_array_element_store_transfers_and_eligibility(mut env, &flat)
-
-	autofree_test_assert_no_array_element_store_or_releases(env, fn_name)
-}
-
-fn test_collect_autofree_array_element_store_transfers_skip_rhs_index() {
-	mut env := Environment.new()
-	fn_name := 'array_element_store_rhs_index'
-	flat := autofree_test_flat_with_fresh_array_element_store_params(fn_name, autofree_test_empty_array_expr('int',
-		autofree_test_rhs_pos), autofree_test_slots_params(), autofree_test_int_expr('0',
-		autofree_test_slots_index_pos), autofree_test_index_expr('items', 'i',
-		autofree_test_second_rhs_pos, autofree_test_index_pos))
-	array_type := autofree_test_move_proof_array_type()
-	slots_type := autofree_test_array_element_root_type(array_type)
-	autofree_test_add_scope_with_slots(mut env, fn_name, slots_type)
-	autofree_test_set_array_element_store_expr_types(mut env, array_type, array_type, slots_type,
-		Type(int_), Type(int_), Type(int_))
-
-	autofree_test_collect_array_element_store_transfers_and_eligibility(mut env, &flat)
-
-	autofree_test_assert_no_array_element_store_or_releases(env, fn_name)
+	cases := [
+		AutofreeArrayElementStoreInvalidRhsCase{
+			name:           'array_element_store_rhs_literal'
+			rhs:            autofree_test_string_expr('literal', autofree_test_second_rhs_pos)
+			store_lhs_type: array_type
+			store_rhs_type: Type(string_)
+		},
+		AutofreeArrayElementStoreInvalidRhsCase{
+			name:           'array_element_store_rhs_call'
+			rhs:            autofree_test_call_expr('make_items', autofree_test_ident_expr('seed',
+				autofree_test_other_rhs_pos), autofree_test_second_rhs_pos)
+			store_lhs_type: array_type
+			store_rhs_type: array_type
+		},
+		AutofreeArrayElementStoreInvalidRhsCase{
+			name:               'array_element_store_rhs_selector'
+			rhs:                autofree_test_selector_expr_with_root_pos('holder', 'items',
+				autofree_test_holder_root_pos, autofree_test_field_pos,
+				autofree_test_second_rhs_pos)
+			store_lhs_type:     array_type
+			store_rhs_type:     array_type
+			needs_holder_scope: true
+		},
+		AutofreeArrayElementStoreInvalidRhsCase{
+			name:           'array_element_store_rhs_index'
+			rhs:            autofree_test_index_expr('items', 'i', autofree_test_second_rhs_pos,
+				autofree_test_index_pos)
+			store_lhs_type: Type(int_)
+			store_rhs_type: Type(int_)
+		},
+	]
+	for invalid_case in cases {
+		autofree_test_assert_array_element_store_invalid_rhs_rejected(invalid_case)
+	}
 }
 
 fn test_collect_autofree_array_element_store_transfers_skip_missing_lhs_type() {
