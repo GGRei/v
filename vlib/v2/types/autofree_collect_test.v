@@ -224,96 +224,83 @@ fn test_collect_autofree_return_transfers_collects_direct_empty_string_array_ret
 	autofree_test_assert_no_releases_or_helper_roots(env)
 }
 
-fn test_collect_autofree_return_transfers_skip_return_literal() {
-	mut env := Environment.new()
-	flat := autofree_test_flat_with_fresh_array_return_expr('return_literal', 'int', autofree_test_empty_array_expr('int',
-		autofree_test_rhs_pos), autofree_test_int_expr('1', autofree_test_return_pos))
-	array_type := autofree_test_move_proof_array_type()
-	env.set_expr_type(autofree_test_lhs_pos, array_type)
-	env.set_expr_type(autofree_test_rhs_pos, array_type)
-	env.set_expr_type(autofree_test_return_pos, Type(int_))
-
-	env.collect_autofree_facts_from_flat(&flat)
-
-	autofree_test_assert_no_return_escape_or_releases(env, 'return_literal')
+struct AutofreeReturnTransferInvalidReturnExprCase {
+	name                     string
+	return_exprs             []ast.Expr
+	return_type              Type
+	set_other_rhs_array_type bool
 }
 
-fn test_collect_autofree_return_transfers_skip_return_call() {
+fn autofree_test_assert_return_transfer_invalid_return_expr_rejected(invalid_case AutofreeReturnTransferInvalidReturnExprCase) {
 	mut env := Environment.new()
-	flat := autofree_test_flat_with_fresh_array_return_expr('return_call', 'int', autofree_test_empty_array_expr('int',
-		autofree_test_rhs_pos), autofree_test_call_expr('make_items', autofree_test_ident_expr('seed',
-		autofree_test_second_rhs_pos), autofree_test_return_pos))
+	flat := autofree_test_flat_with_fresh_array_return_exprs(invalid_case.name, 'int', autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), invalid_case.return_exprs)
 	array_type := autofree_test_move_proof_array_type()
 	env.set_expr_type(autofree_test_lhs_pos, array_type)
 	env.set_expr_type(autofree_test_rhs_pos, array_type)
-	env.set_expr_type(autofree_test_return_pos, array_type)
+	env.set_expr_type(autofree_test_return_pos, invalid_case.return_type)
+	if invalid_case.set_other_rhs_array_type {
+		env.set_expr_type(autofree_test_other_rhs_pos, array_type)
+	}
 
 	env.collect_autofree_facts_from_flat(&flat)
 
-	autofree_test_assert_no_return_escape_or_releases(env, 'return_call')
+	autofree_test_assert_no_return_escape_or_releases(env, invalid_case.name)
 }
 
-fn test_collect_autofree_return_transfers_skip_selector_return() {
-	mut env := Environment.new()
-	flat := autofree_test_flat_with_fresh_array_return_expr('return_selector', 'int', autofree_test_empty_array_expr('int',
-		autofree_test_rhs_pos), autofree_test_selector_expr('holder', 'items',
-		autofree_test_return_pos, autofree_test_field_pos))
+fn test_collect_autofree_return_transfers_skip_invalid_return_expr_shapes() {
 	array_type := autofree_test_move_proof_array_type()
-	env.set_expr_type(autofree_test_lhs_pos, array_type)
-	env.set_expr_type(autofree_test_rhs_pos, array_type)
-	env.set_expr_type(autofree_test_return_pos, array_type)
-
-	env.collect_autofree_facts_from_flat(&flat)
-
-	autofree_test_assert_no_return_escape_or_releases(env, 'return_selector')
-}
-
-fn test_collect_autofree_return_transfers_skip_index_return() {
-	mut env := Environment.new()
-	flat := autofree_test_flat_with_fresh_array_return_expr('return_index', 'int', autofree_test_empty_array_expr('int',
-		autofree_test_rhs_pos), autofree_test_index_expr('items', 'i', autofree_test_return_pos,
-		autofree_test_index_pos))
-	array_type := autofree_test_move_proof_array_type()
-	env.set_expr_type(autofree_test_lhs_pos, array_type)
-	env.set_expr_type(autofree_test_rhs_pos, array_type)
-	env.set_expr_type(autofree_test_return_pos, Type(int_))
-
-	env.collect_autofree_facts_from_flat(&flat)
-
-	autofree_test_assert_no_return_escape_or_releases(env, 'return_index')
-}
-
-fn test_collect_autofree_return_transfers_skip_map_index_return() {
-	mut env := Environment.new()
-	flat := autofree_test_flat_with_fresh_array_return_expr('return_map_index', 'int', autofree_test_empty_array_expr('int',
-		autofree_test_rhs_pos), autofree_test_index_expr('cache', 'key', autofree_test_return_pos,
-		autofree_test_index_pos))
-	array_type := autofree_test_move_proof_array_type()
-	env.set_expr_type(autofree_test_lhs_pos, array_type)
-	env.set_expr_type(autofree_test_rhs_pos, array_type)
-	env.set_expr_type(autofree_test_return_pos, array_type)
-
-	env.collect_autofree_facts_from_flat(&flat)
-
-	autofree_test_assert_no_return_escape_or_releases(env, 'return_map_index')
-}
-
-fn test_collect_autofree_return_transfers_skip_multi_return_tuple() {
-	mut env := Environment.new()
-	flat := autofree_test_flat_with_fresh_array_return_exprs('return_multi', 'int', autofree_test_empty_array_expr('int',
-		autofree_test_rhs_pos), [
-		autofree_test_ident_expr('items', autofree_test_return_pos),
-		autofree_test_ident_expr('other', autofree_test_other_rhs_pos),
-	])
-	array_type := autofree_test_move_proof_array_type()
-	env.set_expr_type(autofree_test_lhs_pos, array_type)
-	env.set_expr_type(autofree_test_rhs_pos, array_type)
-	env.set_expr_type(autofree_test_return_pos, array_type)
-	env.set_expr_type(autofree_test_other_rhs_pos, array_type)
-
-	env.collect_autofree_facts_from_flat(&flat)
-
-	autofree_test_assert_no_return_escape_or_releases(env, 'return_multi')
+	cases := [
+		AutofreeReturnTransferInvalidReturnExprCase{
+			name:         'return_literal'
+			return_exprs: [autofree_test_int_expr('1', autofree_test_return_pos)]
+			return_type:  Type(int_)
+		},
+		AutofreeReturnTransferInvalidReturnExprCase{
+			name:         'return_call'
+			return_exprs: [
+				autofree_test_call_expr('make_items', autofree_test_ident_expr('seed',
+					autofree_test_second_rhs_pos), autofree_test_return_pos),
+			]
+			return_type:  array_type
+		},
+		AutofreeReturnTransferInvalidReturnExprCase{
+			name:         'return_selector'
+			return_exprs: [
+				autofree_test_selector_expr('holder', 'items', autofree_test_return_pos,
+					autofree_test_field_pos),
+			]
+			return_type:  array_type
+		},
+		AutofreeReturnTransferInvalidReturnExprCase{
+			name:         'return_index'
+			return_exprs: [
+				autofree_test_index_expr('items', 'i', autofree_test_return_pos,
+					autofree_test_index_pos),
+			]
+			return_type:  Type(int_)
+		},
+		AutofreeReturnTransferInvalidReturnExprCase{
+			name:         'return_map_index'
+			return_exprs: [
+				autofree_test_index_expr('cache', 'key', autofree_test_return_pos,
+					autofree_test_index_pos),
+			]
+			return_type:  array_type
+		},
+		AutofreeReturnTransferInvalidReturnExprCase{
+			name:                     'return_multi'
+			return_exprs:             [
+				autofree_test_ident_expr('items', autofree_test_return_pos),
+				autofree_test_ident_expr('other', autofree_test_other_rhs_pos),
+			]
+			return_type:              array_type
+			set_other_rhs_array_type: true
+		},
+	]
+	for invalid_case in cases {
+		autofree_test_assert_return_transfer_invalid_return_expr_rejected(invalid_case)
+	}
 }
 
 fn test_collect_autofree_return_transfers_skip_missing_return_type() {
