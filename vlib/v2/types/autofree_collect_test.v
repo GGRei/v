@@ -382,33 +382,16 @@ fn test_collect_autofree_return_transfers_skip_nested_body() {
 	autofree_test_assert_no_return_escape_or_releases(env, 'return_nested')
 }
 
-fn test_collect_autofree_return_transfers_skip_reassigned_local() {
-	mut env := Environment.new()
-	array_type := autofree_test_move_proof_array_type()
-	reassign := autofree_test_assign_stmt(autofree_test_ident_expr('items',
-		autofree_test_second_lhs_pos), autofree_test_ident_expr('other',
-		autofree_test_second_rhs_pos))
-	flat := autofree_test_flat_with_fresh_array_return_extra_stmt('return_reassigned', 'int', autofree_test_empty_array_expr('int',
-		autofree_test_rhs_pos), reassign)
-	env.set_expr_type(autofree_test_lhs_pos, array_type)
-	env.set_expr_type(autofree_test_rhs_pos, array_type)
-	env.set_expr_type(autofree_test_second_lhs_pos, array_type)
-	env.set_expr_type(autofree_test_second_rhs_pos, array_type)
-	env.set_expr_type(autofree_test_return_pos, array_type)
-
-	env.collect_autofree_facts_from_flat(&flat)
-
-	autofree_test_assert_no_return_escape_or_releases(env, 'return_reassigned')
+struct AutofreeReturnTransferInvalidLocalCase {
+	name       string
+	extra_stmt ast.Stmt
 }
 
-fn test_collect_autofree_return_transfers_skip_shadowed_local() {
+fn autofree_test_assert_return_transfer_invalid_local_rejected(invalid_case AutofreeReturnTransferInvalidLocalCase) {
 	mut env := Environment.new()
 	array_type := autofree_test_move_proof_array_type()
-	shadow := autofree_test_decl_assign_stmt(autofree_test_ident_expr('items',
-		autofree_test_second_lhs_pos), autofree_test_ident_expr('other',
-		autofree_test_second_rhs_pos))
-	flat := autofree_test_flat_with_fresh_array_return_extra_stmt('return_shadowed', 'int', autofree_test_empty_array_expr('int',
-		autofree_test_rhs_pos), shadow)
+	flat := autofree_test_flat_with_fresh_array_return_extra_stmt(invalid_case.name, 'int', autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), invalid_case.extra_stmt)
 	env.set_expr_type(autofree_test_lhs_pos, array_type)
 	env.set_expr_type(autofree_test_rhs_pos, array_type)
 	env.set_expr_type(autofree_test_second_lhs_pos, array_type)
@@ -417,7 +400,27 @@ fn test_collect_autofree_return_transfers_skip_shadowed_local() {
 
 	env.collect_autofree_facts_from_flat(&flat)
 
-	autofree_test_assert_no_return_escape_or_releases(env, 'return_shadowed')
+	autofree_test_assert_no_return_escape_or_releases(env, invalid_case.name)
+}
+
+fn test_collect_autofree_return_transfers_skip_invalidated_local() {
+	cases := [
+		AutofreeReturnTransferInvalidLocalCase{
+			name:       'return_reassigned'
+			extra_stmt: autofree_test_assign_stmt(autofree_test_ident_expr('items',
+				autofree_test_second_lhs_pos), autofree_test_ident_expr('other',
+				autofree_test_second_rhs_pos))
+		},
+		AutofreeReturnTransferInvalidLocalCase{
+			name:       'return_shadowed'
+			extra_stmt: autofree_test_decl_assign_stmt(autofree_test_ident_expr('items',
+				autofree_test_second_lhs_pos), autofree_test_ident_expr('other',
+				autofree_test_second_rhs_pos))
+		},
+	]
+	for invalid_case in cases {
+		autofree_test_assert_return_transfer_invalid_local_rejected(invalid_case)
+	}
 }
 
 fn test_collect_autofree_global_store_transfers_collects_direct_empty_int_array_store() {
