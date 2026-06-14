@@ -602,76 +602,58 @@ fn test_collect_autofree_global_store_transfers_skip_map_index_lhs() {
 	autofree_test_assert_no_global_store_or_releases(env, fn_name)
 }
 
-fn test_collect_autofree_global_store_transfers_skip_rhs_literal() {
-	mut env := Environment.new()
-	fn_name := 'global_store_rhs_literal'
-	store := autofree_test_global_store_stmt(autofree_test_ident_expr('cached',
-		autofree_test_second_lhs_pos), autofree_test_string_expr('literal',
-		autofree_test_second_rhs_pos))
-	flat := autofree_test_flat_with_fresh_array_global_store_stmt(fn_name, autofree_test_empty_array_expr('int',
-		autofree_test_rhs_pos), store)
-	array_type := autofree_test_move_proof_array_type()
-	autofree_test_add_scope_with_global(mut env, fn_name, 'cached', array_type)
-	autofree_test_set_global_store_expr_types(mut env, array_type, array_type, array_type,
-		Type(string_))
-
-	env.collect_autofree_facts_from_flat(&flat)
-
-	autofree_test_assert_no_global_store_or_releases(env, fn_name)
+struct AutofreeGlobalStoreInvalidRhsCase {
+	name     string
+	rhs      ast.Expr
+	rhs_type Type
 }
 
-fn test_collect_autofree_global_store_transfers_skip_rhs_call() {
+fn autofree_test_assert_global_store_invalid_rhs_rejected(invalid_case AutofreeGlobalStoreInvalidRhsCase) {
 	mut env := Environment.new()
-	fn_name := 'global_store_rhs_call'
 	store := autofree_test_global_store_stmt(autofree_test_ident_expr('cached',
-		autofree_test_second_lhs_pos), autofree_test_call_expr('make_items', autofree_test_ident_expr('seed',
-		autofree_test_other_rhs_pos), autofree_test_second_rhs_pos))
-	flat := autofree_test_flat_with_fresh_array_global_store_stmt(fn_name, autofree_test_empty_array_expr('int',
+		autofree_test_second_lhs_pos), invalid_case.rhs)
+	flat := autofree_test_flat_with_fresh_array_global_store_stmt(invalid_case.name, autofree_test_empty_array_expr('int',
 		autofree_test_rhs_pos), store)
 	array_type := autofree_test_move_proof_array_type()
-	autofree_test_add_scope_with_global(mut env, fn_name, 'cached', array_type)
+	autofree_test_add_scope_with_global(mut env, invalid_case.name, 'cached', array_type)
 	autofree_test_set_global_store_expr_types(mut env, array_type, array_type, array_type,
-		array_type)
+		invalid_case.rhs_type)
 
 	env.collect_autofree_facts_from_flat(&flat)
 
-	autofree_test_assert_no_global_store_or_releases(env, fn_name)
+	autofree_test_assert_no_global_store_or_releases(env, invalid_case.name)
 }
 
-fn test_collect_autofree_global_store_transfers_skip_rhs_selector() {
-	mut env := Environment.new()
-	fn_name := 'global_store_rhs_selector'
-	store := autofree_test_global_store_stmt(autofree_test_ident_expr('cached',
-		autofree_test_second_lhs_pos), autofree_test_selector_expr('holder', 'items',
-		autofree_test_second_rhs_pos, autofree_test_field_pos))
-	flat := autofree_test_flat_with_fresh_array_global_store_stmt(fn_name, autofree_test_empty_array_expr('int',
-		autofree_test_rhs_pos), store)
+fn test_collect_autofree_global_store_transfers_skip_invalid_rhs_shapes() {
 	array_type := autofree_test_move_proof_array_type()
-	autofree_test_add_scope_with_global(mut env, fn_name, 'cached', array_type)
-	autofree_test_set_global_store_expr_types(mut env, array_type, array_type, array_type,
-		array_type)
-
-	env.collect_autofree_facts_from_flat(&flat)
-
-	autofree_test_assert_no_global_store_or_releases(env, fn_name)
-}
-
-fn test_collect_autofree_global_store_transfers_skip_rhs_index() {
-	mut env := Environment.new()
-	fn_name := 'global_store_rhs_index'
-	store := autofree_test_global_store_stmt(autofree_test_ident_expr('cached',
-		autofree_test_second_lhs_pos), autofree_test_index_expr('items', 'i',
-		autofree_test_second_rhs_pos, autofree_test_index_pos))
-	flat := autofree_test_flat_with_fresh_array_global_store_stmt(fn_name, autofree_test_empty_array_expr('int',
-		autofree_test_rhs_pos), store)
-	array_type := autofree_test_move_proof_array_type()
-	autofree_test_add_scope_with_global(mut env, fn_name, 'cached', array_type)
-	autofree_test_set_global_store_expr_types(mut env, array_type, array_type, array_type,
-		Type(int_))
-
-	env.collect_autofree_facts_from_flat(&flat)
-
-	autofree_test_assert_no_global_store_or_releases(env, fn_name)
+	cases := [
+		AutofreeGlobalStoreInvalidRhsCase{
+			name:     'global_store_rhs_literal'
+			rhs:      autofree_test_string_expr('literal', autofree_test_second_rhs_pos)
+			rhs_type: Type(string_)
+		},
+		AutofreeGlobalStoreInvalidRhsCase{
+			name:     'global_store_rhs_call'
+			rhs:      autofree_test_call_expr('make_items', autofree_test_ident_expr('seed',
+				autofree_test_other_rhs_pos), autofree_test_second_rhs_pos)
+			rhs_type: array_type
+		},
+		AutofreeGlobalStoreInvalidRhsCase{
+			name:     'global_store_rhs_selector'
+			rhs:      autofree_test_selector_expr('holder', 'items', autofree_test_second_rhs_pos,
+				autofree_test_field_pos)
+			rhs_type: array_type
+		},
+		AutofreeGlobalStoreInvalidRhsCase{
+			name:     'global_store_rhs_index'
+			rhs:      autofree_test_index_expr('items', 'i', autofree_test_second_rhs_pos,
+				autofree_test_index_pos)
+			rhs_type: Type(int_)
+		},
+	]
+	for invalid_case in cases {
+		autofree_test_assert_global_store_invalid_rhs_rejected(invalid_case)
+	}
 }
 
 fn test_collect_autofree_global_store_transfers_skip_multi_assign() {
