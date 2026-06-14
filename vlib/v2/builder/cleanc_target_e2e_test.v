@@ -459,6 +459,61 @@ fn assert_autofree_array_cleanup_absent(res CleancCliResult) {
 	assert_autofree_array_cleanup_absent_in_fn(res, 'build_empty_array')
 }
 
+struct CleancAutofreeCleanupCase {
+	name            string
+	args            []string
+	source          string
+	fn_names        []string
+	expect_cleanup  bool
+	transfer_prefix bool
+}
+
+fn cleanc_autofree_hosted_args() []string {
+	return ['-autofree', '-backend', 'cleanc']
+}
+
+fn cleanc_autofree_cross_args() []string {
+	return ['-autofree', '-backend', 'cleanc', '-os', 'cross']
+}
+
+fn cleanc_autofree_disabled_args() []string {
+	return ['-backend', 'cleanc']
+}
+
+fn cleanc_autofree_freestanding_linux_args() []string {
+	return ['-autofree', '-backend', 'cleanc', '-freestanding', '-os', 'linux']
+}
+
+fn cleanc_autofree_none_args() []string {
+	return ['-autofree', '-backend', 'cleanc', '-freestanding', '-os', 'none']
+}
+
+fn run_cleanc_autofree_cleanup_case(v2_binary string, tmp_dir string, cleanup_case CleancAutofreeCleanupCase) {
+	assert cleanup_case.name.len > 0
+	assert cleanup_case.fn_names.len > 0
+	res := run_v2_to_output(v2_binary, tmp_dir, cleanup_case.name, cleanup_case.args,
+		cleanup_case.source, os.join_path(tmp_dir, '${cleanup_case.name}.c'))
+	for fn_name in cleanup_case.fn_names {
+		if cleanup_case.transfer_prefix {
+			if cleanup_case.expect_cleanup {
+				assert_autofree_transfer_prefix_cleanup_present_in_fn(res, fn_name)
+			} else {
+				assert_autofree_transfer_prefix_cleanup_absent_in_fn(res, fn_name)
+			}
+		} else if cleanup_case.expect_cleanup {
+			assert_autofree_array_cleanup_present_in_fn(res, fn_name)
+		} else {
+			assert_autofree_array_cleanup_absent_in_fn(res, fn_name)
+		}
+	}
+}
+
+fn run_cleanc_autofree_cleanup_cases(v2_binary string, tmp_dir string, cleanup_cases []CleancAutofreeCleanupCase) {
+	for cleanup_case in cleanup_cases {
+		run_cleanc_autofree_cleanup_case(v2_binary, tmp_dir, cleanup_case)
+	}
+}
+
 fn test_generated_c_function_body_skips_prototype() {
 	c_source := 'void build_empty_array();
 void unrelated_block() {
@@ -2601,225 +2656,165 @@ fn test_cleanc_autofree_array_cleanup_respects_target_runtime_contract() {
 	prefixed_source := autofree_prefixed_array_cleanup_source()
 	transfer_prefixed_source := autofree_transfer_prefixed_array_cleanup_source()
 
-	hosted_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_cleanup_hosted', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-	], source, os.join_path(tmp_dir, 'autofree_cleanup_hosted.c'))
-	assert_autofree_array_cleanup_present(hosted_res)
+	run_cleanc_autofree_cleanup_cases(v2_binary, tmp_dir, [
+		CleancAutofreeCleanupCase{
+			name:           'autofree_cleanup_hosted'
+			args:           cleanc_autofree_hosted_args()
+			source:         source
+			fn_names:       ['build_empty_array']
+			expect_cleanup: true
+		},
+		CleancAutofreeCleanupCase{
+			name:           'autofree_cleanup_cross'
+			args:           cleanc_autofree_cross_args()
+			source:         source
+			fn_names:       ['build_empty_array']
+			expect_cleanup: true
+		},
+		CleancAutofreeCleanupCase{
+			name:           'autofree_mut_cleanup_hosted'
+			args:           cleanc_autofree_hosted_args()
+			source:         mut_source
+			fn_names:       ['build_mut_empty_array']
+			expect_cleanup: true
+		},
+		CleancAutofreeCleanupCase{
+			name:     'autofree_cleanup_freestanding_linux'
+			args:     cleanc_autofree_freestanding_linux_args()
+			source:   source
+			fn_names: ['build_empty_array']
+		},
+		CleancAutofreeCleanupCase{
+			name:     'autofree_cleanup_none'
+			args:     cleanc_autofree_none_args()
+			source:   source
+			fn_names: ['build_empty_array']
+		},
+	])
 
-	cross_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_cleanup_cross', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-		'-os',
-		'cross',
-	], source, os.join_path(tmp_dir, 'autofree_cleanup_cross.c'))
-	assert_autofree_array_cleanup_present(cross_res)
+	run_cleanc_autofree_cleanup_cases(v2_binary, tmp_dir, [
+		CleancAutofreeCleanupCase{
+			name:           'autofree_string_cleanup_hosted'
+			args:           cleanc_autofree_hosted_args()
+			source:         string_source
+			fn_names:       ['build_empty_string_array']
+			expect_cleanup: true
+		},
+		CleancAutofreeCleanupCase{
+			name:           'autofree_string_cleanup_cross'
+			args:           cleanc_autofree_cross_args()
+			source:         string_source
+			fn_names:       ['build_empty_string_array']
+			expect_cleanup: true
+		},
+		CleancAutofreeCleanupCase{
+			name:           'autofree_mut_string_cleanup_hosted'
+			args:           cleanc_autofree_hosted_args()
+			source:         mut_string_source
+			fn_names:       ['build_mut_empty_string_array']
+			expect_cleanup: true
+		},
+		CleancAutofreeCleanupCase{
+			name:     'autofree_string_cleanup_disabled'
+			args:     cleanc_autofree_disabled_args()
+			source:   string_source
+			fn_names: ['build_empty_string_array']
+		},
+		CleancAutofreeCleanupCase{
+			name:     'autofree_string_cleanup_freestanding_linux'
+			args:     cleanc_autofree_freestanding_linux_args()
+			source:   string_source
+			fn_names: ['build_empty_string_array']
+		},
+		CleancAutofreeCleanupCase{
+			name:     'autofree_string_cleanup_none'
+			args:     cleanc_autofree_none_args()
+			source:   string_source
+			fn_names: ['build_empty_string_array']
+		},
+	])
 
-	mut_hosted_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_mut_cleanup_hosted', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-	], mut_source, os.join_path(tmp_dir, 'autofree_mut_cleanup_hosted.c'))
-	assert_autofree_array_cleanup_present_in_fn(mut_hosted_res, 'build_mut_empty_array')
+	run_cleanc_autofree_cleanup_cases(v2_binary, tmp_dir, [
+		CleancAutofreeCleanupCase{
+			name:           'autofree_prefixed_cleanup_hosted'
+			args:           cleanc_autofree_hosted_args()
+			source:         prefixed_source
+			fn_names:       ['build_empty_array_after_scalar',
+				'build_empty_string_array_after_scalar']
+			expect_cleanup: true
+		},
+		CleancAutofreeCleanupCase{
+			name:           'autofree_prefixed_cleanup_cross'
+			args:           cleanc_autofree_cross_args()
+			source:         prefixed_source
+			fn_names:       ['build_empty_array_after_scalar',
+				'build_empty_string_array_after_scalar']
+			expect_cleanup: true
+		},
+		CleancAutofreeCleanupCase{
+			name:     'autofree_prefixed_cleanup_disabled'
+			args:     cleanc_autofree_disabled_args()
+			source:   prefixed_source
+			fn_names: ['build_empty_array_after_scalar', 'build_empty_string_array_after_scalar']
+		},
+		CleancAutofreeCleanupCase{
+			name:     'autofree_prefixed_cleanup_freestanding_linux'
+			args:     cleanc_autofree_freestanding_linux_args()
+			source:   prefixed_source
+			fn_names: ['build_empty_array_after_scalar', 'build_empty_string_array_after_scalar']
+		},
+		CleancAutofreeCleanupCase{
+			name:     'autofree_prefixed_cleanup_none'
+			args:     cleanc_autofree_none_args()
+			source:   prefixed_source
+			fn_names: ['build_empty_array_after_scalar', 'build_empty_string_array_after_scalar']
+		},
+	])
 
-	freestanding_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_cleanup_freestanding', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-		'-freestanding',
-		'-os',
-		'linux',
-	], source, os.join_path(tmp_dir, 'autofree_cleanup_freestanding.c'))
-	assert_autofree_array_cleanup_absent(freestanding_res)
-
-	none_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_cleanup_none', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-		'-freestanding',
-		'-os',
-		'none',
-	], source, os.join_path(tmp_dir, 'autofree_cleanup_none.c'))
-	assert_autofree_array_cleanup_absent(none_res)
-
-	string_hosted_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_string_cleanup_hosted', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-	], string_source, os.join_path(tmp_dir, 'autofree_string_cleanup_hosted.c'))
-	assert_autofree_array_cleanup_present_in_fn(string_hosted_res, 'build_empty_string_array')
-
-	string_cross_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_string_cleanup_cross', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-		'-os',
-		'cross',
-	], string_source, os.join_path(tmp_dir, 'autofree_string_cleanup_cross.c'))
-	assert_autofree_array_cleanup_present_in_fn(string_cross_res, 'build_empty_string_array')
-
-	mut_string_hosted_res := run_v2_to_output(v2_binary, tmp_dir,
-		'autofree_mut_string_cleanup_hosted', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-	], mut_string_source, os.join_path(tmp_dir, 'autofree_mut_string_cleanup_hosted.c'))
-	assert_autofree_array_cleanup_present_in_fn(mut_string_hosted_res,
-		'build_mut_empty_string_array')
-
-	string_no_autofree_res := run_v2_to_output(v2_binary, tmp_dir,
-		'autofree_string_cleanup_disabled', [
-		'-backend',
-		'cleanc',
-	], string_source, os.join_path(tmp_dir, 'autofree_string_cleanup_disabled.c'))
-	assert_autofree_array_cleanup_absent_in_fn(string_no_autofree_res, 'build_empty_string_array')
-
-	string_freestanding_res := run_v2_to_output(v2_binary, tmp_dir,
-		'autofree_string_cleanup_freestanding', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-		'-freestanding',
-		'-os',
-		'linux',
-	], string_source, os.join_path(tmp_dir, 'autofree_string_cleanup_freestanding.c'))
-	assert_autofree_array_cleanup_absent_in_fn(string_freestanding_res, 'build_empty_string_array')
-
-	string_none_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_string_cleanup_none', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-		'-freestanding',
-		'-os',
-		'none',
-	], string_source, os.join_path(tmp_dir, 'autofree_string_cleanup_none.c'))
-	assert_autofree_array_cleanup_absent_in_fn(string_none_res, 'build_empty_string_array')
-
-	prefixed_hosted_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_prefixed_cleanup_hosted', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-	], prefixed_source, os.join_path(tmp_dir, 'autofree_prefixed_cleanup_hosted.c'))
-	assert_autofree_array_cleanup_present_in_fn(prefixed_hosted_res,
-		'build_empty_array_after_scalar')
-	assert_autofree_array_cleanup_present_in_fn(prefixed_hosted_res,
-		'build_empty_string_array_after_scalar')
-
-	prefixed_cross_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_prefixed_cleanup_cross', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-		'-os',
-		'cross',
-	], prefixed_source, os.join_path(tmp_dir, 'autofree_prefixed_cleanup_cross.c'))
-	assert_autofree_array_cleanup_present_in_fn(prefixed_cross_res,
-		'build_empty_array_after_scalar')
-	assert_autofree_array_cleanup_present_in_fn(prefixed_cross_res,
-		'build_empty_string_array_after_scalar')
-
-	prefixed_no_autofree_res := run_v2_to_output(v2_binary, tmp_dir,
-		'autofree_prefixed_cleanup_disabled', [
-		'-backend',
-		'cleanc',
-	], prefixed_source, os.join_path(tmp_dir, 'autofree_prefixed_cleanup_disabled.c'))
-	assert_autofree_array_cleanup_absent_in_fn(prefixed_no_autofree_res,
-		'build_empty_array_after_scalar')
-	assert_autofree_array_cleanup_absent_in_fn(prefixed_no_autofree_res,
-		'build_empty_string_array_after_scalar')
-
-	prefixed_freestanding_res := run_v2_to_output(v2_binary, tmp_dir,
-		'autofree_prefixed_cleanup_freestanding', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-		'-freestanding',
-		'-os',
-		'linux',
-	], prefixed_source, os.join_path(tmp_dir, 'autofree_prefixed_cleanup_freestanding.c'))
-	assert_autofree_array_cleanup_absent_in_fn(prefixed_freestanding_res,
-		'build_empty_array_after_scalar')
-	assert_autofree_array_cleanup_absent_in_fn(prefixed_freestanding_res,
-		'build_empty_string_array_after_scalar')
-
-	prefixed_none_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_prefixed_cleanup_none', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-		'-freestanding',
-		'-os',
-		'none',
-	], prefixed_source, os.join_path(tmp_dir, 'autofree_prefixed_cleanup_none.c'))
-	assert_autofree_array_cleanup_absent_in_fn(prefixed_none_res, 'build_empty_array_after_scalar')
-	assert_autofree_array_cleanup_absent_in_fn(prefixed_none_res,
-		'build_empty_string_array_after_scalar')
-
-	transfer_prefixed_hosted_res := run_v2_to_output(v2_binary, tmp_dir,
-		'autofree_transfer_prefixed_cleanup_hosted', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-	], transfer_prefixed_source, os.join_path(tmp_dir,
-		'autofree_transfer_prefixed_cleanup_hosted.c'))
-	assert_autofree_transfer_prefix_cleanup_present_in_fn(transfer_prefixed_hosted_res,
-		'build_empty_array_after_transfer')
-	assert_autofree_transfer_prefix_cleanup_present_in_fn(transfer_prefixed_hosted_res,
-		'build_empty_string_array_after_transfer')
-
-	transfer_prefixed_cross_res := run_v2_to_output(v2_binary, tmp_dir,
-		'autofree_transfer_prefixed_cleanup_cross', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-		'-os',
-		'cross',
-	], transfer_prefixed_source,
-		os.join_path(tmp_dir, 'autofree_transfer_prefixed_cleanup_cross.c'))
-	assert_autofree_transfer_prefix_cleanup_present_in_fn(transfer_prefixed_cross_res,
-		'build_empty_array_after_transfer')
-	assert_autofree_transfer_prefix_cleanup_present_in_fn(transfer_prefixed_cross_res,
-		'build_empty_string_array_after_transfer')
-
-	transfer_prefixed_no_autofree_res := run_v2_to_output(v2_binary, tmp_dir,
-		'autofree_transfer_prefixed_cleanup_disabled', [
-		'-backend',
-		'cleanc',
-	], transfer_prefixed_source, os.join_path(tmp_dir,
-		'autofree_transfer_prefixed_cleanup_disabled.c'))
-	assert_autofree_transfer_prefix_cleanup_absent_in_fn(transfer_prefixed_no_autofree_res,
-		'build_empty_array_after_transfer')
-	assert_autofree_transfer_prefix_cleanup_absent_in_fn(transfer_prefixed_no_autofree_res,
-		'build_empty_string_array_after_transfer')
-
-	transfer_prefixed_freestanding_res := run_v2_to_output(v2_binary, tmp_dir,
-		'autofree_transfer_prefixed_cleanup_freestanding', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-		'-freestanding',
-		'-os',
-		'linux',
-	], transfer_prefixed_source, os.join_path(tmp_dir,
-		'autofree_transfer_prefixed_cleanup_freestanding.c'))
-	assert_autofree_transfer_prefix_cleanup_absent_in_fn(transfer_prefixed_freestanding_res,
-		'build_empty_array_after_transfer')
-	assert_autofree_transfer_prefix_cleanup_absent_in_fn(transfer_prefixed_freestanding_res,
-		'build_empty_string_array_after_transfer')
-
-	transfer_prefixed_none_res := run_v2_to_output(v2_binary, tmp_dir,
-		'autofree_transfer_prefixed_cleanup_none', [
-		'-autofree',
-		'-backend',
-		'cleanc',
-		'-freestanding',
-		'-os',
-		'none',
-	], transfer_prefixed_source, os.join_path(tmp_dir, 'autofree_transfer_prefixed_cleanup_none.c'))
-	assert_autofree_transfer_prefix_cleanup_absent_in_fn(transfer_prefixed_none_res,
-		'build_empty_array_after_transfer')
-	assert_autofree_transfer_prefix_cleanup_absent_in_fn(transfer_prefixed_none_res,
-		'build_empty_string_array_after_transfer')
+	run_cleanc_autofree_cleanup_cases(v2_binary, tmp_dir, [
+		CleancAutofreeCleanupCase{
+			name:            'autofree_transfer_prefixed_cleanup_hosted'
+			args:            cleanc_autofree_hosted_args()
+			source:          transfer_prefixed_source
+			fn_names:        ['build_empty_array_after_transfer',
+				'build_empty_string_array_after_transfer']
+			expect_cleanup:  true
+			transfer_prefix: true
+		},
+		CleancAutofreeCleanupCase{
+			name:            'autofree_transfer_prefixed_cleanup_cross'
+			args:            cleanc_autofree_cross_args()
+			source:          transfer_prefixed_source
+			fn_names:        ['build_empty_array_after_transfer',
+				'build_empty_string_array_after_transfer']
+			expect_cleanup:  true
+			transfer_prefix: true
+		},
+		CleancAutofreeCleanupCase{
+			name:            'autofree_transfer_prefixed_cleanup_disabled'
+			args:            cleanc_autofree_disabled_args()
+			source:          transfer_prefixed_source
+			fn_names:        ['build_empty_array_after_transfer',
+				'build_empty_string_array_after_transfer']
+			transfer_prefix: true
+		},
+		CleancAutofreeCleanupCase{
+			name:            'autofree_transfer_prefixed_cleanup_freestanding_linux'
+			args:            cleanc_autofree_freestanding_linux_args()
+			source:          transfer_prefixed_source
+			fn_names:        ['build_empty_array_after_transfer',
+				'build_empty_string_array_after_transfer']
+			transfer_prefix: true
+		},
+		CleancAutofreeCleanupCase{
+			name:            'autofree_transfer_prefixed_cleanup_none'
+			args:            cleanc_autofree_none_args()
+			source:          transfer_prefixed_source
+			fn_names:        ['build_empty_array_after_transfer',
+				'build_empty_string_array_after_transfer']
+			transfer_prefix: true
+		},
+	])
 }
 
 fn test_cleanc_cli_does_not_auto_run_stale_test_binary_for_generation_only_target() {
