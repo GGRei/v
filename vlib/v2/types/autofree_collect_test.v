@@ -12314,7 +12314,7 @@ fn test_collect_autofree_prior_local_return_struct_literal_borrowed_pointer_fiel
 		flat, fn_name, struct_type, pointer_type, 'incoming', 'alias', 'next', 'RenamedNode')
 }
 
-fn test_collect_autofree_prior_local_return_struct_literal_borrowed_pointer_field_initializer_keeps_neighbor_tranches_distinct() {
+fn test_collect_autofree_prior_local_return_struct_literal_borrowed_pointer_field_initializer_keeps_direct_return_and_local_init_distinct() {
 	direct_fn := 'prior_local_return_struct_literal_borrowed_pointer_field_initializer_direct_guard'
 	direct_flat :=
 		autofree_test_flat_with_direct_return_struct_literal_borrowed_pointer_field_initializer(direct_fn)
@@ -15932,7 +15932,7 @@ fn test_collect_autofree_prior_local_holder_return_interop_collects_renamed_with
 		'Envelope', 'Boxed')
 }
 
-fn test_collect_autofree_prior_local_holder_return_interop_keeps_existing_tranches_distinct() {
+fn test_collect_autofree_prior_local_holder_return_interop_keeps_neighbor_transfer_shapes_distinct() {
 	full_type := autofree_test_sumtype_wrap_full_variant_type('Full')
 	payload_type := autofree_test_sumtype_wrap_payload_type('Payload', full_type)
 	holder_type := autofree_test_struct_literal_field_sumtype_wrap_holder_type('Holder', 'payload',

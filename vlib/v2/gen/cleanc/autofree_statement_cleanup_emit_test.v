@@ -126,7 +126,8 @@ fn autofree_statement_cleanup_emit_test_cross_gen() Gen {
 	}
 }
 
-fn autofree_statement_cleanup_emit_test_arm(mut g Gen, context AutofreeCleanCStatementCleanupEmitContextFact, prepared bool) {
+fn autofree_statement_cleanup_emit_test_install_context(mut g Gen, context AutofreeCleanCStatementCleanupEmitContextFact,
+	prepared bool) {
 	g.autofree_cleanup_emit_context = context
 	g.has_autofree_cleanup_emit_context = true
 	g.autofree_cleanup_emit_context_consumed = false
@@ -142,7 +143,7 @@ fn test_autofree_statement_cleanup_emit_writes_valid_context_once() {
 	mut g := autofree_statement_cleanup_emit_test_gen(true)
 	context := autofree_statement_cleanup_emit_test_context()
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == 'array__free(&items);\n'
@@ -162,7 +163,7 @@ fn test_autofree_statement_cleanup_emit_writes_last_statement_items_context_once
 	fields.context_key = 'make_items:10:100:40:220:50:310:items'
 	context := autofree_statement_cleanup_emit_test_context_from_fields(fields)
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	output := g.sb.str()
@@ -177,7 +178,7 @@ fn test_autofree_statement_cleanup_emit_skips_disabled_context() {
 	mut g := autofree_statement_cleanup_emit_test_gen(false)
 	context := autofree_statement_cleanup_emit_test_context()
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == ''
 }
@@ -186,7 +187,7 @@ fn test_autofree_statement_cleanup_emit_keeps_cross_context() {
 	mut g := autofree_statement_cleanup_emit_test_cross_gen()
 	context := autofree_statement_cleanup_emit_test_context()
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == 'array__free(&items);\n'
 	assert g.autofree_cleanup_emit_context_consumed
@@ -196,7 +197,7 @@ fn test_autofree_statement_cleanup_emit_skips_freestanding_context() {
 	mut g := autofree_statement_cleanup_emit_test_freestanding_gen([]string{})
 	context := autofree_statement_cleanup_emit_test_context()
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == ''
 	assert !g.autofree_cleanup_emit_context_consumed
@@ -206,7 +207,7 @@ fn test_autofree_statement_cleanup_emit_skips_freestanding_alloc_hook_context() 
 	mut g := autofree_statement_cleanup_emit_test_freestanding_gen(['alloc'])
 	context := autofree_statement_cleanup_emit_test_context()
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == ''
 	assert !g.autofree_cleanup_emit_context_consumed
@@ -223,7 +224,7 @@ fn test_autofree_statement_cleanup_emit_skips_consumed_context() {
 	mut g := autofree_statement_cleanup_emit_test_gen(true)
 	context := autofree_statement_cleanup_emit_test_context()
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_cleanup_emit_context_consumed = true
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == ''
@@ -235,7 +236,7 @@ fn test_autofree_statement_cleanup_emit_skips_bad_status() {
 	fields.context_status = .unknown
 	context := autofree_statement_cleanup_emit_test_context_from_fields(fields)
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == ''
 }
@@ -246,7 +247,7 @@ fn test_autofree_statement_cleanup_emit_skips_bad_kind() {
 	fields.context_kind = .unknown
 	context := autofree_statement_cleanup_emit_test_context_from_fields(fields)
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == ''
 }
@@ -258,7 +259,7 @@ fn test_autofree_statement_cleanup_emit_skips_bad_symbol() {
 	fields.cleanup_text = 'string__free(&items);'
 	context := autofree_statement_cleanup_emit_test_context_from_fields(fields)
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == ''
 }
@@ -269,7 +270,7 @@ fn test_autofree_statement_cleanup_emit_skips_bad_text() {
 	fields.cleanup_text = 'array__free(items);'
 	context := autofree_statement_cleanup_emit_test_context_from_fields(fields)
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == ''
 }
@@ -280,7 +281,7 @@ fn test_autofree_statement_cleanup_emit_skips_bad_ids() {
 	fields.target_node_id = ast.FlatNodeId(-1)
 	context := autofree_statement_cleanup_emit_test_context_from_fields(fields)
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == ''
 }
@@ -289,7 +290,7 @@ fn test_autofree_statement_cleanup_emit_skips_fn_mismatch() {
 	mut g := autofree_statement_cleanup_emit_test_gen(true)
 	context := autofree_statement_cleanup_emit_test_context()
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_emit_statement_cleanup_context('other_fn', &node)
 	assert g.sb.str() == ''
 }
@@ -298,7 +299,7 @@ fn test_autofree_statement_cleanup_emit_wrong_fn_does_not_consume_context() {
 	mut g := autofree_statement_cleanup_emit_test_gen(true)
 	context := autofree_statement_cleanup_emit_test_context()
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_emit_statement_cleanup_context('other_fn', &node)
 	assert g.sb.str() == ''
 	assert !g.autofree_cleanup_emit_context_consumed
@@ -311,7 +312,7 @@ fn test_autofree_statement_cleanup_emit_skips_unprepared_context() {
 	mut g := autofree_statement_cleanup_emit_test_gen(true)
 	context := autofree_statement_cleanup_emit_test_context()
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, false)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, false)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == ''
 	assert !g.autofree_cleanup_emit_context_consumed
@@ -324,7 +325,7 @@ fn test_autofree_statement_cleanup_emit_skips_wrong_prepared_fn_node_id() {
 	fields.context_key = 'make_items:11:100:20:120:30:210:items'
 	context := autofree_statement_cleanup_emit_test_context_from_fields(fields)
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_cleanup_emit_fn_node_id = ast.FlatNodeId(10)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == ''
@@ -335,7 +336,7 @@ fn test_autofree_statement_cleanup_emit_skips_wrong_prepared_fn_key() {
 	mut g := autofree_statement_cleanup_emit_test_gen(true)
 	context := autofree_statement_cleanup_emit_test_context()
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_cleanup_emit_fn_key = 'other_key'
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == ''
@@ -349,7 +350,7 @@ fn test_autofree_statement_cleanup_emit_skips_clean_c_name_mismatch() {
 	fields.context_key = 'main__make_items:10:100:20:120:30:210:items'
 	context := autofree_statement_cleanup_emit_test_context_from_fields(fields)
 	node := autofree_statement_cleanup_emit_test_fn_decl()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == ''
 	assert !g.autofree_cleanup_emit_context_consumed
@@ -358,7 +359,7 @@ fn test_autofree_statement_cleanup_emit_skips_clean_c_name_mismatch() {
 fn test_autofree_statement_cleanup_emit_clear_resets_cursor_state() {
 	mut g := autofree_statement_cleanup_emit_test_gen(true)
 	context := autofree_statement_cleanup_emit_test_context()
-	autofree_statement_cleanup_emit_test_arm(mut g, context, true)
+	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
 	g.autofree_cleanup_emit_context_consumed = true
 	g.autofree_clear_statement_cleanup_emit_context()
 	assert !g.has_autofree_cleanup_emit_context
