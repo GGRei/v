@@ -49,6 +49,11 @@ fn autofree_statement_adapter_test_assert_no_anchor(facts []AutofreeCleanCBridge
 	assert anchors.len == 0
 }
 
+fn autofree_statement_adapter_test_assert_no_named_anchor(case_name string, facts []AutofreeCleanCBridgeFact) {
+	assert case_name.len > 0
+	autofree_statement_adapter_test_assert_no_anchor(facts)
+}
+
 fn test_autofree_statement_adapter_accepts_valid_bridge_fact() {
 	bridge_fact := autofree_statement_adapter_test_bridge_fact()
 	anchors := autofree_statement_anchor_facts_from_bridge_facts([bridge_fact])
@@ -69,48 +74,6 @@ fn test_autofree_statement_adapter_skips_empty_bridge_facts() {
 	autofree_statement_adapter_test_assert_no_anchor([]AutofreeCleanCBridgeFact{})
 }
 
-fn test_autofree_statement_adapter_rejects_bad_bridge_status() {
-	bridge_fact := AutofreeCleanCBridgeFact{
-		...autofree_statement_adapter_test_bridge_fact()
-		bridge_status: .unknown
-	}
-	autofree_statement_adapter_test_assert_no_anchor([bridge_fact])
-}
-
-fn test_autofree_statement_adapter_rejects_empty_fn_key() {
-	bridge_fact := AutofreeCleanCBridgeFact{
-		...autofree_statement_adapter_test_bridge_fact()
-		fn_key: ''
-	}
-	autofree_statement_adapter_test_assert_no_anchor([bridge_fact])
-}
-
-fn test_autofree_statement_adapter_rejects_empty_name() {
-	bridge_fact := AutofreeCleanCBridgeFact{
-		...autofree_statement_adapter_test_bridge_fact()
-		name: ''
-	}
-	autofree_statement_adapter_test_assert_no_anchor([bridge_fact])
-}
-
-fn test_autofree_statement_adapter_rejects_invalid_target_ids() {
-	bridge_fact := AutofreeCleanCBridgeFact{
-		...autofree_statement_adapter_test_bridge_fact()
-		target_node_id: ast.FlatNodeId(-1)
-		target_pos_id:  0
-	}
-	autofree_statement_adapter_test_assert_no_anchor([bridge_fact])
-}
-
-fn test_autofree_statement_adapter_rejects_invalid_insert_after_ids() {
-	bridge_fact := AutofreeCleanCBridgeFact{
-		...autofree_statement_adapter_test_bridge_fact()
-		insert_after_node_id: ast.FlatNodeId(-1)
-		insert_after_pos_id:  0
-	}
-	autofree_statement_adapter_test_assert_no_anchor([bridge_fact])
-}
-
 fn test_autofree_statement_adapter_rejects_target_equal_insert_after() {
 	bridge_fact := AutofreeCleanCBridgeFact{
 		...autofree_statement_adapter_test_bridge_fact()
@@ -127,6 +90,48 @@ fn test_autofree_statement_adapter_rejects_target_node_equal_insert_after_node()
 		insert_after_pos_id:  121
 	}
 	autofree_statement_adapter_test_assert_no_anchor([bridge_fact])
+}
+
+fn test_autofree_statement_adapter_rejects_invalid_bridge_fields() {
+	base := autofree_statement_adapter_test_bridge_fact()
+	cases := [
+		'bad_bridge_status',
+		'empty_fn_key',
+		'empty_name',
+		'invalid_target_ids',
+		'invalid_insert_after_ids',
+	]
+	bridge_facts := [
+		AutofreeCleanCBridgeFact{
+			...base
+			bridge_status: .unknown
+		},
+		AutofreeCleanCBridgeFact{
+			...base
+			fn_key: ''
+		},
+		AutofreeCleanCBridgeFact{
+			...base
+			name: ''
+		},
+		AutofreeCleanCBridgeFact{
+			...base
+			target_node_id: ast.FlatNodeId(-1)
+			target_pos_id:  0
+		},
+		AutofreeCleanCBridgeFact{
+			...base
+			insert_after_node_id: ast.FlatNodeId(-1)
+			insert_after_pos_id:  0
+		},
+	]
+	assert cases.len == bridge_facts.len
+	for index, invalid_case in cases {
+		bridge_fact := bridge_facts[index]
+		autofree_statement_adapter_test_assert_no_named_anchor(invalid_case, [
+			bridge_fact,
+		])
+	}
 }
 
 fn test_autofree_statement_adapter_rejects_duplicate_name() {

@@ -230,6 +230,11 @@ fn autofree_bridge_test_other_valid_insertion_point() types.AutofreeReleaseInser
 	}
 }
 
+struct AutofreeBridgeRejectCase {
+	name  string
+	point types.AutofreeReleaseInsertionPointFact
+}
+
 fn autofree_bridge_test_assert_no_bridge(points []types.AutofreeReleaseInsertionPointFact) {
 	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
 	assert bridge_facts.len == 0
@@ -314,329 +319,320 @@ fn test_autofree_bridge_rejects_same_name_with_different_ids() {
 	autofree_bridge_test_assert_no_bridge([point, other_point])
 }
 
-fn test_autofree_bridge_rejects_bad_insertion_status() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		insertion_status: .unknown
+fn test_autofree_bridge_rejects_status_kind_and_plan_cases() {
+	cases := [
+		AutofreeBridgeRejectCase{
+			name:  'bad_insertion_status'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				insertion_status: .unknown
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_preflight_status'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				preflight_status: .unknown
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_insertion_kind'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				insertion_kind: .unknown
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_move_kind'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				move_kind: .unknown
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_plan_kind'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				plan_kind: .unknown
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'helper_requirement'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				helper_requirement: .unknown
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'non_array_container_plan'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				plan_action: .unknown
+			}
+		},
+	]
+	for entry in cases {
+		assert entry.name.len > 0
+		autofree_bridge_test_assert_no_bridge([entry.point])
 	}
-	autofree_bridge_test_assert_no_bridge([point])
 }
 
-fn test_autofree_bridge_rejects_bad_preflight_status() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		preflight_status: .unknown
+fn test_autofree_bridge_rejects_endpoint_path_and_reason_cases() {
+	cases := [
+		AutofreeBridgeRejectCase{
+			name:  'bad_source'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_source_endpoint()
+					storage:      .call_result
+					root_storage: .call_result
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'source_without_empty_array_literal_reason'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_source_endpoint()
+					reason: 'array literal'
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_target'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_target_endpoint()
+					storage:      .global
+					root_storage: .global
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'source_path'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_source_endpoint()
+					path: [
+						types.AutofreeEndpointPathSegment{
+							storage: .array_element
+							name:    'elem'
+							node_id: 3
+							pos_id:  91
+						},
+					]
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'target_path'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_target_endpoint()
+					path: [
+						types.AutofreeEndpointPathSegment{
+							storage: .array_element
+							name:    'elem'
+							node_id: 6
+							pos_id:  121
+						},
+					]
+				}
+			}
+		},
+	]
+	for entry in cases {
+		assert entry.name.len > 0
+		autofree_bridge_test_assert_no_bridge([entry.point])
 	}
-	autofree_bridge_test_assert_no_bridge([point])
 }
 
-fn test_autofree_bridge_rejects_bad_insertion_kind() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		insertion_kind: .unknown
+fn test_autofree_bridge_rejects_type_resource_and_shape_cases() {
+	cases := [
+		AutofreeBridgeRejectCase{
+			name:  'missing_type'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_source_endpoint()
+					has_type:  false
+					type_name: ''
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'divergent_type_name'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				type_name: '[]bool'
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_source_state'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_source_endpoint()
+					state: .ambiguous_no_free
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_target_state'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_target_endpoint()
+					state: .ambiguous_no_free
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'non_owned_state'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				state: .ambiguous_no_free
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_source_resource'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_source_endpoint()
+					resource: .string_value
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_target_resource'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_target_endpoint()
+					resource: .string_value
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'non_array_resource'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				resource: .string_value
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'source_shape_mismatch'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_source_endpoint()
+					shape: autofree_bridge_test_string_shape()
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'target_shape_mismatch'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_target_endpoint()
+					shape: autofree_bridge_test_string_shape()
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'fail_closed_shape'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				shape: autofree_bridge_test_fail_closed_shape()
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'no_resource_shape'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				shape: autofree_bridge_test_no_resource_shape()
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'non_array_shape'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				shape: autofree_bridge_test_string_shape()
+			}
+		},
+	]
+	for entry in cases {
+		assert entry.name.len > 0
+		autofree_bridge_test_assert_no_bridge([entry.point])
 	}
-	autofree_bridge_test_assert_no_bridge([point])
 }
 
-fn test_autofree_bridge_rejects_bad_move_kind() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		move_kind: .unknown
+fn test_autofree_bridge_rejects_identity_and_id_cases() {
+	cases := [
+		AutofreeBridgeRejectCase{
+			name:  'source_root_mismatch'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_source_endpoint()
+					root_node_id: 12
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'target_root_mismatch'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_target_endpoint()
+					root_pos_id: 130
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'invalid_point_ids'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				node_id: ast.FlatNodeId(-1)
+				pos_id:  0
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'invalid_proof_ids'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				proof_node_id: ast.FlatNodeId(-1)
+				proof_pos_id:  0
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'invalid_release_after_ids'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				release_after_node_id: ast.FlatNodeId(-1)
+				release_after_pos_id:  0
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'invalid_insert_after_ids'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_valid_insertion_point()
+				insert_after_node_id: ast.FlatNodeId(-1)
+				insert_after_pos_id:  0
+			}
+		},
+	]
+	for entry in cases {
+		assert entry.name.len > 0
+		autofree_bridge_test_assert_no_bridge([entry.point])
 	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_bad_plan_kind() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		plan_kind: .unknown
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_helper_requirement() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		helper_requirement: .unknown
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_non_array_container_plan() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		plan_action: .unknown
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_bad_source() {
-	source := types.AutofreeTransferEndpoint{
-		...autofree_bridge_test_source_endpoint()
-		storage:      .call_result
-		root_storage: .call_result
-	}
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		source_endpoint: source
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_source_without_empty_array_literal_reason() {
-	source := types.AutofreeTransferEndpoint{
-		...autofree_bridge_test_source_endpoint()
-		reason: 'array literal'
-	}
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		source_endpoint: source
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_bad_target() {
-	target := types.AutofreeTransferEndpoint{
-		...autofree_bridge_test_target_endpoint()
-		storage:      .global
-		root_storage: .global
-	}
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		endpoint: target
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_source_path() {
-	source := types.AutofreeTransferEndpoint{
-		...autofree_bridge_test_source_endpoint()
-		path: [
-			types.AutofreeEndpointPathSegment{
-				storage: .array_element
-				name:    'elem'
-				node_id: 3
-				pos_id:  91
-			},
-		]
-	}
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		source_endpoint: source
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_target_path() {
-	target := types.AutofreeTransferEndpoint{
-		...autofree_bridge_test_target_endpoint()
-		path: [
-			types.AutofreeEndpointPathSegment{
-				storage: .array_element
-				name:    'elem'
-				node_id: 6
-				pos_id:  121
-			},
-		]
-	}
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		endpoint: target
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_missing_type() {
-	source := types.AutofreeTransferEndpoint{
-		...autofree_bridge_test_source_endpoint()
-		has_type:  false
-		type_name: ''
-	}
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		source_endpoint: source
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_divergent_type_name() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		type_name: '[]bool'
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_bad_source_state() {
-	source := types.AutofreeTransferEndpoint{
-		...autofree_bridge_test_source_endpoint()
-		state: .ambiguous_no_free
-	}
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		source_endpoint: source
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_bad_target_state() {
-	target := types.AutofreeTransferEndpoint{
-		...autofree_bridge_test_target_endpoint()
-		state: .ambiguous_no_free
-	}
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		endpoint: target
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_non_owned_state() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		state: .ambiguous_no_free
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_bad_source_resource() {
-	source := types.AutofreeTransferEndpoint{
-		...autofree_bridge_test_source_endpoint()
-		resource: .string_value
-	}
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		source_endpoint: source
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_bad_target_resource() {
-	target := types.AutofreeTransferEndpoint{
-		...autofree_bridge_test_target_endpoint()
-		resource: .string_value
-	}
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		endpoint: target
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_non_array_resource() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		resource: .string_value
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_source_shape_mismatch() {
-	source := types.AutofreeTransferEndpoint{
-		...autofree_bridge_test_source_endpoint()
-		shape: autofree_bridge_test_string_shape()
-	}
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		source_endpoint: source
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_target_shape_mismatch() {
-	target := types.AutofreeTransferEndpoint{
-		...autofree_bridge_test_target_endpoint()
-		shape: autofree_bridge_test_string_shape()
-	}
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		endpoint: target
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_fail_closed_shape() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		shape: autofree_bridge_test_fail_closed_shape()
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_no_resource_shape() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		shape: autofree_bridge_test_no_resource_shape()
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_non_array_shape() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		shape: autofree_bridge_test_string_shape()
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_source_root_mismatch() {
-	source := types.AutofreeTransferEndpoint{
-		...autofree_bridge_test_source_endpoint()
-		root_node_id: 12
-	}
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		source_endpoint: source
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_target_root_mismatch() {
-	target := types.AutofreeTransferEndpoint{
-		...autofree_bridge_test_target_endpoint()
-		root_pos_id: 130
-	}
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		endpoint: target
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_invalid_point_ids() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		node_id: ast.FlatNodeId(-1)
-		pos_id:  0
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_invalid_proof_ids() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		proof_node_id: ast.FlatNodeId(-1)
-		proof_pos_id:  0
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_invalid_release_after_ids() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		release_after_node_id: ast.FlatNodeId(-1)
-		release_after_pos_id:  0
-	}
-	autofree_bridge_test_assert_no_bridge([point])
-}
-
-fn test_autofree_bridge_rejects_invalid_insert_after_ids() {
-	point := types.AutofreeReleaseInsertionPointFact{
-		...autofree_bridge_test_valid_insertion_point()
-		insert_after_node_id: ast.FlatNodeId(-1)
-		insert_after_pos_id:  0
-	}
-	autofree_bridge_test_assert_no_bridge([point])
 }
 
 fn test_autofree_bridge_rejects_source_equal_target_endpoint() {
