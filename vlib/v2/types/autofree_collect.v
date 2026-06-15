@@ -136,10 +136,6 @@ fn (mut e Environment) collect_autofree_fresh_locals_from_fn(flat &ast.FlatAst, 
 	fact := e.collect_autofree_fresh_local_from_stmt(flat, fn_key, fn_name, stmt_id, param_names) or {
 		return
 	}
-	if fact.reason in ['cap-only scalar array literal', 'len-only scalar array literal']
-		&& body_count != 1 {
-		return
-	}
 	if !e.autofree_collect_fresh_body_prefix_is_safe(flat, body_id, body_count, fact.name,
 		param_names) {
 		return

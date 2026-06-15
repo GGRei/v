@@ -450,6 +450,26 @@ fn main() {
 '
 }
 
+fn autofree_prefixed_cap_len_array_cleanup_source() string {
+	return 'module main
+
+fn build_array_with_cap_after_transfer(n int, source []int) {
+	copy := source
+	mut items := []int{cap: n}
+}
+
+fn build_array_with_len_after_transfer(n int, source []int) {
+	copy := source
+	mut items := []int{len: n}
+}
+
+fn main() {
+	build_array_with_cap_after_transfer(4, []int{})
+	build_array_with_len_after_transfer(4, []int{})
+}
+'
+}
+
 fn autofree_len_only_final_clone_cleanup_source() string {
 	return 'module main
 
@@ -610,6 +630,39 @@ fn assert_autofree_len_only_array_cleanup_present_in_fn(res CleancCliResult, fn_
 	assert !body.contains('array__free(&dst);'), res.c_source
 	assert !body.contains('array__free(dst);'), res.c_source
 	assert !body.contains('dst'), res.c_source
+	assert !body.contains('string__free'), res.c_source
+}
+
+fn assert_autofree_prefixed_cap_len_array_cleanup_present_in_fn(res CleancCliResult, fn_name string) {
+	assert_cli_success(res)
+	body := generated_c_function_body_or_fail(res, fn_name)
+	allocation_idx := body.index_after('items = __new_array', 0) or {
+		assert false, res.c_source
+		return
+	}
+	cleanup_idx := body.index_after('array__free(&items);', 0) or {
+		assert false, res.c_source
+		return
+	}
+	assert allocation_idx < cleanup_idx, res.c_source
+	assert !body[..allocation_idx].contains('array__free(&items);'), res.c_source
+	assert !body.contains('array__clone'), res.c_source
+	assert !body.contains('array__free(&copy);'), res.c_source
+	assert !body.contains('array__free(&source);'), res.c_source
+	assert !body.contains('array__free(&n);'), res.c_source
+	assert !body.contains('array__free(n);'), res.c_source
+	assert !body.contains('string__free'), res.c_source
+}
+
+fn assert_autofree_prefixed_cap_len_array_cleanup_absent_in_fn(res CleancCliResult, fn_name string) {
+	assert res.exit_code == 0, res.output
+	assert res.c_source.len > 0, res.output
+	body := generated_c_function_body_or_fail(res, fn_name)
+	assert !body.contains('array__free(&items);'), res.c_source
+	assert !body.contains('array__free(&copy);'), res.c_source
+	assert !body.contains('array__free(&source);'), res.c_source
+	assert !body.contains('array__free(&n);'), res.c_source
+	assert !body.contains('array__free(n);'), res.c_source
 	assert !body.contains('string__free'), res.c_source
 }
 
@@ -2846,6 +2899,7 @@ fn test_cleanc_autofree_array_cleanup_respects_target_runtime_contract() {
 	fresh_local_final_clone_source := autofree_fresh_local_final_clone_cleanup_source()
 	cap_only_source := autofree_cap_only_array_cleanup_source()
 	len_only_source := autofree_len_only_array_cleanup_source()
+	prefixed_cap_len_source := autofree_prefixed_cap_len_array_cleanup_source()
 	len_only_final_clone_source := autofree_len_only_final_clone_cleanup_source()
 	cap_only_final_clone_source := autofree_cap_only_final_clone_cleanup_source()
 	multi_param_fresh_local_final_clone_source :=
@@ -3010,6 +3064,35 @@ fn test_cleanc_autofree_array_cleanup_respects_target_runtime_contract() {
 			transfer_prefix: true
 		},
 	])
+
+	prefixed_cap_len_hosted_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_prefixed_cap_len_cleanup_hosted', cleanc_autofree_hosted_args(),
+		prefixed_cap_len_source,
+		os.join_path(tmp_dir, 'autofree_prefixed_cap_len_cleanup_hosted.c'))
+	for fn_name in ['build_array_with_cap_after_transfer', 'build_array_with_len_after_transfer'] {
+		assert_autofree_prefixed_cap_len_array_cleanup_present_in_fn(prefixed_cap_len_hosted_res,
+			fn_name)
+	}
+
+	prefixed_cap_len_disabled_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_prefixed_cap_len_cleanup_disabled', cleanc_autofree_disabled_args(),
+		prefixed_cap_len_source, os.join_path(tmp_dir,
+		'autofree_prefixed_cap_len_cleanup_disabled.c'))
+	prefixed_cap_len_freestanding_linux_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_prefixed_cap_len_cleanup_freestanding_linux',
+		cleanc_autofree_freestanding_linux_args(), prefixed_cap_len_source, os.join_path(tmp_dir,
+		'autofree_prefixed_cap_len_cleanup_freestanding_linux.c'))
+	prefixed_cap_len_none_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_prefixed_cap_len_cleanup_none', cleanc_autofree_none_args(),
+		prefixed_cap_len_source, os.join_path(tmp_dir, 'autofree_prefixed_cap_len_cleanup_none.c'))
+	for fn_name in ['build_array_with_cap_after_transfer', 'build_array_with_len_after_transfer'] {
+		assert_autofree_prefixed_cap_len_array_cleanup_absent_in_fn(prefixed_cap_len_disabled_res,
+			fn_name)
+		assert_autofree_prefixed_cap_len_array_cleanup_absent_in_fn(prefixed_cap_len_freestanding_linux_res,
+			fn_name)
+		assert_autofree_prefixed_cap_len_array_cleanup_absent_in_fn(prefixed_cap_len_none_res,
+			fn_name)
+	}
 
 	rule110_style_res := run_v2_to_output(v2_binary, tmp_dir,
 		'autofree_rule110_style_clone_cleanup_hosted', cleanc_autofree_hosted_args(),
