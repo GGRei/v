@@ -8353,22 +8353,52 @@ fn test_collect_autofree_facts_rejects_two_fresh_arrays_with_invalid_final_len_u
 	autofree_test_assert_two_fresh_final_len_rhs_rejected(nested_fn, nested_rhs, array_type)
 }
 
-fn test_collect_autofree_facts_rejects_two_fresh_array_mixed_source_kinds() {
+fn test_collect_autofree_facts_collects_two_mixed_scalar_array_locals() {
+	autofree_test_assert_two_mixed_fresh_array_cleanup('two_empty_cap_scalar_arrays', autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), autofree_test_empty_array_expr_with_cap_expr('int', autofree_test_ident_expr('n',
+		autofree_test_third_rhs_pos), autofree_test_second_rhs_pos), 'empty dynamic array literal',
+		'cap-only scalar array literal')
+	autofree_test_assert_two_mixed_fresh_array_cleanup('two_cap_empty_scalar_arrays', autofree_test_empty_array_expr_with_cap_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), autofree_test_empty_array_expr('int',
+		autofree_test_second_rhs_pos), 'cap-only scalar array literal',
+		'empty dynamic array literal')
+	autofree_test_assert_two_mixed_fresh_array_cleanup('two_empty_len_scalar_arrays', autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), autofree_test_empty_array_expr_with_len_expr('int', autofree_test_ident_expr('n',
+		autofree_test_third_rhs_pos), autofree_test_second_rhs_pos), 'empty dynamic array literal',
+		'len-only scalar array literal')
+	autofree_test_assert_two_mixed_fresh_array_cleanup('two_len_empty_scalar_arrays', autofree_test_empty_array_expr_with_len_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), autofree_test_empty_array_expr('int',
+		autofree_test_second_rhs_pos), 'len-only scalar array literal',
+		'empty dynamic array literal')
+	autofree_test_assert_two_mixed_fresh_array_cleanup('two_cap_len_scalar_arrays', autofree_test_empty_array_expr_with_cap_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), autofree_test_empty_array_expr_with_len_expr('int', autofree_test_ident_expr('n',
+		autofree_test_third_rhs_pos), autofree_test_second_rhs_pos),
+		'cap-only scalar array literal', 'len-only scalar array literal')
+	autofree_test_assert_two_mixed_fresh_array_cleanup('two_len_cap_scalar_arrays', autofree_test_empty_array_expr_with_len_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), autofree_test_empty_array_expr_with_cap_expr('int', autofree_test_ident_expr('n',
+		autofree_test_third_rhs_pos), autofree_test_second_rhs_pos),
+		'len-only scalar array literal', 'cap-only scalar array literal')
+}
+
+fn test_collect_autofree_facts_collects_two_mixed_scalar_array_locals_after_final_len_use() {
 	mut env := Environment.new()
-	fn_name := 'two_mixed_fresh_arrays'
+	fn_name := 'two_empty_cap_scalar_arrays_final_len_use'
 	array_type := Type(Array{
 		elem_type: Type(int_)
 	})
-	flat := autofree_test_flat_with_two_fresh_array_locals(fn_name, 'first', 'second', [
+	flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use(fn_name,
+		'first', 'second', [
 		autofree_test_param_at('n', 'int', autofree_test_source_param_pos),
 	], autofree_test_empty_array_expr('int', autofree_test_rhs_pos), autofree_test_empty_array_expr_with_cap_expr('int', autofree_test_ident_expr('n',
 		autofree_test_other_rhs_pos), autofree_test_second_rhs_pos))
 	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
 	autofree_test_set_two_fresh_array_param_bound_expr_types(mut env)
+	autofree_test_set_two_fresh_array_final_len_use_types(mut env, array_type)
 
 	env.collect_autofree_facts_from_flat(&flat)
 
-	autofree_test_assert_no_fresh_cleanup_for_fn(env, fn_name)
+	autofree_test_assert_two_fresh_array_cleanup_reasons(env, fn_name, 'first', 'second',
+		'empty dynamic array literal', 'cap-only scalar array literal', 202)
 }
 
 fn test_collect_autofree_facts_rejects_two_fresh_array_duplicate_targets() {
@@ -26167,72 +26197,94 @@ fn autofree_test_assert_two_fresh_final_len_rhs_rejected(fn_name string, rhs ast
 	autofree_test_assert_no_fresh_cleanup_for_fn(env, fn_name)
 }
 
+fn autofree_test_assert_two_mixed_fresh_array_cleanup(fn_name string, first_rhs ast.Expr, second_rhs ast.Expr, first_reason string, second_reason string) {
+	mut env := Environment.new()
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals(fn_name, 'first', 'second', [
+		autofree_test_param_at('n', 'int', autofree_test_source_param_pos),
+	], first_rhs, second_rhs)
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_param_bound_expr_types(mut env)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_two_fresh_array_cleanup_reasons(env, fn_name, 'first', 'second',
+		first_reason, second_reason, 201)
+}
+
 fn autofree_test_assert_two_fresh_array_cleanup(env Environment, fn_key string, first_name string, second_name string, reason string, shared_release_pos_id int) {
+	autofree_test_assert_two_fresh_array_cleanup_reasons(env, fn_key, first_name, second_name,
+		reason, reason, shared_release_pos_id)
+}
+
+fn autofree_test_assert_two_fresh_array_cleanup_reasons(env Environment, fn_key string, first_name string, second_name string, first_reason string, second_reason string, shared_release_pos_id int) {
 	assert fn_key in env.autofree_fresh_locals_by_fn_key
 	fresh_locals := env.autofree_fresh_locals_by_fn_key[fn_key]
 	assert fresh_locals.len == 2
 	assert fresh_locals[0].name == first_name
-	assert fresh_locals[0].reason == reason
+	assert fresh_locals[0].reason == first_reason
 	assert fresh_locals[0].pos_id == autofree_test_lhs_pos
 	assert fresh_locals[0].stmt_pos_id == 200
 	assert fresh_locals[1].name == second_name
-	assert fresh_locals[1].reason == reason
+	assert fresh_locals[1].reason == second_reason
 	assert fresh_locals[1].pos_id == autofree_test_second_lhs_pos
 	assert fresh_locals[1].stmt_pos_id == 201
 	assert fn_key in env.autofree_move_proofs_by_fn_key
 	proofs := env.autofree_move_proofs_by_fn_key[fn_key]
 	assert proofs.len == 2
 	assert proofs[0].name == first_name
-	assert proofs[0].source_endpoint.reason == reason
+	assert proofs[0].source_endpoint.reason == first_reason
 	assert proofs[0].pos_id == autofree_test_lhs_pos
 	assert proofs[0].stmt_pos_id == 200
 	assert proofs[1].name == second_name
-	assert proofs[1].source_endpoint.reason == reason
+	assert proofs[1].source_endpoint.reason == second_reason
 	assert proofs[1].pos_id == autofree_test_second_lhs_pos
 	assert proofs[1].stmt_pos_id == 201
 	assert fn_key in env.autofree_natural_release_candidates_by_fn_key
 	candidates := env.autofree_natural_release_candidates_by_fn_key[fn_key]
 	assert candidates.len == 2
 	assert candidates[0].name == first_name
-	assert candidates[0].source_endpoint.reason == reason
+	assert candidates[0].source_endpoint.reason == first_reason
 	assert candidates[0].proof_pos_id == autofree_test_lhs_pos
 	assert candidates[0].release_after_pos_id == shared_release_pos_id
 	assert candidates[1].name == second_name
-	assert candidates[1].source_endpoint.reason == reason
+	assert candidates[1].source_endpoint.reason == second_reason
 	assert candidates[1].proof_pos_id == autofree_test_second_lhs_pos
 	assert candidates[1].release_after_pos_id == shared_release_pos_id
 	assert fn_key in env.autofree_release_plans_by_fn_key
 	plans := env.autofree_release_plans_by_fn_key[fn_key]
 	assert plans.len == 2
 	assert plans[0].name == first_name
-	assert plans[0].source_endpoint.reason == reason
+	assert plans[0].source_endpoint.reason == first_reason
 	assert plans[0].proof_pos_id == autofree_test_lhs_pos
 	assert plans[0].release_after_pos_id == shared_release_pos_id
 	assert plans[1].name == second_name
-	assert plans[1].source_endpoint.reason == reason
+	assert plans[1].source_endpoint.reason == second_reason
 	assert plans[1].proof_pos_id == autofree_test_second_lhs_pos
 	assert plans[1].release_after_pos_id == shared_release_pos_id
 	assert fn_key in env.autofree_release_preflights_by_fn_key
 	preflights := env.autofree_release_preflights_by_fn_key[fn_key]
 	assert preflights.len == 2
 	assert preflights[0].name == first_name
-	assert preflights[0].source_endpoint.reason == reason
+	assert preflights[0].source_endpoint.reason == first_reason
 	assert preflights[0].proof_pos_id == autofree_test_lhs_pos
 	assert preflights[0].release_after_pos_id == shared_release_pos_id
 	assert preflights[1].name == second_name
-	assert preflights[1].source_endpoint.reason == reason
+	assert preflights[1].source_endpoint.reason == second_reason
 	assert preflights[1].proof_pos_id == autofree_test_second_lhs_pos
 	assert preflights[1].release_after_pos_id == shared_release_pos_id
 	assert fn_key in env.autofree_release_insertion_points_by_fn_key
 	insertion_points := env.autofree_release_insertion_points_by_fn_key[fn_key]
 	assert insertion_points.len == 2
 	assert insertion_points[0].endpoint.name == first_name
-	assert insertion_points[0].source_endpoint.reason == reason
+	assert insertion_points[0].source_endpoint.reason == first_reason
 	assert insertion_points[0].proof_pos_id == autofree_test_lhs_pos
 	assert insertion_points[0].insert_after_pos_id == shared_release_pos_id
 	assert insertion_points[0].plan_action == .array_container_cleanup
 	assert insertion_points[1].endpoint.name == second_name
-	assert insertion_points[1].source_endpoint.reason == reason
+	assert insertion_points[1].source_endpoint.reason == second_reason
 	assert insertion_points[1].proof_pos_id == autofree_test_second_lhs_pos
 	assert insertion_points[1].insert_after_pos_id == shared_release_pos_id
 	assert insertion_points[1].plan_action == .array_container_cleanup

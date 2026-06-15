@@ -505,6 +505,56 @@ fn main() {
 '
 }
 
+fn autofree_mixed_two_array_cleanup_source() string {
+	return 'module main
+
+fn build_mixed_empty_cap_arrays(n int) {
+	mut first := []int{}
+	mut second := []int{cap: n}
+	sink := first.len + second.len + n
+}
+
+fn build_mixed_cap_empty_arrays(n int) {
+	mut first := []int{cap: n}
+	mut second := []int{}
+	sink := first.len + second.len + n
+}
+
+fn build_mixed_empty_len_arrays(n int) {
+	mut first := []int{}
+	mut second := []int{len: n}
+	sink := first.len + second.len + n
+}
+
+fn build_mixed_len_empty_arrays(n int) {
+	mut first := []int{len: n}
+	mut second := []int{}
+	sink := first.len + second.len + n
+}
+
+fn build_mixed_cap_len_arrays(n int) {
+	mut first := []int{cap: n}
+	mut second := []int{len: n}
+	sink := first.len + second.len + n
+}
+
+fn build_mixed_len_cap_arrays(n int) {
+	mut first := []int{len: n}
+	mut second := []int{cap: n}
+	sink := first.len + second.len + n
+}
+
+fn main() {
+	build_mixed_empty_cap_arrays(4)
+	build_mixed_cap_empty_arrays(4)
+	build_mixed_empty_len_arrays(4)
+	build_mixed_len_empty_arrays(4)
+	build_mixed_cap_len_arrays(4)
+	build_mixed_len_cap_arrays(4)
+}
+'
+}
+
 fn autofree_prefixed_cap_len_array_cleanup_source() string {
 	return 'module main
 
@@ -3053,6 +3103,7 @@ fn test_cleanc_autofree_array_cleanup_respects_target_runtime_contract() {
 	len_only_source := autofree_len_only_array_cleanup_source()
 	single_final_len_source := autofree_single_final_len_array_cleanup_source()
 	two_array_source := autofree_two_array_cleanup_source()
+	mixed_two_array_source := autofree_mixed_two_array_cleanup_source()
 	prefixed_cap_len_source := autofree_prefixed_cap_len_array_cleanup_source()
 	len_only_final_clone_source := autofree_len_only_final_clone_cleanup_source()
 	cap_only_final_clone_source := autofree_cap_only_final_clone_cleanup_source()
@@ -3315,6 +3366,39 @@ fn test_cleanc_autofree_array_cleanup_respects_target_runtime_contract() {
 		assert_autofree_two_array_cleanup_absent_in_fn(two_array_disabled_res, fn_name)
 		assert_autofree_two_array_cleanup_absent_in_fn(two_array_freestanding_linux_res, fn_name)
 		assert_autofree_two_array_cleanup_absent_in_fn(two_array_none_res, fn_name)
+	}
+
+	mixed_two_array_hosted_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_mixed_two_array_cleanup_hosted', cleanc_autofree_hosted_args(),
+		mixed_two_array_source, os.join_path(tmp_dir, 'autofree_mixed_two_array_cleanup_hosted.c'))
+	mixed_two_array_fns := [
+		'build_mixed_empty_cap_arrays',
+		'build_mixed_cap_empty_arrays',
+		'build_mixed_empty_len_arrays',
+		'build_mixed_len_empty_arrays',
+		'build_mixed_cap_len_arrays',
+		'build_mixed_len_cap_arrays',
+	]
+	for fn_name in mixed_two_array_fns {
+		assert_autofree_two_array_cleanup_present_in_fn(mixed_two_array_hosted_res, fn_name)
+	}
+
+	mixed_two_array_disabled_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_mixed_two_array_cleanup_disabled', cleanc_autofree_disabled_args(),
+		mixed_two_array_source,
+		os.join_path(tmp_dir, 'autofree_mixed_two_array_cleanup_disabled.c'))
+	mixed_two_array_freestanding_linux_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_mixed_two_array_cleanup_freestanding_linux',
+		cleanc_autofree_freestanding_linux_args(), mixed_two_array_source, os.join_path(tmp_dir,
+		'autofree_mixed_two_array_cleanup_freestanding_linux.c'))
+	mixed_two_array_none_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_mixed_two_array_cleanup_none', cleanc_autofree_none_args(),
+		mixed_two_array_source, os.join_path(tmp_dir, 'autofree_mixed_two_array_cleanup_none.c'))
+	for fn_name in mixed_two_array_fns {
+		assert_autofree_two_array_cleanup_absent_in_fn(mixed_two_array_disabled_res, fn_name)
+		assert_autofree_two_array_cleanup_absent_in_fn(mixed_two_array_freestanding_linux_res,
+			fn_name)
+		assert_autofree_two_array_cleanup_absent_in_fn(mixed_two_array_none_res, fn_name)
 	}
 
 	len_only_final_clone_res := run_v2_to_output(v2_binary, tmp_dir,

@@ -5336,6 +5336,47 @@ fn build_two_len_arrays(n int) {
 '
 }
 
+fn autofree_statement_cleanup_emit_test_mixed_two_array_source() string {
+	return 'module main
+
+fn build_mixed_empty_cap_arrays(n int) {
+	mut first := []int{}
+	mut second := []int{cap: n}
+	sink := first.len + second.len + n
+}
+
+fn build_mixed_cap_empty_arrays(n int) {
+	mut first := []int{cap: n}
+	mut second := []int{}
+	sink := first.len + second.len + n
+}
+
+fn build_mixed_empty_len_arrays(n int) {
+	mut first := []int{}
+	mut second := []int{len: n}
+	sink := first.len + second.len + n
+}
+
+fn build_mixed_len_empty_arrays(n int) {
+	mut first := []int{len: n}
+	mut second := []int{}
+	sink := first.len + second.len + n
+}
+
+fn build_mixed_cap_len_arrays(n int) {
+	mut first := []int{cap: n}
+	mut second := []int{len: n}
+	sink := first.len + second.len + n
+}
+
+fn build_mixed_len_cap_arrays(n int) {
+	mut first := []int{len: n}
+	mut second := []int{cap: n}
+	sink := first.len + second.len + n
+}
+'
+}
+
 fn autofree_statement_cleanup_emit_test_two_array_literal_final_source() string {
 	return 'module main
 
@@ -5593,6 +5634,11 @@ fn test_autofree_statement_location_singleton_final_len_matcher_rejects_invalid_
 fn autofree_statement_cleanup_emit_test_two_array_natural_release_fixture() AutofreeStatementCleanupEmitPipelineFixture {
 	return autofree_statement_cleanup_emit_test_pipeline_fixture('two_array_natural_release',
 		autofree_statement_cleanup_emit_test_two_array_natural_release_source())
+}
+
+fn autofree_statement_cleanup_emit_test_mixed_two_array_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('mixed_two_array',
+		autofree_statement_cleanup_emit_test_mixed_two_array_source())
 }
 
 fn autofree_statement_cleanup_emit_test_two_array_literal_final_fixture() AutofreeStatementCleanupEmitPipelineFixture {
@@ -5873,6 +5919,11 @@ fn test_autofree_statement_cleanup_emit_single_final_len_pipeline_reaches_contex
 }
 
 fn autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_context(fixture &AutofreeStatementCleanupEmitPipelineFixture, fn_name string, reason string) {
+	autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_context_with_reasons(fixture,
+		fn_name, reason, reason)
+}
+
+fn autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_context_with_reasons(fixture &AutofreeStatementCleanupEmitPipelineFixture, fn_name string, first_reason string, second_reason string) {
 	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat, fn_name) or {
 		assert false
 		return
@@ -5890,8 +5941,8 @@ fn autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_contex
 	assert points.len == 2
 	assert points[0].name == 'first'
 	assert points[1].name == 'second'
-	assert points[0].source_endpoint.reason == reason
-	assert points[1].source_endpoint.reason == reason
+	assert points[0].source_endpoint.reason == first_reason
+	assert points[1].source_endpoint.reason == second_reason
 	assert points[0].insert_after_node_id == points[1].insert_after_node_id
 	assert points[0].insert_after_pos_id == points[1].insert_after_pos_id
 	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
@@ -5919,6 +5970,28 @@ fn autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_contex
 	assert contexts[0].cleanup_text == 'array__free(&second);'
 	assert contexts[1].name == 'first'
 	assert contexts[1].cleanup_text == 'array__free(&first);'
+}
+
+fn test_autofree_statement_cleanup_emit_mixed_two_array_pipeline_reaches_context() {
+	fixture := autofree_statement_cleanup_emit_test_mixed_two_array_fixture()
+	autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_context_with_reasons(&fixture,
+		'build_mixed_empty_cap_arrays', 'empty dynamic array literal',
+		'cap-only scalar array literal')
+	autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_context_with_reasons(&fixture,
+		'build_mixed_cap_empty_arrays', 'cap-only scalar array literal',
+		'empty dynamic array literal')
+	autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_context_with_reasons(&fixture,
+		'build_mixed_empty_len_arrays', 'empty dynamic array literal',
+		'len-only scalar array literal')
+	autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_context_with_reasons(&fixture,
+		'build_mixed_len_empty_arrays', 'len-only scalar array literal',
+		'empty dynamic array literal')
+	autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_context_with_reasons(&fixture,
+		'build_mixed_cap_len_arrays', 'cap-only scalar array literal',
+		'len-only scalar array literal')
+	autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_context_with_reasons(&fixture,
+		'build_mixed_len_cap_arrays', 'len-only scalar array literal',
+		'cap-only scalar array literal')
 }
 
 fn test_autofree_statement_cleanup_emit_two_array_natural_release_pipeline_reaches_context() {

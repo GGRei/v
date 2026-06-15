@@ -558,8 +558,8 @@ fn autofree_collect_two_fresh_locals_are_supported(first AutofreeFreshLocalFact,
 		|| first.name == second.name {
 		return false
 	}
-	if first.reason != second.reason
-		|| !autofree_collect_two_fresh_local_reason_is_supported(first.reason) {
+	if !autofree_collect_two_fresh_local_reason_is_supported(first.reason)
+		|| !autofree_collect_two_fresh_local_reason_is_supported(second.reason) {
 		return false
 	}
 	if first.stmt_pos_id <= 0 || second.stmt_pos_id <= 0 || first.stmt_pos_id >= second.stmt_pos_id {
