@@ -292,8 +292,12 @@ fn autofree_collect_fresh_local_is_final_clone_array_source(fresh AutofreeFreshL
 	if autofree_collect_fresh_local_is_empty_dynamic_array(fresh) {
 		return true
 	}
-	return fresh.reason == 'cap-only scalar array literal'
-		&& fresh.source_endpoint.reason == 'cap-only scalar array literal'
+	if fresh.reason == 'cap-only scalar array literal'
+		&& fresh.source_endpoint.reason == 'cap-only scalar array literal' {
+		return true
+	}
+	return fresh.reason == 'len-only scalar array literal'
+		&& fresh.source_endpoint.reason == 'len-only scalar array literal'
 }
 
 fn autofree_collect_move_proof_from_fresh_local(fresh AutofreeFreshLocalFact) ?AutofreeMoveProofFact {

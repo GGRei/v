@@ -6617,6 +6617,46 @@ fn test_collect_autofree_facts_collects_fresh_scalar_array_final_clone_cleanup_f
 	assert env.autofree_move_proofs_by_fn_key[fn_name][0].source_endpoint.reason == 'cap-only scalar array literal'
 }
 
+fn test_collect_autofree_facts_collects_fresh_scalar_array_final_clone_cleanup_from_len_param() {
+	mut env := Environment.new()
+	fn_name := 'fresh_array_final_clone_len_param'
+	array_type := autofree_test_move_proof_array_type()
+	flat := autofree_test_flat_with_fresh_array_final_clone_cleanup_custom(fn_name, [
+		autofree_test_mut_param_at('dst', '[]int', autofree_test_source_param_pos),
+		autofree_test_param_at('n', 'int', autofree_test_other_lhs_pos),
+	], autofree_test_empty_array_expr_with_len_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), autofree_test_ident_expr('dst',
+		autofree_test_second_lhs_pos), autofree_test_clone_call_expr('arr',
+		autofree_test_second_rhs_pos), []ast.Stmt{})
+	autofree_test_prepare_fresh_array_final_clone_cleanup_env_with_cap_param(mut env, fn_name,
+		array_type, Type(int_))
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_fresh_array_final_clone_cleanup(env, flat, fn_name, array_type)
+	assert env.autofree_move_proofs_by_fn_key[fn_name][0].source_endpoint.reason == 'len-only scalar array literal'
+}
+
+fn test_collect_autofree_facts_collects_fresh_scalar_array_final_clone_cleanup_from_lowered_len_param() {
+	mut env := Environment.new()
+	fn_name := 'fresh_array_final_clone_lowered_len_param'
+	array_type := autofree_test_move_proof_array_type()
+	flat := autofree_test_flat_with_fresh_array_final_clone_cleanup_custom(fn_name, [
+		autofree_test_mut_param_at('dst', '[]int', autofree_test_source_param_pos),
+		autofree_test_param_at('n', 'int', autofree_test_other_lhs_pos),
+	], autofree_test_lowered_array_alloc_expr_with_len_expr('__new_array_with_default_noscan', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), '0', 'int', 'nil', autofree_test_rhs_pos), autofree_test_ident_expr('dst',
+		autofree_test_second_lhs_pos), autofree_test_clone_call_expr('arr',
+		autofree_test_second_rhs_pos), []ast.Stmt{})
+	autofree_test_prepare_fresh_array_final_clone_cleanup_env_with_cap_param(mut env, fn_name,
+		array_type, Type(int_))
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_fresh_array_final_clone_cleanup(env, flat, fn_name, array_type)
+	assert env.autofree_move_proofs_by_fn_key[fn_name][0].source_endpoint.reason == 'len-only scalar array literal'
+}
+
 fn test_collect_autofree_facts_rejects_fresh_scalar_array_final_clone_cleanup_body_count_not_two() {
 	mut env := Environment.new()
 	fn_name := 'fresh_array_final_clone_extra_stmt'
@@ -6808,6 +6848,73 @@ fn test_collect_autofree_facts_rejects_fresh_scalar_array_final_clone_cleanup_ca
 	env.set_expr_type(autofree_test_other_rhs_pos, Type(int_))
 	env.set_expr_type(autofree_test_second_lhs_pos, array_type)
 	env.set_expr_type(autofree_test_second_rhs_pos, array_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_no_fresh_locals_or_transfers(env)
+}
+
+fn test_collect_autofree_facts_rejects_fresh_scalar_array_final_clone_cleanup_len_local_source() {
+	mut env := Environment.new()
+	fn_name := 'fresh_array_final_clone_len_local_bound'
+	array_type := autofree_test_move_proof_array_type()
+	flat := autofree_test_flat_with_fresh_array_final_clone_cleanup_custom(fn_name, [
+		autofree_test_mut_param_at('dst', '[]int', autofree_test_source_param_pos),
+	], autofree_test_empty_array_expr_with_len_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), autofree_test_ident_expr('dst',
+		autofree_test_second_lhs_pos), autofree_test_clone_call_expr('arr',
+		autofree_test_second_rhs_pos), []ast.Stmt{})
+	autofree_test_add_scope_with_var_types(mut env, fn_name, {
+		'dst': array_type
+		'n':   Type(int_)
+		'arr': array_type
+	})
+	env.set_expr_type(autofree_test_source_param_pos, array_type)
+	env.set_expr_type(autofree_test_lhs_pos, array_type)
+	env.set_expr_type(autofree_test_rhs_pos, array_type)
+	env.set_expr_type(autofree_test_other_rhs_pos, Type(int_))
+	env.set_expr_type(autofree_test_second_lhs_pos, array_type)
+	env.set_expr_type(autofree_test_second_rhs_pos, array_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_no_fresh_locals_or_transfers(env)
+}
+
+fn test_collect_autofree_facts_rejects_fresh_scalar_array_final_clone_cleanup_len_cap_and_len() {
+	mut env := Environment.new()
+	fn_name := 'fresh_array_final_clone_len_cap_and_len'
+	array_type := autofree_test_move_proof_array_type()
+	flat := autofree_test_flat_with_fresh_array_final_clone_cleanup_custom(fn_name, [
+		autofree_test_mut_param_at('dst', '[]int', autofree_test_source_param_pos),
+		autofree_test_param_at('n', 'int', autofree_test_other_lhs_pos),
+	], autofree_test_empty_array_expr_with_cap_and_len_expr('int', autofree_test_int_expr('4',
+		autofree_test_key_pos), autofree_test_ident_expr('n', autofree_test_other_rhs_pos),
+		autofree_test_rhs_pos), autofree_test_ident_expr('dst', autofree_test_second_lhs_pos), autofree_test_clone_call_expr('arr',
+		autofree_test_second_rhs_pos), []ast.Stmt{})
+	autofree_test_prepare_fresh_array_final_clone_cleanup_env_with_cap_param(mut env, fn_name,
+		array_type, Type(int_))
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_no_fresh_locals_or_transfers(env)
+}
+
+fn test_collect_autofree_facts_rejects_fresh_scalar_array_final_clone_cleanup_len_resourceful_array() {
+	mut env := Environment.new()
+	fn_name := 'fresh_array_final_clone_len_resourceful'
+	array_type := Type(Array{
+		elem_type: Type(string_)
+	})
+	flat := autofree_test_flat_with_fresh_array_final_clone_cleanup_custom(fn_name, [
+		autofree_test_mut_param_at('dst', '[]string', autofree_test_source_param_pos),
+		autofree_test_param_at('n', 'int', autofree_test_other_lhs_pos),
+	], autofree_test_empty_array_expr_with_len_expr('string', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), autofree_test_ident_expr('dst',
+		autofree_test_second_lhs_pos), autofree_test_clone_call_expr('arr',
+		autofree_test_second_rhs_pos), []ast.Stmt{})
+	autofree_test_prepare_fresh_array_final_clone_cleanup_env_with_cap_param(mut env, fn_name,
+		array_type, Type(int_))
 
 	env.collect_autofree_facts_from_flat(&flat)
 

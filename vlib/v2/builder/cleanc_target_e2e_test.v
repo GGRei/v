@@ -450,6 +450,21 @@ fn main() {
 '
 }
 
+fn autofree_len_only_final_clone_cleanup_source() string {
+	return 'module main
+
+fn fill_array_from_len_only(n int, mut dst []int) {
+	mut arr := []int{len: n}
+	dst = arr.clone()
+}
+
+fn main() {
+	mut dst := []int{}
+	fill_array_from_len_only(4, mut dst)
+}
+'
+}
+
 fn autofree_cap_only_final_clone_cleanup_source() string {
 	return 'module main
 
@@ -614,6 +629,13 @@ fn assert_autofree_fresh_local_final_clone_cleanup_present_in_fn(res CleancCliRe
 	assert !body.contains('array__free(&dst);'), res.c_source
 	assert !body.contains('array__free(dst);'), res.c_source
 	assert !body.contains('string__free'), res.c_source
+}
+
+fn assert_autofree_len_only_final_clone_cleanup_present_in_fn(res CleancCliResult, fn_name string) {
+	assert_autofree_fresh_local_final_clone_cleanup_present_in_fn(res, fn_name)
+	body := generated_c_function_body_or_fail(res, fn_name)
+	assert !body.contains('array__free(&n);'), res.c_source
+	assert !body.contains('array__free(n);'), res.c_source
 }
 
 fn assert_autofree_array_cleanup_present(res CleancCliResult) {
@@ -2824,6 +2846,7 @@ fn test_cleanc_autofree_array_cleanup_respects_target_runtime_contract() {
 	fresh_local_final_clone_source := autofree_fresh_local_final_clone_cleanup_source()
 	cap_only_source := autofree_cap_only_array_cleanup_source()
 	len_only_source := autofree_len_only_array_cleanup_source()
+	len_only_final_clone_source := autofree_len_only_final_clone_cleanup_source()
 	cap_only_final_clone_source := autofree_cap_only_final_clone_cleanup_source()
 	multi_param_fresh_local_final_clone_source :=
 		autofree_multi_param_fresh_local_final_clone_cleanup_source()
@@ -3003,6 +3026,13 @@ fn test_cleanc_autofree_array_cleanup_respects_target_runtime_contract() {
 		cleanc_autofree_hosted_args(), len_only_source, os.join_path(tmp_dir,
 		'autofree_len_only_cleanup_hosted.c'))
 	assert_autofree_len_only_array_cleanup_present_in_fn(len_only_res, 'build_array_with_len')
+
+	len_only_final_clone_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_len_only_final_clone_cleanup_hosted', cleanc_autofree_hosted_args(),
+		len_only_final_clone_source, os.join_path(tmp_dir,
+		'autofree_len_only_final_clone_cleanup_hosted.c'))
+	assert_autofree_len_only_final_clone_cleanup_present_in_fn(len_only_final_clone_res,
+		'fill_array_from_len_only')
 
 	cap_only_final_clone_res := run_v2_to_output(v2_binary, tmp_dir,
 		'autofree_cap_only_final_clone_cleanup_hosted', cleanc_autofree_hosted_args(),
