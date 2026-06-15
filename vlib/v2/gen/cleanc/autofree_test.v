@@ -5293,6 +5293,26 @@ fn build_array_with_len(n int) {
 '
 }
 
+fn autofree_statement_cleanup_emit_test_single_final_len_source() string {
+	return 'module main
+
+fn build_empty_array_final_len() {
+	mut items := []int{}
+	sink := items.len
+}
+
+fn build_cap_array_final_len(n int) {
+	mut items := []int{cap: n}
+	sink := items.len
+}
+
+fn build_len_array_final_len(n int) {
+	mut items := []int{len: n}
+	sink := items.len
+}
+'
+}
+
 fn autofree_statement_cleanup_emit_test_two_array_natural_release_source() string {
 	return 'module main
 
@@ -5405,6 +5425,169 @@ fn autofree_statement_cleanup_emit_test_cap_only_natural_release_fixture() Autof
 fn autofree_statement_cleanup_emit_test_len_only_natural_release_fixture() AutofreeStatementCleanupEmitPipelineFixture {
 	return autofree_statement_cleanup_emit_test_pipeline_fixture('len_only_natural_release',
 		autofree_statement_cleanup_emit_test_len_only_natural_release_source())
+}
+
+fn autofree_statement_cleanup_emit_test_single_final_len_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('single_final_len',
+		autofree_statement_cleanup_emit_test_single_final_len_source())
+}
+
+struct AutofreeStatementSingletonFinalLenMatcherFixture {
+	flat    ast.FlatAst
+	stmt_id ast.FlatNodeId
+	anchor  AutofreeCleanCStatementAnchorFact
+}
+
+fn autofree_statement_singleton_final_len_matcher_fixture(rhs_kind string, final_lhs_name string, op token.Token) AutofreeStatementSingletonFinalLenMatcherFixture {
+	mut b := ast.new_flat_builder()
+	target_lhs_id := b.emit_ident_by_name('items',
+		autofree_statement_cleanup_hook_preview_test_pos(120))
+	target_rhs_id := autofree_statement_cleanup_hook_preview_test_array_init(mut b, 130)
+	target_stmt_id := b.emit_assign_stmt_by_ids(.decl_assign, [target_lhs_id], [
+		target_rhs_id,
+	], autofree_statement_cleanup_hook_preview_test_pos(210))
+	final_lhs_id := b.emit_ident_by_name(final_lhs_name,
+		autofree_statement_cleanup_hook_preview_test_pos(220))
+	final_rhs_id := autofree_statement_singleton_final_len_matcher_rhs(mut b, rhs_kind)
+	final_stmt_id := b.emit_assign_stmt_by_ids(op, [final_lhs_id], [final_rhs_id],
+		autofree_statement_cleanup_hook_preview_test_pos(310))
+	body_id := b.emit_aux_list_from_ids([target_stmt_id, final_stmt_id])
+	fn_type_id := b.emit_type(ast.Type(ast.FnType{}))
+	attrs_id := b.emit_attribute_list([])
+	fn_id := b.emit_fn_decl_by_ids('build_array_final_len', false, false, false, .v,
+		autofree_statement_cleanup_hook_preview_test_pos(100), ast.invalid_flat_node_id,
+		fn_type_id, attrs_id, body_id)
+	b.append_file_with_stmt_ids(ast.File{
+		name: 'autofree_statement_singleton_final_len_matcher_test.v'
+		mod:  'main'
+	}, [fn_id])
+	return AutofreeStatementSingletonFinalLenMatcherFixture{
+		flat:    b.take_flat()
+		stmt_id: final_stmt_id
+		anchor:  AutofreeCleanCStatementAnchorFact{
+			fn_key:               'build_array_final_len'
+			fn_name:              'build_array_final_len'
+			name:                 'items'
+			anchor_status:        .inert
+			target_node_id:       target_lhs_id
+			target_pos_id:        120
+			insert_after_node_id: final_stmt_id
+			insert_after_pos_id:  310
+			reason:               'singleton final len matcher test'
+		}
+	}
+}
+
+fn autofree_statement_singleton_final_len_matcher_rhs(mut b ast.FlatBuilder, rhs_kind string) ast.FlatNodeId {
+	items_id := b.emit_ident_by_name('items', autofree_statement_cleanup_hook_preview_test_pos(320))
+	len_id := b.emit_ident_by_name('len', autofree_statement_cleanup_hook_preview_test_pos(321))
+	match rhs_kind {
+		'len_selector' {
+			return b.emit_selector_expr_by_ids(items_id, len_id,
+				autofree_statement_cleanup_hook_preview_test_pos(330))
+		}
+		'cap_selector' {
+			cap_id := b.emit_ident_by_name('cap',
+				autofree_statement_cleanup_hook_preview_test_pos(321))
+			return b.emit_selector_expr_by_ids(items_id, cap_id,
+				autofree_statement_cleanup_hook_preview_test_pos(330))
+		}
+		'foreign_len_selector' {
+			other_id := b.emit_ident_by_name('other',
+				autofree_statement_cleanup_hook_preview_test_pos(320))
+			return b.emit_selector_expr_by_ids(other_id, len_id,
+				autofree_statement_cleanup_hook_preview_test_pos(330))
+		}
+		'infix' {
+			len_selector_id := b.emit_selector_expr_by_ids(items_id, len_id,
+				autofree_statement_cleanup_hook_preview_test_pos(330))
+			literal_id := b.emit_basic_literal_by_value(.number, '1',
+				autofree_statement_cleanup_hook_preview_test_pos(331))
+			return b.emit_infix_expr_by_ids(.plus, len_selector_id, literal_id,
+				autofree_statement_cleanup_hook_preview_test_pos(332))
+		}
+		'call' {
+			callee_id := b.emit_ident_by_name('len_value',
+				autofree_statement_cleanup_hook_preview_test_pos(330))
+			return b.emit_call_expr_by_ids(callee_id, [],
+				autofree_statement_cleanup_hook_preview_test_pos(331))
+		}
+		'index' {
+			index_id := b.emit_basic_literal_by_value(.number, '0',
+				autofree_statement_cleanup_hook_preview_test_pos(331))
+			return b.emit_index_expr_by_ids(items_id, index_id, false,
+				autofree_statement_cleanup_hook_preview_test_pos(332))
+		}
+		'nested_selector' {
+			child_id := b.emit_ident_by_name('child',
+				autofree_statement_cleanup_hook_preview_test_pos(321))
+			nested_root_id := b.emit_selector_expr_by_ids(items_id, child_id,
+				autofree_statement_cleanup_hook_preview_test_pos(330))
+			return b.emit_selector_expr_by_ids(nested_root_id, len_id,
+				autofree_statement_cleanup_hook_preview_test_pos(331))
+		}
+		else {
+			return b.emit_basic_literal_by_value(.number, '1',
+				autofree_statement_cleanup_hook_preview_test_pos(330))
+		}
+	}
+}
+
+fn autofree_statement_singleton_final_len_matcher_stmt(fixture &AutofreeStatementSingletonFinalLenMatcherFixture) ast.Cursor {
+	return ast.Cursor{
+		flat: &fixture.flat
+		id:   fixture.stmt_id
+	}
+}
+
+fn test_autofree_statement_location_singleton_final_len_matcher_accepts_direct_len_selector() {
+	fixture := autofree_statement_singleton_final_len_matcher_fixture('len_selector', 'sink',
+		.decl_assign)
+	stmt := autofree_statement_singleton_final_len_matcher_stmt(&fixture)
+	assert autofree_statement_location_stmt_is_singleton_final_len_slot(stmt, fixture.anchor, [
+		fixture.anchor,
+	])
+}
+
+fn test_autofree_statement_location_singleton_final_len_matcher_rejects_invalid_shapes() {
+	cases := [
+		'cap_selector',
+		'foreign_len_selector',
+		'infix',
+		'call',
+		'index',
+		'nested_selector',
+		'literal',
+	]
+	for item in cases {
+		fixture := autofree_statement_singleton_final_len_matcher_fixture(item, 'sink',
+			.decl_assign)
+		stmt := autofree_statement_singleton_final_len_matcher_stmt(&fixture)
+		assert !autofree_statement_location_stmt_is_singleton_final_len_slot(stmt, fixture.anchor, [
+			fixture.anchor,
+		])
+	}
+	target_lhs := autofree_statement_singleton_final_len_matcher_fixture('len_selector', 'items',
+		.decl_assign)
+	target_lhs_stmt := autofree_statement_singleton_final_len_matcher_stmt(&target_lhs)
+	assert !autofree_statement_location_stmt_is_singleton_final_len_slot(target_lhs_stmt,
+		target_lhs.anchor, [target_lhs.anchor])
+	assign_op := autofree_statement_singleton_final_len_matcher_fixture('len_selector', 'sink',
+		.assign)
+	assign_op_stmt := autofree_statement_singleton_final_len_matcher_stmt(&assign_op)
+	assert !autofree_statement_location_stmt_is_singleton_final_len_slot(assign_op_stmt,
+		assign_op.anchor, [assign_op.anchor])
+	multi_anchor := autofree_statement_singleton_final_len_matcher_fixture('len_selector', 'sink',
+		.decl_assign)
+	multi_anchor_stmt := autofree_statement_singleton_final_len_matcher_stmt(&multi_anchor)
+	second_anchor := AutofreeCleanCStatementAnchorFact{
+		...multi_anchor.anchor
+		name:           'other_items'
+		target_node_id: ast.FlatNodeId(9001)
+		target_pos_id:  9002
+	}
+	assert !autofree_statement_location_stmt_is_singleton_final_len_slot(multi_anchor_stmt,
+		multi_anchor.anchor, [multi_anchor.anchor, second_anchor])
 }
 
 fn autofree_statement_cleanup_emit_test_two_array_natural_release_fixture() AutofreeStatementCleanupEmitPipelineFixture {
@@ -5629,6 +5812,64 @@ fn test_autofree_statement_cleanup_emit_len_only_natural_release_pipeline_reache
 	assert contexts.len == 1
 	assert contexts[0].name == 'items'
 	assert contexts[0].cleanup_text == 'array__free(&items);'
+}
+
+fn autofree_statement_cleanup_emit_test_assert_single_final_len_pipeline_reaches_context(fixture &AutofreeStatementCleanupEmitPipelineFixture, fn_name string, reason string) {
+	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat, fn_name) or {
+		assert false
+		return
+	}
+	mut g := Gen.new_with_env_pref_and_flat(&fixture.flat, fixture.env, fixture.prefs)
+	fn_key := g.autofree_statement_cleanup_emit_fn_key_from_cursor(cursor.file_cursor,
+		cursor.fn_cursor) or {
+		assert false
+		return
+	}
+	assert fn_key == fn_name
+	points := fixture.env.autofree_release_insertion_points_by_fn_key[fn_key] or {
+		[]types.AutofreeReleaseInsertionPointFact{}
+	}
+	assert points.len == 1
+	assert points[0].name == 'items'
+	assert points[0].move_kind == .fresh_local_binding
+	assert points[0].source_endpoint.reason == reason
+	assert points[0].release_after_node_id != points[0].node_id
+	assert points[0].release_after_pos_id > points[0].pos_id
+	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
+	assert bridge_facts.len == 1
+	anchors := autofree_statement_anchor_facts_from_bridge_facts(bridge_facts)
+	assert anchors.len == 1
+	locations := autofree_statement_location_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, anchors)
+	assert locations.len == 1
+	assert locations[0].stmt_node_id == points[0].release_after_node_id
+	assert locations[0].stmt_pos_id == points[0].release_after_pos_id
+	previews := autofree_statement_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, locations)
+	assert previews.len == 1
+	intents := autofree_statement_intent_facts_from_previews(previews)
+	assert intents.len == 1
+	slots := autofree_statement_emission_slot_facts_from_intents(intents)
+	assert slots.len == 1
+	cleanup_previews := autofree_statement_cleanup_preview_facts_from_slots(slots)
+	assert cleanup_previews.len == 1
+	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, cleanup_previews)
+	assert hook_previews.len == 1
+	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
+	assert contexts.len == 1
+	assert contexts[0].name == 'items'
+	assert contexts[0].cleanup_text == 'array__free(&items);'
+}
+
+fn test_autofree_statement_cleanup_emit_single_final_len_pipeline_reaches_context() {
+	fixture := autofree_statement_cleanup_emit_test_single_final_len_fixture()
+	autofree_statement_cleanup_emit_test_assert_single_final_len_pipeline_reaches_context(&fixture,
+		'build_empty_array_final_len', 'empty dynamic array literal')
+	autofree_statement_cleanup_emit_test_assert_single_final_len_pipeline_reaches_context(&fixture,
+		'build_cap_array_final_len', 'cap-only scalar array literal')
+	autofree_statement_cleanup_emit_test_assert_single_final_len_pipeline_reaches_context(&fixture,
+		'build_len_array_final_len', 'len-only scalar array literal')
 }
 
 fn autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_context(fixture &AutofreeStatementCleanupEmitPipelineFixture, fn_name string, reason string) {

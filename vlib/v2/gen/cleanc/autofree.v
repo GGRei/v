@@ -545,6 +545,10 @@ fn autofree_statement_location_fact_from_stmt(fn_cursor ast.Cursor, body ast.Cur
 		&& autofree_statement_location_body_declares_target_before(body, stmt_index, anchor) {
 		return autofree_statement_location_fact_from_anchor(fn_cursor, stmt, stmt_index, anchor)
 	}
+	if autofree_statement_location_stmt_is_singleton_final_len_slot(stmt, anchor, anchors)
+		&& autofree_statement_location_body_declares_target_before(body, stmt_index, anchor) {
+		return autofree_statement_location_fact_from_anchor(fn_cursor, stmt, stmt_index, anchor)
+	}
 	if anchors.len >= 2 {
 		return none
 	}
@@ -625,6 +629,56 @@ fn autofree_statement_location_stmt_declares_target(stmt ast.Cursor, anchor Auto
 	lhs_ident := autofree_statement_location_decl_lhs_ident(stmt) or { return false }
 	return lhs_ident.id == anchor.target_node_id && lhs_ident.pos().id == anchor.target_pos_id
 		&& lhs_ident.name() == anchor.name
+}
+
+fn autofree_statement_location_stmt_is_singleton_final_len_slot(stmt ast.Cursor, anchor AutofreeCleanCStatementAnchorFact, anchors []AutofreeCleanCStatementAnchorFact) bool {
+	if anchors.len != 1 {
+		return false
+	}
+	return autofree_statement_location_stmt_has_singleton_final_len_shape(stmt, anchor)
+}
+
+fn autofree_statement_location_stmt_has_singleton_final_len_shape(stmt ast.Cursor, anchor AutofreeCleanCStatementAnchorFact) bool {
+	if !stmt.is_valid() || stmt.kind() != .stmt_assign
+		|| !autofree_statement_location_cursor_edge_range_is_valid(stmt) {
+		return false
+	}
+	if stmt.extra_int() != 1 || stmt.edge_count() != 2 {
+		return false
+	}
+	if unsafe { token.Token(int(stmt.aux())) } != .decl_assign {
+		return false
+	}
+	lhs := autofree_statement_location_edge_cursor(stmt, 0) or { return false }
+	rhs := autofree_statement_location_edge_cursor(stmt, 1) or { return false }
+	lhs_ident := autofree_statement_location_direct_lhs_ident(lhs) or { return false }
+	if !autofree_statement_location_singleton_final_len_lhs_is_safe(lhs_ident, anchor) {
+		return false
+	}
+	return autofree_statement_location_singleton_final_len_rhs_is_safe(rhs, anchor)
+}
+
+fn autofree_statement_location_singleton_final_len_lhs_is_safe(lhs ast.Cursor, anchor AutofreeCleanCStatementAnchorFact) bool {
+	if !lhs.is_valid() || lhs.kind() != .expr_ident || lhs.edge_count() != 0 {
+		return false
+	}
+	lhs_name := lhs.name()
+	return lhs_name.len > 0 && lhs_name != anchor.name
+}
+
+fn autofree_statement_location_singleton_final_len_rhs_is_safe(rhs ast.Cursor, anchor AutofreeCleanCStatementAnchorFact) bool {
+	if !rhs.is_valid() || rhs.kind() != .expr_selector || rhs.edge_count() != 2 {
+		return false
+	}
+	root := rhs.edge(0)
+	field := rhs.edge(1)
+	if !root.is_valid() || root.kind() != .expr_ident || root.edge_count() != 0 {
+		return false
+	}
+	if !field.is_valid() || field.kind() != .expr_ident || field.edge_count() != 0 {
+		return false
+	}
+	return root.name() == anchor.name && field.name() == 'len'
 }
 
 fn autofree_statement_location_stmt_is_plain_assign(stmt ast.Cursor) bool {
@@ -1665,6 +1719,11 @@ fn autofree_statement_cleanup_hook_preview_stmt_matches_preview(body ast.Cursor,
 		return true
 	}
 	if autofree_statement_cleanup_hook_preview_stmt_is_group_shared_slot(stmt, preview, previews)
+		&& autofree_statement_location_body_declares_target_before(body, preview.stmt_index, anchor) {
+		return true
+	}
+	if previews.len == 1
+		&& autofree_statement_location_stmt_has_singleton_final_len_shape(stmt, anchor)
 		&& autofree_statement_location_body_declares_target_before(body, preview.stmt_index, anchor) {
 		return true
 	}
