@@ -43,8 +43,7 @@ fn autofree_statement_preview_facts_from_file_cursor(file_cursor ast.FileCursor,
 	body := autofree_statement_location_child_cursor(fn_cursor, 3, .aux_list) or {
 		return []AutofreeCleanCStatementPreviewFact{}
 	}
-	if !autofree_statement_location_cursor_edge_range_is_valid(body)
-		|| !autofree_statement_preview_body_is_assign_only(body) {
+	if !autofree_statement_location_cursor_edge_range_is_valid(body) {
 		return []AutofreeCleanCStatementPreviewFact{}
 	}
 	duplicate_names := autofree_statement_preview_duplicate_names(locations)
@@ -72,19 +71,6 @@ fn autofree_statement_preview_facts_from_file_cursor(file_cursor ast.FileCursor,
 		previews << preview
 	}
 	return previews
-}
-
-fn autofree_statement_preview_body_is_assign_only(body ast.Cursor) bool {
-	if !body.is_valid() || body.kind() != .aux_list {
-		return false
-	}
-	for i in 0 .. body.edge_count() {
-		stmt := autofree_statement_location_edge_cursor(body, i) or { return false }
-		if !stmt.is_valid() || stmt.kind() != .stmt_assign {
-			return false
-		}
-	}
-	return true
 }
 
 fn autofree_statement_preview_fact_from_location_in_body(body ast.Cursor, location AutofreeCleanCStatementLocationFact) ?AutofreeCleanCStatementPreviewFact {

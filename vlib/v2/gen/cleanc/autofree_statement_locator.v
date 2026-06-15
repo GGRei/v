@@ -136,9 +136,8 @@ fn autofree_statement_location_fact_from_body(fn_cursor ast.Cursor, body ast.Cur
 		if stmt.id != anchor.insert_after_node_id || stmt.pos().id != anchor.insert_after_pos_id {
 			continue
 		}
-		location := autofree_statement_location_fact_from_stmt(fn_cursor, stmt, stmt_i, anchor) or {
-			continue
-		}
+		location := autofree_statement_location_fact_from_stmt(fn_cursor, body, stmt, stmt_i,
+			anchor) or { continue }
 		matches << location
 	}
 	if matches.len != 1 {
@@ -147,32 +146,73 @@ fn autofree_statement_location_fact_from_body(fn_cursor ast.Cursor, body ast.Cur
 	return matches[0]
 }
 
-fn autofree_statement_location_fact_from_stmt(fn_cursor ast.Cursor, stmt ast.Cursor, stmt_index int, anchor AutofreeCleanCStatementAnchorFact) ?AutofreeCleanCStatementLocationFact {
+fn autofree_statement_location_fact_from_stmt(fn_cursor ast.Cursor, body ast.Cursor, stmt ast.Cursor, stmt_index int, anchor AutofreeCleanCStatementAnchorFact) ?AutofreeCleanCStatementLocationFact {
 	if !stmt.is_valid() || stmt.kind() != .stmt_assign {
 		return none
 	}
 	if stmt.id != anchor.insert_after_node_id || stmt.pos().id != anchor.insert_after_pos_id {
 		return none
 	}
-	if stmt.extra_int() != 1 || stmt.edge_count() != 2 {
+	if autofree_statement_location_stmt_declares_target(stmt, anchor) {
+		return autofree_statement_location_fact_from_anchor(fn_cursor, stmt, stmt_index, anchor)
+	}
+	if !autofree_statement_location_stmt_is_plain_assign(stmt) {
 		return none
 	}
-	if unsafe { token.Token(int(stmt.aux())) } != .decl_assign {
+	if !autofree_statement_location_body_declares_target_before(body, stmt_index, anchor) {
 		return none
+	}
+	return autofree_statement_location_fact_from_anchor(fn_cursor, stmt, stmt_index, anchor)
+}
+
+fn autofree_statement_location_stmt_declares_target(stmt ast.Cursor, anchor AutofreeCleanCStatementAnchorFact) bool {
+	lhs_ident := autofree_statement_location_decl_lhs_ident(stmt) or { return false }
+	return lhs_ident.id == anchor.target_node_id && lhs_ident.pos().id == anchor.target_pos_id
+		&& lhs_ident.name() == anchor.name
+}
+
+fn autofree_statement_location_stmt_is_plain_assign(stmt ast.Cursor) bool {
+	if stmt.extra_int() != 1 || stmt.edge_count() != 2 {
+		return false
+	}
+	if unsafe { token.Token(int(stmt.aux())) } != .assign {
+		return false
 	}
 	if !autofree_statement_location_cursor_edge_range_is_valid(stmt) {
-		return none
+		return false
 	}
-	lhs := autofree_statement_location_edge_cursor(stmt, 0) or { return none }
-	rhs := autofree_statement_location_edge_cursor(stmt, 1) or { return none }
-	if !rhs.is_valid() {
-		return none
+	lhs := autofree_statement_location_edge_cursor(stmt, 0) or { return false }
+	rhs := autofree_statement_location_edge_cursor(stmt, 1) or { return false }
+	return lhs.is_valid() && rhs.is_valid()
+}
+
+fn autofree_statement_location_body_declares_target_before(body ast.Cursor, stmt_index int, anchor AutofreeCleanCStatementAnchorFact) bool {
+	if stmt_index <= 0 {
+		return false
 	}
-	lhs_ident := autofree_statement_location_direct_lhs_ident(lhs) or { return none }
-	if lhs_ident.id != anchor.target_node_id || lhs_ident.pos().id != anchor.target_pos_id
-		|| lhs_ident.name() != anchor.name {
-		return none
+	mut matching_names := 0
+	mut matching_target := 0
+	for i in 0 .. stmt_index {
+		stmt := autofree_statement_location_edge_cursor(body, i) or { return false }
+		if !stmt.is_valid() {
+			return false
+		}
+		if stmt.kind() != .stmt_assign {
+			continue
+		}
+		lhs_ident := autofree_statement_location_decl_lhs_ident(stmt) or { continue }
+		if lhs_ident.name() != anchor.name {
+			continue
+		}
+		matching_names++
+		if lhs_ident.id == anchor.target_node_id && lhs_ident.pos().id == anchor.target_pos_id {
+			matching_target++
+		}
 	}
+	return matching_names == 1 && matching_target == 1
+}
+
+fn autofree_statement_location_fact_from_anchor(fn_cursor ast.Cursor, stmt ast.Cursor, stmt_index int, anchor AutofreeCleanCStatementAnchorFact) AutofreeCleanCStatementLocationFact {
 	return AutofreeCleanCStatementLocationFact{
 		fn_key:               anchor.fn_key
 		fn_name:              fn_cursor.name()
@@ -190,6 +230,24 @@ fn autofree_statement_location_fact_from_stmt(fn_cursor ast.Cursor, stmt ast.Cur
 		lhs_index:            0
 		reason:               'inert statement location accepted'
 	}
+}
+
+fn autofree_statement_location_decl_lhs_ident(stmt ast.Cursor) ?ast.Cursor {
+	if stmt.extra_int() != 1 || stmt.edge_count() != 2 {
+		return none
+	}
+	if unsafe { token.Token(int(stmt.aux())) } != .decl_assign {
+		return none
+	}
+	if !autofree_statement_location_cursor_edge_range_is_valid(stmt) {
+		return none
+	}
+	lhs := autofree_statement_location_edge_cursor(stmt, 0) or { return none }
+	rhs := autofree_statement_location_edge_cursor(stmt, 1) or { return none }
+	if !rhs.is_valid() {
+		return none
+	}
+	return autofree_statement_location_direct_lhs_ident(lhs)
 }
 
 fn autofree_statement_location_direct_lhs_ident(lhs ast.Cursor) ?ast.Cursor {

@@ -77,6 +77,7 @@ pub enum AutofreeTransferAction {
 pub enum AutofreeMoveProofKind {
 	unknown
 	fresh_local_binding
+	local_array_clone_binding
 }
 
 pub enum AutofreeReleaseKind {

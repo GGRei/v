@@ -99,6 +99,48 @@ fn autofree_bridge_test_string_array_source_endpoint() types.AutofreeTransferEnd
 	}
 }
 
+fn autofree_bridge_test_cap_only_source_endpoint() types.AutofreeTransferEndpoint {
+	return types.AutofreeTransferEndpoint{
+		...autofree_bridge_test_source_endpoint()
+		root_name: 'cap array literal'
+		name:      'cap array literal'
+		reason:    'cap-only scalar array literal'
+	}
+}
+
+fn autofree_bridge_test_len_only_source_endpoint() types.AutofreeTransferEndpoint {
+	return types.AutofreeTransferEndpoint{
+		...autofree_bridge_test_source_endpoint()
+		root_name: 'len array literal'
+		name:      'len array literal'
+		reason:    'len-only scalar array literal'
+	}
+}
+
+fn autofree_bridge_test_string_array_cap_only_source_endpoint() types.AutofreeTransferEndpoint {
+	array_type := autofree_bridge_test_string_array_type()
+	array_shape := autofree_bridge_test_string_array_shape()
+	array_type_name := array_type.name()
+	return types.AutofreeTransferEndpoint{
+		...autofree_bridge_test_cap_only_source_endpoint()
+		typ:       array_type
+		type_name: array_type_name
+		shape:     array_shape
+	}
+}
+
+fn autofree_bridge_test_string_array_len_only_source_endpoint() types.AutofreeTransferEndpoint {
+	array_type := autofree_bridge_test_string_array_type()
+	array_shape := autofree_bridge_test_string_array_shape()
+	array_type_name := array_type.name()
+	return types.AutofreeTransferEndpoint{
+		...autofree_bridge_test_len_only_source_endpoint()
+		typ:       array_type
+		type_name: array_type_name
+		shape:     array_shape
+	}
+}
+
 fn autofree_bridge_test_target_endpoint() types.AutofreeTransferEndpoint {
 	array_type := autofree_bridge_test_array_type()
 	array_shape := autofree_bridge_test_array_shape()
@@ -134,6 +176,38 @@ fn autofree_bridge_test_string_array_target_endpoint() types.AutofreeTransferEnd
 	}
 }
 
+fn autofree_bridge_test_local_array_clone_source_endpoint() types.AutofreeTransferEndpoint {
+	array_type := autofree_bridge_test_array_type()
+	array_shape := autofree_bridge_test_array_shape()
+	array_type_name := array_type.name()
+	return types.AutofreeTransferEndpoint{
+		storage:      .parameter
+		root_storage: .parameter
+		root_name:    'gen'
+		name:         'gen'
+		root_node_id: 3
+		root_pos_id:  80
+		node_id:      4
+		pos_id:       130
+		has_type:     true
+		typ:          array_type
+		type_name:    array_type_name
+		resource:     .array_value
+		shape:        array_shape
+		state:        .ambiguous_no_free
+		reason:       'local scalar array clone source'
+	}
+}
+
+fn autofree_bridge_test_local_array_clone_target_endpoint() types.AutofreeTransferEndpoint {
+	return types.AutofreeTransferEndpoint{
+		...autofree_bridge_test_target_endpoint()
+		root_name: 'arr'
+		name:      'arr'
+		reason:    'local scalar array clone target'
+	}
+}
+
 fn autofree_bridge_test_valid_insertion_point() types.AutofreeReleaseInsertionPointFact {
 	array_type := autofree_bridge_test_array_type()
 	array_shape := autofree_bridge_test_array_shape()
@@ -164,6 +238,59 @@ fn autofree_bridge_test_valid_insertion_point() types.AutofreeReleaseInsertionPo
 		release_after_pos_id:  210
 		insert_after_node_id:  7
 		insert_after_pos_id:   210
+		reason:                'release insertion point accepted'
+	}
+}
+
+fn autofree_bridge_test_cap_only_insertion_point() types.AutofreeReleaseInsertionPointFact {
+	return types.AutofreeReleaseInsertionPointFact{
+		...autofree_bridge_test_valid_insertion_point()
+		fn_key:          'build_array_with_cap'
+		fn_name:         'build_array_with_cap'
+		source_endpoint: autofree_bridge_test_cap_only_source_endpoint()
+	}
+}
+
+fn autofree_bridge_test_len_only_insertion_point() types.AutofreeReleaseInsertionPointFact {
+	return types.AutofreeReleaseInsertionPointFact{
+		...autofree_bridge_test_valid_insertion_point()
+		fn_key:          'build_array_with_len'
+		fn_name:         'build_array_with_len'
+		source_endpoint: autofree_bridge_test_len_only_source_endpoint()
+	}
+}
+
+fn autofree_bridge_test_local_array_clone_insertion_point() types.AutofreeReleaseInsertionPointFact {
+	array_type := autofree_bridge_test_array_type()
+	array_shape := autofree_bridge_test_array_shape()
+	array_type_name := array_type.name()
+	target := autofree_bridge_test_local_array_clone_target_endpoint()
+	return types.AutofreeReleaseInsertionPointFact{
+		fn_key:                'next_generation'
+		fn_name:               'next_generation'
+		name:                  'arr'
+		move_kind:             .local_array_clone_binding
+		plan_kind:             .natural_exit
+		plan_action:           .array_container_cleanup
+		helper_requirement:    .none
+		preflight_status:      .inert
+		insertion_kind:        .after_statement
+		insertion_status:      .inert
+		source_endpoint:       autofree_bridge_test_local_array_clone_source_endpoint()
+		endpoint:              target
+		state:                 .owned_unique
+		resource:              .array_value
+		shape:                 array_shape
+		typ:                   array_type
+		type_name:             array_type_name
+		node_id:               target.node_id
+		pos_id:                target.pos_id
+		proof_node_id:         target.node_id
+		proof_pos_id:          target.pos_id
+		release_after_node_id: 10
+		release_after_pos_id:  202
+		insert_after_node_id:  10
+		insert_after_pos_id:   202
 		reason:                'release insertion point accepted'
 	}
 }
@@ -272,6 +399,55 @@ fn test_autofree_bridge_accepts_builtin_string_array_container_cleanup() {
 	assert bridge_fact.reason.len > 0
 }
 
+fn test_autofree_bridge_accepts_cap_only_scalar_array_container_cleanup() {
+	point := autofree_bridge_test_cap_only_insertion_point()
+	bridge_facts := autofree_bridge_facts_from_insertion_points([point])
+	assert bridge_facts.len == 1
+	bridge_fact := bridge_facts[0]
+	assert bridge_fact.fn_key == point.fn_key
+	assert bridge_fact.fn_name == point.fn_name
+	assert bridge_fact.name == point.name
+	assert bridge_fact.bridge_status == .inert
+	assert bridge_fact.target_node_id == point.endpoint.node_id
+	assert bridge_fact.target_pos_id == point.endpoint.pos_id
+	assert bridge_fact.insert_after_node_id == point.insert_after_node_id
+	assert bridge_fact.insert_after_pos_id == point.insert_after_pos_id
+	assert bridge_fact.reason.len > 0
+}
+
+fn test_autofree_bridge_accepts_len_only_scalar_array_container_cleanup() {
+	point := autofree_bridge_test_len_only_insertion_point()
+	bridge_facts := autofree_bridge_facts_from_insertion_points([point])
+	assert bridge_facts.len == 1
+	bridge_fact := bridge_facts[0]
+	assert bridge_fact.fn_key == point.fn_key
+	assert bridge_fact.fn_name == point.fn_name
+	assert bridge_fact.name == point.name
+	assert bridge_fact.bridge_status == .inert
+	assert bridge_fact.target_node_id == point.endpoint.node_id
+	assert bridge_fact.target_pos_id == point.endpoint.pos_id
+	assert bridge_fact.insert_after_node_id == point.insert_after_node_id
+	assert bridge_fact.insert_after_pos_id == point.insert_after_pos_id
+	assert bridge_fact.reason.len > 0
+}
+
+fn test_autofree_bridge_accepts_local_array_clone_insertion_point() {
+	point := autofree_bridge_test_local_array_clone_insertion_point()
+	bridge_facts := autofree_bridge_facts_from_insertion_points([point])
+	assert bridge_facts.len == 1
+	bridge_fact := bridge_facts[0]
+	assert bridge_fact.fn_key == point.fn_key
+	assert bridge_fact.fn_name == point.fn_name
+	assert bridge_fact.name == point.name
+	assert bridge_fact.bridge_status == .inert
+	assert bridge_fact.target_node_id == point.endpoint.node_id
+	assert bridge_fact.target_pos_id == point.endpoint.pos_id
+	assert bridge_fact.insert_after_node_id == point.insert_after_node_id
+	assert bridge_fact.insert_after_pos_id == point.insert_after_pos_id
+	assert bridge_fact.insert_after_node_id == point.release_after_node_id
+	assert bridge_fact.reason.len > 0
+}
+
 fn test_autofree_bridge_rejects_non_builtin_string_array_container_shape() {
 	named_string_array_type := types.Type(types.Array{
 		elem_type: types.Type(types.NamedType('string'))
@@ -302,6 +478,309 @@ fn test_autofree_bridge_rejects_non_builtin_string_array_container_shape() {
 		type_name:       named_string_array_type_name
 	}
 	autofree_bridge_test_assert_no_bridge([point])
+}
+
+fn test_autofree_bridge_rejects_cap_only_bad_source_and_shape_cases() {
+	string_array_type := autofree_bridge_test_string_array_type()
+	string_array_shape := autofree_bridge_test_string_array_shape()
+	string_array_type_name := string_array_type.name()
+	string_source := autofree_bridge_test_string_array_cap_only_source_endpoint()
+	string_target := types.AutofreeTransferEndpoint{
+		...autofree_bridge_test_string_array_target_endpoint()
+	}
+	string_point := types.AutofreeReleaseInsertionPointFact{
+		...autofree_bridge_test_cap_only_insertion_point()
+		source_endpoint: string_source
+		endpoint:        string_target
+		shape:           string_array_shape
+		typ:             string_array_type
+		type_name:       string_array_type_name
+	}
+	cases := [
+		AutofreeBridgeRejectCase{
+			name:  'source_string_array'
+			point: string_point
+		},
+		AutofreeBridgeRejectCase{
+			name:  'source_without_cap_only_reason'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_cap_only_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_cap_only_source_endpoint()
+					reason: 'array literal'
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_source_state'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_cap_only_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_cap_only_source_endpoint()
+					state: .ambiguous_no_free
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_source_storage'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_cap_only_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_cap_only_source_endpoint()
+					storage:      .call_result
+					root_storage: .call_result
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'source_path'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_cap_only_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_cap_only_source_endpoint()
+					path: [
+						types.AutofreeEndpointPathSegment{
+							storage: .array_element
+							name:    'elem'
+							node_id: 3
+							pos_id:  91
+						},
+					]
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'local_array_clone_move'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_cap_only_insertion_point()
+				move_kind: .local_array_clone_binding
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'fail_closed_shape'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_cap_only_insertion_point()
+				shape: autofree_bridge_test_fail_closed_shape()
+			}
+		},
+	]
+	for entry in cases {
+		assert entry.name.len > 0
+		autofree_bridge_test_assert_no_bridge([entry.point])
+	}
+}
+
+fn test_autofree_bridge_rejects_len_only_bad_source_and_shape_cases() {
+	string_array_type := autofree_bridge_test_string_array_type()
+	string_array_shape := autofree_bridge_test_string_array_shape()
+	string_array_type_name := string_array_type.name()
+	string_source := autofree_bridge_test_string_array_len_only_source_endpoint()
+	string_target := types.AutofreeTransferEndpoint{
+		...autofree_bridge_test_string_array_target_endpoint()
+	}
+	string_point := types.AutofreeReleaseInsertionPointFact{
+		...autofree_bridge_test_len_only_insertion_point()
+		source_endpoint: string_source
+		endpoint:        string_target
+		shape:           string_array_shape
+		typ:             string_array_type
+		type_name:       string_array_type_name
+	}
+	cases := [
+		AutofreeBridgeRejectCase{
+			name:  'source_string_array'
+			point: string_point
+		},
+		AutofreeBridgeRejectCase{
+			name:  'source_without_len_only_reason'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_len_only_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_len_only_source_endpoint()
+					reason: 'array literal'
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_source_state'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_len_only_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_len_only_source_endpoint()
+					state: .ambiguous_no_free
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_source_storage'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_len_only_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_len_only_source_endpoint()
+					storage:      .call_result
+					root_storage: .call_result
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'source_path'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_len_only_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_len_only_source_endpoint()
+					path: [
+						types.AutofreeEndpointPathSegment{
+							storage: .array_element
+							name:    'elem'
+							node_id: 3
+							pos_id:  91
+						},
+					]
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'local_array_clone_move'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_len_only_insertion_point()
+				move_kind: .local_array_clone_binding
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'fail_closed_shape'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_len_only_insertion_point()
+				shape: autofree_bridge_test_fail_closed_shape()
+			}
+		},
+	]
+	for entry in cases {
+		assert entry.name.len > 0
+		autofree_bridge_test_assert_no_bridge([entry.point])
+	}
+}
+
+fn test_autofree_bridge_rejects_local_array_clone_bad_source_and_target_cases() {
+	string_array_type := autofree_bridge_test_string_array_type()
+	string_array_shape := autofree_bridge_test_string_array_shape()
+	string_array_type_name := string_array_type.name()
+	string_source := types.AutofreeTransferEndpoint{
+		...autofree_bridge_test_local_array_clone_source_endpoint()
+		typ:       string_array_type
+		type_name: string_array_type_name
+		shape:     string_array_shape
+	}
+	string_target := types.AutofreeTransferEndpoint{
+		...autofree_bridge_test_local_array_clone_target_endpoint()
+		typ:       string_array_type
+		type_name: string_array_type_name
+		shape:     string_array_shape
+	}
+	string_point := types.AutofreeReleaseInsertionPointFact{
+		...autofree_bridge_test_local_array_clone_insertion_point()
+		source_endpoint: string_source
+		endpoint:        string_target
+		shape:           string_array_shape
+		typ:             string_array_type
+		type_name:       string_array_type_name
+	}
+	cases := [
+		AutofreeBridgeRejectCase{
+			name:  'source_string_array'
+			point: string_point
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_source_state'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_local_array_clone_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_local_array_clone_source_endpoint()
+					state: .owned_unique
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_source_storage'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_local_array_clone_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_local_array_clone_source_endpoint()
+					storage:      .call_result
+					root_storage: .call_result
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'source_local'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_local_array_clone_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_local_array_clone_source_endpoint()
+					storage:      .local
+					root_storage: .local
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'source_path'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_local_array_clone_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_local_array_clone_source_endpoint()
+					path: [
+						types.AutofreeEndpointPathSegment{
+							storage: .array_element
+							name:    'elem'
+							node_id: 4
+							pos_id:  131
+						},
+					]
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'source_resourceful'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_local_array_clone_insertion_point()
+				source_endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_local_array_clone_source_endpoint()
+					resource: .string_value
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_target_state'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_local_array_clone_insertion_point()
+				endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_local_array_clone_target_endpoint()
+					state: .ambiguous_no_free
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'bad_target_storage'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_local_array_clone_insertion_point()
+				endpoint: types.AutofreeTransferEndpoint{
+					...autofree_bridge_test_local_array_clone_target_endpoint()
+					storage:      .global
+					root_storage: .global
+				}
+			}
+		},
+		AutofreeBridgeRejectCase{
+			name:  'unknown_move'
+			point: types.AutofreeReleaseInsertionPointFact{
+				...autofree_bridge_test_local_array_clone_insertion_point()
+				move_kind: .unknown
+			}
+		},
+	]
+	for entry in cases {
+		assert entry.name.len > 0
+		autofree_bridge_test_assert_no_bridge([entry.point])
+	}
 }
 
 fn test_autofree_bridge_skips_empty_insertion_points() {

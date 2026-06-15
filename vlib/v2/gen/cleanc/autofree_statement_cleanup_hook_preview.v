@@ -5,7 +5,6 @@
 module cleanc
 
 import v2.ast
-import v2.token
 
 enum AutofreeCleanCStatementCleanupHookPreviewStatus {
 	unknown
@@ -56,8 +55,7 @@ fn autofree_statement_cleanup_hook_preview_facts_from_file_cursor(file_cursor as
 	body := autofree_statement_location_child_cursor(fn_cursor, 3, .aux_list) or {
 		return []AutofreeCleanCStatementCleanupHookPreviewFact{}
 	}
-	if !autofree_statement_location_cursor_edge_range_is_valid(body)
-		|| !autofree_statement_preview_body_is_assign_only(body) {
+	if !autofree_statement_location_cursor_edge_range_is_valid(body) {
 		return []AutofreeCleanCStatementCleanupHookPreviewFact{}
 	}
 	hook_preview := autofree_statement_cleanup_hook_preview_fact_from_body(fn_cursor, body,
@@ -82,7 +80,7 @@ fn autofree_statement_cleanup_hook_preview_fact_from_body(fn_cursor ast.Cursor, 
 		return none
 	}
 	stmt := autofree_statement_location_edge_cursor(body, preview.stmt_index) or { return none }
-	if !autofree_statement_cleanup_hook_preview_stmt_matches_preview(stmt, preview) {
+	if !autofree_statement_cleanup_hook_preview_stmt_matches_preview(body, stmt, preview) {
 		return none
 	}
 	return AutofreeCleanCStatementCleanupHookPreviewFact{
@@ -133,7 +131,7 @@ fn autofree_statement_cleanup_hook_preview_is_valid(preview AutofreeCleanCStatem
 		&& preview.cleanup_text == '${preview.cleanup_symbol}(&${target_c_name});'
 }
 
-fn autofree_statement_cleanup_hook_preview_stmt_matches_preview(stmt ast.Cursor, preview AutofreeCleanCStatementCleanupPreviewFact) bool {
+fn autofree_statement_cleanup_hook_preview_stmt_matches_preview(body ast.Cursor, stmt ast.Cursor, preview AutofreeCleanCStatementCleanupPreviewFact) bool {
 	if !stmt.is_valid() || stmt.kind() != .stmt_assign {
 		return false
 	}
@@ -141,12 +139,20 @@ fn autofree_statement_cleanup_hook_preview_stmt_matches_preview(stmt ast.Cursor,
 		|| stmt.id != preview.insert_after_node_id || stmt.pos().id != preview.insert_after_pos_id {
 		return false
 	}
-	if !autofree_statement_location_cursor_edge_range_is_valid(stmt) || stmt.extra_int() != 1
-		|| stmt.edge_count() != 2 || unsafe { token.Token(int(stmt.aux())) } != .decl_assign {
-		return false
+	anchor := AutofreeCleanCStatementAnchorFact{
+		fn_key:               preview.fn_key
+		fn_name:              preview.fn_name
+		name:                 preview.name
+		anchor_status:        .inert
+		target_node_id:       preview.target_node_id
+		target_pos_id:        preview.target_pos_id
+		insert_after_node_id: preview.insert_after_node_id
+		insert_after_pos_id:  preview.insert_after_pos_id
+		reason:               preview.reason
 	}
-	lhs := autofree_statement_location_edge_cursor(stmt, preview.lhs_index) or { return false }
-	lhs_ident := autofree_statement_location_direct_lhs_ident(lhs) or { return false }
-	return lhs_ident.id == preview.target_node_id && lhs_ident.pos().id == preview.target_pos_id
-		&& lhs_ident.name() == preview.name
+	if autofree_statement_location_stmt_declares_target(stmt, anchor) {
+		return true
+	}
+	return autofree_statement_location_stmt_is_plain_assign(stmt)
+		&& autofree_statement_location_body_declares_target_before(body, preview.stmt_index, anchor)
 }

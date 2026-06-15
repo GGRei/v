@@ -71,7 +71,7 @@ fn autofree_bridge_fact_from_insertion_point(point types.AutofreeReleaseInsertio
 	if point.insertion_status != .inert || point.insertion_kind != .after_statement {
 		return none
 	}
-	if point.move_kind != .fresh_local_binding || point.plan_kind != .natural_exit
+	if !autofree_bridge_move_kind_is_supported(point.move_kind) || point.plan_kind != .natural_exit
 		|| point.preflight_status != .inert {
 		return none
 	}
@@ -100,15 +100,7 @@ fn autofree_bridge_fact_from_insertion_point(point types.AutofreeReleaseInsertio
 	if point.release_after_node_id == source.node_id || point.insert_after_node_id == source.node_id {
 		return none
 	}
-	if source.storage != .literal || source.root_storage != .literal || source.path.len != 0 {
-		return none
-	}
 	if target.storage != .local || target.root_storage != .local || target.path.len != 0 {
-		return none
-	}
-	if source.node_id < 0 || source.pos_id <= 0 || source.root_node_id != source.node_id
-		|| source.root_pos_id != source.pos_id || source.name.len == 0
-		|| source.root_name != source.name {
 		return none
 	}
 	if target.node_id < 0 || target.pos_id <= 0 || target.name != point.name
@@ -127,8 +119,7 @@ fn autofree_bridge_fact_from_insertion_point(point types.AutofreeReleaseInsertio
 		|| source.typ.name() != canonical_type_name || target.typ.name() != canonical_type_name {
 		return none
 	}
-	if point.state != .owned_unique || source.state != .owned_unique
-		|| target.state != .owned_unique {
+	if point.state != .owned_unique || target.state != .owned_unique {
 		return none
 	}
 	if point.resource != .array_value || source.resource != .array_value
@@ -136,7 +127,7 @@ fn autofree_bridge_fact_from_insertion_point(point types.AutofreeReleaseInsertio
 		return none
 	}
 	shape := point.shape
-	if !autofree_bridge_empty_array_container_shape_is_allowed(shape, source) {
+	if !autofree_bridge_source_endpoint_is_allowed(point.move_kind, shape, source) {
 		return none
 	}
 	if !autofree_bridge_shapes_match(shape, source.shape)
@@ -156,15 +147,89 @@ fn autofree_bridge_fact_from_insertion_point(point types.AutofreeReleaseInsertio
 	}
 }
 
+fn autofree_bridge_move_kind_is_supported(kind types.AutofreeMoveProofKind) bool {
+	return kind == .fresh_local_binding || kind == .local_array_clone_binding
+}
+
+fn autofree_bridge_source_endpoint_is_allowed(kind types.AutofreeMoveProofKind, shape types.AutofreeResourceShape, source types.AutofreeTransferEndpoint) bool {
+	match kind {
+		.fresh_local_binding {
+			return autofree_bridge_empty_array_container_shape_is_allowed(shape, source)
+				|| autofree_bridge_cap_only_array_container_shape_is_allowed(shape, source)
+				|| autofree_bridge_len_only_array_container_shape_is_allowed(shape, source)
+		}
+		.local_array_clone_binding {
+			return autofree_bridge_local_array_clone_source_is_allowed(shape, source)
+		}
+		else {
+			return false
+		}
+	}
+}
+
 fn autofree_bridge_empty_array_container_shape_is_allowed(shape types.AutofreeResourceShape, source types.AutofreeTransferEndpoint) bool {
 	if shape.kind != .array || shape.fail_closed || !shape.needs_autofree() {
 		return false
 	}
 	if source.storage != .literal || source.root_storage != .literal || source.path.len != 0
-		|| source.reason != 'empty dynamic array literal' {
+		|| source.state != .owned_unique || source.reason != 'empty dynamic array literal' {
+		return false
+	}
+	if source.node_id < 0 || source.pos_id <= 0 || source.root_node_id != source.node_id
+		|| source.root_pos_id != source.pos_id || source.name.len == 0
+		|| source.root_name != source.name {
 		return false
 	}
 	return shape.target_kind == .no_resource || shape.target_kind == .string_
+}
+
+fn autofree_bridge_cap_only_array_container_shape_is_allowed(shape types.AutofreeResourceShape, source types.AutofreeTransferEndpoint) bool {
+	if shape.kind != .array || shape.fail_closed || !shape.needs_autofree()
+		|| shape.target_kind != .no_resource {
+		return false
+	}
+	if source.storage != .literal || source.root_storage != .literal || source.path.len != 0
+		|| source.state != .owned_unique || source.reason != 'cap-only scalar array literal' {
+		return false
+	}
+	if source.node_id < 0 || source.pos_id <= 0 || source.root_node_id != source.node_id
+		|| source.root_pos_id != source.pos_id || source.name.len == 0
+		|| source.root_name != source.name {
+		return false
+	}
+	return true
+}
+
+fn autofree_bridge_len_only_array_container_shape_is_allowed(shape types.AutofreeResourceShape, source types.AutofreeTransferEndpoint) bool {
+	if shape.kind != .array || shape.fail_closed || !shape.needs_autofree()
+		|| shape.target_kind != .no_resource {
+		return false
+	}
+	if source.storage != .literal || source.root_storage != .literal || source.path.len != 0
+		|| source.state != .owned_unique || source.reason != 'len-only scalar array literal' {
+		return false
+	}
+	if source.node_id < 0 || source.pos_id <= 0 || source.root_node_id != source.node_id
+		|| source.root_pos_id != source.pos_id || source.name.len == 0
+		|| source.root_name != source.name {
+		return false
+	}
+	return true
+}
+
+fn autofree_bridge_local_array_clone_source_is_allowed(shape types.AutofreeResourceShape, source types.AutofreeTransferEndpoint) bool {
+	if shape.kind != .array || shape.fail_closed || !shape.needs_autofree()
+		|| shape.target_kind != .no_resource {
+		return false
+	}
+	if source.storage != .parameter || source.root_storage != .parameter {
+		return false
+	}
+	if source.path.len != 0 || source.state != .ambiguous_no_free {
+		return false
+	}
+	return source.root_node_id >= 0 && source.root_pos_id > 0 && source.node_id >= 0
+		&& source.pos_id > 0 && source.name.len > 0 && source.root_name == source.name
 }
 
 fn autofree_bridge_shapes_match(a types.AutofreeResourceShape, b types.AutofreeResourceShape) bool {

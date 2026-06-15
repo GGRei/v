@@ -43,6 +43,8 @@ pub fn (mut e Environment) collect_autofree_facts_from_flat(flat &ast.FlatAst) {
 	e.autofree_helper_roots = []AutofreeHelperRootFact{}
 	e.collect_autofree_fresh_locals_from_flat(flat)
 	e.collect_autofree_move_proofs_from_fresh_locals()
+	e.collect_autofree_local_array_clone_move_proofs_from_flat(flat)
+	e.collect_autofree_fresh_array_final_clone_move_proofs_from_flat(flat)
 	e.collect_autofree_natural_release_candidates_from_move_proofs()
 	e.collect_autofree_release_plans_from_candidates()
 	e.collect_autofree_release_preflights_from_plans()
@@ -134,6 +136,10 @@ fn (mut e Environment) collect_autofree_fresh_locals_from_fn(flat &ast.FlatAst, 
 	fact := e.collect_autofree_fresh_local_from_stmt(flat, fn_key, fn_name, stmt_id, param_names) or {
 		return
 	}
+	if fact.reason in ['cap-only scalar array literal', 'len-only scalar array literal']
+		&& body_count != 1 {
+		return
+	}
 	if !e.autofree_collect_fresh_body_prefix_is_safe(flat, body_id, body_count, fact.name,
 		param_names) {
 		return
@@ -185,12 +191,30 @@ fn (mut e Environment) collect_autofree_fresh_local_from_stmt(flat &ast.FlatAst,
 		}
 	}
 	fact_typ := matched_typ
-	mut rhs_is_exact_empty_dynamic_array := false
+	mut rhs_is_supported_fresh_array_source := false
+	mut source_reason := ''
 	match fact_typ {
 		Array {
-			rhs_is_exact_empty_dynamic_array = autofree_collect_empty_dynamic_array_init_is_exact(flat,
-				rhs_id, fact_typ.elem_type)
-			if !rhs_is_exact_empty_dynamic_array {
+			if autofree_collect_empty_dynamic_array_init_is_exact(flat, rhs_id, fact_typ.elem_type) {
+				rhs_is_supported_fresh_array_source = true
+				source_reason = 'empty dynamic array literal'
+			} else if e.autofree_collect_cap_only_array_init_is_exact(flat, rhs_id,
+				fact_typ.elem_type, param_names)
+			{
+				if !autofree_collect_fresh_array_lhs_is_mut(flat, lhs_expr_id) {
+					return none
+				}
+				rhs_is_supported_fresh_array_source = true
+				source_reason = 'cap-only scalar array literal'
+			} else if e.autofree_collect_len_only_array_init_is_exact(flat, rhs_id,
+				fact_typ.elem_type, param_names)
+			{
+				if !autofree_collect_fresh_array_lhs_is_mut(flat, lhs_expr_id) {
+					return none
+				}
+				rhs_is_supported_fresh_array_source = true
+				source_reason = 'len-only scalar array literal'
+			} else {
 				return none
 			}
 		}
@@ -201,9 +225,10 @@ fn (mut e Environment) collect_autofree_fresh_local_from_stmt(flat &ast.FlatAst,
 
 	shape := e.autofree_resource_shape(fact_typ)
 	endpoint := autofree_collect_fresh_local_endpoint(flat, lhs_id, lhs_name, fact_typ, shape)
-	source_endpoint := autofree_collect_fresh_literal_endpoint(flat, rhs_id, fact_typ, shape)
+	source_endpoint := autofree_collect_fresh_literal_endpoint_with_reason(flat, rhs_id, fact_typ,
+		shape, source_reason)
 	if !autofree_collect_array_container_cleanup_allowed(shape, source_endpoint,
-		rhs_is_exact_empty_dynamic_array) {
+		rhs_is_supported_fresh_array_source) {
 		return none
 	}
 	return AutofreeFreshLocalFact{
@@ -221,7 +246,7 @@ fn (mut e Environment) collect_autofree_fresh_local_from_stmt(flat &ast.FlatAst,
 		pos_id:          lhs_pos_id
 		stmt_node_id:    stmt_id
 		stmt_pos_id:     stmt_pos_id
-		reason:          'empty dynamic array literal'
+		reason:          source_reason
 	}
 }
 
@@ -256,6 +281,19 @@ fn autofree_collect_duplicate_fresh_local_names(fresh_locals []AutofreeFreshLoca
 		seen[fresh.name] = true
 	}
 	return duplicates
+}
+
+fn autofree_collect_fresh_local_is_empty_dynamic_array(fresh AutofreeFreshLocalFact) bool {
+	return fresh.reason == 'empty dynamic array literal'
+		&& fresh.source_endpoint.reason == 'empty dynamic array literal'
+}
+
+fn autofree_collect_fresh_local_is_final_clone_array_source(fresh AutofreeFreshLocalFact) bool {
+	if autofree_collect_fresh_local_is_empty_dynamic_array(fresh) {
+		return true
+	}
+	return fresh.reason == 'cap-only scalar array literal'
+		&& fresh.source_endpoint.reason == 'cap-only scalar array literal'
 }
 
 fn autofree_collect_move_proof_from_fresh_local(fresh AutofreeFreshLocalFact) ?AutofreeMoveProofFact {
@@ -346,15 +384,597 @@ fn autofree_collect_shapes_match_for_move_proof(a AutofreeResourceShape, b Autof
 		&& a.needs_autofree() == b.needs_autofree()
 }
 
-fn autofree_collect_array_container_cleanup_allowed(shape AutofreeResourceShape, source AutofreeTransferEndpoint, exact_empty_dynamic_array bool) bool {
+struct AutofreeLocalArrayCloneRhs {
+	receiver_name   string
+	receiver_id     ast.FlatNodeId
+	receiver_pos_id int
+	call_id         ast.FlatNodeId
+	call_pos_id     int
+}
+
+fn (mut e Environment) collect_autofree_local_array_clone_move_proofs_from_flat(flat &ast.FlatAst) {
+	for file in flat.files {
+		if !autofree_collect_node_is(flat, file.file_id, .file) {
+			continue
+		}
+		module_name := flat.string_at(file.mod_idx)
+		stmts_id := autofree_collect_required_child(flat, file.file_id, 2, .aux_list)
+		if stmts_id == ast.invalid_flat_node_id {
+			continue
+		}
+		stmt_count := autofree_collect_exact_edge_count(flat, stmts_id)
+		if stmt_count < 0 {
+			continue
+		}
+		stmt_node := flat.nodes[stmts_id]
+		for i in 0 .. stmt_count {
+			fn_id := flat.edges[stmt_node.first_edge + i].child_id
+			if !autofree_collect_node_is(flat, fn_id, .stmt_fn_decl) {
+				continue
+			}
+			e.collect_autofree_local_array_clone_move_proof_from_fn(flat, module_name, fn_id)
+		}
+	}
+}
+
+fn (mut e Environment) collect_autofree_local_array_clone_move_proof_from_fn(flat &ast.FlatAst, module_name string, fn_id ast.FlatNodeId) {
+	if !autofree_collect_node_is(flat, fn_id, .stmt_fn_decl) {
+		return
+	}
+	fn_node := flat.nodes[fn_id]
+	if (fn_node.flags & ast.flag_is_method) != 0 {
+		return
+	}
+	fn_name := flat.string_at(fn_node.name_id)
+	if fn_name.len == 0 || !autofree_collect_fn_schema_is_complete(flat, fn_id) {
+		return
+	}
+	body_id := autofree_collect_required_child(flat, fn_id, 3, .aux_list)
+	if body_id == ast.invalid_flat_node_id {
+		return
+	}
+	body_count := autofree_collect_exact_edge_count(flat, body_id)
+	if body_count < 2 {
+		return
+	}
+	param_ids := autofree_collect_fn_param_ids(flat, fn_id)
+	param_names := autofree_collect_param_names(flat, param_ids)
+	param_ids_by_name := autofree_collect_param_ids_by_name(flat, param_ids)
+	body_node := flat.nodes[body_id]
+	first_stmt_id := flat.edges[body_node.first_edge].child_id
+	last_stmt_id := flat.edges[body_node.first_edge + body_count - 1].child_id
+	fn_key := autofree_fn_key(module_name, fn_name, '')
+	proof := e.collect_autofree_local_array_clone_move_proof_from_stmts(flat, fn_key, fn_name,
+		first_stmt_id, last_stmt_id, param_names, param_ids_by_name) or { return }
+	if !autofree_collect_local_array_clone_middle_is_safe(flat, body_id, body_count, proof.name,
+		proof.source_endpoint.name) {
+		return
+	}
+	mut proofs := e.autofree_move_proofs_by_fn_key[proof.fn_key] or { []AutofreeMoveProofFact{} }
+	proofs << proof
+	e.autofree_move_proofs_by_fn_key[proof.fn_key] = proofs
+}
+
+fn (mut e Environment) collect_autofree_local_array_clone_move_proof_from_stmts(flat &ast.FlatAst, fn_key string, fn_name string, first_stmt_id ast.FlatNodeId, last_stmt_id ast.FlatNodeId, param_names map[string]bool, param_ids_by_name map[string]ast.FlatNodeId) ?AutofreeMoveProofFact {
+	if !autofree_collect_node_is(flat, first_stmt_id, .stmt_assign)
+		|| !autofree_collect_node_is(flat, last_stmt_id, .stmt_assign) {
+		return none
+	}
+	first_node := flat.nodes[first_stmt_id]
+	last_node := flat.nodes[last_stmt_id]
+	if unsafe { token.Token(int(first_node.aux)) } != .decl_assign
+		|| unsafe { token.Token(int(last_node.aux)) } != .assign {
+		return none
+	}
+	if first_node.extra != 1 || last_node.extra != 1
+		|| autofree_collect_exact_edge_count(flat, first_stmt_id) != 2
+		|| autofree_collect_exact_edge_count(flat, last_stmt_id) != 2 {
+		return none
+	}
+	arr_lhs_expr_id := flat.edges[first_node.first_edge].child_id
+	arr_lhs_id := autofree_collect_fresh_array_lhs_ident_id(flat, arr_lhs_expr_id)
+	if arr_lhs_id == ast.invalid_flat_node_id {
+		return none
+	}
+	arr_name := flat.string_at(flat.nodes[arr_lhs_id].name_id)
+	if !autofree_collect_name_is_usable(arr_name) || arr_name in param_names {
+		return none
+	}
+	source_clone := autofree_collect_direct_clone_rhs(flat,
+		flat.edges[first_node.first_edge + 1].child_id) or { return none }
+	if !autofree_collect_name_is_usable(source_clone.receiver_name)
+		|| source_clone.receiver_name == arr_name || source_clone.receiver_name !in param_names {
+		return none
+	}
+	final_lhs_id := flat.edges[last_node.first_edge].child_id
+	if !autofree_collect_node_is(flat, final_lhs_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, final_lhs_id) != 0 {
+		return none
+	}
+	final_lhs_name := flat.string_at(flat.nodes[final_lhs_id].name_id)
+	if final_lhs_name != source_clone.receiver_name {
+		return none
+	}
+	final_clone := autofree_collect_direct_clone_rhs(flat,
+		flat.edges[last_node.first_edge + 1].child_id) or { return none }
+	if final_clone.receiver_name != arr_name {
+		return none
+	}
+	arr_pos_id := flat.nodes[arr_lhs_id].pos.id
+	source_pos_id := flat.nodes[source_clone.receiver_id].pos.id
+	final_lhs_pos_id := flat.nodes[final_lhs_id].pos.id
+	final_clone_pos_id := flat.nodes[final_clone.call_id].pos.id
+	if arr_pos_id <= 0 || source_pos_id <= 0 || final_lhs_pos_id <= 0 || final_clone_pos_id <= 0
+		|| first_node.pos.id <= 0 || last_node.pos.id <= 0 {
+		return none
+	}
+	arr_typ := e.get_expr_type(arr_pos_id) or { return none }
+	source_typ := e.get_expr_type(source_pos_id) or { return none }
+	final_lhs_typ := e.get_expr_type(final_lhs_pos_id) or { return none }
+	final_clone_typ := e.get_expr_type(final_clone_pos_id) or { return none }
+	if !type_has_valid_payload(arr_typ) || !type_has_valid_payload(source_typ)
+		|| !type_has_valid_payload(final_lhs_typ) || !type_has_valid_payload(final_clone_typ) {
+		return none
+	}
+	source_transfer_typ := autofree_collect_local_array_clone_endpoint_type(source_typ,
+		source_clone.receiver_name, param_names)
+	final_lhs_transfer_typ := autofree_collect_local_array_clone_endpoint_type(final_lhs_typ,
+		final_lhs_name, param_names)
+	transfer_typ := autofree_collect_canonical_decl_transfer_type(arr_typ, source_transfer_typ) or {
+		return none
+	}
+	_ = autofree_collect_canonical_decl_transfer_type(final_lhs_transfer_typ, transfer_typ) or {
+		return none
+	}
+	_ = autofree_collect_canonical_decl_transfer_type(final_clone_typ, transfer_typ) or {
+		return none
+	}
+	shape := e.autofree_resource_shape(transfer_typ)
+	if !autofree_collect_scalar_array_clone_cleanup_allowed(transfer_typ, shape) {
+		return none
+	}
+	source_root_id := param_ids_by_name[source_clone.receiver_name] or { return none }
+	source_root_pos_id := flat.nodes[source_root_id].pos.id
+	if source_root_id < 0 || source_root_pos_id <= 0 {
+		return none
+	}
+	source_endpoint := AutofreeTransferEndpoint{
+		...autofree_collect_endpoint(flat, source_root_id, source_root_pos_id,
+			source_clone.receiver_id, source_clone.receiver_name, transfer_typ, shape, .parameter,
+			'local scalar array clone source')
+		state: .ambiguous_no_free
+	}
+	target_endpoint := AutofreeTransferEndpoint{
+		...autofree_collect_endpoint(flat, arr_lhs_id, arr_pos_id, arr_lhs_id, arr_name,
+			transfer_typ, shape, .local, 'local scalar array clone target')
+		state: .owned_unique
+	}
+	return AutofreeMoveProofFact{
+		fn_key:          fn_key
+		fn_name:         fn_name
+		name:            arr_name
+		kind:            .local_array_clone_binding
+		source_endpoint: source_endpoint
+		target_endpoint: target_endpoint
+		state:           .owned_unique
+		resource:        .array_value
+		shape:           shape
+		typ:             transfer_typ
+		type_name:       transfer_typ.name()
+		node_id:         arr_lhs_id
+		pos_id:          arr_pos_id
+		stmt_node_id:    last_stmt_id
+		stmt_pos_id:     last_node.pos.id
+		reason:          'local scalar array clone final assignment'
+	}
+}
+
+fn autofree_collect_local_array_clone_endpoint_type(typ Type, name string, param_names map[string]bool) Type {
+	if name in param_names {
+		if typ is Pointer {
+			return typ.base_type
+		}
+	}
+	return typ
+}
+
+fn autofree_collect_direct_clone_rhs(flat &ast.FlatAst, rhs_id ast.FlatNodeId) ?AutofreeLocalArrayCloneRhs {
+	if !autofree_collect_node_is(flat, rhs_id, .expr_call) {
+		return none
+	}
+	call_node := flat.nodes[rhs_id]
+	if call_node.pos.id <= 0 {
+		return none
+	}
+	edge_count := autofree_collect_exact_edge_count(flat, rhs_id)
+	if edge_count != 1 && edge_count != 2 {
+		return none
+	}
+	if edge_count == 2 {
+		call_lhs_id := flat.edges[call_node.first_edge].child_id
+		receiver_id := flat.edges[call_node.first_edge + 1].child_id
+		if !autofree_collect_node_is(flat, call_lhs_id, .expr_ident)
+			|| !autofree_collect_node_is(flat, receiver_id, .expr_ident)
+			|| autofree_collect_exact_edge_count(flat, call_lhs_id) != 0
+			|| autofree_collect_exact_edge_count(flat, receiver_id) != 0 {
+			return none
+		}
+		call_name := flat.string_at(flat.nodes[call_lhs_id].name_id)
+		receiver_name := flat.string_at(flat.nodes[receiver_id].name_id)
+		if call_name != 'array__clone' || !autofree_collect_name_is_usable(receiver_name) {
+			return none
+		}
+		return AutofreeLocalArrayCloneRhs{
+			receiver_name:   receiver_name
+			receiver_id:     receiver_id
+			receiver_pos_id: flat.nodes[receiver_id].pos.id
+			call_id:         rhs_id
+			call_pos_id:     call_node.pos.id
+		}
+	}
+	selector_id := flat.edges[call_node.first_edge].child_id
+	if !autofree_collect_node_is(flat, selector_id, .expr_selector)
+		|| autofree_collect_exact_edge_count(flat, selector_id) != 2 {
+		return none
+	}
+	receiver_id := flat.edges[flat.nodes[selector_id].first_edge].child_id
+	method_id := flat.edges[flat.nodes[selector_id].first_edge + 1].child_id
+	if !autofree_collect_node_is(flat, receiver_id, .expr_ident)
+		|| !autofree_collect_node_is(flat, method_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, receiver_id) != 0
+		|| autofree_collect_exact_edge_count(flat, method_id) != 0 {
+		return none
+	}
+	method_name := flat.string_at(flat.nodes[method_id].name_id)
+	receiver_name := flat.string_at(flat.nodes[receiver_id].name_id)
+	if method_name != 'clone' || !autofree_collect_name_is_usable(receiver_name) {
+		return none
+	}
+	return AutofreeLocalArrayCloneRhs{
+		receiver_name:   receiver_name
+		receiver_id:     receiver_id
+		receiver_pos_id: flat.nodes[receiver_id].pos.id
+		call_id:         rhs_id
+		call_pos_id:     call_node.pos.id
+	}
+}
+
+fn autofree_collect_scalar_array_clone_cleanup_allowed(typ Type, shape AutofreeResourceShape) bool {
+	if shape.kind != .array || shape.target_kind != .no_resource || shape.fail_closed
+		|| !shape.needs_autofree() {
+		return false
+	}
+	match typ {
+		Array {
+			elem_type := typ.elem_type
+			return elem_type is Primitive || elem_type is Char || elem_type is Enum
+				|| elem_type is ISize || elem_type is Rune || elem_type is USize
+		}
+		else {
+			return false
+		}
+	}
+}
+
+fn (mut e Environment) collect_autofree_fresh_array_final_clone_move_proofs_from_flat(flat &ast.FlatAst) {
+	for file in flat.files {
+		if !autofree_collect_node_is(flat, file.file_id, .file) {
+			continue
+		}
+		module_name := flat.string_at(file.mod_idx)
+		stmts_id := autofree_collect_required_child(flat, file.file_id, 2, .aux_list)
+		if stmts_id == ast.invalid_flat_node_id {
+			continue
+		}
+		stmt_count := autofree_collect_exact_edge_count(flat, stmts_id)
+		if stmt_count < 0 {
+			continue
+		}
+		stmt_node := flat.nodes[stmts_id]
+		for i in 0 .. stmt_count {
+			fn_id := flat.edges[stmt_node.first_edge + i].child_id
+			if !autofree_collect_node_is(flat, fn_id, .stmt_fn_decl) {
+				continue
+			}
+			e.collect_autofree_fresh_array_final_clone_move_proof_from_fn(flat, module_name, fn_id)
+		}
+	}
+}
+
+fn (mut e Environment) collect_autofree_fresh_array_final_clone_move_proof_from_fn(flat &ast.FlatAst, module_name string, fn_id ast.FlatNodeId) {
+	if !autofree_collect_node_is(flat, fn_id, .stmt_fn_decl) {
+		return
+	}
+	fn_node := flat.nodes[fn_id]
+	if (fn_node.flags & ast.flag_is_method) != 0 {
+		return
+	}
+	fn_name := flat.string_at(fn_node.name_id)
+	if fn_name.len == 0 || !autofree_collect_fn_schema_is_complete(flat, fn_id) {
+		return
+	}
+	body_id := autofree_collect_required_child(flat, fn_id, 3, .aux_list)
+	if body_id == ast.invalid_flat_node_id {
+		return
+	}
+	body_count := autofree_collect_exact_edge_count(flat, body_id)
+	if body_count != 2 {
+		return
+	}
+	param_ids := autofree_collect_fn_param_ids(flat, fn_id)
+	param_names := autofree_collect_param_names(flat, param_ids)
+	param_ids_by_name := autofree_collect_param_ids_by_name(flat, param_ids)
+	body_node := flat.nodes[body_id]
+	fresh_stmt_id := flat.edges[body_node.first_edge].child_id
+	final_stmt_id := flat.edges[body_node.first_edge + 1].child_id
+	fn_key := autofree_fn_key(module_name, fn_name, '')
+	proof := e.collect_autofree_fresh_array_final_clone_move_proof_from_stmts(flat, fn_key,
+		fn_name, fresh_stmt_id, final_stmt_id, param_names, param_ids_by_name) or { return }
+	mut proofs := e.autofree_move_proofs_by_fn_key[proof.fn_key] or { []AutofreeMoveProofFact{} }
+	proofs << proof
+	e.autofree_move_proofs_by_fn_key[proof.fn_key] = proofs
+}
+
+fn (mut e Environment) collect_autofree_fresh_array_final_clone_move_proof_from_stmts(flat &ast.FlatAst, fn_key string, fn_name string, fresh_stmt_id ast.FlatNodeId, final_stmt_id ast.FlatNodeId, param_names map[string]bool, param_ids_by_name map[string]ast.FlatNodeId) ?AutofreeMoveProofFact {
+	fresh := e.collect_autofree_fresh_local_from_stmt(flat, fn_key, fn_name, fresh_stmt_id,
+		param_names) or { return none }
+	if !autofree_collect_fresh_local_is_final_clone_array_source(fresh) {
+		return none
+	}
+	if !autofree_collect_scalar_array_clone_cleanup_allowed(fresh.typ, fresh.shape) {
+		return none
+	}
+	if !autofree_collect_node_is(flat, final_stmt_id, .stmt_assign) {
+		return none
+	}
+	final_node := flat.nodes[final_stmt_id]
+	if unsafe { token.Token(int(final_node.aux)) } != .assign || final_node.extra != 1
+		|| autofree_collect_exact_edge_count(flat, final_stmt_id) != 2 {
+		return none
+	}
+	final_lhs_id := flat.edges[final_node.first_edge].child_id
+	if !autofree_collect_node_is(flat, final_lhs_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, final_lhs_id) != 0 {
+		return none
+	}
+	final_lhs_name := flat.string_at(flat.nodes[final_lhs_id].name_id)
+	if !autofree_collect_name_is_usable(final_lhs_name) || final_lhs_name !in param_names
+		|| final_lhs_name == fresh.name {
+		return none
+	}
+	param_id := param_ids_by_name[final_lhs_name] or { return none }
+	if param_id < 0 || flat.nodes[param_id].pos.id <= 0
+		|| (flat.nodes[param_id].flags & ast.flag_is_mut) == 0 {
+		return none
+	}
+	final_clone := autofree_collect_direct_clone_rhs(flat,
+		flat.edges[final_node.first_edge + 1].child_id) or { return none }
+	if final_clone.receiver_name != fresh.name || final_clone.receiver_pos_id <= 0
+		|| final_clone.call_pos_id <= 0 || final_node.pos.id <= 0 {
+		return none
+	}
+	final_lhs_pos_id := flat.nodes[final_lhs_id].pos.id
+	if final_lhs_pos_id <= 0 {
+		return none
+	}
+	final_lhs_typ := e.get_expr_type(final_lhs_pos_id) or { return none }
+	final_clone_typ := e.get_expr_type(final_clone.call_pos_id) or { return none }
+	if !type_has_valid_payload(final_lhs_typ) || !type_has_valid_payload(final_clone_typ) {
+		return none
+	}
+	final_lhs_transfer_typ := autofree_collect_local_array_clone_endpoint_type(final_lhs_typ,
+		final_lhs_name, param_names)
+	transfer_typ := autofree_collect_canonical_decl_transfer_type(final_lhs_transfer_typ, fresh.typ) or {
+		return none
+	}
+	_ = autofree_collect_canonical_decl_transfer_type(final_clone_typ, transfer_typ) or {
+		return none
+	}
+	if !same_type_name(transfer_typ, fresh.typ) {
+		return none
+	}
+	shape := e.autofree_resource_shape(transfer_typ)
+	if !autofree_collect_scalar_array_clone_cleanup_allowed(transfer_typ, shape)
+		|| !autofree_collect_shapes_match_for_move_proof(shape, fresh.shape) {
+		return none
+	}
+	proof := autofree_collect_move_proof_from_fresh_local(fresh) or { return none }
+	return AutofreeMoveProofFact{
+		...proof
+		stmt_node_id: final_stmt_id
+		stmt_pos_id:  final_node.pos.id
+		reason:       'fresh scalar array final clone assignment'
+	}
+}
+
+fn autofree_collect_local_array_clone_middle_is_safe(flat &ast.FlatAst, body_id ast.FlatNodeId, body_count int, target_name string, source_name string) bool {
+	if body_count < 2 || !autofree_collect_name_is_usable(target_name)
+		|| !autofree_collect_name_is_usable(source_name) {
+		return false
+	}
+	body_node := flat.nodes[body_id]
+	if body_node.first_edge < 0 || body_node.first_edge + body_count > flat.edges.len {
+		return false
+	}
+	for i in 1 .. body_count - 1 {
+		stmt_id := flat.edges[body_node.first_edge + i].child_id
+		if !autofree_collect_local_array_clone_stmt_is_safe(flat, stmt_id, target_name, source_name) {
+			return false
+		}
+	}
+	return true
+}
+
+fn autofree_collect_local_array_clone_stmt_is_safe(flat &ast.FlatAst, stmt_id ast.FlatNodeId, target_name string, source_name string) bool {
+	if !autofree_collect_node_is_valid(flat, stmt_id) {
+		return false
+	}
+	if autofree_collect_local_array_clone_subtree_has_rejected_node(flat, stmt_id, target_name) {
+		return false
+	}
+	if !autofree_collect_local_array_clone_assigns_are_safe(flat, stmt_id, target_name, source_name) {
+		return false
+	}
+	return true
+}
+
+fn autofree_collect_local_array_clone_subtree_has_rejected_node(flat &ast.FlatAst, node_id ast.FlatNodeId, target_name string) bool {
+	if !autofree_collect_node_is_valid(flat, node_id) {
+		return true
+	}
+	node := flat.nodes[node_id]
+	match node.kind {
+		.stmt_return, .stmt_flow_control, .expr_fn_literal, .expr_lambda, .expr_call,
+		.expr_call_or_cast {
+			return true
+		}
+		.expr_infix {
+			if unsafe { token.Token(int(node.aux)) } == .left_shift
+				&& autofree_collect_subtree_contains_ident(flat, node_id, target_name) {
+				return true
+			}
+		}
+		else {}
+	}
+
+	for i in 0 .. node.edge_count {
+		if !autofree_collect_child_is_valid(flat, node_id, i) {
+			return true
+		}
+		child_id := flat.edges[node.first_edge + i].child_id
+		if autofree_collect_local_array_clone_subtree_has_rejected_node(flat, child_id, target_name) {
+			return true
+		}
+	}
+	return false
+}
+
+fn autofree_collect_local_array_clone_assigns_are_safe(flat &ast.FlatAst, node_id ast.FlatNodeId, target_name string, source_name string) bool {
+	if !autofree_collect_node_is_valid(flat, node_id) {
+		return false
+	}
+	node := flat.nodes[node_id]
+	if node.kind == .stmt_assign
+		&& !autofree_collect_local_array_clone_assign_is_safe(flat, node_id, target_name, source_name) {
+		return false
+	}
+	for i in 0 .. node.edge_count {
+		if !autofree_collect_child_is_valid(flat, node_id, i) {
+			return false
+		}
+		child_id := flat.edges[node.first_edge + i].child_id
+		if !autofree_collect_local_array_clone_assigns_are_safe(flat, child_id, target_name,
+			source_name) {
+			return false
+		}
+	}
+	return true
+}
+
+fn autofree_collect_local_array_clone_assign_is_safe(flat &ast.FlatAst, stmt_id ast.FlatNodeId, target_name string, source_name string) bool {
+	if !autofree_collect_node_is(flat, stmt_id, .stmt_assign) {
+		return false
+	}
+	stmt_node := flat.nodes[stmt_id]
+	op := unsafe { token.Token(int(stmt_node.aux)) }
+	edge_count := autofree_collect_exact_edge_count(flat, stmt_id)
+	lhs_count := stmt_node.extra
+	if lhs_count <= 0 || edge_count < lhs_count {
+		return false
+	}
+	for lhs_i in 0 .. lhs_count {
+		lhs_id := flat.edges[stmt_node.first_edge + lhs_i].child_id
+		if autofree_collect_lhs_reassigns_direct_name(flat, lhs_id, target_name) {
+			return false
+		}
+		if autofree_collect_node_is(flat, lhs_id, .expr_selector)
+			&& autofree_collect_subtree_contains_ident(flat, lhs_id, target_name) {
+			return false
+		}
+		if autofree_collect_node_is(flat, lhs_id, .expr_index)
+			&& autofree_collect_subtree_contains_ident(flat, lhs_id, target_name)
+			&& (op != .assign || !autofree_collect_index_root_is_ident(flat, lhs_id, target_name)) {
+			return false
+		}
+		if op != .assign && autofree_collect_subtree_contains_ident(flat, lhs_id, target_name) {
+			return false
+		}
+	}
+	for rhs_i in lhs_count .. edge_count {
+		rhs_id := flat.edges[stmt_node.first_edge + rhs_i].child_id
+		if autofree_collect_subtree_contains_ident(flat, rhs_id, target_name) {
+			return false
+		}
+		if autofree_collect_subtree_contains_ident(flat, rhs_id, source_name) && op == .decl_assign {
+			return false
+		}
+	}
+	return true
+}
+
+fn autofree_collect_lhs_reassigns_direct_name(flat &ast.FlatAst, lhs_id ast.FlatNodeId, name string) bool {
+	direct_id := autofree_collect_direct_ident_id(flat, lhs_id)
+	if direct_id == ast.invalid_flat_node_id {
+		return false
+	}
+	return flat.string_at(flat.nodes[direct_id].name_id) == name
+}
+
+fn autofree_collect_direct_ident_id(flat &ast.FlatAst, node_id ast.FlatNodeId) ast.FlatNodeId {
+	if autofree_collect_node_is(flat, node_id, .expr_ident)
+		&& autofree_collect_exact_edge_count(flat, node_id) == 0 {
+		return node_id
+	}
+	return ast.invalid_flat_node_id
+}
+
+fn autofree_collect_index_root_is_ident(flat &ast.FlatAst, index_id ast.FlatNodeId, name string) bool {
+	if !autofree_collect_node_is(flat, index_id, .expr_index)
+		|| autofree_collect_exact_edge_count(flat, index_id) != 2 {
+		return false
+	}
+	root_id := flat.edges[flat.nodes[index_id].first_edge].child_id
+	return autofree_collect_lhs_reassigns_direct_name(flat, root_id, name)
+}
+
+fn autofree_collect_subtree_contains_ident(flat &ast.FlatAst, node_id ast.FlatNodeId, name string) bool {
+	if !autofree_collect_node_is_valid(flat, node_id) || name.len == 0 {
+		return false
+	}
+	node := flat.nodes[node_id]
+	if node.kind == .expr_ident && flat.string_at(node.name_id) == name {
+		return true
+	}
+	for i in 0 .. node.edge_count {
+		if !autofree_collect_child_is_valid(flat, node_id, i) {
+			return false
+		}
+		child_id := flat.edges[node.first_edge + i].child_id
+		if autofree_collect_subtree_contains_ident(flat, child_id, name) {
+			return true
+		}
+	}
+	return false
+}
+
+fn autofree_collect_array_container_cleanup_allowed(shape AutofreeResourceShape, source AutofreeTransferEndpoint, supported_fresh_array_source bool) bool {
 	if shape.kind != .array || shape.fail_closed || !shape.needs_autofree() {
 		return false
 	}
-	if !exact_empty_dynamic_array || source.storage != .literal || source.root_storage != .literal
-		|| source.path.len != 0 || source.reason != 'empty dynamic array literal' {
+	if !supported_fresh_array_source || source.storage != .literal
+		|| source.root_storage != .literal || source.path.len != 0 {
 		return false
 	}
-	return shape.target_kind == .no_resource || shape.target_kind == .string_
+	if source.reason == 'empty dynamic array literal' {
+		return shape.target_kind == .no_resource || shape.target_kind == .string_
+	}
+	if source.reason == 'cap-only scalar array literal' {
+		return shape.target_kind == .no_resource
+	}
+	if source.reason == 'len-only scalar array literal' {
+		return shape.target_kind == .no_resource
+	}
+	return false
 }
 
 fn autofree_collect_canonical_empty_string_array_type(lhs_typ Type, rhs_typ Type) ?Type {
@@ -522,21 +1142,20 @@ fn autofree_collect_duplicate_move_proof_names(proofs []AutofreeMoveProofFact) m
 fn autofree_collect_natural_release_candidate_from_move_proof(proof AutofreeMoveProofFact) ?AutofreeNaturalReleaseCandidateFact {
 	source := proof.source_endpoint
 	target := proof.target_endpoint
-	if proof.fn_key.len == 0 || proof.name.len == 0 || proof.kind != .fresh_local_binding {
+	if proof.fn_key.len == 0 || proof.name.len == 0
+		|| !autofree_collect_natural_release_move_kind_is_supported(proof.kind) {
 		return none
 	}
 	if proof.node_id < 0 || proof.pos_id <= 0 || proof.stmt_node_id < 0 || proof.stmt_pos_id <= 0 {
 		return none
 	}
-	if source.storage != .literal || source.root_storage != .literal || source.path.len != 0 {
+	if !autofree_collect_source_endpoint_matches_natural_release_kind(proof.kind, source) {
 		return none
 	}
 	if target.storage != .local || target.root_storage != .local || target.path.len != 0 {
 		return none
 	}
-	if source.root_node_id != source.node_id || source.root_pos_id != source.pos_id
-		|| source.node_id < 0 || source.pos_id <= 0 || source.name.len == 0
-		|| source.root_name != source.name {
+	if !autofree_collect_source_endpoint_ids_match_natural_release_kind(proof.kind, source) {
 		return none
 	}
 	if target.name != proof.name || target.root_name != proof.name
@@ -559,7 +1178,7 @@ fn autofree_collect_natural_release_candidate_from_move_proof(proof AutofreeMove
 		return none
 	}
 	if proof.state != .owned_unique || target.state != .owned_unique
-		|| source.state != .owned_unique {
+		|| !autofree_collect_source_state_matches_natural_release_kind(proof.kind, source.state) {
 		return none
 	}
 	if proof.resource != .array_value || target.resource != .array_value
@@ -567,7 +1186,7 @@ fn autofree_collect_natural_release_candidate_from_move_proof(proof AutofreeMove
 		return none
 	}
 	shape := proof.shape
-	if shape.kind != .array || shape.fail_closed || !shape.needs_autofree() {
+	if !autofree_collect_natural_release_shape_allowed(proof.kind, shape, source, proof.typ) {
 		return none
 	}
 	if !autofree_collect_shapes_match_for_move_proof(shape, source.shape)
@@ -593,6 +1212,73 @@ fn autofree_collect_natural_release_candidate_from_move_proof(proof AutofreeMove
 		release_after_node_id: proof.stmt_node_id
 		release_after_pos_id:  proof.stmt_pos_id
 		reason:                'natural local cleanup candidate'
+	}
+}
+
+fn autofree_collect_natural_release_move_kind_is_supported(kind AutofreeMoveProofKind) bool {
+	return kind == .fresh_local_binding || kind == .local_array_clone_binding
+}
+
+fn autofree_collect_source_endpoint_matches_natural_release_kind(kind AutofreeMoveProofKind, source AutofreeTransferEndpoint) bool {
+	match kind {
+		.fresh_local_binding {
+			return source.storage == .literal && source.root_storage == .literal
+				&& source.path.len == 0 && source.root_node_id == source.node_id
+				&& source.root_pos_id == source.pos_id
+		}
+		.local_array_clone_binding {
+			return source.storage == .parameter && source.root_storage == .parameter
+				&& source.path.len == 0
+		}
+		else {
+			return false
+		}
+	}
+}
+
+fn autofree_collect_source_endpoint_ids_match_natural_release_kind(kind AutofreeMoveProofKind, source AutofreeTransferEndpoint) bool {
+	if source.root_node_id < 0 || source.root_pos_id <= 0 || source.node_id < 0
+		|| source.pos_id <= 0 || source.name.len == 0 || source.root_name != source.name {
+		return false
+	}
+	match kind {
+		.fresh_local_binding {
+			return source.root_node_id == source.node_id && source.root_pos_id == source.pos_id
+		}
+		.local_array_clone_binding {
+			return true
+		}
+		else {
+			return false
+		}
+	}
+}
+
+fn autofree_collect_source_state_matches_natural_release_kind(kind AutofreeMoveProofKind, state AutofreeOwnershipState) bool {
+	match kind {
+		.fresh_local_binding {
+			return state == .owned_unique
+		}
+		.local_array_clone_binding {
+			return state == .ambiguous_no_free
+		}
+		else {
+			return false
+		}
+	}
+}
+
+fn autofree_collect_natural_release_shape_allowed(kind AutofreeMoveProofKind, shape AutofreeResourceShape, source AutofreeTransferEndpoint, typ Type) bool {
+	match kind {
+		.fresh_local_binding {
+			return autofree_collect_array_container_cleanup_allowed(shape, source, true)
+		}
+		.local_array_clone_binding {
+			return autofree_collect_scalar_array_clone_cleanup_allowed(typ, shape)
+		}
+		else {
+			return false
+		}
 	}
 }
 
@@ -678,7 +1364,7 @@ fn autofree_collect_release_plan_from_candidate(candidate AutofreeNaturalRelease
 	source := candidate.source_endpoint
 	target := candidate.endpoint
 	if candidate.fn_key.len == 0 || candidate.name.len == 0
-		|| candidate.move_kind != .fresh_local_binding {
+		|| !autofree_collect_natural_release_move_kind_is_supported(candidate.move_kind) {
 		return none
 	}
 	if proof.fn_key != candidate.fn_key || proof.name != candidate.name
@@ -703,7 +1389,7 @@ fn autofree_collect_release_plan_from_candidate(candidate AutofreeNaturalRelease
 	if candidate.release_after_node_id == target.node_id {
 		return none
 	}
-	if source.storage != .literal || source.root_storage != .literal || source.path.len != 0 {
+	if !autofree_collect_source_endpoint_matches_natural_release_kind(candidate.move_kind, source) {
 		return none
 	}
 	if target.storage != .local || target.root_storage != .local || target.path.len != 0 {
@@ -730,7 +1416,8 @@ fn autofree_collect_release_plan_from_candidate(candidate AutofreeNaturalRelease
 		return none
 	}
 	if candidate.state != .owned_unique || proof.state != .owned_unique
-		|| source.state != .owned_unique || target.state != .owned_unique {
+		|| target.state != .owned_unique
+		|| !autofree_collect_source_state_matches_natural_release_kind(candidate.move_kind, source.state) {
 		return none
 	}
 	if candidate.resource != .array_value || proof.resource != .array_value
@@ -738,7 +1425,8 @@ fn autofree_collect_release_plan_from_candidate(candidate AutofreeNaturalRelease
 		return none
 	}
 	shape := candidate.shape
-	if !autofree_collect_array_container_cleanup_allowed(shape, source, true) {
+	if !autofree_collect_natural_release_shape_allowed(candidate.move_kind, shape, source,
+		candidate.typ) {
 		return none
 	}
 	if !autofree_collect_shapes_match_for_move_proof(shape, proof.shape)
@@ -813,7 +1501,8 @@ fn autofree_collect_release_plan_identity(plan AutofreeReleasePlanFact) string {
 fn autofree_collect_release_preflight_from_plan(plan AutofreeReleasePlanFact) ?AutofreeReleasePreflightFact {
 	source := plan.source_endpoint
 	target := plan.endpoint
-	if plan.fn_key.len == 0 || plan.name.len == 0 || plan.move_kind != .fresh_local_binding {
+	if plan.fn_key.len == 0 || plan.name.len == 0
+		|| !autofree_collect_natural_release_move_kind_is_supported(plan.move_kind) {
 		return none
 	}
 	if plan.plan_kind != .natural_exit || plan.plan_action != .array_container_cleanup
@@ -831,15 +1520,13 @@ fn autofree_collect_release_preflight_from_plan(plan AutofreeReleasePlanFact) ?A
 	if plan.release_after_node_id == target.node_id {
 		return none
 	}
-	if source.storage != .literal || source.root_storage != .literal || source.path.len != 0 {
+	if !autofree_collect_source_endpoint_matches_natural_release_kind(plan.move_kind, source) {
 		return none
 	}
 	if target.storage != .local || target.root_storage != .local || target.path.len != 0 {
 		return none
 	}
-	if source.node_id < 0 || source.pos_id <= 0 || source.root_node_id != source.node_id
-		|| source.root_pos_id != source.pos_id || source.name.len == 0
-		|| source.root_name != source.name {
+	if !autofree_collect_source_endpoint_ids_match_natural_release_kind(plan.move_kind, source) {
 		return none
 	}
 	if target.name != plan.name || target.root_name != plan.name
@@ -859,7 +1546,8 @@ fn autofree_collect_release_preflight_from_plan(plan AutofreeReleasePlanFact) ?A
 		|| source.type_name != canonical_type_name || target.type_name != canonical_type_name {
 		return none
 	}
-	if plan.state != .owned_unique || source.state != .owned_unique || target.state != .owned_unique {
+	if plan.state != .owned_unique || target.state != .owned_unique
+		|| !autofree_collect_source_state_matches_natural_release_kind(plan.move_kind, source.state) {
 		return none
 	}
 	if plan.resource != .array_value || source.resource != .array_value
@@ -867,7 +1555,7 @@ fn autofree_collect_release_preflight_from_plan(plan AutofreeReleasePlanFact) ?A
 		return none
 	}
 	shape := plan.shape
-	if !autofree_collect_array_container_cleanup_allowed(shape, source, true) {
+	if !autofree_collect_natural_release_shape_allowed(plan.move_kind, shape, source, plan.typ) {
 		return none
 	}
 	if !autofree_collect_shapes_match_for_move_proof(shape, source.shape)
@@ -941,8 +1629,8 @@ fn autofree_collect_release_insertion_point_from_preflight(preflight AutofreeRel
 	if preflight.fn_key.len == 0 || preflight.name.len == 0 || preflight.preflight_status != .inert {
 		return none
 	}
-	if preflight.move_kind != .fresh_local_binding || preflight.plan_kind != .natural_exit
-		|| preflight.plan_action != .array_container_cleanup
+	if !autofree_collect_natural_release_move_kind_is_supported(preflight.move_kind)
+		|| preflight.plan_kind != .natural_exit || preflight.plan_action != .array_container_cleanup
 		|| preflight.helper_requirement != .none {
 		return none
 	}
@@ -958,15 +1646,13 @@ fn autofree_collect_release_insertion_point_from_preflight(preflight AutofreeRel
 	if preflight.release_after_node_id == target.node_id {
 		return none
 	}
-	if source.storage != .literal || source.root_storage != .literal || source.path.len != 0 {
+	if !autofree_collect_source_endpoint_matches_natural_release_kind(preflight.move_kind, source) {
 		return none
 	}
 	if target.storage != .local || target.root_storage != .local || target.path.len != 0 {
 		return none
 	}
-	if source.node_id < 0 || source.pos_id <= 0 || source.root_node_id != source.node_id
-		|| source.root_pos_id != source.pos_id || source.name.len == 0
-		|| source.root_name != source.name {
+	if !autofree_collect_source_endpoint_ids_match_natural_release_kind(preflight.move_kind, source) {
 		return none
 	}
 	if target.name != preflight.name || target.root_name != preflight.name
@@ -986,8 +1672,8 @@ fn autofree_collect_release_insertion_point_from_preflight(preflight AutofreeRel
 		|| source.type_name != canonical_type_name || target.type_name != canonical_type_name {
 		return none
 	}
-	if preflight.state != .owned_unique || source.state != .owned_unique
-		|| target.state != .owned_unique {
+	if preflight.state != .owned_unique || target.state != .owned_unique
+		|| !autofree_collect_source_state_matches_natural_release_kind(preflight.move_kind, source.state) {
 		return none
 	}
 	if preflight.resource != .array_value || source.resource != .array_value
@@ -995,7 +1681,8 @@ fn autofree_collect_release_insertion_point_from_preflight(preflight AutofreeRel
 		return none
 	}
 	shape := preflight.shape
-	if !autofree_collect_array_container_cleanup_allowed(shape, source, true) {
+	if !autofree_collect_natural_release_shape_allowed(preflight.move_kind, shape, source,
+		preflight.typ) {
 		return none
 	}
 	if !autofree_collect_shapes_match_for_move_proof(shape, source.shape)
@@ -1324,6 +2011,9 @@ fn (mut e Environment) collect_autofree_return_transfer_from_fn(flat &ast.FlatAs
 	fn_key := autofree_fn_key(module_name, fn_name, '')
 	fresh := e.collect_autofree_fresh_local_from_stmt(flat, fn_key, fn_name, fresh_stmt_id,
 		param_names) or { return }
+	if !autofree_collect_fresh_local_is_empty_dynamic_array(fresh) {
+		return
+	}
 	transfer := e.collect_autofree_return_transfer_from_stmt(flat, fn_key, fn_name, return_stmt_id,
 		fresh) or { return }
 	mut facts := e.autofree_transfers_by_fn_key[fn_key] or { []AutofreeTransferFact{} }
@@ -1444,6 +2134,9 @@ fn (mut e Environment) collect_autofree_global_store_transfer_from_fn(flat &ast.
 	fn_key := autofree_fn_key(module_name, fn_name, '')
 	fresh := e.collect_autofree_fresh_local_from_stmt(flat, fn_key, fn_name, fresh_stmt_id,
 		param_names) or { return }
+	if !autofree_collect_fresh_local_is_empty_dynamic_array(fresh) {
+		return
+	}
 	transfer := e.collect_autofree_global_store_transfer_from_stmt(flat, fn_key, fn_name,
 		store_stmt_id, fresh, fn_scope, param_names) or { return }
 	mut facts := e.autofree_transfers_by_fn_key[fn_key] or { []AutofreeTransferFact{} }
@@ -1586,6 +2279,9 @@ fn (mut e Environment) collect_autofree_field_store_transfer_from_fn(flat &ast.F
 	store_stmt_id := flat.edges[body_node.first_edge + 1].child_id
 	fresh := e.collect_autofree_fresh_local_from_stmt(flat, fn_key, fn_name, fresh_stmt_id,
 		param_names) or { return }
+	if !autofree_collect_fresh_local_is_empty_dynamic_array(fresh) {
+		return
+	}
 	transfer := e.collect_autofree_field_store_transfer_from_stmt(flat, fn_key, fn_name,
 		store_stmt_id, fresh, param_names, param_bindings_by_name) or { return }
 	mut facts := e.autofree_transfers_by_fn_key[fn_key] or { []AutofreeTransferFact{} }
@@ -1755,6 +2451,9 @@ fn (mut e Environment) collect_autofree_map_value_store_transfer_from_fn(flat &a
 	store_stmt_id := flat.edges[body_node.first_edge + 1].child_id
 	fresh := e.collect_autofree_fresh_local_from_stmt(flat, fn_key, fn_name, fresh_stmt_id,
 		param_names) or { return }
+	if !autofree_collect_fresh_local_is_empty_dynamic_array(fresh) {
+		return
+	}
 	transfer := e.collect_autofree_map_value_store_transfer_from_stmt(flat, fn_key, fn_name,
 		store_stmt_id, fresh, param_names, param_bindings_by_name) or { return }
 	mut facts := e.autofree_transfers_by_fn_key[fn_key] or { []AutofreeTransferFact{} }
@@ -1955,6 +2654,9 @@ fn (mut e Environment) collect_autofree_array_element_store_transfer_from_fn(fla
 	store_stmt_id := flat.edges[body_node.first_edge + 1].child_id
 	fresh := e.collect_autofree_fresh_local_from_stmt(flat, fn_key, fn_name, fresh_stmt_id,
 		param_names) or { return }
+	if !autofree_collect_fresh_local_is_empty_dynamic_array(fresh) {
+		return
+	}
 	transfer := e.collect_autofree_array_element_store_transfer_from_stmt(flat, fn_key, fn_name,
 		store_stmt_id, fresh, param_names, param_bindings_by_name) or { return }
 	mut facts := e.autofree_transfers_by_fn_key[fn_key] or { []AutofreeTransferFact{} }
@@ -2146,6 +2848,9 @@ fn (mut e Environment) collect_autofree_array_push_transfer_from_fn(flat &ast.Fl
 	push_stmt_id := flat.edges[body_node.first_edge + 1].child_id
 	fresh := e.collect_autofree_fresh_local_from_stmt(flat, fn_key, fn_name, fresh_stmt_id,
 		param_names) or { return }
+	if !autofree_collect_fresh_local_is_empty_dynamic_array(fresh) {
+		return
+	}
 	transfer := e.collect_autofree_array_push_transfer_from_stmt(flat, fn_key, fn_name,
 		push_stmt_id, fresh, param_names, param_bindings_by_name) or { return }
 	mut facts := e.autofree_transfers_by_fn_key[fn_key] or { []AutofreeTransferFact{} }
@@ -2325,6 +3030,9 @@ fn (mut e Environment) collect_autofree_field_array_push_transfer_from_fn(flat &
 	push_stmt_id := flat.edges[body_node.first_edge + 1].child_id
 	fresh := e.collect_autofree_fresh_local_from_stmt(flat, fn_key, fn_name, fresh_stmt_id,
 		param_names) or { return }
+	if !autofree_collect_fresh_local_is_empty_dynamic_array(fresh) {
+		return
+	}
 	transfer := e.collect_autofree_field_array_push_transfer_from_stmt(flat, fn_key, fn_name,
 		push_stmt_id, fresh, param_names, param_bindings_by_name) or { return }
 	mut facts := e.autofree_transfers_by_fn_key[fn_key] or { []AutofreeTransferFact{} }
@@ -7049,6 +7757,17 @@ fn autofree_collect_param_names(flat &ast.FlatAst, param_ids []ast.FlatNodeId) m
 	return names
 }
 
+fn autofree_collect_param_ids_by_name(flat &ast.FlatAst, param_ids []ast.FlatNodeId) map[string]ast.FlatNodeId {
+	mut ids_by_name := map[string]ast.FlatNodeId{}
+	for param_id in param_ids {
+		name := flat.string_at(flat.nodes[param_id].name_id)
+		if name.len > 0 {
+			ids_by_name[name] = param_id
+		}
+	}
+	return ids_by_name
+}
+
 fn autofree_collect_parameter_bindings_by_name(bindings []AutofreeBindingFact) map[string]AutofreeBindingFact {
 	mut by_name := map[string]AutofreeBindingFact{}
 	for binding in bindings {
@@ -7872,11 +8591,186 @@ fn autofree_collect_fresh_array_lhs_ident_id(flat &ast.FlatAst, lhs_id ast.FlatN
 	return ast.invalid_flat_node_id
 }
 
+fn autofree_collect_fresh_array_lhs_is_mut(flat &ast.FlatAst, lhs_id ast.FlatNodeId) bool {
+	if !autofree_collect_node_is(flat, lhs_id, .expr_modifier)
+		|| autofree_collect_exact_edge_count(flat, lhs_id) != 1 {
+		return false
+	}
+	lhs_node := flat.nodes[lhs_id]
+	if unsafe { token.Token(int(lhs_node.aux)) } != .key_mut
+		|| !autofree_collect_child_is_valid(flat, lhs_id, 0) {
+		return false
+	}
+	inner_id := flat.edges[lhs_node.first_edge].child_id
+	return autofree_collect_node_is(flat, inner_id, .expr_ident)
+		&& autofree_collect_exact_edge_count(flat, inner_id) == 0
+}
+
 fn autofree_collect_empty_dynamic_array_init_is_exact(flat &ast.FlatAst, node_id ast.FlatNodeId, elem_type Type) bool {
 	if autofree_collect_empty_dynamic_array_literal_is_exact(flat, node_id, elem_type) {
 		return true
 	}
 	return autofree_collect_empty_dynamic_array_alloc_call_is_exact(flat, node_id, elem_type)
+}
+
+fn (e Environment) autofree_collect_cap_only_array_init_is_exact(flat &ast.FlatAst, node_id ast.FlatNodeId, elem_type Type, param_names map[string]bool) bool {
+	if e.autofree_collect_cap_only_array_literal_is_exact(flat, node_id, elem_type, param_names) {
+		return true
+	}
+	return e.autofree_collect_cap_only_array_alloc_call_is_exact(flat, node_id, elem_type,
+		param_names)
+}
+
+fn (e Environment) autofree_collect_len_only_array_init_is_exact(flat &ast.FlatAst, node_id ast.FlatNodeId, elem_type Type, param_names map[string]bool) bool {
+	if e.autofree_collect_len_only_array_literal_is_exact(flat, node_id, elem_type, param_names) {
+		return true
+	}
+	return e.autofree_collect_len_only_array_alloc_call_is_exact(flat, node_id, elem_type,
+		param_names)
+}
+
+fn (e Environment) autofree_collect_cap_only_array_literal_is_exact(flat &ast.FlatAst, node_id ast.FlatNodeId, elem_type Type, param_names map[string]bool) bool {
+	if !autofree_collect_node_is(flat, node_id, .expr_array_init)
+		|| autofree_collect_exact_edge_count(flat, node_id) != 5 {
+		return false
+	}
+	type_id := autofree_collect_required_child(flat, node_id, 0, .typ_array)
+	if type_id == ast.invalid_flat_node_id || autofree_collect_exact_edge_count(flat, type_id) != 1
+		|| !autofree_collect_child_is_valid(flat, type_id, 0) {
+		return false
+	}
+	elem_type_id := flat.edges[flat.nodes[type_id].first_edge].child_id
+	if !autofree_collect_type_expr_matches(flat, elem_type_id, elem_type) {
+		return false
+	}
+	if autofree_collect_required_child(flat, node_id, 1, .expr_empty) == ast.invalid_flat_node_id
+		|| autofree_collect_required_child(flat, node_id, 3, .expr_empty) == ast.invalid_flat_node_id
+		|| autofree_collect_required_child(flat, node_id, 4, .expr_empty) == ast.invalid_flat_node_id {
+		return false
+	}
+	cap_id := flat.edges[flat.nodes[node_id].first_edge + 2].child_id
+	return e.autofree_collect_cap_expr_is_direct_int_param(flat, cap_id, param_names)
+}
+
+fn (e Environment) autofree_collect_len_only_array_literal_is_exact(flat &ast.FlatAst, node_id ast.FlatNodeId, elem_type Type, param_names map[string]bool) bool {
+	if !autofree_collect_node_is(flat, node_id, .expr_array_init)
+		|| autofree_collect_exact_edge_count(flat, node_id) != 5 {
+		return false
+	}
+	type_id := autofree_collect_required_child(flat, node_id, 0, .typ_array)
+	if type_id == ast.invalid_flat_node_id || autofree_collect_exact_edge_count(flat, type_id) != 1
+		|| !autofree_collect_child_is_valid(flat, type_id, 0) {
+		return false
+	}
+	elem_type_id := flat.edges[flat.nodes[type_id].first_edge].child_id
+	if !autofree_collect_type_expr_matches(flat, elem_type_id, elem_type) {
+		return false
+	}
+	if autofree_collect_required_child(flat, node_id, 1, .expr_empty) == ast.invalid_flat_node_id
+		|| autofree_collect_required_child(flat, node_id, 2, .expr_empty) == ast.invalid_flat_node_id
+		|| autofree_collect_required_child(flat, node_id, 4, .expr_empty) == ast.invalid_flat_node_id {
+		return false
+	}
+	len_id := flat.edges[flat.nodes[node_id].first_edge + 3].child_id
+	return e.autofree_collect_array_bound_expr_is_direct_int_param(flat, len_id, param_names)
+}
+
+fn (e Environment) autofree_collect_cap_only_array_alloc_call_is_exact(flat &ast.FlatAst, node_id ast.FlatNodeId, elem_type Type, param_names map[string]bool) bool {
+	if !autofree_collect_node_is(flat, node_id, .expr_call)
+		|| autofree_collect_exact_edge_count(flat, node_id) != 5 {
+		return false
+	}
+	callee_id := autofree_collect_required_child(flat, node_id, 0, .expr_ident)
+	if callee_id == ast.invalid_flat_node_id
+		|| autofree_collect_exact_edge_count(flat, callee_id) != 0 {
+		return false
+	}
+	callee_name := flat.string_at(flat.nodes[callee_id].name_id)
+	if callee_name !in ['__new_array_with_default_noscan', 'builtin____new_array_with_default_noscan'] {
+		return false
+	}
+	if !autofree_collect_numeric_zero_child(flat, node_id, 1) {
+		return false
+	}
+	cap_id := flat.edges[flat.nodes[node_id].first_edge + 2].child_id
+	if !e.autofree_collect_cap_expr_is_direct_int_param(flat, cap_id, param_names) {
+		return false
+	}
+	sizeof_id := autofree_collect_required_child(flat, node_id, 3, .expr_keyword_operator)
+	if sizeof_id == ast.invalid_flat_node_id
+		|| autofree_collect_exact_edge_count(flat, sizeof_id) != 1
+		|| unsafe { token.Token(int(flat.nodes[sizeof_id].aux)) } != .key_sizeof
+		|| !autofree_collect_child_is_valid(flat, sizeof_id, 0) {
+		return false
+	}
+	sizeof_type_id := flat.edges[flat.nodes[sizeof_id].first_edge].child_id
+	if !autofree_collect_type_expr_matches(flat, sizeof_type_id, elem_type) {
+		return false
+	}
+	return autofree_collect_empty_array_alloc_init_is_zero(flat, node_id, 4)
+}
+
+fn (e Environment) autofree_collect_len_only_array_alloc_call_is_exact(flat &ast.FlatAst, node_id ast.FlatNodeId, elem_type Type, param_names map[string]bool) bool {
+	if !autofree_collect_node_is(flat, node_id, .expr_call)
+		|| autofree_collect_exact_edge_count(flat, node_id) != 5 {
+		return false
+	}
+	callee_id := autofree_collect_required_child(flat, node_id, 0, .expr_ident)
+	if callee_id == ast.invalid_flat_node_id
+		|| autofree_collect_exact_edge_count(flat, callee_id) != 0 {
+		return false
+	}
+	callee_name := flat.string_at(flat.nodes[callee_id].name_id)
+	if callee_name !in ['__new_array_with_default_noscan', 'builtin____new_array_with_default_noscan'] {
+		return false
+	}
+	len_id := flat.edges[flat.nodes[node_id].first_edge + 1].child_id
+	if !e.autofree_collect_array_bound_expr_is_direct_int_param(flat, len_id, param_names) {
+		return false
+	}
+	if !autofree_collect_numeric_zero_child(flat, node_id, 2) {
+		return false
+	}
+	sizeof_id := autofree_collect_required_child(flat, node_id, 3, .expr_keyword_operator)
+	if sizeof_id == ast.invalid_flat_node_id
+		|| autofree_collect_exact_edge_count(flat, sizeof_id) != 1
+		|| unsafe { token.Token(int(flat.nodes[sizeof_id].aux)) } != .key_sizeof
+		|| !autofree_collect_child_is_valid(flat, sizeof_id, 0) {
+		return false
+	}
+	sizeof_type_id := flat.edges[flat.nodes[sizeof_id].first_edge].child_id
+	if !autofree_collect_type_expr_matches(flat, sizeof_type_id, elem_type) {
+		return false
+	}
+	return autofree_collect_empty_array_alloc_init_is_zero(flat, node_id, 4)
+}
+
+fn (e Environment) autofree_collect_cap_expr_is_direct_int_param(flat &ast.FlatAst, node_id ast.FlatNodeId, param_names map[string]bool) bool {
+	return e.autofree_collect_array_bound_expr_is_direct_int_param(flat, node_id, param_names)
+}
+
+fn (e Environment) autofree_collect_array_bound_expr_is_direct_int_param(flat &ast.FlatAst, node_id ast.FlatNodeId, param_names map[string]bool) bool {
+	if !autofree_collect_node_is_valid(flat, node_id)
+		|| autofree_collect_exact_edge_count(flat, node_id) != 0 {
+		return false
+	}
+	node := flat.nodes[node_id]
+	if node.kind != .expr_ident {
+		return false
+	}
+	bound_name := flat.string_at(node.name_id)
+	if !autofree_collect_name_is_usable(bound_name) || bound_name !in param_names {
+		return false
+	}
+	pos_id := node.pos.id
+	if pos_id <= 0 {
+		return false
+	}
+	bound_typ := e.get_expr_type(pos_id) or { return false }
+	if !type_has_valid_payload(bound_typ) {
+		return false
+	}
+	return bound_typ.is_int_literal() || bound_typ.is_integer()
 }
 
 fn autofree_collect_empty_dynamic_array_literal_is_exact(flat &ast.FlatAst, node_id ast.FlatNodeId, elem_type Type) bool {
@@ -8019,6 +8913,11 @@ fn autofree_collect_fresh_local_endpoint(flat &ast.FlatAst, node_id ast.FlatNode
 }
 
 fn autofree_collect_fresh_literal_endpoint(flat &ast.FlatAst, node_id ast.FlatNodeId, typ Type, shape AutofreeResourceShape) AutofreeTransferEndpoint {
+	return autofree_collect_fresh_literal_endpoint_with_reason(flat, node_id, typ, shape,
+		'empty dynamic array literal')
+}
+
+fn autofree_collect_fresh_literal_endpoint_with_reason(flat &ast.FlatAst, node_id ast.FlatNodeId, typ Type, shape AutofreeResourceShape, reason string) AutofreeTransferEndpoint {
 	pos_id := flat.nodes[node_id].pos.id
 	return AutofreeTransferEndpoint{
 		storage:      .literal
@@ -8035,7 +8934,7 @@ fn autofree_collect_fresh_literal_endpoint(flat &ast.FlatAst, node_id ast.FlatNo
 		resource:     autofree_collect_resource_kind_from_shape(shape)
 		shape:        shape
 		state:        .owned_unique
-		reason:       'empty dynamic array literal'
+		reason:       reason
 	}
 }
 

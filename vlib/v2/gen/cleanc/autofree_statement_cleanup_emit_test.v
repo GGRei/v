@@ -1,9 +1,13 @@
 module cleanc
 
+import os
 import strings
 import v2.ast
+import v2.parser
 import v2.pref as vpref
 import v2.token
+import v2.transformer
+import v2.types
 
 struct AutofreeStatementCleanupEmitTestContextFields {
 mut:
@@ -368,4 +372,427 @@ fn test_autofree_statement_cleanup_emit_clear_resets_cursor_state() {
 	assert g.autofree_cleanup_emit_fn_key == ''
 	assert g.autofree_cleanup_emit_fn_node_id == ast.invalid_flat_node_id
 	assert g.autofree_cleanup_emit_fn_pos_id == 0
+}
+
+struct AutofreeStatementCleanupEmitPipelineFixture {
+mut:
+	flat  ast.FlatAst
+	env   &types.Environment = unsafe { nil }
+	prefs &vpref.Preferences = unsafe { nil }
+}
+
+struct AutofreeStatementCleanupEmitPipelineCursor {
+	file_cursor ast.FileCursor
+	fn_cursor   ast.Cursor
+}
+
+fn autofree_statement_cleanup_emit_test_rule110_style_source() string {
+	return 'module main
+
+fn next_generation(mut gen []int) {
+	mut arr := gen.clone()
+	for i in 0 .. gen.len {
+		arr[i] = gen[i]
+	}
+	gen = arr.clone()
+}
+'
+}
+
+fn autofree_statement_cleanup_emit_test_fresh_local_final_clone_source() string {
+	return 'module main
+
+fn fill_array_from_fresh_local(mut dst []int) {
+	mut arr := []int{}
+	dst = arr.clone()
+}
+'
+}
+
+fn autofree_statement_cleanup_emit_test_cap_only_natural_release_source() string {
+	return 'module main
+
+fn build_array_with_cap(n int) {
+	mut items := []int{cap: n}
+}
+'
+}
+
+fn autofree_statement_cleanup_emit_test_len_only_natural_release_source() string {
+	return 'module main
+
+fn build_array_with_len(n int) {
+	mut items := []int{len: n}
+}
+'
+}
+
+fn autofree_statement_cleanup_emit_test_cap_only_final_clone_source() string {
+	return 'module main
+
+fn fill_array_from_cap_only(n int, mut dst []int) {
+	mut arr := []int{cap: n}
+	dst = arr.clone()
+}
+'
+}
+
+fn autofree_statement_cleanup_emit_test_multi_param_fresh_local_final_clone_source() string {
+	return 'module main
+
+fn fill_array_from_fresh_local_with_extra(x int, mut dst []int) {
+	mut arr := []int{}
+	dst = arr.clone()
+}
+'
+}
+
+fn autofree_statement_cleanup_emit_test_pipeline_fixture(name string, source string) AutofreeStatementCleanupEmitPipelineFixture {
+	tmp_file := os.join_path(os.vtmp_dir(), 'v2_cleanc_autofree_${name}_${os.getpid()}.v')
+	os.write_file(tmp_file, source) or { panic('failed to write temp file') }
+	defer {
+		os.rm(tmp_file) or {}
+	}
+	prefs := &vpref.Preferences{
+		backend:               .cleanc
+		autofree:              true
+		no_parallel:           true
+		no_parallel_transform: true
+	}
+	mut file_set := token.FileSet.new()
+	mut par := parser.Parser.new(prefs)
+	files := par.parse_files([tmp_file], mut file_set)
+	mut env := types.Environment.new()
+	mut checker := types.Checker.new(prefs, file_set, env)
+	checker.check_files(files)
+	flat := ast.flatten_files(files)
+	mut trans := transformer.Transformer.new_with_pref(env, prefs)
+	trans.set_file_set(file_set)
+	transformed_flat := trans.transform_flat_to_flat_direct(&flat, []ast.File{})
+	env.collect_autofree_facts_from_flat(&transformed_flat)
+	return AutofreeStatementCleanupEmitPipelineFixture{
+		flat:  transformed_flat
+		env:   env
+		prefs: prefs
+	}
+}
+
+fn autofree_statement_cleanup_emit_test_rule110_style_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('rule110_style',
+		autofree_statement_cleanup_emit_test_rule110_style_source())
+}
+
+fn autofree_statement_cleanup_emit_test_fresh_local_final_clone_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('fresh_local_final_clone',
+		autofree_statement_cleanup_emit_test_fresh_local_final_clone_source())
+}
+
+fn autofree_statement_cleanup_emit_test_cap_only_natural_release_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('cap_only_natural_release',
+		autofree_statement_cleanup_emit_test_cap_only_natural_release_source())
+}
+
+fn autofree_statement_cleanup_emit_test_len_only_natural_release_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('len_only_natural_release',
+		autofree_statement_cleanup_emit_test_len_only_natural_release_source())
+}
+
+fn autofree_statement_cleanup_emit_test_cap_only_final_clone_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('cap_only_final_clone',
+		autofree_statement_cleanup_emit_test_cap_only_final_clone_source())
+}
+
+fn autofree_statement_cleanup_emit_test_multi_param_fresh_local_final_clone_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('multi_param_fresh_local_final_clone',
+		autofree_statement_cleanup_emit_test_multi_param_fresh_local_final_clone_source())
+}
+
+fn autofree_statement_cleanup_emit_test_find_fn_cursor(flat &ast.FlatAst, fn_name string) ?AutofreeStatementCleanupEmitPipelineCursor {
+	for file_i in 0 .. flat.files.len {
+		file_cursor := flat.file_cursor(file_i)
+		stmts := file_cursor.stmts()
+		for stmt_i in 0 .. stmts.len() {
+			fn_cursor := stmts.at(stmt_i)
+			if fn_cursor.is_valid() && fn_cursor.kind() == .stmt_fn_decl
+				&& fn_cursor.name() == fn_name {
+				return AutofreeStatementCleanupEmitPipelineCursor{
+					file_cursor: file_cursor
+					fn_cursor:   fn_cursor
+				}
+			}
+		}
+	}
+	return none
+}
+
+fn test_autofree_statement_cleanup_emit_rule110_style_clone_cleanup_pipeline_reaches_context() {
+	mut fixture := autofree_statement_cleanup_emit_test_rule110_style_fixture()
+	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat, 'next_generation') or {
+		assert false
+		return
+	}
+	mut g := Gen.new_with_env_pref_and_flat(&fixture.flat, fixture.env, fixture.prefs)
+	fn_key := g.autofree_statement_cleanup_emit_fn_key_from_cursor(cursor.file_cursor,
+		cursor.fn_cursor) or {
+		assert false
+		return
+	}
+	assert fn_key == 'next_generation'
+	points := fixture.env.autofree_release_insertion_points_by_fn_key[fn_key] or {
+		[]types.AutofreeReleaseInsertionPointFact{}
+	}
+	assert points.len == 1
+	assert points[0].name == 'arr'
+	assert points[0].move_kind == .local_array_clone_binding
+	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
+	assert bridge_facts.len == 1
+	anchors := autofree_statement_anchor_facts_from_bridge_facts(bridge_facts)
+	assert anchors.len == 1
+	locations := autofree_statement_location_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, anchors)
+	assert locations.len == 1
+	previews := autofree_statement_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, locations)
+	assert previews.len == 1
+	intents := autofree_statement_intent_facts_from_previews(previews)
+	assert intents.len == 1
+	slots := autofree_statement_emission_slot_facts_from_intents(intents)
+	assert slots.len == 1
+	cleanup_previews := autofree_statement_cleanup_preview_facts_from_slots(slots)
+	assert cleanup_previews.len == 1
+	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, cleanup_previews)
+	assert hook_previews.len == 1
+	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
+	assert contexts.len == 1
+	assert contexts[0].name == 'arr'
+	assert contexts[0].cleanup_text == 'array__free(&arr);'
+}
+
+fn test_autofree_statement_cleanup_emit_multi_param_fresh_local_final_clone_pipeline_reaches_context() {
+	mut fixture :=
+		autofree_statement_cleanup_emit_test_multi_param_fresh_local_final_clone_fixture()
+	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat,
+		'fill_array_from_fresh_local_with_extra') or {
+		assert false
+		return
+	}
+	mut g := Gen.new_with_env_pref_and_flat(&fixture.flat, fixture.env, fixture.prefs)
+	fn_key := g.autofree_statement_cleanup_emit_fn_key_from_cursor(cursor.file_cursor,
+		cursor.fn_cursor) or {
+		assert false
+		return
+	}
+	assert fn_key == 'fill_array_from_fresh_local_with_extra'
+	points := fixture.env.autofree_release_insertion_points_by_fn_key[fn_key] or {
+		[]types.AutofreeReleaseInsertionPointFact{}
+	}
+	assert points.len == 1
+	assert points[0].name == 'arr'
+	assert points[0].move_kind == .fresh_local_binding
+	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
+	assert bridge_facts.len == 1
+	anchors := autofree_statement_anchor_facts_from_bridge_facts(bridge_facts)
+	assert anchors.len == 1
+	locations := autofree_statement_location_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, anchors)
+	assert locations.len == 1
+	previews := autofree_statement_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, locations)
+	assert previews.len == 1
+	intents := autofree_statement_intent_facts_from_previews(previews)
+	assert intents.len == 1
+	slots := autofree_statement_emission_slot_facts_from_intents(intents)
+	assert slots.len == 1
+	cleanup_previews := autofree_statement_cleanup_preview_facts_from_slots(slots)
+	assert cleanup_previews.len == 1
+	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, cleanup_previews)
+	assert hook_previews.len == 1
+	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
+	assert contexts.len == 1
+	assert contexts[0].name == 'arr'
+	assert contexts[0].cleanup_text == 'array__free(&arr);'
+}
+
+fn test_autofree_statement_cleanup_emit_cap_only_natural_release_pipeline_reaches_context() {
+	mut fixture := autofree_statement_cleanup_emit_test_cap_only_natural_release_fixture()
+	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat,
+		'build_array_with_cap') or {
+		assert false
+		return
+	}
+	mut g := Gen.new_with_env_pref_and_flat(&fixture.flat, fixture.env, fixture.prefs)
+	fn_key := g.autofree_statement_cleanup_emit_fn_key_from_cursor(cursor.file_cursor,
+		cursor.fn_cursor) or {
+		assert false
+		return
+	}
+	assert fn_key == 'build_array_with_cap'
+	points := fixture.env.autofree_release_insertion_points_by_fn_key[fn_key] or {
+		[]types.AutofreeReleaseInsertionPointFact{}
+	}
+	assert points.len == 1
+	assert points[0].name == 'items'
+	assert points[0].move_kind == .fresh_local_binding
+	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
+	assert bridge_facts.len == 1
+	anchors := autofree_statement_anchor_facts_from_bridge_facts(bridge_facts)
+	assert anchors.len == 1
+	locations := autofree_statement_location_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, anchors)
+	assert locations.len == 1
+	previews := autofree_statement_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, locations)
+	assert previews.len == 1
+	intents := autofree_statement_intent_facts_from_previews(previews)
+	assert intents.len == 1
+	slots := autofree_statement_emission_slot_facts_from_intents(intents)
+	assert slots.len == 1
+	cleanup_previews := autofree_statement_cleanup_preview_facts_from_slots(slots)
+	assert cleanup_previews.len == 1
+	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, cleanup_previews)
+	assert hook_previews.len == 1
+	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
+	assert contexts.len == 1
+	assert contexts[0].name == 'items'
+	assert contexts[0].cleanup_text == 'array__free(&items);'
+}
+
+fn test_autofree_statement_cleanup_emit_len_only_natural_release_pipeline_reaches_context() {
+	mut fixture := autofree_statement_cleanup_emit_test_len_only_natural_release_fixture()
+	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat,
+		'build_array_with_len') or {
+		assert false
+		return
+	}
+	mut g := Gen.new_with_env_pref_and_flat(&fixture.flat, fixture.env, fixture.prefs)
+	fn_key := g.autofree_statement_cleanup_emit_fn_key_from_cursor(cursor.file_cursor,
+		cursor.fn_cursor) or {
+		assert false
+		return
+	}
+	assert fn_key == 'build_array_with_len'
+	points := fixture.env.autofree_release_insertion_points_by_fn_key[fn_key] or {
+		[]types.AutofreeReleaseInsertionPointFact{}
+	}
+	assert points.len == 1
+	assert points[0].name == 'items'
+	assert points[0].move_kind == .fresh_local_binding
+	assert points[0].source_endpoint.reason == 'len-only scalar array literal'
+	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
+	assert bridge_facts.len == 1
+	anchors := autofree_statement_anchor_facts_from_bridge_facts(bridge_facts)
+	assert anchors.len == 1
+	locations := autofree_statement_location_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, anchors)
+	assert locations.len == 1
+	previews := autofree_statement_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, locations)
+	assert previews.len == 1
+	intents := autofree_statement_intent_facts_from_previews(previews)
+	assert intents.len == 1
+	slots := autofree_statement_emission_slot_facts_from_intents(intents)
+	assert slots.len == 1
+	cleanup_previews := autofree_statement_cleanup_preview_facts_from_slots(slots)
+	assert cleanup_previews.len == 1
+	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, cleanup_previews)
+	assert hook_previews.len == 1
+	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
+	assert contexts.len == 1
+	assert contexts[0].name == 'items'
+	assert contexts[0].cleanup_text == 'array__free(&items);'
+}
+
+fn test_autofree_statement_cleanup_emit_cap_only_final_clone_pipeline_reaches_context() {
+	mut fixture := autofree_statement_cleanup_emit_test_cap_only_final_clone_fixture()
+	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat,
+		'fill_array_from_cap_only') or {
+		assert false
+		return
+	}
+	mut g := Gen.new_with_env_pref_and_flat(&fixture.flat, fixture.env, fixture.prefs)
+	fn_key := g.autofree_statement_cleanup_emit_fn_key_from_cursor(cursor.file_cursor,
+		cursor.fn_cursor) or {
+		assert false
+		return
+	}
+	assert fn_key == 'fill_array_from_cap_only'
+	points := fixture.env.autofree_release_insertion_points_by_fn_key[fn_key] or {
+		[]types.AutofreeReleaseInsertionPointFact{}
+	}
+	assert points.len == 1
+	assert points[0].name == 'arr'
+	assert points[0].move_kind == .fresh_local_binding
+	assert points[0].source_endpoint.reason == 'cap-only scalar array literal'
+	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
+	assert bridge_facts.len == 1
+	anchors := autofree_statement_anchor_facts_from_bridge_facts(bridge_facts)
+	assert anchors.len == 1
+	locations := autofree_statement_location_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, anchors)
+	assert locations.len == 1
+	previews := autofree_statement_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, locations)
+	assert previews.len == 1
+	intents := autofree_statement_intent_facts_from_previews(previews)
+	assert intents.len == 1
+	slots := autofree_statement_emission_slot_facts_from_intents(intents)
+	assert slots.len == 1
+	cleanup_previews := autofree_statement_cleanup_preview_facts_from_slots(slots)
+	assert cleanup_previews.len == 1
+	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, cleanup_previews)
+	assert hook_previews.len == 1
+	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
+	assert contexts.len == 1
+	assert contexts[0].name == 'arr'
+	assert contexts[0].cleanup_text == 'array__free(&arr);'
+}
+
+fn test_autofree_statement_cleanup_emit_fresh_local_final_clone_pipeline_reaches_context() {
+	mut fixture := autofree_statement_cleanup_emit_test_fresh_local_final_clone_fixture()
+	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat,
+		'fill_array_from_fresh_local') or {
+		assert false
+		return
+	}
+	mut g := Gen.new_with_env_pref_and_flat(&fixture.flat, fixture.env, fixture.prefs)
+	fn_key := g.autofree_statement_cleanup_emit_fn_key_from_cursor(cursor.file_cursor,
+		cursor.fn_cursor) or {
+		assert false
+		return
+	}
+	assert fn_key == 'fill_array_from_fresh_local'
+	points := fixture.env.autofree_release_insertion_points_by_fn_key[fn_key] or {
+		[]types.AutofreeReleaseInsertionPointFact{}
+	}
+	assert points.len == 1
+	assert points[0].name == 'arr'
+	assert points[0].move_kind == .fresh_local_binding
+	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
+	assert bridge_facts.len == 1
+	anchors := autofree_statement_anchor_facts_from_bridge_facts(bridge_facts)
+	assert anchors.len == 1
+	locations := autofree_statement_location_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, anchors)
+	assert locations.len == 1
+	previews := autofree_statement_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, locations)
+	assert previews.len == 1
+	intents := autofree_statement_intent_facts_from_previews(previews)
+	assert intents.len == 1
+	slots := autofree_statement_emission_slot_facts_from_intents(intents)
+	assert slots.len == 1
+	cleanup_previews := autofree_statement_cleanup_preview_facts_from_slots(slots)
+	assert cleanup_previews.len == 1
+	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, cleanup_previews)
+	assert hook_previews.len == 1
+	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
+	assert contexts.len == 1
+	assert contexts[0].name == 'arr'
+	assert contexts[0].cleanup_text == 'array__free(&arr);'
 }

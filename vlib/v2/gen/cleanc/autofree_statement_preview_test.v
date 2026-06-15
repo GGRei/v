@@ -108,6 +108,41 @@ fn autofree_statement_preview_test_flat_with_source_prefix_then_items() Autofree
 	}
 }
 
+fn autofree_statement_preview_test_flat_with_later_insert_assignment() AutofreeStatementPreviewTestFlat {
+	mut b := ast.new_flat_builder()
+	first_lhs_id := b.emit_ident_by_name('arr', autofree_statement_preview_test_pos(120))
+	first_rhs_id := autofree_statement_preview_test_array_init(mut b, 130)
+	first_stmt_id := b.emit_assign_stmt_by_ids(.decl_assign, [first_lhs_id], [
+		first_rhs_id,
+	], autofree_statement_preview_test_pos(210))
+	block_id := b.emit_block_stmt_by_ids([])
+	next_lhs_id := b.emit_ident_by_name('gen', autofree_statement_preview_test_pos(320))
+	next_rhs_id := b.emit_ident_by_name('arr', autofree_statement_preview_test_pos(330))
+	next_stmt_id := b.emit_assign_stmt_by_ids(.assign, [next_lhs_id], [
+		next_rhs_id,
+	], autofree_statement_preview_test_pos(410))
+	body_id := b.emit_aux_list_from_ids([first_stmt_id, block_id, next_stmt_id])
+	fn_type_id := b.emit_type(ast.Type(ast.FnType{}))
+	attrs_id := b.emit_attribute_list([])
+	fn_id := b.emit_fn_decl_by_ids('next_generation', false, false, false, .v,
+		autofree_statement_preview_test_pos(100), ast.invalid_flat_node_id, fn_type_id, attrs_id,
+		body_id)
+	b.append_file_with_stmt_ids(ast.File{
+		name: 'autofree_statement_preview_later_insert_test.v'
+		mod:  'main'
+	}, [fn_id])
+	return AutofreeStatementPreviewTestFlat{
+		flat:         b.take_flat()
+		fn_id:        fn_id
+		stmt_id:      first_stmt_id
+		lhs_id:       first_lhs_id
+		rhs_id:       first_rhs_id
+		next_stmt_id: next_stmt_id
+		next_lhs_id:  next_lhs_id
+		next_rhs_id:  next_rhs_id
+	}
+}
+
 fn autofree_statement_preview_test_flat_with_return() AutofreeStatementPreviewTestFlat {
 	mut b := ast.new_flat_builder()
 	rhs_id := autofree_statement_preview_test_array_init(mut b, 130)
@@ -245,6 +280,26 @@ fn autofree_statement_preview_test_next_items_location(fixture AutofreeStatement
 	}
 }
 
+fn autofree_statement_preview_test_later_insert_location(fixture AutofreeStatementPreviewTestFlat) AutofreeCleanCStatementLocationFact {
+	return AutofreeCleanCStatementLocationFact{
+		fn_key:               'next_generation'
+		fn_name:              'next_generation'
+		name:                 'arr'
+		location_status:      .inert
+		fn_node_id:           fixture.fn_id
+		fn_pos_id:            100
+		stmt_node_id:         fixture.next_stmt_id
+		stmt_pos_id:          410
+		stmt_index:           2
+		lhs_index:            0
+		target_node_id:       fixture.lhs_id
+		target_pos_id:        120
+		insert_after_node_id: fixture.next_stmt_id
+		insert_after_pos_id:  410
+		reason:               'statement location accepted'
+	}
+}
+
 fn autofree_statement_preview_test_second_file_location(fixture AutofreeStatementPreviewTestFlat) AutofreeCleanCStatementLocationFact {
 	return AutofreeCleanCStatementLocationFact{
 		fn_key:               'make_items'
@@ -317,6 +372,25 @@ fn test_autofree_statement_preview_accepts_last_statement_after_prefix() {
 	assert preview.target_pos_id == 220
 	assert preview.insert_after_node_id == fixture.next_stmt_id
 	assert preview.insert_after_pos_id == 310
+}
+
+fn test_autofree_statement_preview_accepts_later_final_assignment_after_target_decl() {
+	fixture := autofree_statement_preview_test_flat_with_later_insert_assignment()
+	location := autofree_statement_preview_test_later_insert_location(fixture)
+	previews := autofree_statement_preview_test_previews(&fixture, [location])
+	assert previews.len == 1
+	preview := previews[0]
+	assert preview.fn_key == 'next_generation'
+	assert preview.fn_name == 'next_generation'
+	assert preview.name == 'arr'
+	assert preview.stmt_index == 2
+	assert preview.target_node_id == fixture.lhs_id
+	assert preview.target_pos_id == 120
+	assert preview.stmt_node_id == fixture.next_stmt_id
+	assert preview.stmt_pos_id == 410
+	assert preview.insert_after_node_id == fixture.next_stmt_id
+	assert preview.insert_after_pos_id == 410
+	assert preview.lhs_index == 0
 }
 
 fn test_autofree_statement_preview_rejects_return_statement() {

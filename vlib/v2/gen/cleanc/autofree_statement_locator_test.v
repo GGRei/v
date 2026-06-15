@@ -165,6 +165,80 @@ fn autofree_statement_locator_test_flat_with_prefix_then_items() AutofreeStateme
 	}
 }
 
+fn autofree_statement_locator_test_flat_with_later_insert_assignment() AutofreeStatementLocatorTestFlat {
+	mut b := ast.new_flat_builder()
+	first_lhs_id := b.emit_ident_by_name('arr', autofree_statement_locator_test_pos(120))
+	first_rhs_id := autofree_statement_locator_test_array_init(mut b, 130)
+	first_stmt_id := b.emit_assign_stmt_by_ids(.decl_assign, [first_lhs_id], [
+		first_rhs_id,
+	], autofree_statement_locator_test_pos(210))
+	block_id := b.emit_block_stmt_by_ids([])
+	next_lhs_id := b.emit_ident_by_name('gen', autofree_statement_locator_test_pos(320))
+	next_rhs_id := b.emit_ident_by_name('arr', autofree_statement_locator_test_pos(330))
+	next_stmt_id := b.emit_assign_stmt_by_ids(.assign, [next_lhs_id], [
+		next_rhs_id,
+	], autofree_statement_locator_test_pos(410))
+	body_id := b.emit_aux_list_from_ids([first_stmt_id, block_id, next_stmt_id])
+	fn_type_id := b.emit_type(ast.Type(ast.FnType{}))
+	attrs_id := b.emit_attribute_list([])
+	fn_id := b.emit_fn_decl_by_ids('next_generation', false, false, false, .v,
+		autofree_statement_locator_test_pos(100), ast.invalid_flat_node_id, fn_type_id, attrs_id,
+		body_id)
+	b.append_file_with_stmt_ids(ast.File{
+		name: 'autofree_statement_locator_later_insert_test.v'
+		mod:  'main'
+	}, [fn_id])
+	return AutofreeStatementLocatorTestFlat{
+		flat:          b.take_flat()
+		fn_id:         fn_id
+		first_stmt_id: first_stmt_id
+		first_lhs_id:  first_lhs_id
+		first_rhs_id:  first_rhs_id
+		next_stmt_id:  next_stmt_id
+		next_lhs_id:   next_lhs_id
+		next_rhs_id:   next_rhs_id
+	}
+}
+
+fn autofree_statement_locator_test_flat_with_duplicate_later_insert_assignment() AutofreeStatementLocatorTestFlat {
+	mut b := ast.new_flat_builder()
+	first_lhs_id := b.emit_ident_by_name('arr', autofree_statement_locator_test_pos(120))
+	first_rhs_id := autofree_statement_locator_test_array_init(mut b, 130)
+	first_stmt_id := b.emit_assign_stmt_by_ids(.decl_assign, [first_lhs_id], [
+		first_rhs_id,
+	], autofree_statement_locator_test_pos(210))
+	duplicate_lhs_id := b.emit_ident_by_name('arr', autofree_statement_locator_test_pos(220))
+	duplicate_rhs_id := autofree_statement_locator_test_array_init(mut b, 230)
+	duplicate_stmt_id := b.emit_assign_stmt_by_ids(.decl_assign, [duplicate_lhs_id], [
+		duplicate_rhs_id,
+	], autofree_statement_locator_test_pos(310))
+	next_lhs_id := b.emit_ident_by_name('gen', autofree_statement_locator_test_pos(320))
+	next_rhs_id := b.emit_ident_by_name('arr', autofree_statement_locator_test_pos(330))
+	next_stmt_id := b.emit_assign_stmt_by_ids(.assign, [next_lhs_id], [
+		next_rhs_id,
+	], autofree_statement_locator_test_pos(410))
+	body_id := b.emit_aux_list_from_ids([first_stmt_id, duplicate_stmt_id, next_stmt_id])
+	fn_type_id := b.emit_type(ast.Type(ast.FnType{}))
+	attrs_id := b.emit_attribute_list([])
+	fn_id := b.emit_fn_decl_by_ids('next_generation', false, false, false, .v,
+		autofree_statement_locator_test_pos(100), ast.invalid_flat_node_id, fn_type_id, attrs_id,
+		body_id)
+	b.append_file_with_stmt_ids(ast.File{
+		name: 'autofree_statement_locator_duplicate_later_insert_test.v'
+		mod:  'main'
+	}, [fn_id])
+	return AutofreeStatementLocatorTestFlat{
+		flat:          b.take_flat()
+		fn_id:         fn_id
+		first_stmt_id: first_stmt_id
+		first_lhs_id:  first_lhs_id
+		first_rhs_id:  first_rhs_id
+		next_stmt_id:  next_stmt_id
+		next_lhs_id:   next_lhs_id
+		next_rhs_id:   next_rhs_id
+	}
+}
+
 fn autofree_statement_locator_test_flat_with_two_files() AutofreeStatementLocatorTestFlat {
 	mut b := ast.new_flat_builder()
 	first_file_lhs_id := b.emit_ident_by_name('items', autofree_statement_locator_test_pos(120))
@@ -298,6 +372,20 @@ fn autofree_statement_locator_test_next_anchor(fixture &AutofreeStatementLocator
 	}
 }
 
+fn autofree_statement_locator_test_later_insert_anchor(fixture &AutofreeStatementLocatorTestFlat) AutofreeCleanCStatementAnchorFact {
+	return AutofreeCleanCStatementAnchorFact{
+		fn_key:               'next_generation'
+		fn_name:              'next_generation'
+		name:                 'arr'
+		anchor_status:        .inert
+		target_node_id:       fixture.first_lhs_id
+		target_pos_id:        120
+		insert_after_node_id: fixture.next_stmt_id
+		insert_after_pos_id:  410
+		reason:               'anchor accepted'
+	}
+}
+
 fn autofree_statement_locator_test_fn_cursor(fixture &AutofreeStatementLocatorTestFlat) ast.Cursor {
 	return ast.Cursor{
 		flat: &fixture.flat
@@ -387,6 +475,73 @@ fn test_autofree_statement_locator_accepts_last_statement_after_prefix() {
 	assert location.target_pos_id == 220
 	assert location.insert_after_node_id == fixture.next_stmt_id
 	assert location.insert_after_pos_id == 310
+}
+
+fn test_autofree_statement_locator_accepts_later_final_assignment_after_target_decl() {
+	fixture := autofree_statement_locator_test_flat_with_later_insert_assignment()
+	anchor := autofree_statement_locator_test_later_insert_anchor(&fixture)
+	file_cursor := fixture.flat.file_cursor(0)
+	fn_cursor := autofree_statement_locator_test_fn_cursor(&fixture)
+	locations := autofree_statement_location_facts_from_file_cursor(file_cursor, fn_cursor, [
+		anchor,
+	])
+	assert locations.len == 1
+	location := locations[0]
+	assert location.fn_key == 'next_generation'
+	assert location.fn_name == 'next_generation'
+	assert location.name == 'arr'
+	assert location.stmt_index == 2
+	assert location.target_node_id == fixture.first_lhs_id
+	assert location.target_pos_id == 120
+	assert location.stmt_node_id == fixture.next_stmt_id
+	assert location.stmt_pos_id == 410
+	assert location.insert_after_node_id == fixture.next_stmt_id
+	assert location.insert_after_pos_id == 410
+	assert location.lhs_index == 0
+}
+
+fn test_autofree_statement_locator_rejects_later_final_assignment_wrong_insert_after_node_id() {
+	fixture := autofree_statement_locator_test_flat_with_later_insert_assignment()
+	anchor := AutofreeCleanCStatementAnchorFact{
+		...autofree_statement_locator_test_later_insert_anchor(&fixture)
+		insert_after_node_id: ast.FlatNodeId(9002)
+	}
+	autofree_statement_locator_test_assert_no_location(&fixture, [anchor])
+}
+
+fn test_autofree_statement_locator_rejects_later_final_assignment_wrong_target_node_id() {
+	fixture := autofree_statement_locator_test_flat_with_later_insert_assignment()
+	anchor := AutofreeCleanCStatementAnchorFact{
+		...autofree_statement_locator_test_later_insert_anchor(&fixture)
+		target_node_id: ast.FlatNodeId(9001)
+	}
+	autofree_statement_locator_test_assert_no_location(&fixture, [anchor])
+}
+
+fn test_autofree_statement_locator_rejects_later_final_assignment_duplicate_target_decl() {
+	fixture := autofree_statement_locator_test_flat_with_duplicate_later_insert_assignment()
+	anchor := autofree_statement_locator_test_later_insert_anchor(&fixture)
+	autofree_statement_locator_test_assert_no_location(&fixture, [anchor])
+}
+
+fn test_autofree_statement_locator_rejects_later_insert_assignment_without_target_decl() {
+	fixture := autofree_statement_locator_test_flat_with_later_insert_assignment()
+	anchor := AutofreeCleanCStatementAnchorFact{
+		...autofree_statement_locator_test_later_insert_anchor(&fixture)
+		target_node_id: fixture.first_rhs_id
+		target_pos_id:  130
+	}
+	autofree_statement_locator_test_assert_no_location(&fixture, [anchor])
+}
+
+fn test_autofree_statement_locator_rejects_later_decl_insert_for_prior_target() {
+	fixture := autofree_statement_locator_test_flat_with_two_assigns()
+	anchor := AutofreeCleanCStatementAnchorFact{
+		...autofree_statement_locator_test_anchor(&fixture)
+		insert_after_node_id: fixture.next_stmt_id
+		insert_after_pos_id:  310
+	}
+	autofree_statement_locator_test_assert_no_location(&fixture, [anchor])
 }
 
 fn test_autofree_statement_locator_rejects_rhs_target() {

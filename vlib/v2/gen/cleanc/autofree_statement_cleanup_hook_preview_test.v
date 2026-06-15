@@ -112,6 +112,44 @@ fn autofree_statement_cleanup_hook_preview_test_flat_with_source_prefix_then_ite
 	}
 }
 
+fn autofree_statement_cleanup_hook_preview_test_flat_with_later_insert_assignment() AutofreeStatementCleanupHookPreviewTestFlat {
+	mut b := ast.new_flat_builder()
+	first_lhs_id := b.emit_ident_by_name('arr',
+		autofree_statement_cleanup_hook_preview_test_pos(120))
+	first_rhs_id := autofree_statement_cleanup_hook_preview_test_array_init(mut b, 130)
+	first_stmt_id := b.emit_assign_stmt_by_ids(.decl_assign, [first_lhs_id], [
+		first_rhs_id,
+	], autofree_statement_cleanup_hook_preview_test_pos(210))
+	block_id := b.emit_block_stmt_by_ids([])
+	next_lhs_id := b.emit_ident_by_name('gen',
+		autofree_statement_cleanup_hook_preview_test_pos(320))
+	next_rhs_id := b.emit_ident_by_name('arr',
+		autofree_statement_cleanup_hook_preview_test_pos(330))
+	next_stmt_id := b.emit_assign_stmt_by_ids(.assign, [next_lhs_id], [
+		next_rhs_id,
+	], autofree_statement_cleanup_hook_preview_test_pos(410))
+	body_id := b.emit_aux_list_from_ids([first_stmt_id, block_id, next_stmt_id])
+	fn_type_id := b.emit_type(ast.Type(ast.FnType{}))
+	attrs_id := b.emit_attribute_list([])
+	fn_id := b.emit_fn_decl_by_ids('next_generation', false, false, false, .v,
+		autofree_statement_cleanup_hook_preview_test_pos(100), ast.invalid_flat_node_id,
+		fn_type_id, attrs_id, body_id)
+	b.append_file_with_stmt_ids(ast.File{
+		name: 'autofree_statement_cleanup_hook_preview_later_insert_test.v'
+		mod:  'main'
+	}, [fn_id])
+	return AutofreeStatementCleanupHookPreviewTestFlat{
+		flat:         b.take_flat()
+		fn_id:        fn_id
+		stmt_id:      first_stmt_id
+		lhs_id:       first_lhs_id
+		rhs_id:       first_rhs_id
+		next_stmt_id: next_stmt_id
+		next_lhs_id:  next_lhs_id
+		next_rhs_id:  next_rhs_id
+	}
+}
+
 fn autofree_statement_cleanup_hook_preview_test_flat_with_modifier_assign(kind token.Token, extra_child bool) AutofreeStatementCleanupHookPreviewTestFlat {
 	mut b := ast.new_flat_builder()
 	lhs_id := b.emit_ident_by_name('items', autofree_statement_cleanup_hook_preview_test_pos(120))
@@ -316,6 +354,30 @@ fn autofree_statement_cleanup_hook_preview_test_next_items_preview(fixture Autof
 	}
 }
 
+fn autofree_statement_cleanup_hook_preview_test_later_insert_preview(fixture AutofreeStatementCleanupHookPreviewTestFlat) AutofreeCleanCStatementCleanupPreviewFact {
+	return AutofreeCleanCStatementCleanupPreviewFact{
+		fn_key:               'next_generation'
+		fn_name:              'next_generation'
+		name:                 'arr'
+		cleanup_status:       .inert
+		cleanup_kind:         .array_after_statement
+		fn_node_id:           fixture.fn_id
+		fn_pos_id:            100
+		target_node_id:       fixture.lhs_id
+		target_pos_id:        120
+		stmt_node_id:         fixture.next_stmt_id
+		stmt_pos_id:          410
+		insert_after_node_id: fixture.next_stmt_id
+		insert_after_pos_id:  410
+		stmt_index:           2
+		lhs_index:            0
+		target_c_name:        c_local_name('arr')
+		cleanup_symbol:       'array__free'
+		cleanup_text:         'array__free(&arr);'
+		reason:               'statement cleanup preview accepted'
+	}
+}
+
 fn autofree_statement_cleanup_hook_preview_test_previews(fixture &AutofreeStatementCleanupHookPreviewTestFlat,
 	previews []AutofreeCleanCStatementCleanupPreviewFact) []AutofreeCleanCStatementCleanupHookPreviewFact {
 	file_cursor := fixture.flat.file_cursor(0)
@@ -384,6 +446,39 @@ fn test_autofree_statement_cleanup_hook_preview_accepts_last_statement_after_pre
 	assert !hook_preview.cleanup_text.contains('copy')
 	assert !hook_preview.cleanup_text.contains('source')
 	assert !hook_preview.cleanup_text.contains('string__free')
+}
+
+fn test_autofree_statement_cleanup_hook_preview_accepts_later_final_assignment_after_target_decl() {
+	fixture := autofree_statement_cleanup_hook_preview_test_flat_with_later_insert_assignment()
+	preview := autofree_statement_cleanup_hook_preview_test_later_insert_preview(fixture)
+	hook_previews := autofree_statement_cleanup_hook_preview_test_previews(&fixture, [
+		preview,
+	])
+	assert hook_previews.len == 1
+	hook_preview := hook_previews[0]
+	assert hook_preview.fn_key == 'next_generation'
+	assert hook_preview.fn_name == 'next_generation'
+	assert hook_preview.name == 'arr'
+	assert hook_preview.stmt_index == 2
+	assert hook_preview.target_node_id == fixture.lhs_id
+	assert hook_preview.target_pos_id == 120
+	assert hook_preview.stmt_node_id == fixture.next_stmt_id
+	assert hook_preview.stmt_pos_id == 410
+	assert hook_preview.insert_after_node_id == fixture.next_stmt_id
+	assert hook_preview.insert_after_pos_id == 410
+	assert hook_preview.cleanup_symbol == 'array__free'
+	assert hook_preview.cleanup_text == 'array__free(&arr);'
+	assert !hook_preview.cleanup_text.contains('gen')
+}
+
+fn test_autofree_statement_cleanup_hook_preview_rejects_later_insert_without_target_decl() {
+	fixture := autofree_statement_cleanup_hook_preview_test_flat_with_later_insert_assignment()
+	preview := AutofreeCleanCStatementCleanupPreviewFact{
+		...autofree_statement_cleanup_hook_preview_test_later_insert_preview(fixture)
+		target_node_id: fixture.rhs_id
+		target_pos_id:  130
+	}
+	autofree_statement_cleanup_hook_preview_test_assert_no_hook(&fixture, [preview])
 }
 
 fn test_autofree_statement_cleanup_hook_preview_accepts_mut_ident_lhs() {
