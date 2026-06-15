@@ -365,6 +365,20 @@ fn autofree_bridge_test_other_valid_insertion_point() types.AutofreeReleaseInser
 	}
 }
 
+fn autofree_bridge_test_other_named_valid_insertion_point() types.AutofreeReleaseInsertionPointFact {
+	point := autofree_bridge_test_other_valid_insertion_point()
+	target := types.AutofreeTransferEndpoint{
+		...point.endpoint
+		root_name: 'more_items'
+		name:      'more_items'
+	}
+	return types.AutofreeReleaseInsertionPointFact{
+		...point
+		name:     'more_items'
+		endpoint: target
+	}
+}
+
 struct AutofreeBridgeRejectCase {
 	name  string
 	point types.AutofreeReleaseInsertionPointFact
@@ -804,6 +818,15 @@ fn test_autofree_bridge_rejects_same_name_with_different_ids() {
 	point := autofree_bridge_test_valid_insertion_point()
 	other_point := autofree_bridge_test_other_valid_insertion_point()
 	autofree_bridge_test_assert_no_bridge([point, other_point])
+}
+
+fn test_autofree_bridge_rejects_valid_plus_invalid_group() {
+	point := autofree_bridge_test_valid_insertion_point()
+	invalid := types.AutofreeReleaseInsertionPointFact{
+		...autofree_bridge_test_other_named_valid_insertion_point()
+		insertion_status: .unknown
+	}
+	autofree_bridge_test_assert_no_bridge([point, invalid])
 }
 
 fn test_autofree_bridge_rejects_status_kind_and_plan_cases() {
@@ -1330,7 +1353,16 @@ fn test_autofree_statement_adapter_rejects_duplicate_target() {
 	autofree_statement_adapter_test_assert_no_anchor([bridge_fact, duplicate])
 }
 
-fn test_autofree_statement_adapter_rejects_duplicate_slot() {
+fn test_autofree_statement_adapter_rejects_valid_plus_invalid_group() {
+	bridge_fact := autofree_statement_adapter_test_bridge_fact()
+	invalid := AutofreeCleanCBridgeFact{
+		...autofree_statement_adapter_test_bridge_fact_same_fn_other_slot()
+		bridge_status: .unknown
+	}
+	autofree_statement_adapter_test_assert_no_anchor([bridge_fact, invalid])
+}
+
+fn test_autofree_statement_adapter_accepts_distinct_targets_with_shared_slot() {
 	bridge_fact := autofree_statement_adapter_test_bridge_fact()
 	duplicate := AutofreeCleanCBridgeFact{
 		...autofree_statement_adapter_test_bridge_fact()
@@ -1338,7 +1370,12 @@ fn test_autofree_statement_adapter_rejects_duplicate_slot() {
 		target_node_id: 8
 		target_pos_id:  121
 	}
-	autofree_statement_adapter_test_assert_no_anchor([bridge_fact, duplicate])
+	anchors := autofree_statement_anchor_facts_from_bridge_facts([bridge_fact, duplicate])
+	assert anchors.len == 2
+	assert anchors[0].name == 'items'
+	assert anchors[1].name == 'more_items'
+	assert anchors[0].insert_after_node_id == anchors[1].insert_after_node_id
+	assert anchors[0].insert_after_pos_id == anchors[1].insert_after_pos_id
 }
 
 // autofree_statement_locator_test
@@ -1946,6 +1983,27 @@ fn test_autofree_statement_locator_rejects_duplicate_insert_slot() {
 		insert_after_pos_id:  210
 	}
 	autofree_statement_locator_test_assert_no_location(&fixture, [anchor, duplicate])
+}
+
+fn test_autofree_statement_locator_rejects_valid_plus_invalid_group() {
+	fixture := autofree_statement_locator_test_flat_with_two_assigns()
+	anchor := autofree_statement_locator_test_anchor(&fixture)
+	invalid := AutofreeCleanCStatementAnchorFact{
+		...autofree_statement_locator_test_next_anchor(&fixture)
+		anchor_status: .unknown
+	}
+	autofree_statement_locator_test_assert_no_location(&fixture, [anchor, invalid])
+}
+
+fn test_autofree_statement_locator_rejects_mixed_function_group() {
+	fixture := autofree_statement_locator_test_flat_with_two_assigns()
+	anchor := autofree_statement_locator_test_anchor(&fixture)
+	mixed := AutofreeCleanCStatementAnchorFact{
+		...autofree_statement_locator_test_next_anchor(&fixture)
+		fn_key:  'other_fn'
+		fn_name: 'other_fn'
+	}
+	autofree_statement_locator_test_assert_no_location(&fixture, [anchor, mixed])
 }
 
 fn test_autofree_statement_locator_rejects_method_function() {
@@ -2723,6 +2781,33 @@ fn test_autofree_statement_preview_rejects_duplicate_statement_position() {
 	autofree_statement_preview_test_assert_no_preview(&fixture, [location, duplicate])
 }
 
+fn test_autofree_statement_preview_rejects_valid_plus_invalid_group() {
+	fixture := autofree_statement_preview_test_flat_with_assigns(['items', 'more_items'], [
+		.decl_assign,
+		.decl_assign,
+	])
+	location := autofree_statement_preview_test_location(fixture)
+	invalid := AutofreeCleanCStatementLocationFact{
+		...autofree_statement_preview_test_next_location(fixture)
+		location_status: .unknown
+	}
+	autofree_statement_preview_test_assert_no_preview(&fixture, [location, invalid])
+}
+
+fn test_autofree_statement_preview_rejects_mixed_function_group() {
+	fixture := autofree_statement_preview_test_flat_with_assigns(['items', 'more_items'], [
+		.decl_assign,
+		.decl_assign,
+	])
+	location := autofree_statement_preview_test_location(fixture)
+	mixed := AutofreeCleanCStatementLocationFact{
+		...autofree_statement_preview_test_next_location(fixture)
+		fn_key:  'other_fn'
+		fn_name: 'other_fn'
+	}
+	autofree_statement_preview_test_assert_no_preview(&fixture, [location, mixed])
+}
+
 // autofree_statement_intent_test
 
 fn autofree_statement_intent_test_preview() AutofreeCleanCStatementPreviewFact {
@@ -2776,6 +2861,23 @@ fn test_autofree_statement_intent_accepts_single_preview() {
 	assert intent.stmt_index == preview.stmt_index
 	assert intent.lhs_index == preview.lhs_index
 	assert intent.reason.len > 0
+}
+
+fn test_autofree_statement_intent_accepts_distinct_preview_list() {
+	first := AutofreeCleanCStatementPreviewFact{
+		...autofree_statement_intent_test_preview()
+		name: 'first'
+	}
+	second := AutofreeCleanCStatementPreviewFact{
+		...autofree_statement_intent_test_preview()
+		name:           'second'
+		target_node_id: ast.FlatNodeId(40)
+		target_pos_id:  220
+	}
+	intents := autofree_statement_intent_facts_from_previews([first, second])
+	assert intents.len == 2
+	assert intents[0].name == 'first'
+	assert intents[1].name == 'second'
 }
 
 fn test_autofree_statement_intent_rejects_empty_preview_list() {
@@ -2939,6 +3041,23 @@ fn test_autofree_statement_emission_slot_accepts_single_intent() {
 	assert slot.stmt_index == intent.stmt_index
 	assert slot.lhs_index == intent.lhs_index
 	assert slot.reason.len > 0
+}
+
+fn test_autofree_statement_emission_slot_accepts_distinct_intent_list() {
+	first := AutofreeCleanCStatementIntentFact{
+		...autofree_statement_emission_slot_test_intent()
+		name: 'first'
+	}
+	second := AutofreeCleanCStatementIntentFact{
+		...autofree_statement_emission_slot_test_intent()
+		name:           'second'
+		target_node_id: ast.FlatNodeId(40)
+		target_pos_id:  220
+	}
+	slots := autofree_statement_emission_slot_facts_from_intents([first, second])
+	assert slots.len == 2
+	assert slots[0].name == 'first'
+	assert slots[1].name == 'second'
 }
 
 fn test_autofree_statement_emission_slot_rejects_empty_intent_list() {
@@ -3136,6 +3255,23 @@ fn test_autofree_statement_cleanup_preview_escapes_array_name() {
 	assert previews.len == 1
 	assert previews[0].target_c_name == '_v_array'
 	assert previews[0].cleanup_text == 'array__free(&_v_array);'
+}
+
+fn test_autofree_statement_cleanup_preview_accepts_distinct_slot_list() {
+	first := AutofreeCleanCStatementEmissionSlotFact{
+		...autofree_statement_cleanup_preview_test_slot()
+		name: 'first'
+	}
+	second := AutofreeCleanCStatementEmissionSlotFact{
+		...autofree_statement_cleanup_preview_test_slot()
+		name:           'second'
+		target_node_id: ast.FlatNodeId(40)
+		target_pos_id:  220
+	}
+	previews := autofree_statement_cleanup_preview_facts_from_slots([first, second])
+	assert previews.len == 2
+	assert previews[0].cleanup_text == 'array__free(&first);'
+	assert previews[1].cleanup_text == 'array__free(&second);'
 }
 
 fn test_autofree_statement_cleanup_preview_rejects_empty_slot_list() {
@@ -3382,6 +3518,49 @@ fn autofree_statement_cleanup_hook_preview_test_flat_with_later_insert_assignmen
 		next_stmt_id: next_stmt_id
 		next_lhs_id:  next_lhs_id
 		next_rhs_id:  next_rhs_id
+	}
+}
+
+fn autofree_statement_cleanup_hook_preview_test_flat_with_two_targets_and_literal_final() AutofreeStatementCleanupHookPreviewTestFlat {
+	mut b := ast.new_flat_builder()
+	first_lhs_id := b.emit_ident_by_name('first',
+		autofree_statement_cleanup_hook_preview_test_pos(120))
+	first_rhs_id := autofree_statement_cleanup_hook_preview_test_array_init(mut b, 130)
+	first_stmt_id := b.emit_assign_stmt_by_ids(.decl_assign, [first_lhs_id], [
+		first_rhs_id,
+	], autofree_statement_cleanup_hook_preview_test_pos(210))
+	second_lhs_id := b.emit_ident_by_name('second',
+		autofree_statement_cleanup_hook_preview_test_pos(220))
+	second_rhs_id := autofree_statement_cleanup_hook_preview_test_array_init(mut b, 230)
+	second_stmt_id := b.emit_assign_stmt_by_ids(.decl_assign, [second_lhs_id], [
+		second_rhs_id,
+	], autofree_statement_cleanup_hook_preview_test_pos(310))
+	final_lhs_id := b.emit_ident_by_name('sink',
+		autofree_statement_cleanup_hook_preview_test_pos(320))
+	final_rhs_id := b.emit_basic_literal_by_value(.number, '1',
+		autofree_statement_cleanup_hook_preview_test_pos(330))
+	final_stmt_id := b.emit_assign_stmt_by_ids(.decl_assign, [final_lhs_id], [
+		final_rhs_id,
+	], autofree_statement_cleanup_hook_preview_test_pos(410))
+	body_id := b.emit_aux_list_from_ids([first_stmt_id, second_stmt_id, final_stmt_id])
+	fn_type_id := b.emit_type(ast.Type(ast.FnType{}))
+	attrs_id := b.emit_attribute_list([])
+	fn_id := b.emit_fn_decl_by_ids('make_items', false, false, false, .v,
+		autofree_statement_cleanup_hook_preview_test_pos(100), ast.invalid_flat_node_id,
+		fn_type_id, attrs_id, body_id)
+	b.append_file_with_stmt_ids(ast.File{
+		name: 'autofree_statement_cleanup_hook_preview_literal_final_test.v'
+		mod:  'main'
+	}, [fn_id])
+	return AutofreeStatementCleanupHookPreviewTestFlat{
+		flat:         b.take_flat()
+		fn_id:        fn_id
+		stmt_id:      first_stmt_id
+		lhs_id:       first_lhs_id
+		rhs_id:       first_rhs_id
+		next_stmt_id: final_stmt_id
+		next_lhs_id:  second_lhs_id
+		next_rhs_id:  second_rhs_id
 	}
 }
 
@@ -3658,6 +3837,127 @@ fn test_autofree_statement_cleanup_hook_preview_accepts_valid_preview() {
 	assert hook_preview.cleanup_symbol == preview.cleanup_symbol
 	assert hook_preview.cleanup_text == preview.cleanup_text
 	assert hook_preview.reason.len > 0
+}
+
+fn test_autofree_statement_cleanup_hook_preview_accepts_distinct_same_slot_previews() {
+	fixture := autofree_statement_cleanup_hook_preview_test_flat_with_assigns([
+		'first',
+		'second',
+	], [
+		.decl_assign,
+		.decl_assign,
+	])
+	first := AutofreeCleanCStatementCleanupPreviewFact{
+		...autofree_statement_cleanup_hook_preview_test_preview_with_name(fixture, 'first', 'first')
+		stmt_node_id:         fixture.next_stmt_id
+		stmt_pos_id:          310
+		insert_after_node_id: fixture.next_stmt_id
+		insert_after_pos_id:  310
+		stmt_index:           1
+	}
+	second := AutofreeCleanCStatementCleanupPreviewFact{
+		...autofree_statement_cleanup_hook_preview_test_preview_with_name(fixture, 'second',
+			'second')
+		target_node_id:       fixture.next_lhs_id
+		target_pos_id:        220
+		stmt_node_id:         fixture.next_stmt_id
+		stmt_pos_id:          310
+		insert_after_node_id: fixture.next_stmt_id
+		insert_after_pos_id:  310
+		stmt_index:           1
+	}
+	hook_previews := autofree_statement_cleanup_hook_preview_test_previews(&fixture, [
+		first,
+		second,
+	])
+	assert hook_previews.len == 2
+	assert hook_previews[0].cleanup_text == 'array__free(&first);'
+	assert hook_previews[1].cleanup_text == 'array__free(&second);'
+}
+
+fn test_autofree_statement_cleanup_hook_preview_rejects_valid_plus_invalid_group() {
+	fixture := autofree_statement_cleanup_hook_preview_test_flat_with_assigns([
+		'first',
+		'second',
+	], [
+		.decl_assign,
+		.decl_assign,
+	])
+	valid := AutofreeCleanCStatementCleanupPreviewFact{
+		...autofree_statement_cleanup_hook_preview_test_preview_with_name(fixture, 'second',
+			'second')
+		target_node_id:       fixture.next_lhs_id
+		target_pos_id:        220
+		stmt_node_id:         fixture.next_stmt_id
+		stmt_pos_id:          310
+		insert_after_node_id: fixture.next_stmt_id
+		insert_after_pos_id:  310
+		stmt_index:           1
+	}
+	invalid := AutofreeCleanCStatementCleanupPreviewFact{
+		...autofree_statement_cleanup_hook_preview_test_preview(fixture)
+		name:          'first'
+		target_c_name: 'first'
+		cleanup_text:  'array__free(&first);'
+	}
+	autofree_statement_cleanup_hook_preview_test_assert_no_hook(&fixture, [valid, invalid])
+}
+
+fn test_autofree_statement_cleanup_hook_preview_rejects_mixed_function_group() {
+	fixture := autofree_statement_cleanup_hook_preview_test_flat_with_assigns([
+		'first',
+		'second',
+	], [
+		.decl_assign,
+		.decl_assign,
+	])
+	valid := AutofreeCleanCStatementCleanupPreviewFact{
+		...autofree_statement_cleanup_hook_preview_test_preview_with_name(fixture, 'second',
+			'second')
+		target_node_id:       fixture.next_lhs_id
+		target_pos_id:        220
+		stmt_node_id:         fixture.next_stmt_id
+		stmt_pos_id:          310
+		insert_after_node_id: fixture.next_stmt_id
+		insert_after_pos_id:  310
+		stmt_index:           1
+	}
+	mixed := AutofreeCleanCStatementCleanupPreviewFact{
+		...valid
+		name:           'second'
+		fn_key:         'other_fn'
+		fn_name:        'other_fn'
+		target_node_id: fixture.next_lhs_id
+		target_pos_id:  220
+		target_c_name:  'second'
+		cleanup_text:   'array__free(&second);'
+	}
+	autofree_statement_cleanup_hook_preview_test_assert_no_hook(&fixture, [valid, mixed])
+}
+
+fn test_autofree_statement_cleanup_hook_preview_rejects_group_literal_final_assignment() {
+	fixture :=
+		autofree_statement_cleanup_hook_preview_test_flat_with_two_targets_and_literal_final()
+	first := AutofreeCleanCStatementCleanupPreviewFact{
+		...autofree_statement_cleanup_hook_preview_test_preview_with_name(fixture, 'first', 'first')
+		stmt_node_id:         fixture.next_stmt_id
+		stmt_pos_id:          410
+		insert_after_node_id: fixture.next_stmt_id
+		insert_after_pos_id:  410
+		stmt_index:           2
+	}
+	second := AutofreeCleanCStatementCleanupPreviewFact{
+		...autofree_statement_cleanup_hook_preview_test_preview_with_name(fixture, 'second',
+			'second')
+		target_node_id:       fixture.next_lhs_id
+		target_pos_id:        220
+		stmt_node_id:         fixture.next_stmt_id
+		stmt_pos_id:          410
+		insert_after_node_id: fixture.next_stmt_id
+		insert_after_pos_id:  410
+		stmt_index:           2
+	}
+	autofree_statement_cleanup_hook_preview_test_assert_no_hook(&fixture, [first, second])
 }
 
 fn test_autofree_statement_cleanup_hook_preview_accepts_last_statement_after_prefix() {
@@ -4268,6 +4568,88 @@ fn test_autofree_statement_cleanup_emit_context_key_is_stable() {
 	assert first[0].context_key.len > 0
 }
 
+fn test_autofree_statement_cleanup_emit_context_accepts_distinct_same_slot_previews_in_reverse_order() {
+	mut first_fields := autofree_statement_cleanup_emit_context_test_hook_preview_fields()
+	first_fields.name = 'first'
+	first_fields.target_c_name = 'first'
+	first_fields.cleanup_text = 'array__free(&first);'
+	mut second_fields := autofree_statement_cleanup_emit_context_test_hook_preview_fields()
+	second_fields.name = 'second'
+	second_fields.target_node_id = ast.FlatNodeId(40)
+	second_fields.target_pos_id = 220
+	second_fields.target_c_name = 'second'
+	second_fields.cleanup_text = 'array__free(&second);'
+	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews([
+		autofree_statement_cleanup_emit_context_test_hook_preview_from_fields(first_fields),
+		autofree_statement_cleanup_emit_context_test_hook_preview_from_fields(second_fields),
+	])
+	assert contexts.len == 2
+	assert contexts[0].name == 'second'
+	assert contexts[0].cleanup_text == 'array__free(&second);'
+	assert contexts[1].name == 'first'
+	assert contexts[1].cleanup_text == 'array__free(&first);'
+}
+
+fn test_autofree_statement_cleanup_emit_context_rejects_valid_plus_invalid_group() {
+	valid := autofree_statement_cleanup_emit_context_test_hook_preview()
+	mut invalid_fields := autofree_statement_cleanup_emit_context_test_hook_preview_fields()
+	invalid_fields.name = 'second'
+	invalid_fields.target_node_id = ast.FlatNodeId(40)
+	invalid_fields.target_pos_id = 220
+	invalid_fields.target_c_name = 'second'
+	invalid_fields.cleanup_text = 'array__free(&second);'
+	invalid_fields.hook_status = .unknown
+	invalid := autofree_statement_cleanup_emit_context_test_hook_preview_from_fields(invalid_fields)
+	autofree_statement_cleanup_emit_context_test_assert_no_context([valid, invalid])
+}
+
+fn test_autofree_statement_cleanup_emit_context_rejects_mixed_function_group() {
+	valid := autofree_statement_cleanup_emit_context_test_hook_preview()
+	mut mixed_fields := autofree_statement_cleanup_emit_context_test_hook_preview_fields()
+	mixed_fields.fn_key = 'other_fn'
+	mixed_fields.fn_name = 'other_fn'
+	mixed_fields.name = 'second'
+	mixed_fields.target_node_id = ast.FlatNodeId(40)
+	mixed_fields.target_pos_id = 220
+	mixed_fields.target_c_name = 'second'
+	mixed_fields.cleanup_text = 'array__free(&second);'
+	mixed := autofree_statement_cleanup_emit_context_test_hook_preview_from_fields(mixed_fields)
+	autofree_statement_cleanup_emit_context_test_assert_no_context([valid, mixed])
+}
+
+fn test_autofree_statement_cleanup_emit_context_rejects_mixed_slot_group() {
+	valid := autofree_statement_cleanup_emit_context_test_hook_preview()
+	mut mixed_fields := autofree_statement_cleanup_emit_context_test_hook_preview_fields()
+	mixed_fields.name = 'second'
+	mixed_fields.target_node_id = ast.FlatNodeId(40)
+	mixed_fields.target_pos_id = 220
+	mixed_fields.stmt_node_id = ast.FlatNodeId(50)
+	mixed_fields.stmt_pos_id = 310
+	mixed_fields.insert_after_node_id = ast.FlatNodeId(50)
+	mixed_fields.insert_after_pos_id = 310
+	mixed_fields.target_c_name = 'second'
+	mixed_fields.cleanup_text = 'array__free(&second);'
+	mixed := autofree_statement_cleanup_emit_context_test_hook_preview_from_fields(mixed_fields)
+	autofree_statement_cleanup_emit_context_test_assert_no_context([valid, mixed])
+}
+
+fn test_autofree_statement_cleanup_emit_context_rejects_duplicate_cleanup_text_group() {
+	mut first_fields := autofree_statement_cleanup_emit_context_test_hook_preview_fields()
+	first_fields.name = '@return'
+	first_fields.target_c_name = '_return'
+	first_fields.cleanup_text = 'array__free(&_return);'
+	mut second_fields := autofree_statement_cleanup_emit_context_test_hook_preview_fields()
+	second_fields.name = '_return'
+	second_fields.target_node_id = ast.FlatNodeId(40)
+	second_fields.target_pos_id = 220
+	second_fields.target_c_name = '_return'
+	second_fields.cleanup_text = 'array__free(&_return);'
+	autofree_statement_cleanup_emit_context_test_assert_no_context([
+		autofree_statement_cleanup_emit_context_test_hook_preview_from_fields(first_fields),
+		autofree_statement_cleanup_emit_context_test_hook_preview_from_fields(second_fields),
+	])
+}
+
 fn test_autofree_statement_cleanup_emit_context_rejects_empty_input() {
 	autofree_statement_cleanup_emit_context_test_assert_no_context([])
 }
@@ -4554,7 +4936,7 @@ fn autofree_statement_cleanup_emit_test_cross_gen() Gen {
 
 fn autofree_statement_cleanup_emit_test_install_context(mut g Gen, context AutofreeCleanCStatementCleanupEmitContextFact,
 	prepared bool) {
-	g.autofree_cleanup_emit_context = context
+	g.autofree_cleanup_emit_contexts = [context]
 	g.has_autofree_cleanup_emit_context = true
 	g.autofree_cleanup_emit_context_consumed = false
 	g.autofree_cleanup_emit_context_prepared = prepared
@@ -4562,6 +4944,19 @@ fn autofree_statement_cleanup_emit_test_install_context(mut g Gen, context Autof
 		g.autofree_cleanup_emit_fn_key = context.fn_key
 		g.autofree_cleanup_emit_fn_node_id = context.fn_node_id
 		g.autofree_cleanup_emit_fn_pos_id = context.fn_pos_id
+	}
+}
+
+fn autofree_statement_cleanup_emit_test_install_contexts(mut g Gen, contexts []AutofreeCleanCStatementCleanupEmitContextFact,
+	prepared bool) {
+	g.autofree_cleanup_emit_contexts = contexts
+	g.has_autofree_cleanup_emit_context = contexts.len > 0
+	g.autofree_cleanup_emit_context_consumed = false
+	g.autofree_cleanup_emit_context_prepared = prepared
+	if prepared && contexts.len > 0 {
+		g.autofree_cleanup_emit_fn_key = contexts[0].fn_key
+		g.autofree_cleanup_emit_fn_node_id = contexts[0].fn_node_id
+		g.autofree_cleanup_emit_fn_pos_id = contexts[0].fn_pos_id
 	}
 }
 
@@ -4574,6 +4969,54 @@ fn test_autofree_statement_cleanup_emit_writes_valid_context_once() {
 	g.autofree_emit_statement_cleanup_context('make_items', &node)
 	assert g.sb.str() == 'array__free(&items);\n'
 	assert g.autofree_cleanup_emit_context_consumed
+}
+
+fn test_autofree_statement_cleanup_emit_writes_context_list_in_reverse_order_once() {
+	mut g := autofree_statement_cleanup_emit_test_gen(true)
+	mut first_fields := autofree_statement_cleanup_emit_test_context_fields()
+	first_fields.name = 'first'
+	first_fields.target_c_name = 'first'
+	first_fields.cleanup_text = 'array__free(&first);'
+	first_fields.context_key = 'make_items:10:100:20:120:30:210:first'
+	mut second_fields := autofree_statement_cleanup_emit_test_context_fields()
+	second_fields.name = 'second'
+	second_fields.target_node_id = ast.FlatNodeId(40)
+	second_fields.target_pos_id = 220
+	second_fields.target_c_name = 'second'
+	second_fields.cleanup_text = 'array__free(&second);'
+	second_fields.context_key = 'make_items:10:100:40:220:30:210:second'
+	contexts := autofree_statement_cleanup_emit_contexts_reverse_lexical([
+		autofree_statement_cleanup_emit_test_context_from_fields(first_fields),
+		autofree_statement_cleanup_emit_test_context_from_fields(second_fields),
+	])
+	node := autofree_statement_cleanup_emit_test_fn_decl()
+	autofree_statement_cleanup_emit_test_install_contexts(mut g, contexts, true)
+	g.autofree_emit_statement_cleanup_context('make_items', &node)
+	g.autofree_emit_statement_cleanup_context('make_items', &node)
+	assert g.sb.str() == 'array__free(&second);\narray__free(&first);\n'
+	assert g.autofree_cleanup_emit_context_consumed
+}
+
+fn test_autofree_statement_cleanup_emit_rejects_invalid_context_group_without_singleton_emit() {
+	mut g := autofree_statement_cleanup_emit_test_gen(true)
+	first := autofree_statement_cleanup_emit_test_context()
+	mut second_fields := autofree_statement_cleanup_emit_test_context_fields()
+	second_fields.name = 'second'
+	second_fields.target_node_id = ast.FlatNodeId(40)
+	second_fields.target_pos_id = 220
+	second_fields.stmt_node_id = ast.FlatNodeId(50)
+	second_fields.stmt_pos_id = 310
+	second_fields.insert_after_node_id = ast.FlatNodeId(50)
+	second_fields.insert_after_pos_id = 310
+	second_fields.target_c_name = 'second'
+	second_fields.cleanup_text = 'array__free(&second);'
+	second_fields.context_key = 'make_items:10:100:40:220:50:310:second'
+	second := autofree_statement_cleanup_emit_test_context_from_fields(second_fields)
+	node := autofree_statement_cleanup_emit_test_fn_decl()
+	autofree_statement_cleanup_emit_test_install_contexts(mut g, [first, second], true)
+	g.autofree_emit_statement_cleanup_context('make_items', &node)
+	assert g.sb.str() == ''
+	assert !g.autofree_cleanup_emit_context_consumed
 }
 
 fn test_autofree_statement_cleanup_emit_writes_last_statement_items_context_once() {
@@ -4789,6 +5232,7 @@ fn test_autofree_statement_cleanup_emit_clear_resets_cursor_state() {
 	g.autofree_cleanup_emit_context_consumed = true
 	g.autofree_clear_statement_cleanup_emit_context()
 	assert !g.has_autofree_cleanup_emit_context
+	assert g.autofree_cleanup_emit_contexts.len == 0
 	assert !g.autofree_cleanup_emit_context_consumed
 	assert !g.autofree_cleanup_emit_context_prepared
 	assert g.autofree_cleanup_emit_fn_key == ''
@@ -4845,6 +5289,40 @@ fn autofree_statement_cleanup_emit_test_len_only_natural_release_source() string
 
 fn build_array_with_len(n int) {
 	mut items := []int{len: n}
+}
+'
+}
+
+fn autofree_statement_cleanup_emit_test_two_array_natural_release_source() string {
+	return 'module main
+
+fn build_two_empty_arrays() {
+	mut first := []int{}
+	mut second := []int{}
+	sink := first.len + second.len
+}
+
+fn build_two_cap_arrays(n int) {
+	mut first := []int{cap: n}
+	mut second := []int{cap: n}
+	sink := first.len + second.len + n
+}
+
+fn build_two_len_arrays(n int) {
+	mut first := []int{len: n}
+	mut second := []int{len: n}
+	sink := first.len + second.len + n
+}
+'
+}
+
+fn autofree_statement_cleanup_emit_test_two_array_literal_final_source() string {
+	return 'module main
+
+fn build_two_empty_arrays() {
+	mut first := []int{}
+	mut second := []int{}
+	sink := 1
 }
 '
 }
@@ -4927,6 +5405,16 @@ fn autofree_statement_cleanup_emit_test_cap_only_natural_release_fixture() Autof
 fn autofree_statement_cleanup_emit_test_len_only_natural_release_fixture() AutofreeStatementCleanupEmitPipelineFixture {
 	return autofree_statement_cleanup_emit_test_pipeline_fixture('len_only_natural_release',
 		autofree_statement_cleanup_emit_test_len_only_natural_release_source())
+}
+
+fn autofree_statement_cleanup_emit_test_two_array_natural_release_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('two_array_natural_release',
+		autofree_statement_cleanup_emit_test_two_array_natural_release_source())
+}
+
+fn autofree_statement_cleanup_emit_test_two_array_literal_final_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('two_array_literal_final',
+		autofree_statement_cleanup_emit_test_two_array_literal_final_source())
 }
 
 fn autofree_statement_cleanup_emit_test_len_only_final_clone_fixture() AutofreeStatementCleanupEmitPipelineFixture {
@@ -5141,6 +5629,96 @@ fn test_autofree_statement_cleanup_emit_len_only_natural_release_pipeline_reache
 	assert contexts.len == 1
 	assert contexts[0].name == 'items'
 	assert contexts[0].cleanup_text == 'array__free(&items);'
+}
+
+fn autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_context(fixture &AutofreeStatementCleanupEmitPipelineFixture, fn_name string, reason string) {
+	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat, fn_name) or {
+		assert false
+		return
+	}
+	mut g := Gen.new_with_env_pref_and_flat(&fixture.flat, fixture.env, fixture.prefs)
+	fn_key := g.autofree_statement_cleanup_emit_fn_key_from_cursor(cursor.file_cursor,
+		cursor.fn_cursor) or {
+		assert false
+		return
+	}
+	assert fn_key == fn_name
+	points := fixture.env.autofree_release_insertion_points_by_fn_key[fn_key] or {
+		[]types.AutofreeReleaseInsertionPointFact{}
+	}
+	assert points.len == 2
+	assert points[0].name == 'first'
+	assert points[1].name == 'second'
+	assert points[0].source_endpoint.reason == reason
+	assert points[1].source_endpoint.reason == reason
+	assert points[0].insert_after_node_id == points[1].insert_after_node_id
+	assert points[0].insert_after_pos_id == points[1].insert_after_pos_id
+	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
+	assert bridge_facts.len == 2
+	anchors := autofree_statement_anchor_facts_from_bridge_facts(bridge_facts)
+	assert anchors.len == 2
+	locations := autofree_statement_location_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, anchors)
+	assert locations.len == 2
+	previews := autofree_statement_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, locations)
+	assert previews.len == 2
+	intents := autofree_statement_intent_facts_from_previews(previews)
+	assert intents.len == 2
+	slots := autofree_statement_emission_slot_facts_from_intents(intents)
+	assert slots.len == 2
+	cleanup_previews := autofree_statement_cleanup_preview_facts_from_slots(slots)
+	assert cleanup_previews.len == 2
+	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, cleanup_previews)
+	assert hook_previews.len == 2
+	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
+	assert contexts.len == 2
+	assert contexts[0].name == 'second'
+	assert contexts[0].cleanup_text == 'array__free(&second);'
+	assert contexts[1].name == 'first'
+	assert contexts[1].cleanup_text == 'array__free(&first);'
+}
+
+fn test_autofree_statement_cleanup_emit_two_array_natural_release_pipeline_reaches_context() {
+	fixture := autofree_statement_cleanup_emit_test_two_array_natural_release_fixture()
+	autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_context(&fixture,
+		'build_two_empty_arrays', 'empty dynamic array literal')
+	autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_context(&fixture,
+		'build_two_cap_arrays', 'cap-only scalar array literal')
+	autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_context(&fixture,
+		'build_two_len_arrays', 'len-only scalar array literal')
+}
+
+fn test_autofree_statement_cleanup_emit_two_array_literal_final_pipeline_rejects_group_location() {
+	fixture := autofree_statement_cleanup_emit_test_two_array_literal_final_fixture()
+	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat,
+		'build_two_empty_arrays') or {
+		assert false
+		return
+	}
+	mut g := Gen.new_with_env_pref_and_flat(&fixture.flat, fixture.env, fixture.prefs)
+	fn_key := g.autofree_statement_cleanup_emit_fn_key_from_cursor(cursor.file_cursor,
+		cursor.fn_cursor) or {
+		assert false
+		return
+	}
+	assert fn_key == 'build_two_empty_arrays'
+	points := fixture.env.autofree_release_insertion_points_by_fn_key[fn_key] or {
+		[]types.AutofreeReleaseInsertionPointFact{}
+	}
+	assert points.len == 2
+	assert points[0].name == 'first'
+	assert points[1].name == 'second'
+	assert points[0].insert_after_node_id == points[1].insert_after_node_id
+	assert points[0].insert_after_pos_id == points[1].insert_after_pos_id
+	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
+	assert bridge_facts.len == 2
+	anchors := autofree_statement_anchor_facts_from_bridge_facts(bridge_facts)
+	assert anchors.len == 2
+	locations := autofree_statement_location_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, anchors)
+	assert locations.len == 0
 }
 
 fn test_autofree_statement_cleanup_emit_len_only_final_clone_pipeline_reaches_context() {

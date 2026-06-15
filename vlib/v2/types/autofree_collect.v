@@ -130,9 +130,26 @@ fn (mut e Environment) collect_autofree_fresh_locals_from_fn(flat &ast.FlatAst, 
 		return
 	}
 	body_node := flat.nodes[body_id]
+	fn_key := autofree_fn_key(module_name, fn_name, '')
+	if body_count == 2 || body_count == 3 {
+		first_stmt_id := flat.edges[body_node.first_edge].child_id
+		if autofree_collect_fresh_array_decl_lhs_rhs_schema_is_exact(flat, first_stmt_id) {
+			second_stmt_id := flat.edges[body_node.first_edge + 1].child_id
+			mut shared_stmt_id := second_stmt_id
+			if body_count == 3 {
+				shared_stmt_id = flat.edges[body_node.first_edge + 2].child_id
+			}
+			facts := e.collect_autofree_two_fresh_locals_from_stmts(flat, fn_key, fn_name,
+				first_stmt_id, second_stmt_id, shared_stmt_id, param_names) or { return }
+			e.autofree_fresh_locals_by_fn_key[fn_key] = facts
+			if !e.collect_autofree_two_fresh_shared_release_candidates(flat, facts, shared_stmt_id) {
+				e.autofree_fresh_locals_by_fn_key.delete(fn_key)
+			}
+			return
+		}
+	}
 	last_stmt_index := body_count - 1
 	stmt_id := flat.edges[body_node.first_edge + last_stmt_index].child_id
-	fn_key := autofree_fn_key(module_name, fn_name, '')
 	fact := e.collect_autofree_fresh_local_from_stmt(flat, fn_key, fn_name, stmt_id, param_names) or {
 		return
 	}
@@ -143,6 +160,326 @@ fn (mut e Environment) collect_autofree_fresh_locals_from_fn(flat &ast.FlatAst, 
 	mut facts := e.autofree_fresh_locals_by_fn_key[fn_key] or { []AutofreeFreshLocalFact{} }
 	facts << fact
 	e.autofree_fresh_locals_by_fn_key[fn_key] = facts
+}
+
+fn (mut e Environment) collect_autofree_two_fresh_locals_from_stmts(flat &ast.FlatAst, fn_key string, fn_name string, first_stmt_id ast.FlatNodeId, second_stmt_id ast.FlatNodeId, shared_stmt_id ast.FlatNodeId, param_names map[string]bool) ?[]AutofreeFreshLocalFact {
+	first := e.collect_autofree_fresh_local_from_stmt(flat, fn_key, fn_name, first_stmt_id,
+		param_names) or { return none }
+	second := e.collect_autofree_fresh_local_from_stmt(flat, fn_key, fn_name, second_stmt_id,
+		param_names) or { return none }
+	if !autofree_collect_two_fresh_locals_are_supported(first, second) {
+		return none
+	}
+	if shared_stmt_id != second_stmt_id
+		&& !e.autofree_collect_two_fresh_final_inert_stmt_is_safe(flat, shared_stmt_id, first.name, second.name, param_names) {
+		return none
+	}
+	return [first, second]
+}
+
+fn (mut e Environment) collect_autofree_two_fresh_shared_release_candidates(flat &ast.FlatAst, fresh_locals []AutofreeFreshLocalFact, shared_stmt_id ast.FlatNodeId) bool {
+	if fresh_locals.len != 2 || !autofree_collect_node_is_valid(flat, shared_stmt_id) {
+		return false
+	}
+	first := fresh_locals[0]
+	second := fresh_locals[1]
+	if !autofree_collect_two_fresh_locals_are_supported(first, second) {
+		return false
+	}
+	shared_stmt_pos_id := flat.nodes[shared_stmt_id].pos.id
+	if shared_stmt_pos_id <= 0 || shared_stmt_pos_id < second.stmt_pos_id {
+		return false
+	}
+	mut proofs := []AutofreeMoveProofFact{cap: 2}
+	mut candidates := []AutofreeNaturalReleaseCandidateFact{cap: 2}
+	for fresh in fresh_locals {
+		proof := autofree_collect_move_proof_from_fresh_local(fresh) or { return false }
+		candidate := autofree_collect_natural_release_candidate_from_move_proof_at_release(proof,
+			shared_stmt_id, shared_stmt_pos_id) or { return false }
+		proofs << proof
+		candidates << candidate
+	}
+	e.autofree_move_proofs_by_fn_key[first.fn_key] = proofs
+	e.autofree_natural_release_candidates_by_fn_key[first.fn_key] = candidates
+	return true
+}
+
+fn autofree_collect_natural_release_candidate_from_move_proof_at_release(proof AutofreeMoveProofFact, release_after_node_id ast.FlatNodeId, release_after_pos_id int) ?AutofreeNaturalReleaseCandidateFact {
+	candidate := autofree_collect_natural_release_candidate_from_move_proof(proof) or {
+		return none
+	}
+	if release_after_node_id < 0 || release_after_pos_id <= 0
+		|| release_after_pos_id < proof.stmt_pos_id {
+		return none
+	}
+	return AutofreeNaturalReleaseCandidateFact{
+		fn_key:                candidate.fn_key
+		fn_name:               candidate.fn_name
+		name:                  candidate.name
+		move_kind:             candidate.move_kind
+		source_endpoint:       candidate.source_endpoint
+		endpoint:              candidate.endpoint
+		state:                 candidate.state
+		resource:              candidate.resource
+		shape:                 candidate.shape
+		typ:                   candidate.typ
+		type_name:             candidate.type_name
+		node_id:               candidate.node_id
+		pos_id:                candidate.pos_id
+		proof_node_id:         candidate.proof_node_id
+		proof_pos_id:          candidate.proof_pos_id
+		release_after_node_id: release_after_node_id
+		release_after_pos_id:  release_after_pos_id
+		reason:                'shared natural local cleanup candidate'
+	}
+}
+
+fn (mut e Environment) autofree_collect_two_fresh_final_inert_stmt_is_safe(flat &ast.FlatAst, stmt_id ast.FlatNodeId, first_name string, second_name string, param_names map[string]bool) bool {
+	return
+		e.autofree_collect_two_fresh_scalar_inert_stmt_is_safe(flat, stmt_id, first_name, second_name, param_names)
+		|| e.autofree_collect_two_fresh_final_len_stmt_is_safe(flat, stmt_id, first_name, second_name, param_names)
+}
+
+fn (mut e Environment) autofree_collect_two_fresh_scalar_inert_stmt_is_safe(flat &ast.FlatAst, stmt_id ast.FlatNodeId, first_name string, second_name string, param_names map[string]bool) bool {
+	if !autofree_collect_node_is(flat, stmt_id, .stmt_assign)
+		|| !autofree_collect_name_is_usable(first_name)
+		|| !autofree_collect_name_is_usable(second_name) || first_name == second_name {
+		return false
+	}
+	stmt_node := flat.nodes[stmt_id]
+	op := unsafe { token.Token(int(stmt_node.aux)) }
+	if op != .decl_assign && op != .assign {
+		return false
+	}
+	if stmt_node.extra != 1 || autofree_collect_exact_edge_count(flat, stmt_id) != 2 {
+		return false
+	}
+	raw_lhs_id := flat.edges[stmt_node.first_edge].child_id
+	rhs_id := flat.edges[stmt_node.first_edge + 1].child_id
+	lhs_id := autofree_collect_two_fresh_final_scalar_lhs_id(flat, raw_lhs_id)
+	if !autofree_collect_node_is(flat, lhs_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, lhs_id) != 0 {
+		return false
+	}
+	lhs_name := flat.string_at(flat.nodes[lhs_id].name_id)
+	if !autofree_collect_name_is_usable(lhs_name) || lhs_name == first_name
+		|| lhs_name == second_name || lhs_name in param_names {
+		return false
+	}
+	if !e.autofree_collect_two_fresh_final_inert_expr_is_safe(flat, lhs_id, first_name, second_name) {
+		return false
+	}
+	return e.autofree_collect_two_fresh_final_inert_expr_is_safe(flat, rhs_id, first_name,
+		second_name)
+}
+
+fn (mut e Environment) autofree_collect_two_fresh_final_len_stmt_is_safe(flat &ast.FlatAst, stmt_id ast.FlatNodeId, first_name string, second_name string, param_names map[string]bool) bool {
+	if !autofree_collect_node_is(flat, stmt_id, .stmt_assign)
+		|| !autofree_collect_name_is_usable(first_name)
+		|| !autofree_collect_name_is_usable(second_name) || first_name == second_name {
+		return false
+	}
+	stmt_node := flat.nodes[stmt_id]
+	op := unsafe { token.Token(int(stmt_node.aux)) }
+	if op != .decl_assign && op != .assign {
+		return false
+	}
+	if stmt_node.extra != 1 || autofree_collect_exact_edge_count(flat, stmt_id) != 2 {
+		return false
+	}
+	raw_lhs_id := flat.edges[stmt_node.first_edge].child_id
+	rhs_id := flat.edges[stmt_node.first_edge + 1].child_id
+	lhs_id := autofree_collect_two_fresh_final_scalar_lhs_id(flat, raw_lhs_id)
+	if !autofree_collect_node_is(flat, lhs_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, lhs_id) != 0 {
+		return false
+	}
+	lhs_name := flat.string_at(flat.nodes[lhs_id].name_id)
+	if !autofree_collect_name_is_usable(lhs_name) || lhs_name == first_name
+		|| lhs_name == second_name || lhs_name in param_names {
+		return false
+	}
+	mut term_counts := AutofreeFinalLenTermCounts{}
+	if !e.autofree_collect_two_fresh_final_len_expr_is_safe(flat, rhs_id, first_name, second_name,
+		param_names, mut term_counts) {
+		return false
+	}
+	return term_counts.first_len_count == 1 && term_counts.second_len_count == 1
+		&& term_counts.param_terms.len <= 1
+}
+
+fn autofree_collect_two_fresh_final_scalar_lhs_id(flat &ast.FlatAst, lhs_id ast.FlatNodeId) ast.FlatNodeId {
+	if !autofree_collect_node_is(flat, lhs_id, .expr_modifier) {
+		return lhs_id
+	}
+	lhs_node := flat.nodes[lhs_id]
+	if unsafe { token.Token(int(lhs_node.aux)) } != .key_mut
+		|| autofree_collect_exact_edge_count(flat, lhs_id) != 1 {
+		return ast.invalid_flat_node_id
+	}
+	return flat.edges[lhs_node.first_edge].child_id
+}
+
+fn (mut e Environment) autofree_collect_two_fresh_final_inert_expr_is_safe(flat &ast.FlatAst, expr_id ast.FlatNodeId, first_name string, second_name string) bool {
+	if !autofree_collect_node_is_valid(flat, expr_id)
+		|| autofree_collect_exact_edge_count(flat, expr_id) != 0 {
+		return false
+	}
+	expr_node := flat.nodes[expr_id]
+	match expr_node.kind {
+		.expr_basic_literal {}
+		.expr_ident {
+			expr_name := flat.string_at(expr_node.name_id)
+			if !autofree_collect_name_is_usable(expr_name) || expr_name == first_name
+				|| expr_name == second_name {
+				return false
+			}
+		}
+		else {
+			return false
+		}
+	}
+
+	expr_pos_id := expr_node.pos.id
+	if expr_pos_id <= 0 {
+		return false
+	}
+	expr_typ := e.get_expr_type(expr_pos_id) or { return false }
+	if !type_has_valid_payload(expr_typ) {
+		return false
+	}
+	shape := e.autofree_resource_shape(expr_typ)
+	return !shape.fail_closed && shape.kind == .no_resource
+}
+
+struct AutofreeFinalLenTermCounts {
+mut:
+	first_len_count  int
+	second_len_count int
+	param_terms      []string
+}
+
+fn (mut e Environment) autofree_collect_two_fresh_final_len_expr_is_safe(flat &ast.FlatAst, expr_id ast.FlatNodeId, first_name string, second_name string, param_names map[string]bool, mut term_counts AutofreeFinalLenTermCounts) bool {
+	if !autofree_collect_node_is_valid(flat, expr_id) {
+		return false
+	}
+	expr_node := flat.nodes[expr_id]
+	if !e.autofree_collect_two_fresh_final_len_scalar_expr_is_safe(flat, expr_id) {
+		return false
+	}
+	match expr_node.kind {
+		.expr_basic_literal {
+			return false
+		}
+		.expr_ident {
+			expr_name := flat.string_at(expr_node.name_id)
+			if !autofree_collect_name_is_usable(expr_name) || expr_name !in param_names
+				|| expr_name == first_name || expr_name == second_name
+				|| term_counts.param_terms.len >= 1 {
+				return false
+			}
+			term_counts.param_terms << expr_name
+			return true
+		}
+		.expr_selector {
+			return autofree_collect_two_fresh_final_len_selector_is_safe(flat, expr_id, first_name,
+				second_name, mut term_counts)
+		}
+		.expr_infix {
+			if autofree_collect_exact_edge_count(flat, expr_id) != 2 || !autofree_collect_two_fresh_final_len_infix_op_is_safe(unsafe {
+				token.Token(int(expr_node.aux))
+			}) {
+				return false
+			}
+			lhs_id := flat.edges[expr_node.first_edge].child_id
+			rhs_id := flat.edges[expr_node.first_edge + 1].child_id
+			return
+				e.autofree_collect_two_fresh_final_len_expr_is_safe(flat, lhs_id, first_name, second_name, param_names, mut term_counts)
+				&& e.autofree_collect_two_fresh_final_len_expr_is_safe(flat, rhs_id, first_name, second_name, param_names, mut term_counts)
+		}
+		else {
+			return false
+		}
+	}
+}
+
+fn autofree_collect_two_fresh_final_len_infix_op_is_safe(op token.Token) bool {
+	return op == .plus
+}
+
+fn (mut e Environment) autofree_collect_two_fresh_final_len_scalar_expr_is_safe(flat &ast.FlatAst, expr_id ast.FlatNodeId) bool {
+	if !autofree_collect_node_is_valid(flat, expr_id) {
+		return false
+	}
+	expr_pos_id := flat.nodes[expr_id].pos.id
+	if expr_pos_id <= 0 {
+		return false
+	}
+	expr_typ := e.get_expr_type(expr_pos_id) or { return false }
+	if !type_has_valid_payload(expr_typ) {
+		return false
+	}
+	shape := e.autofree_resource_shape(expr_typ)
+	return !shape.fail_closed && shape.kind == .no_resource
+}
+
+fn autofree_collect_two_fresh_final_len_selector_is_safe(flat &ast.FlatAst, expr_id ast.FlatNodeId, first_name string, second_name string, mut term_counts AutofreeFinalLenTermCounts) bool {
+	if !autofree_collect_node_is(flat, expr_id, .expr_selector)
+		|| autofree_collect_exact_edge_count(flat, expr_id) != 2 {
+		return false
+	}
+	expr_node := flat.nodes[expr_id]
+	root_id := flat.edges[expr_node.first_edge].child_id
+	field_id := flat.edges[expr_node.first_edge + 1].child_id
+	if !autofree_collect_node_is(flat, root_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, root_id) != 0
+		|| !autofree_collect_node_is(flat, field_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, field_id) != 0 {
+		return false
+	}
+	root_name := flat.string_at(flat.nodes[root_id].name_id)
+	field_name := flat.string_at(flat.nodes[field_id].name_id)
+	if field_name != 'len' || (root_name != first_name && root_name != second_name) {
+		return false
+	}
+	if root_name == first_name {
+		term_counts.first_len_count++
+		return term_counts.first_len_count <= 1
+	}
+	term_counts.second_len_count++
+	return term_counts.second_len_count <= 1
+}
+
+fn autofree_collect_two_fresh_locals_are_supported(first AutofreeFreshLocalFact, second AutofreeFreshLocalFact) bool {
+	if first.fn_key.len == 0 || first.fn_key != second.fn_key || first.fn_name != second.fn_name {
+		return false
+	}
+	if !autofree_collect_name_is_usable(first.name) || !autofree_collect_name_is_usable(second.name)
+		|| first.name == second.name {
+		return false
+	}
+	if first.reason != second.reason
+		|| !autofree_collect_two_fresh_local_reason_is_supported(first.reason) {
+		return false
+	}
+	if first.stmt_pos_id <= 0 || second.stmt_pos_id <= 0 || first.stmt_pos_id >= second.stmt_pos_id {
+		return false
+	}
+	if first.shape.kind != .array || second.shape.kind != .array {
+		return false
+	}
+	if first.shape.target_kind != .no_resource || second.shape.target_kind != .no_resource {
+		return false
+	}
+	if first.state != .owned_unique || second.state != .owned_unique {
+		return false
+	}
+	return first.resource == .array_value && second.resource == .array_value
+}
+
+fn autofree_collect_two_fresh_local_reason_is_supported(reason string) bool {
+	return reason == 'empty dynamic array literal' || reason == 'cap-only scalar array literal'
+		|| reason == 'len-only scalar array literal'
 }
 
 fn (mut e Environment) collect_autofree_fresh_local_from_stmt(flat &ast.FlatAst, fn_key string, fn_name string, stmt_id ast.FlatNodeId, param_names map[string]bool) ?AutofreeFreshLocalFact {
@@ -248,6 +585,9 @@ fn (mut e Environment) collect_autofree_fresh_local_from_stmt(flat &ast.FlatAst,
 
 fn (mut e Environment) collect_autofree_move_proofs_from_fresh_locals() {
 	for fn_key, fresh_locals in e.autofree_fresh_locals_by_fn_key {
+		if fn_key in e.autofree_move_proofs_by_fn_key {
+			continue
+		}
 		duplicates := autofree_collect_duplicate_fresh_local_names(fresh_locals)
 		for fresh in fresh_locals {
 			if fresh.fn_key != fn_key || fresh.name in duplicates {
@@ -1106,6 +1446,9 @@ fn (mut e Environment) autofree_collect_fresh_inert_transfer_prefix_stmt_is_safe
 
 fn (mut e Environment) collect_autofree_natural_release_candidates_from_move_proofs() {
 	for fn_key, proofs in e.autofree_move_proofs_by_fn_key {
+		if fn_key in e.autofree_natural_release_candidates_by_fn_key {
+			continue
+		}
 		duplicates := autofree_collect_duplicate_move_proof_names(proofs)
 		for proof in proofs {
 			if proof.fn_key != fn_key || proof.name in duplicates {
@@ -1339,10 +1682,24 @@ fn autofree_collect_move_proof_matches_release_candidate(proof AutofreeMoveProof
 	return proof.fn_key == candidate.fn_key && proof.name == candidate.name
 		&& proof.kind == candidate.move_kind && proof.node_id == candidate.proof_node_id
 		&& proof.pos_id == candidate.proof_pos_id
-		&& proof.stmt_node_id == candidate.release_after_node_id
-		&& proof.stmt_pos_id == candidate.release_after_pos_id
+		&& autofree_collect_release_candidate_slot_matches_proof(proof, candidate)
 		&& autofree_collect_endpoints_match_for_release_plan(proof.source_endpoint, candidate.source_endpoint)
 		&& autofree_collect_endpoints_match_for_release_plan(proof.target_endpoint, candidate.endpoint)
+}
+
+fn autofree_collect_release_candidate_slot_matches_proof(proof AutofreeMoveProofFact, candidate AutofreeNaturalReleaseCandidateFact) bool {
+	if proof.stmt_node_id == candidate.release_after_node_id
+		&& proof.stmt_pos_id == candidate.release_after_pos_id {
+		return true
+	}
+	if candidate.reason != 'shared natural local cleanup candidate'
+		|| proof.kind != .fresh_local_binding || candidate.move_kind != .fresh_local_binding {
+		return false
+	}
+	return candidate.release_after_node_id >= 0
+		&& candidate.release_after_pos_id >= proof.stmt_pos_id
+		&& proof.stmt_node_id != candidate.release_after_node_id && proof.stmt_pos_id > 0
+		&& proof.stmt_pos_id < candidate.release_after_pos_id
 }
 
 fn autofree_collect_endpoints_match_for_release_plan(a AutofreeTransferEndpoint, b AutofreeTransferEndpoint) bool {
@@ -1376,8 +1733,7 @@ fn autofree_collect_release_plan_from_candidate(candidate AutofreeNaturalRelease
 		return none
 	}
 	if proof.node_id != candidate.proof_node_id || proof.pos_id != candidate.proof_pos_id
-		|| proof.stmt_node_id != candidate.release_after_node_id
-		|| proof.stmt_pos_id != candidate.release_after_pos_id {
+		|| !autofree_collect_release_candidate_slot_matches_proof(proof, candidate) {
 		return none
 	}
 	if candidate.node_id < 0 || candidate.pos_id <= 0

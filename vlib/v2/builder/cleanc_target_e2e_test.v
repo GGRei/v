@@ -450,6 +450,35 @@ fn main() {
 '
 }
 
+fn autofree_two_array_cleanup_source() string {
+	return 'module main
+
+fn build_two_empty_arrays() {
+	mut first := []int{}
+	mut second := []int{}
+	sink := first.len + second.len
+}
+
+fn build_two_cap_arrays(n int) {
+	mut first := []int{cap: n}
+	mut second := []int{cap: n}
+	sink := first.len + second.len + n
+}
+
+fn build_two_len_arrays(n int) {
+	mut first := []int{len: n}
+	mut second := []int{len: n}
+	sink := first.len + second.len + n
+}
+
+fn main() {
+	build_two_empty_arrays()
+	build_two_cap_arrays(4)
+	build_two_len_arrays(4)
+}
+'
+}
+
 fn autofree_prefixed_cap_len_array_cleanup_source() string {
 	return 'module main
 
@@ -663,6 +692,63 @@ fn assert_autofree_prefixed_cap_len_array_cleanup_absent_in_fn(res CleancCliResu
 	assert !body.contains('array__free(&source);'), res.c_source
 	assert !body.contains('array__free(&n);'), res.c_source
 	assert !body.contains('array__free(n);'), res.c_source
+	assert !body.contains('string__free'), res.c_source
+}
+
+fn assert_autofree_two_array_cleanup_present_in_fn(res CleancCliResult, fn_name string) {
+	assert_cli_success(res)
+	body := generated_c_function_body_or_fail(res, fn_name)
+	free_count := generated_c_body_substring_count(body, 'array__free(')
+	assert free_count == 2, res.c_source
+	first_decl_idx := body.index_after('first = __new_array', 0) or {
+		assert false, res.c_source
+		return
+	}
+	second_decl_idx := body.index_after('second = __new_array', 0) or {
+		assert false, res.c_source
+		return
+	}
+	second_cleanup_idx := body.index_after('array__free(&second);', 0) or {
+		assert false, res.c_source
+		return
+	}
+	first_cleanup_idx := body.index_after('array__free(&first);', 0) or {
+		assert false, res.c_source
+		return
+	}
+	assert first_decl_idx < second_decl_idx, res.c_source
+	assert second_decl_idx < second_cleanup_idx, res.c_source
+	assert second_cleanup_idx < first_cleanup_idx, res.c_source
+	assert !body[..second_decl_idx].contains('array__free(&second);'), res.c_source
+	assert !body[..first_decl_idx].contains('array__free(&first);'), res.c_source
+	assert !body.contains('array__free(&n);'), res.c_source
+	assert !body.contains('array__free(n);'), res.c_source
+	assert !body.contains('array__clone'), res.c_source
+	assert !body.contains('string__free'), res.c_source
+}
+
+fn generated_c_body_substring_count(body string, needle string) int {
+	if needle.len == 0 {
+		return 0
+	}
+	mut count := 0
+	mut search_from := 0
+	for search_from < body.len {
+		idx := body.index_after(needle, search_from) or { break }
+		count++
+		search_from = idx + needle.len
+	}
+	return count
+}
+
+fn assert_autofree_two_array_cleanup_absent_in_fn(res CleancCliResult, fn_name string) {
+	assert res.exit_code == 0, res.output
+	assert res.c_source.len > 0, res.output
+	body := generated_c_function_body_or_fail(res, fn_name)
+	free_count := generated_c_body_substring_count(body, 'array__free(')
+	assert free_count == 0, res.c_source
+	assert !body.contains('array__free(&first);'), res.c_source
+	assert !body.contains('array__free(&second);'), res.c_source
 	assert !body.contains('string__free'), res.c_source
 }
 
@@ -2899,6 +2985,7 @@ fn test_cleanc_autofree_array_cleanup_respects_target_runtime_contract() {
 	fresh_local_final_clone_source := autofree_fresh_local_final_clone_cleanup_source()
 	cap_only_source := autofree_cap_only_array_cleanup_source()
 	len_only_source := autofree_len_only_array_cleanup_source()
+	two_array_source := autofree_two_array_cleanup_source()
 	prefixed_cap_len_source := autofree_prefixed_cap_len_array_cleanup_source()
 	len_only_final_clone_source := autofree_len_only_final_clone_cleanup_source()
 	cap_only_final_clone_source := autofree_cap_only_final_clone_cleanup_source()
@@ -3109,6 +3196,28 @@ fn test_cleanc_autofree_array_cleanup_respects_target_runtime_contract() {
 		cleanc_autofree_hosted_args(), len_only_source, os.join_path(tmp_dir,
 		'autofree_len_only_cleanup_hosted.c'))
 	assert_autofree_len_only_array_cleanup_present_in_fn(len_only_res, 'build_array_with_len')
+
+	two_array_hosted_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_two_array_cleanup_hosted', cleanc_autofree_hosted_args(), two_array_source, os.join_path(tmp_dir,
+		'autofree_two_array_cleanup_hosted.c'))
+	for fn_name in ['build_two_empty_arrays', 'build_two_cap_arrays', 'build_two_len_arrays'] {
+		assert_autofree_two_array_cleanup_present_in_fn(two_array_hosted_res, fn_name)
+	}
+
+	two_array_disabled_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_two_array_cleanup_disabled', cleanc_autofree_disabled_args(), two_array_source, os.join_path(tmp_dir,
+		'autofree_two_array_cleanup_disabled.c'))
+	two_array_freestanding_linux_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_two_array_cleanup_freestanding_linux', cleanc_autofree_freestanding_linux_args(),
+		two_array_source, os.join_path(tmp_dir, 'autofree_two_array_cleanup_freestanding_linux.c'))
+	two_array_none_res := run_v2_to_output(v2_binary, tmp_dir, 'autofree_two_array_cleanup_none',
+		cleanc_autofree_none_args(), two_array_source, os.join_path(tmp_dir,
+		'autofree_two_array_cleanup_none.c'))
+	for fn_name in ['build_two_empty_arrays', 'build_two_cap_arrays', 'build_two_len_arrays'] {
+		assert_autofree_two_array_cleanup_absent_in_fn(two_array_disabled_res, fn_name)
+		assert_autofree_two_array_cleanup_absent_in_fn(two_array_freestanding_linux_res, fn_name)
+		assert_autofree_two_array_cleanup_absent_in_fn(two_array_none_res, fn_name)
+	}
 
 	len_only_final_clone_res := run_v2_to_output(v2_binary, tmp_dir,
 		'autofree_len_only_final_clone_cleanup_hosted', cleanc_autofree_hosted_args(),

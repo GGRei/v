@@ -33,7 +33,7 @@ mut:
 	// fns the checker didn't see (e.g., plain V without `-d ownership`).
 	cur_fn_return_drops                    [][]types.DropEntry
 	cur_fn_return_index                    int
-	autofree_cleanup_emit_context          AutofreeCleanCStatementCleanupEmitContextFact
+	autofree_cleanup_emit_contexts         []AutofreeCleanCStatementCleanupEmitContextFact
 	has_autofree_cleanup_emit_context      bool
 	autofree_cleanup_emit_context_consumed bool
 	autofree_cleanup_emit_context_prepared bool

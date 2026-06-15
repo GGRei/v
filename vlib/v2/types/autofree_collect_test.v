@@ -7765,6 +7765,735 @@ fn test_collect_autofree_facts_collects_len_only_scalar_array_local_after_transf
 	assert env.autofree_helper_roots.len == 0
 }
 
+fn test_collect_autofree_facts_collects_two_empty_scalar_array_locals() {
+	mut env := Environment.new()
+	fn_name := 'two_empty_scalar_arrays'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals(fn_name, 'first', 'second',
+		[]ast.Parameter{}, autofree_test_empty_array_expr('int', autofree_test_rhs_pos), autofree_test_empty_array_expr('int',
+		autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_two_fresh_array_cleanup(env, fn_name, 'first', 'second',
+		'empty dynamic array literal', 201)
+}
+
+fn test_collect_autofree_facts_collects_two_cap_only_scalar_array_locals() {
+	mut env := Environment.new()
+	fn_name := 'two_cap_scalar_arrays'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals(fn_name, 'first', 'second', [
+		autofree_test_param_at('n', 'int', autofree_test_source_param_pos),
+	], autofree_test_empty_array_expr_with_cap_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), autofree_test_empty_array_expr_with_cap_expr('int', autofree_test_ident_expr('n',
+		autofree_test_third_rhs_pos), autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_param_bound_expr_types(mut env)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_two_fresh_array_cleanup(env, fn_name, 'first', 'second',
+		'cap-only scalar array literal', 201)
+}
+
+fn test_collect_autofree_facts_collects_two_len_only_scalar_array_locals() {
+	mut env := Environment.new()
+	fn_name := 'two_len_scalar_arrays'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals(fn_name, 'first', 'second', [
+		autofree_test_param_at('n', 'int', autofree_test_source_param_pos),
+	], autofree_test_empty_array_expr_with_len_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), autofree_test_empty_array_expr_with_len_expr('int', autofree_test_ident_expr('n',
+		autofree_test_third_rhs_pos), autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_param_bound_expr_types(mut env)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_two_fresh_array_cleanup(env, fn_name, 'first', 'second',
+		'len-only scalar array literal', 201)
+}
+
+fn test_collect_autofree_facts_collects_two_empty_scalar_array_locals_after_final_scalar() {
+	mut env := Environment.new()
+	fn_name := 'two_empty_scalar_arrays_final_scalar'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals_and_final_scalar(fn_name, 'first',
+		'second', []ast.Parameter{}, autofree_test_empty_array_expr('int', autofree_test_rhs_pos), autofree_test_empty_array_expr('int',
+		autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_final_scalar_types(mut env)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_two_fresh_array_cleanup(env, fn_name, 'first', 'second',
+		'empty dynamic array literal', 202)
+}
+
+fn test_collect_autofree_facts_collects_two_cap_only_scalar_array_locals_after_final_scalar() {
+	mut env := Environment.new()
+	fn_name := 'two_cap_scalar_arrays_final_scalar'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals_and_final_scalar(fn_name, 'first',
+		'second', [
+		autofree_test_param_at('n', 'int', autofree_test_source_param_pos),
+	], autofree_test_empty_array_expr_with_cap_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), autofree_test_empty_array_expr_with_cap_expr('int', autofree_test_ident_expr('n',
+		autofree_test_third_rhs_pos), autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_param_bound_expr_types(mut env)
+	autofree_test_set_two_fresh_array_final_scalar_types(mut env)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_two_fresh_array_cleanup(env, fn_name, 'first', 'second',
+		'cap-only scalar array literal', 202)
+}
+
+fn test_collect_autofree_facts_collects_two_len_only_scalar_array_locals_after_final_scalar() {
+	mut env := Environment.new()
+	fn_name := 'two_len_scalar_arrays_final_scalar'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals_and_final_scalar(fn_name, 'first',
+		'second', [
+		autofree_test_param_at('n', 'int', autofree_test_source_param_pos),
+	], autofree_test_empty_array_expr_with_len_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), autofree_test_empty_array_expr_with_len_expr('int', autofree_test_ident_expr('n',
+		autofree_test_third_rhs_pos), autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_param_bound_expr_types(mut env)
+	autofree_test_set_two_fresh_array_final_scalar_types(mut env)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_two_fresh_array_cleanup(env, fn_name, 'first', 'second',
+		'len-only scalar array literal', 202)
+}
+
+fn test_collect_autofree_facts_collects_two_empty_scalar_array_locals_after_final_len_use() {
+	mut env := Environment.new()
+	fn_name := 'two_empty_scalar_arrays_final_len_use'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use(fn_name,
+		'first', 'second', []ast.Parameter{}, autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), autofree_test_empty_array_expr('int', autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_final_len_use_types(mut env, array_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_two_fresh_array_cleanup(env, fn_name, 'first', 'second',
+		'empty dynamic array literal', 202)
+}
+
+fn test_collect_autofree_facts_collects_two_empty_arrays_after_final_len_use_without_lhs_type() {
+	mut env := Environment.new()
+	fn_name := 'two_empty_arrays_final_len_use_missing_lhs_type'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use(fn_name,
+		'first', 'second', []ast.Parameter{}, autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), autofree_test_empty_array_expr('int', autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_final_len_rhs_types(mut env, array_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_two_fresh_array_cleanup(env, fn_name, 'first', 'second',
+		'empty dynamic array literal', 202)
+}
+
+fn test_collect_autofree_facts_collects_two_cap_scalar_array_locals_after_final_len_use() {
+	mut env := Environment.new()
+	fn_name := 'two_cap_scalar_arrays_final_len_use'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use(fn_name,
+		'first', 'second', [
+		autofree_test_param_at('n', 'int', autofree_test_source_param_pos),
+	], autofree_test_empty_array_expr_with_cap_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), autofree_test_empty_array_expr_with_cap_expr('int', autofree_test_ident_expr('n',
+		autofree_test_third_rhs_pos), autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_param_bound_expr_types(mut env)
+	autofree_test_set_two_fresh_array_final_len_use_types(mut env, array_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_two_fresh_array_cleanup(env, fn_name, 'first', 'second',
+		'cap-only scalar array literal', 202)
+}
+
+fn test_collect_autofree_facts_collects_two_len_scalar_array_locals_after_final_len_use() {
+	mut env := Environment.new()
+	fn_name := 'two_len_scalar_arrays_final_len_use'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use_rhs(fn_name,
+		'first', 'second', [
+		autofree_test_param_at('n', 'int', autofree_test_source_param_pos),
+	], autofree_test_empty_array_expr_with_len_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), autofree_test_empty_array_expr_with_len_expr('int', autofree_test_ident_expr('n',
+		autofree_test_third_rhs_pos), autofree_test_second_rhs_pos),
+		autofree_test_two_fresh_final_len_rhs_with_scalar('n'))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_param_bound_expr_types(mut env)
+	autofree_test_set_two_fresh_array_final_len_use_types(mut env, array_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_two_fresh_array_cleanup(env, fn_name, 'first', 'second',
+		'len-only scalar array literal', 202)
+}
+
+fn test_collect_autofree_facts_collects_two_lowered_empty_arrays_after_final_len_use() {
+	mut env := Environment.new()
+	fn_name := 'two_lowered_empty_arrays_final_len_use'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use(fn_name,
+		'first', 'second', []ast.Parameter{}, autofree_test_lowered_empty_array_alloc_expr('int',
+		autofree_test_rhs_pos), autofree_test_lowered_empty_array_alloc_expr('int',
+		autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_final_len_use_types(mut env, array_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_two_fresh_array_cleanup(env, fn_name, 'first', 'second',
+		'empty dynamic array literal', 202)
+}
+
+fn test_collect_autofree_facts_collects_two_lowered_cap_arrays_after_final_len_use() {
+	mut env := Environment.new()
+	fn_name := 'two_lowered_cap_arrays_final_len_use'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use(fn_name,
+		'first', 'second', [
+		autofree_test_param_at('n', 'int', autofree_test_source_param_pos),
+	], autofree_test_lowered_array_alloc_expr_with_cap_expr('__new_array_with_default_noscan', '0', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), 'int', 'nil', autofree_test_rhs_pos), autofree_test_lowered_array_alloc_expr_with_cap_expr('__new_array_with_default_noscan',
+		'0', autofree_test_ident_expr('n', autofree_test_third_rhs_pos), 'int', 'nil',
+		autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_param_bound_expr_types(mut env)
+	autofree_test_set_two_fresh_array_final_len_use_types(mut env, array_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_two_fresh_array_cleanup(env, fn_name, 'first', 'second',
+		'cap-only scalar array literal', 202)
+}
+
+fn test_collect_autofree_facts_collects_two_lowered_len_arrays_after_final_len_use() {
+	mut env := Environment.new()
+	fn_name := 'two_lowered_len_arrays_final_len_use'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use_rhs(fn_name,
+		'first', 'second', [
+		autofree_test_param_at('n', 'int', autofree_test_source_param_pos),
+	], autofree_test_lowered_array_alloc_expr_with_len_expr('__new_array_with_default_noscan', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), '0', 'int', 'nil', autofree_test_rhs_pos), autofree_test_lowered_array_alloc_expr_with_len_expr('__new_array_with_default_noscan', autofree_test_ident_expr('n',
+		autofree_test_third_rhs_pos), '0', 'int', 'nil', autofree_test_second_rhs_pos),
+		autofree_test_two_fresh_final_len_rhs_with_scalar('n'))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_param_bound_expr_types(mut env)
+	autofree_test_set_two_fresh_array_final_len_use_types(mut env, array_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_two_fresh_array_cleanup(env, fn_name, 'first', 'second',
+		'len-only scalar array literal', 202)
+}
+
+fn test_collect_autofree_facts_collects_two_empty_arrays_after_final_mut_len_use() {
+	mut env := Environment.new()
+	fn_name := 'two_empty_arrays_final_mut_len_use'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use_lhs(fn_name,
+		'first', 'second', []ast.Parameter{}, autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos),
+		autofree_test_empty_array_expr('int', autofree_test_second_rhs_pos), autofree_test_modifier_expr(.key_mut, autofree_test_ident_expr('sink',
+		autofree_test_third_lhs_pos), autofree_test_third_lhs_pos), autofree_test_two_fresh_final_len_rhs_for_names('first',
+		'second'))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_final_len_use_types(mut env, array_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_two_fresh_array_cleanup(env, fn_name, 'first', 'second',
+		'empty dynamic array literal', 202)
+}
+
+fn test_collect_autofree_facts_rejects_two_fresh_arrays_with_invalid_final_len_use() {
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	cap_fn := 'two_fresh_arrays_final_cap_use'
+	cap_flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use_rhs(cap_fn,
+		'first', 'second', []ast.Parameter{}, autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos),
+		autofree_test_empty_array_expr('int', autofree_test_second_rhs_pos),
+		autofree_test_two_fresh_final_len_rhs_with_field('cap'))
+	mut cap_env := Environment.new()
+	autofree_test_prepare_two_fresh_array_env(mut cap_env, cap_fn, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_final_len_use_types(mut cap_env, array_type)
+
+	cap_env.collect_autofree_facts_from_flat(&cap_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(cap_env, cap_fn)
+
+	foreign_fn := 'two_fresh_arrays_final_foreign_len_use'
+	foreign_flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use_rhs(foreign_fn,
+		'first', 'second', []ast.Parameter{}, autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos),
+		autofree_test_empty_array_expr('int', autofree_test_second_rhs_pos), autofree_test_two_fresh_final_len_rhs_for_names('first',
+		'other'))
+	mut foreign_env := Environment.new()
+	autofree_test_prepare_two_fresh_array_env(mut foreign_env, foreign_fn, 'first', 'second',
+		array_type)
+	autofree_test_add_scope_with_var_types(mut foreign_env, foreign_fn, {
+		'other': array_type
+	})
+	autofree_test_set_two_fresh_array_final_len_use_types(mut foreign_env, array_type)
+
+	foreign_env.collect_autofree_facts_from_flat(&foreign_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(foreign_env, foreign_fn)
+
+	one_name_fn := 'two_fresh_arrays_final_one_len_use'
+	one_name_flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use_rhs(one_name_fn,
+		'first', 'second', []ast.Parameter{}, autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos),
+		autofree_test_empty_array_expr('int', autofree_test_second_rhs_pos), autofree_test_two_fresh_final_len_rhs_for_names('first',
+		'first'))
+	mut one_name_env := Environment.new()
+	autofree_test_prepare_two_fresh_array_env(mut one_name_env, one_name_fn, 'first', 'second',
+		array_type)
+	autofree_test_set_two_fresh_array_final_len_use_types(mut one_name_env, array_type)
+
+	one_name_env.collect_autofree_facts_from_flat(&one_name_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(one_name_env, one_name_fn)
+
+	call_fn := 'two_fresh_arrays_final_len_call'
+	call_flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use_rhs(call_fn,
+		'first', 'second', []ast.Parameter{}, autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos),
+		autofree_test_empty_array_expr('int', autofree_test_second_rhs_pos), autofree_test_infix_expr(autofree_test_len_selector_expr('first',
+		autofree_test_post_root_pos, autofree_test_field_pos, autofree_test_call_pos), autofree_test_call_expr('touch', autofree_test_int_expr('1',
+		autofree_test_key_pos), autofree_test_nested_index_pos), .plus,
+		autofree_test_return_type_pos))
+	mut call_env := Environment.new()
+	autofree_test_prepare_two_fresh_array_env(mut call_env, call_fn, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_final_len_use_types(mut call_env, array_type)
+
+	call_env.collect_autofree_facts_from_flat(&call_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(call_env, call_fn)
+
+	autofree_test_assert_two_fresh_final_len_rhs_rejected('two_fresh_arrays_final_len_minus',
+		autofree_test_two_fresh_final_len_rhs_with_op(.minus), array_type)
+	autofree_test_assert_two_fresh_final_len_rhs_rejected('two_fresh_arrays_final_len_mul',
+		autofree_test_two_fresh_final_len_rhs_with_op(.mul), array_type)
+	autofree_test_assert_two_fresh_final_len_rhs_rejected('two_fresh_arrays_final_len_div',
+		autofree_test_two_fresh_final_len_rhs_with_op(.div), array_type)
+	autofree_test_assert_two_fresh_final_len_rhs_rejected('two_fresh_arrays_final_len_mod',
+		autofree_test_two_fresh_final_len_rhs_with_op(.mod), array_type)
+	autofree_test_assert_two_fresh_final_len_rhs_rejected('two_fresh_arrays_final_len_duplicate',
+		autofree_test_two_fresh_final_len_rhs_with_duplicate_first(), array_type)
+	autofree_test_assert_two_fresh_final_len_rhs_rejected('two_fresh_arrays_final_len_literal',
+		autofree_test_two_fresh_final_len_rhs_with_literal('1'), array_type)
+
+	local_fn := 'two_fresh_arrays_final_len_local_ident'
+	local_flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use_rhs(local_fn,
+		'first', 'second', []ast.Parameter{}, autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos),
+		autofree_test_empty_array_expr('int', autofree_test_second_rhs_pos),
+		autofree_test_two_fresh_final_len_rhs_with_scalar('seed'))
+	mut local_env := Environment.new()
+	autofree_test_prepare_two_fresh_array_env(mut local_env, local_fn, 'first', 'second',
+		array_type)
+	autofree_test_add_scope_with_var_types(mut local_env, local_fn, {
+		'seed': Type(int_)
+	})
+	autofree_test_set_two_fresh_array_final_len_use_types(mut local_env, array_type)
+	local_env.set_expr_type(autofree_test_other_rhs_pos, Type(int_))
+
+	local_env.collect_autofree_facts_from_flat(&local_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(local_env, local_fn)
+
+	params_fn := 'two_fresh_arrays_final_len_two_params'
+	params_flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use_rhs(params_fn,
+		'first', 'second', [
+		autofree_test_param_at('n', 'int', autofree_test_source_param_pos),
+		autofree_test_param_at('m', 'int', autofree_test_key_pos),
+	], autofree_test_empty_array_expr('int', autofree_test_rhs_pos), autofree_test_empty_array_expr('int',
+		autofree_test_second_rhs_pos),
+		autofree_test_two_fresh_final_len_rhs_with_two_scalars('n', 'm'))
+	mut params_env := Environment.new()
+	autofree_test_prepare_two_fresh_array_env(mut params_env, params_fn, 'first', 'second',
+		array_type)
+	autofree_test_set_two_fresh_array_final_len_use_types(mut params_env, array_type)
+	params_env.set_expr_type(autofree_test_source_param_pos, Type(int_))
+	params_env.set_expr_type(autofree_test_other_rhs_pos, Type(int_))
+
+	params_env.collect_autofree_facts_from_flat(&params_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(params_env, params_fn)
+
+	index_fn := 'two_fresh_arrays_final_len_index'
+	index_rhs := autofree_test_infix_expr(autofree_test_len_selector_expr('first',
+		autofree_test_post_root_pos, autofree_test_field_pos, autofree_test_call_pos), autofree_test_index_expr_from_lhs(autofree_test_ident_expr('second',
+		autofree_test_post_rhs_pos), autofree_test_int_expr('0', autofree_test_key_pos),
+		autofree_test_index_pos), .plus, autofree_test_return_type_pos)
+	autofree_test_assert_two_fresh_final_len_rhs_rejected(index_fn, index_rhs, array_type)
+
+	nested_fn := 'two_fresh_arrays_final_len_nested_selector'
+	nested_rhs := autofree_test_infix_expr(autofree_test_len_selector_expr('first',
+		autofree_test_post_root_pos, autofree_test_field_pos, autofree_test_call_pos), autofree_test_nested_selector_expr('second',
+		'len', 'bytes', autofree_test_post_rhs_pos, autofree_test_index_pos,
+		autofree_test_nested_field_pos, autofree_test_key_pos), .plus,
+		autofree_test_return_type_pos)
+	autofree_test_assert_two_fresh_final_len_rhs_rejected(nested_fn, nested_rhs, array_type)
+}
+
+fn test_collect_autofree_facts_rejects_two_fresh_array_mixed_source_kinds() {
+	mut env := Environment.new()
+	fn_name := 'two_mixed_fresh_arrays'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals(fn_name, 'first', 'second', [
+		autofree_test_param_at('n', 'int', autofree_test_source_param_pos),
+	], autofree_test_empty_array_expr('int', autofree_test_rhs_pos), autofree_test_empty_array_expr_with_cap_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_param_bound_expr_types(mut env)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(env, fn_name)
+}
+
+fn test_collect_autofree_facts_rejects_two_fresh_array_duplicate_targets() {
+	mut env := Environment.new()
+	fn_name := 'two_duplicate_fresh_arrays'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals(fn_name, 'items', 'items',
+		[]ast.Parameter{}, autofree_test_empty_array_expr('int', autofree_test_rhs_pos), autofree_test_empty_array_expr('int',
+		autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'items', 'items', array_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(env, fn_name)
+}
+
+fn test_collect_autofree_facts_rejects_two_fresh_array_local_bound_cap_len() {
+	mut cap_env := Environment.new()
+	cap_fn := 'two_cap_local_bound_arrays'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	cap_flat := autofree_test_flat_with_two_fresh_array_locals(cap_fn, 'first', 'second',
+		[]ast.Parameter{}, autofree_test_empty_array_expr_with_cap_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), autofree_test_empty_array_expr_with_cap_expr('int', autofree_test_ident_expr('n',
+		autofree_test_third_rhs_pos), autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut cap_env, cap_fn, 'first', 'second', array_type)
+	autofree_test_add_scope_with_var_types(mut cap_env, cap_fn, {
+		'n':      Type(int_)
+		'first':  array_type
+		'second': array_type
+	})
+	cap_env.set_expr_type(autofree_test_other_rhs_pos, Type(int_))
+	cap_env.set_expr_type(autofree_test_third_rhs_pos, Type(int_))
+
+	cap_env.collect_autofree_facts_from_flat(&cap_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(cap_env, cap_fn)
+
+	mut len_env := Environment.new()
+	len_fn := 'two_len_local_bound_arrays'
+	len_flat := autofree_test_flat_with_two_fresh_array_locals(len_fn, 'first', 'second',
+		[]ast.Parameter{}, autofree_test_empty_array_expr_with_len_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), autofree_test_empty_array_expr_with_len_expr('int', autofree_test_ident_expr('n',
+		autofree_test_third_rhs_pos), autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut len_env, len_fn, 'first', 'second', array_type)
+	autofree_test_add_scope_with_var_types(mut len_env, len_fn, {
+		'n':      Type(int_)
+		'first':  array_type
+		'second': array_type
+	})
+	len_env.set_expr_type(autofree_test_other_rhs_pos, Type(int_))
+	len_env.set_expr_type(autofree_test_third_rhs_pos, Type(int_))
+
+	len_env.collect_autofree_facts_from_flat(&len_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(len_env, len_fn)
+}
+
+fn test_collect_autofree_facts_rejects_two_fresh_array_resourceful_elements() {
+	mut env := Environment.new()
+	fn_name := 'two_empty_string_arrays'
+	string_array_type := Type(Array{
+		elem_type: Type(string_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals(fn_name, 'first', 'second',
+		[]ast.Parameter{}, autofree_test_empty_array_expr('string', autofree_test_rhs_pos), autofree_test_empty_array_expr('string',
+		autofree_test_second_rhs_pos))
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second',
+		string_array_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(env, fn_name)
+}
+
+fn test_collect_autofree_facts_rejects_two_fresh_array_valid_then_resourceful_pair() {
+	mut env := Environment.new()
+	fn_name := 'two_valid_then_resourceful_arrays'
+	int_array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	string_array_type := Type(Array{
+		elem_type: Type(string_)
+	})
+	flat := autofree_test_flat_with_two_fresh_array_locals(fn_name, 'first', 'second',
+		[]ast.Parameter{}, autofree_test_empty_array_expr('int', autofree_test_rhs_pos), autofree_test_empty_array_expr('string',
+		autofree_test_second_rhs_pos))
+	autofree_test_add_scope_with_var_types(mut env, fn_name, {
+		'first':  int_array_type
+		'second': string_array_type
+	})
+	env.set_expr_type(autofree_test_lhs_pos, int_array_type)
+	env.set_expr_type(autofree_test_rhs_pos, int_array_type)
+	env.set_expr_type(autofree_test_second_lhs_pos, string_array_type)
+	env.set_expr_type(autofree_test_second_rhs_pos, string_array_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(env, fn_name)
+}
+
+fn test_collect_autofree_facts_rejects_two_statement_fresh_then_non_fresh_without_singleton_fallback() {
+	mut env := Environment.new()
+	fn_name := 'two_statement_fresh_then_non_fresh'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	first := autofree_test_fresh_array_decl_stmt('items', autofree_test_lhs_pos, autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), 200)
+	second := autofree_test_assign_stmt_with_op(autofree_test_ident_expr('seed',
+		autofree_test_second_lhs_pos), autofree_test_int_expr('1', autofree_test_second_rhs_pos),
+		.decl_assign, 201)
+	flat := autofree_test_flat_with_free_function(fn_name, []ast.Parameter{}, [
+		first,
+		second,
+	])
+	autofree_test_add_scope_with_var_types(mut env, fn_name, {
+		'items': array_type
+		'seed':  Type(int_)
+	})
+	env.set_expr_type(autofree_test_lhs_pos, array_type)
+	env.set_expr_type(autofree_test_rhs_pos, array_type)
+	env.set_expr_type(autofree_test_second_lhs_pos, Type(int_))
+	env.set_expr_type(autofree_test_second_rhs_pos, Type(int_))
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(env, fn_name)
+}
+
+fn test_collect_autofree_facts_rejects_two_fresh_arrays_with_unsafe_final_slot() {
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	first := autofree_test_fresh_array_decl_stmt('first', autofree_test_lhs_pos, autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), 200)
+	second := autofree_test_fresh_array_decl_stmt('second', autofree_test_second_lhs_pos, autofree_test_empty_array_expr('int',
+		autofree_test_second_rhs_pos), 201)
+	call_fn := 'two_fresh_arrays_final_call'
+	call_flat := autofree_test_flat_with_free_function(call_fn, []ast.Parameter{}, [
+		first,
+		second,
+		autofree_test_call_stmt('touch', autofree_test_int_expr('1', autofree_test_key_pos), 202),
+	])
+	mut call_env := Environment.new()
+	autofree_test_prepare_two_fresh_array_env(mut call_env, call_fn, 'first', 'second', array_type)
+
+	call_env.collect_autofree_facts_from_flat(&call_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(call_env, call_fn)
+
+	reference_fn := 'two_fresh_arrays_final_references_target'
+	reference_flat := autofree_test_flat_with_free_function(reference_fn, []ast.Parameter{}, [
+		first,
+		second,
+		autofree_test_assign_stmt_with_op(autofree_test_ident_expr('sink',
+			autofree_test_third_lhs_pos), autofree_test_ident_expr('first',
+			autofree_test_third_rhs_pos), .decl_assign, 202),
+	])
+	mut reference_env := Environment.new()
+	autofree_test_prepare_two_fresh_array_env(mut reference_env, reference_fn, 'first', 'second',
+		array_type)
+	reference_env.set_expr_type(autofree_test_third_lhs_pos, Type(int_))
+	reference_env.set_expr_type(autofree_test_third_rhs_pos, array_type)
+
+	reference_env.collect_autofree_facts_from_flat(&reference_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(reference_env, reference_fn)
+
+	store_fn := 'two_fresh_arrays_final_store'
+	store_flat := autofree_test_flat_with_free_function(store_fn, []ast.Parameter{}, [
+		first,
+		second,
+		autofree_test_assign_stmt_with_op(autofree_test_selector_expr('holder', 'sink',
+			autofree_test_third_lhs_pos, autofree_test_field_pos), autofree_test_int_expr('1',
+			autofree_test_third_rhs_pos), .assign, 202),
+	])
+	mut store_env := Environment.new()
+	autofree_test_prepare_two_fresh_array_env(mut store_env, store_fn, 'first', 'second',
+		array_type)
+	store_env.set_expr_type(autofree_test_third_lhs_pos, Type(int_))
+	store_env.set_expr_type(autofree_test_third_rhs_pos, Type(int_))
+
+	store_env.collect_autofree_facts_from_flat(&store_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(store_env, store_fn)
+}
+
+fn test_collect_autofree_facts_rejects_two_fresh_arrays_with_extra_control_or_mutation() {
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	first := autofree_test_fresh_array_decl_stmt('first', autofree_test_lhs_pos, autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), 200)
+	second := autofree_test_fresh_array_decl_stmt('second', autofree_test_second_lhs_pos, autofree_test_empty_array_expr('int',
+		autofree_test_second_rhs_pos), 202)
+	call_stmt := autofree_test_call_stmt('touch',
+		autofree_test_int_expr('1', autofree_test_key_pos), autofree_test_call_pos)
+	call_fn := 'two_fresh_arrays_with_call'
+	call_flat := autofree_test_flat_with_free_function(call_fn, []ast.Parameter{}, [
+		first,
+		call_stmt,
+		second,
+	])
+	mut call_env := Environment.new()
+	autofree_test_prepare_two_fresh_array_env(mut call_env, call_fn, 'first', 'second', array_type)
+
+	call_env.collect_autofree_facts_from_flat(&call_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(call_env, call_fn)
+
+	return_fn := 'two_fresh_arrays_with_return'
+	return_flat := autofree_test_flat_with_free_function(return_fn, []ast.Parameter{}, [
+		first,
+		second,
+		autofree_test_return_stmt_with_exprs([]ast.Expr{}),
+	])
+	mut return_env := Environment.new()
+	autofree_test_prepare_two_fresh_array_env(mut return_env, return_fn, 'first', 'second',
+		array_type)
+
+	return_env.collect_autofree_facts_from_flat(&return_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(return_env, return_fn)
+
+	reassign_fn := 'two_fresh_arrays_with_reassign'
+	reassign_flat := autofree_test_flat_with_free_function(reassign_fn, []ast.Parameter{}, [
+		first,
+		second,
+		autofree_test_assign_stmt_with_op(autofree_test_ident_expr('first',
+			autofree_test_other_lhs_pos), autofree_test_empty_array_expr('int',
+			autofree_test_other_rhs_pos), .assign, 203),
+	])
+	mut reassign_env := Environment.new()
+	autofree_test_prepare_two_fresh_array_env(mut reassign_env, reassign_fn, 'first', 'second',
+		array_type)
+	reassign_env.set_expr_type(autofree_test_other_lhs_pos, array_type)
+	reassign_env.set_expr_type(autofree_test_other_rhs_pos, array_type)
+
+	reassign_env.collect_autofree_facts_from_flat(&reassign_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(reassign_env, reassign_fn)
+}
+
+fn test_collect_autofree_facts_rejects_two_fresh_arrays_in_method_or_nested_body() {
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	first := autofree_test_fresh_array_decl_stmt('first', autofree_test_lhs_pos, autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), 200)
+	second := autofree_test_fresh_array_decl_stmt('second', autofree_test_second_lhs_pos, autofree_test_empty_array_expr('int',
+		autofree_test_second_rhs_pos), 201)
+	method_fn := 'two_fresh_arrays_method'
+	method_decl := ast.FnDecl{
+		is_method: true
+		receiver:  autofree_test_param('holder', 'Holder')
+		name:      method_fn
+		typ:       ast.FnType{}
+		stmts:     [
+			first,
+			second,
+		]
+	}
+	mut method_env := Environment.new()
+	method_flat := autofree_test_flat_with_stmts([ast.Stmt(method_decl)])
+	autofree_test_prepare_two_fresh_array_env(mut method_env, method_fn, 'first', 'second',
+		array_type)
+
+	method_env.collect_autofree_facts_from_flat(&method_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(method_env, method_fn)
+
+	nested_fn := 'two_fresh_arrays_nested'
+	nested_flat := autofree_test_flat_with_free_function(nested_fn, []ast.Parameter{}, [
+		ast.Stmt(ast.BlockStmt{
+			stmts: [
+				first,
+				second,
+			]
+		}),
+	])
+	mut nested_env := Environment.new()
+	autofree_test_prepare_two_fresh_array_env(mut nested_env, nested_fn, 'first', 'second',
+		array_type)
+
+	nested_env.collect_autofree_facts_from_flat(&nested_flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(nested_env, nested_fn)
+}
+
 fn test_collect_autofree_facts_rejects_cap_only_scalar_array_local_after_call_prefix() {
 	mut env := Environment.new()
 	fn_name := 'fresh_cap_array_after_call_prefix'
@@ -18964,6 +19693,101 @@ fn autofree_test_flat_with_mut_fresh_array_local_params(fn_name string, params [
 	return autofree_test_flat_with_free_function(fn_name, params, stmts)
 }
 
+fn autofree_test_flat_with_two_fresh_array_locals(fn_name string, first_name string, second_name string, params []ast.Parameter, first_rhs ast.Expr, second_rhs ast.Expr) ast.FlatAst {
+	first := autofree_test_fresh_array_decl_stmt(first_name, autofree_test_lhs_pos, first_rhs, 200)
+	second := autofree_test_fresh_array_decl_stmt(second_name, autofree_test_second_lhs_pos,
+		second_rhs, 201)
+	return autofree_test_flat_with_free_function(fn_name, params, [
+		first,
+		second,
+	])
+}
+
+fn autofree_test_flat_with_two_fresh_array_locals_and_final_scalar(fn_name string, first_name string, second_name string, params []ast.Parameter, first_rhs ast.Expr, second_rhs ast.Expr) ast.FlatAst {
+	first := autofree_test_fresh_array_decl_stmt(first_name, autofree_test_lhs_pos, first_rhs, 200)
+	second := autofree_test_fresh_array_decl_stmt(second_name, autofree_test_second_lhs_pos,
+		second_rhs, 201)
+	final_scalar := autofree_test_assign_stmt_with_op(autofree_test_ident_expr('sink',
+		autofree_test_third_lhs_pos), autofree_test_int_expr('1', autofree_test_key_pos),
+		.decl_assign, 202)
+	return autofree_test_flat_with_free_function(fn_name, params, [
+		first,
+		second,
+		final_scalar,
+	])
+}
+
+fn autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use(fn_name string, first_name string, second_name string, params []ast.Parameter, first_rhs ast.Expr, second_rhs ast.Expr) ast.FlatAst {
+	return autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use_rhs(fn_name,
+		first_name, second_name, params, first_rhs, second_rhs, autofree_test_two_fresh_final_len_rhs_for_names(first_name,
+		second_name))
+}
+
+fn autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use_rhs(fn_name string, first_name string, second_name string, params []ast.Parameter, first_rhs ast.Expr, second_rhs ast.Expr, final_rhs ast.Expr) ast.FlatAst {
+	return autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use_lhs(fn_name,
+		first_name, second_name, params, first_rhs, second_rhs, autofree_test_ident_expr('total',
+		autofree_test_third_lhs_pos), final_rhs)
+}
+
+fn autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use_lhs(fn_name string, first_name string, second_name string, params []ast.Parameter, first_rhs ast.Expr, second_rhs ast.Expr, final_lhs ast.Expr, final_rhs ast.Expr) ast.FlatAst {
+	first := autofree_test_fresh_array_decl_stmt(first_name, autofree_test_lhs_pos, first_rhs, 200)
+	second := autofree_test_fresh_array_decl_stmt(second_name, autofree_test_second_lhs_pos,
+		second_rhs, 201)
+	final_assign := autofree_test_assign_stmt_with_op(final_lhs, final_rhs, .decl_assign, 202)
+	return autofree_test_flat_with_free_function(fn_name, params, [
+		first,
+		second,
+		final_assign,
+	])
+}
+
+fn autofree_test_two_fresh_final_len_rhs_for_names(first_name string, second_name string) ast.Expr {
+	return autofree_test_infix_expr(autofree_test_len_selector_expr(first_name,
+		autofree_test_post_root_pos, autofree_test_field_pos, autofree_test_call_pos), autofree_test_len_selector_expr(second_name,
+		autofree_test_post_rhs_pos, autofree_test_nested_field_pos, autofree_test_index_pos),
+		.plus, autofree_test_return_type_pos)
+}
+
+fn autofree_test_two_fresh_final_len_rhs_with_op(op token.Token) ast.Expr {
+	return autofree_test_infix_expr(autofree_test_len_selector_expr('first',
+		autofree_test_post_root_pos, autofree_test_field_pos, autofree_test_call_pos), autofree_test_len_selector_expr('second',
+		autofree_test_post_rhs_pos, autofree_test_nested_field_pos, autofree_test_index_pos), op,
+		autofree_test_return_type_pos)
+}
+
+fn autofree_test_two_fresh_final_len_rhs_with_field(field_name string) ast.Expr {
+	return autofree_test_infix_expr(autofree_test_selector_expr_with_root_pos('first', field_name,
+		autofree_test_post_root_pos, autofree_test_field_pos, autofree_test_call_pos), autofree_test_len_selector_expr('second',
+		autofree_test_post_rhs_pos, autofree_test_nested_field_pos, autofree_test_index_pos),
+		.plus, autofree_test_return_type_pos)
+}
+
+fn autofree_test_two_fresh_final_len_rhs_with_duplicate_first() ast.Expr {
+	return autofree_test_infix_expr(autofree_test_infix_expr(autofree_test_len_selector_expr('first',
+		autofree_test_post_root_pos, autofree_test_field_pos, autofree_test_call_pos), autofree_test_len_selector_expr('first',
+		autofree_test_post_root_pos, autofree_test_field_pos, autofree_test_call_pos), .plus,
+		autofree_test_return_type_pos), autofree_test_len_selector_expr('second',
+		autofree_test_post_rhs_pos, autofree_test_nested_field_pos, autofree_test_index_pos),
+		.plus, autofree_test_return_type_pos)
+}
+
+fn autofree_test_two_fresh_final_len_rhs_with_scalar(name string) ast.Expr {
+	return autofree_test_infix_expr(autofree_test_two_fresh_final_len_rhs_for_names('first',
+		'second'), autofree_test_ident_expr(name, autofree_test_other_rhs_pos), .plus,
+		autofree_test_return_type_pos)
+}
+
+fn autofree_test_two_fresh_final_len_rhs_with_two_scalars(first_name string, second_name string) ast.Expr {
+	return autofree_test_infix_expr(autofree_test_two_fresh_final_len_rhs_with_scalar(first_name), autofree_test_ident_expr(second_name,
+		autofree_test_key_pos), .plus, autofree_test_return_type_pos)
+}
+
+fn autofree_test_two_fresh_final_len_rhs_with_literal(value string) ast.Expr {
+	return autofree_test_infix_expr(autofree_test_two_fresh_final_len_rhs_for_names('first',
+		'second'), autofree_test_int_expr(value, autofree_test_key_pos), .plus,
+		autofree_test_return_type_pos)
+}
+
 fn autofree_test_flat_with_fresh_array_final_clone_cleanup(fn_name string, elem_type_name string, rhs ast.Expr, extra_stmts []ast.Stmt) ast.FlatAst {
 	return autofree_test_flat_with_fresh_array_final_clone_cleanup_custom(fn_name, [
 		autofree_test_mut_param_at('dst', '[]${elem_type_name}', autofree_test_source_param_pos),
@@ -23023,6 +23847,11 @@ fn autofree_test_decl_assign_stmt(lhs ast.Expr, rhs ast.Expr) ast.Stmt {
 	})
 }
 
+fn autofree_test_fresh_array_decl_stmt(name string, lhs_pos_id int, rhs ast.Expr, stmt_pos_id int) ast.Stmt {
+	return autofree_test_assign_stmt_with_op(autofree_test_modifier_expr(.key_mut, autofree_test_ident_expr(name,
+		lhs_pos_id), lhs_pos_id), rhs, .decl_assign, stmt_pos_id)
+}
+
 fn autofree_test_assign_stmt(lhs ast.Expr, rhs ast.Expr) ast.Stmt {
 	return ast.Stmt(ast.AssignStmt{
 		op:  .assign
@@ -23336,6 +24165,20 @@ fn autofree_test_prefix_expr(op token.Token, expr ast.Expr, pos_id int) ast.Expr
 		expr: expr
 		pos:  autofree_test_pos(pos_id)
 	})
+}
+
+fn autofree_test_infix_expr(lhs ast.Expr, rhs ast.Expr, op token.Token, pos_id int) ast.Expr {
+	return ast.Expr(ast.InfixExpr{
+		op:  op
+		lhs: lhs
+		rhs: rhs
+		pos: autofree_test_pos(pos_id)
+	})
+}
+
+fn autofree_test_len_selector_expr(lhs_name string, root_pos_id int, field_pos_id int, selector_pos_id int) ast.Expr {
+	return autofree_test_selector_expr_with_root_pos(lhs_name, 'len', root_pos_id, field_pos_id,
+		selector_pos_id)
 }
 
 fn autofree_test_selector_expr(lhs_name string, field_name string, lhs_pos_id int, field_pos_id int) ast.Expr {
@@ -24990,6 +25833,131 @@ fn autofree_test_assert_no_fresh_cleanup_for_fn(env Environment, fn_key string) 
 	assert fn_key !in env.autofree_release_plans_by_fn_key
 	assert fn_key !in env.autofree_release_preflights_by_fn_key
 	assert fn_key !in env.autofree_release_insertion_points_by_fn_key
+}
+
+fn autofree_test_prepare_two_fresh_array_env(mut env Environment, fn_name string, first_name string, second_name string, array_type Type) {
+	mut vars := map[string]Type{}
+	vars[first_name] = array_type
+	vars[second_name] = array_type
+	autofree_test_add_scope_with_var_types(mut env, fn_name, vars)
+	env.set_expr_type(autofree_test_lhs_pos, array_type)
+	env.set_expr_type(autofree_test_rhs_pos, array_type)
+	env.set_expr_type(autofree_test_second_lhs_pos, array_type)
+	env.set_expr_type(autofree_test_second_rhs_pos, array_type)
+}
+
+fn autofree_test_set_two_fresh_array_param_bound_expr_types(mut env Environment) {
+	env.set_expr_type(autofree_test_source_param_pos, Type(int_))
+	env.set_expr_type(autofree_test_other_rhs_pos, Type(int_))
+	env.set_expr_type(autofree_test_third_rhs_pos, Type(int_))
+}
+
+fn autofree_test_set_two_fresh_array_final_scalar_types(mut env Environment) {
+	env.set_expr_type(autofree_test_third_lhs_pos, Type(int_))
+	env.set_expr_type(autofree_test_key_pos, Type(int_))
+}
+
+fn autofree_test_set_two_fresh_array_final_len_use_types(mut env Environment, array_type Type) {
+	env.set_expr_type(autofree_test_third_lhs_pos, Type(int_))
+	autofree_test_set_two_fresh_array_final_len_rhs_types(mut env, array_type)
+}
+
+fn autofree_test_set_two_fresh_array_final_len_rhs_types(mut env Environment, array_type Type) {
+	env.set_expr_type(autofree_test_key_pos, Type(int_))
+	env.set_expr_type(autofree_test_post_lhs_pos, Type(int_))
+	env.set_expr_type(autofree_test_post_root_pos, array_type)
+	env.set_expr_type(autofree_test_post_rhs_pos, array_type)
+	env.set_expr_type(autofree_test_call_pos, Type(int_))
+	env.set_expr_type(autofree_test_index_pos, Type(int_))
+	env.set_expr_type(autofree_test_return_type_pos, Type(int_))
+}
+
+fn autofree_test_assert_two_fresh_final_len_rhs_rejected(fn_name string, rhs ast.Expr, array_type Type) {
+	flat := autofree_test_flat_with_two_fresh_array_locals_and_direct_final_len_use_rhs(fn_name,
+		'first', 'second', []ast.Parameter{}, autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos),
+		autofree_test_empty_array_expr('int', autofree_test_second_rhs_pos), rhs)
+	mut env := Environment.new()
+	autofree_test_prepare_two_fresh_array_env(mut env, fn_name, 'first', 'second', array_type)
+	autofree_test_set_two_fresh_array_final_len_use_types(mut env, array_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(env, fn_name)
+}
+
+fn autofree_test_assert_two_fresh_array_cleanup(env Environment, fn_key string, first_name string, second_name string, reason string, shared_release_pos_id int) {
+	assert fn_key in env.autofree_fresh_locals_by_fn_key
+	fresh_locals := env.autofree_fresh_locals_by_fn_key[fn_key]
+	assert fresh_locals.len == 2
+	assert fresh_locals[0].name == first_name
+	assert fresh_locals[0].reason == reason
+	assert fresh_locals[0].pos_id == autofree_test_lhs_pos
+	assert fresh_locals[0].stmt_pos_id == 200
+	assert fresh_locals[1].name == second_name
+	assert fresh_locals[1].reason == reason
+	assert fresh_locals[1].pos_id == autofree_test_second_lhs_pos
+	assert fresh_locals[1].stmt_pos_id == 201
+	assert fn_key in env.autofree_move_proofs_by_fn_key
+	proofs := env.autofree_move_proofs_by_fn_key[fn_key]
+	assert proofs.len == 2
+	assert proofs[0].name == first_name
+	assert proofs[0].source_endpoint.reason == reason
+	assert proofs[0].pos_id == autofree_test_lhs_pos
+	assert proofs[0].stmt_pos_id == 200
+	assert proofs[1].name == second_name
+	assert proofs[1].source_endpoint.reason == reason
+	assert proofs[1].pos_id == autofree_test_second_lhs_pos
+	assert proofs[1].stmt_pos_id == 201
+	assert fn_key in env.autofree_natural_release_candidates_by_fn_key
+	candidates := env.autofree_natural_release_candidates_by_fn_key[fn_key]
+	assert candidates.len == 2
+	assert candidates[0].name == first_name
+	assert candidates[0].source_endpoint.reason == reason
+	assert candidates[0].proof_pos_id == autofree_test_lhs_pos
+	assert candidates[0].release_after_pos_id == shared_release_pos_id
+	assert candidates[1].name == second_name
+	assert candidates[1].source_endpoint.reason == reason
+	assert candidates[1].proof_pos_id == autofree_test_second_lhs_pos
+	assert candidates[1].release_after_pos_id == shared_release_pos_id
+	assert fn_key in env.autofree_release_plans_by_fn_key
+	plans := env.autofree_release_plans_by_fn_key[fn_key]
+	assert plans.len == 2
+	assert plans[0].name == first_name
+	assert plans[0].source_endpoint.reason == reason
+	assert plans[0].proof_pos_id == autofree_test_lhs_pos
+	assert plans[0].release_after_pos_id == shared_release_pos_id
+	assert plans[1].name == second_name
+	assert plans[1].source_endpoint.reason == reason
+	assert plans[1].proof_pos_id == autofree_test_second_lhs_pos
+	assert plans[1].release_after_pos_id == shared_release_pos_id
+	assert fn_key in env.autofree_release_preflights_by_fn_key
+	preflights := env.autofree_release_preflights_by_fn_key[fn_key]
+	assert preflights.len == 2
+	assert preflights[0].name == first_name
+	assert preflights[0].source_endpoint.reason == reason
+	assert preflights[0].proof_pos_id == autofree_test_lhs_pos
+	assert preflights[0].release_after_pos_id == shared_release_pos_id
+	assert preflights[1].name == second_name
+	assert preflights[1].source_endpoint.reason == reason
+	assert preflights[1].proof_pos_id == autofree_test_second_lhs_pos
+	assert preflights[1].release_after_pos_id == shared_release_pos_id
+	assert fn_key in env.autofree_release_insertion_points_by_fn_key
+	insertion_points := env.autofree_release_insertion_points_by_fn_key[fn_key]
+	assert insertion_points.len == 2
+	assert insertion_points[0].endpoint.name == first_name
+	assert insertion_points[0].source_endpoint.reason == reason
+	assert insertion_points[0].proof_pos_id == autofree_test_lhs_pos
+	assert insertion_points[0].insert_after_pos_id == shared_release_pos_id
+	assert insertion_points[0].plan_action == .array_container_cleanup
+	assert insertion_points[1].endpoint.name == second_name
+	assert insertion_points[1].source_endpoint.reason == reason
+	assert insertion_points[1].proof_pos_id == autofree_test_second_lhs_pos
+	assert insertion_points[1].insert_after_pos_id == shared_release_pos_id
+	assert insertion_points[1].plan_action == .array_container_cleanup
+	assert insertion_points[0].insert_after_pos_id == insertion_points[1].insert_after_pos_id
+	assert env.autofree_releases_by_fn_key.len == 0
+	assert env.autofree_helper_roots.len == 0
 }
 
 fn autofree_test_assert_cap_only_scalar_array_cleanup(env Environment, flat ast.FlatAst, fn_key string, array_type Type) {
