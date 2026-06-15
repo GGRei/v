@@ -424,6 +424,22 @@ fn main() {
 '
 }
 
+fn autofree_prefixed_fresh_local_final_clone_cleanup_source() string {
+	return 'module main
+
+fn fill_array_from_prefixed_fresh_local(mut dst []int) {
+	seed := 1
+	mut arr := []int{}
+	dst = arr.clone()
+}
+
+fn main() {
+	mut dst := []int{}
+	fill_array_from_prefixed_fresh_local(mut dst)
+}
+'
+}
+
 fn autofree_cap_only_array_cleanup_source() string {
 	return 'module main
 
@@ -871,6 +887,8 @@ fn assert_autofree_two_array_cleanup_absent_in_fn(res CleancCliResult, fn_name s
 fn assert_autofree_fresh_local_final_clone_cleanup_present_in_fn(res CleancCliResult, fn_name string) {
 	assert_cli_success(res)
 	body := generated_c_function_body_or_fail(res, fn_name)
+	free_count := generated_c_body_substring_count(body, 'array__free(')
+	assert free_count == 1, res.c_source
 	final_clone_idx := body.index_after('dst = array__clone', 0) or {
 		assert false, res.c_source
 		return
@@ -881,6 +899,20 @@ fn assert_autofree_fresh_local_final_clone_cleanup_present_in_fn(res CleancCliRe
 	}
 	assert final_clone_idx < cleanup_idx, res.c_source
 	assert !body[..final_clone_idx].contains('array__free(&arr);'), res.c_source
+	assert !body.contains('array__free(&seed);'), res.c_source
+	assert !body.contains('array__free(&dst);'), res.c_source
+	assert !body.contains('array__free(dst);'), res.c_source
+	assert !body.contains('string__free'), res.c_source
+}
+
+fn assert_autofree_fresh_local_final_clone_cleanup_absent_in_fn(res CleancCliResult, fn_name string) {
+	assert res.exit_code == 0, res.output
+	assert res.c_source.len > 0, res.output
+	body := generated_c_function_body_or_fail(res, fn_name)
+	free_count := generated_c_body_substring_count(body, 'array__free(')
+	assert free_count == 0, res.c_source
+	assert !body.contains('array__free(&arr);'), res.c_source
+	assert !body.contains('array__free(&seed);'), res.c_source
 	assert !body.contains('array__free(&dst);'), res.c_source
 	assert !body.contains('array__free(dst);'), res.c_source
 	assert !body.contains('string__free'), res.c_source
@@ -3099,6 +3131,8 @@ fn test_cleanc_autofree_array_cleanup_respects_target_runtime_contract() {
 	transfer_prefixed_source := autofree_transfer_prefixed_array_cleanup_source()
 	rule110_style_source := autofree_rule110_style_clone_cleanup_source()
 	fresh_local_final_clone_source := autofree_fresh_local_final_clone_cleanup_source()
+	prefixed_fresh_local_final_clone_source :=
+		autofree_prefixed_fresh_local_final_clone_cleanup_source()
 	cap_only_source := autofree_cap_only_array_cleanup_source()
 	len_only_source := autofree_len_only_array_cleanup_source()
 	single_final_len_source := autofree_single_final_len_array_cleanup_source()
@@ -3421,6 +3455,32 @@ fn test_cleanc_autofree_array_cleanup_respects_target_runtime_contract() {
 		'autofree_fresh_local_final_clone_cleanup_hosted.c'))
 	assert_autofree_fresh_local_final_clone_cleanup_present_in_fn(fresh_local_final_clone_res,
 		'fill_array_from_fresh_local')
+
+	prefixed_fresh_local_final_clone_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_prefixed_fresh_local_final_clone_cleanup_hosted', cleanc_autofree_hosted_args(),
+		prefixed_fresh_local_final_clone_source, os.join_path(tmp_dir,
+		'autofree_prefixed_fresh_local_final_clone_cleanup_hosted.c'))
+	assert_autofree_fresh_local_final_clone_cleanup_present_in_fn(prefixed_fresh_local_final_clone_res,
+		'fill_array_from_prefixed_fresh_local')
+
+	prefixed_fresh_local_final_clone_disabled_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_prefixed_fresh_local_final_clone_cleanup_disabled',
+		cleanc_autofree_disabled_args(), prefixed_fresh_local_final_clone_source, os.join_path(tmp_dir,
+		'autofree_prefixed_fresh_local_final_clone_cleanup_disabled.c'))
+	prefixed_fresh_local_final_clone_freestanding_linux_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_prefixed_fresh_local_final_clone_cleanup_freestanding_linux',
+		cleanc_autofree_freestanding_linux_args(), prefixed_fresh_local_final_clone_source, os.join_path(tmp_dir,
+		'autofree_prefixed_fresh_local_final_clone_cleanup_freestanding_linux.c'))
+	prefixed_fresh_local_final_clone_none_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_prefixed_fresh_local_final_clone_cleanup_none', cleanc_autofree_none_args(),
+		prefixed_fresh_local_final_clone_source, os.join_path(tmp_dir,
+		'autofree_prefixed_fresh_local_final_clone_cleanup_none.c'))
+	assert_autofree_fresh_local_final_clone_cleanup_absent_in_fn(prefixed_fresh_local_final_clone_disabled_res,
+		'fill_array_from_prefixed_fresh_local')
+	assert_autofree_fresh_local_final_clone_cleanup_absent_in_fn(prefixed_fresh_local_final_clone_freestanding_linux_res,
+		'fill_array_from_prefixed_fresh_local')
+	assert_autofree_fresh_local_final_clone_cleanup_absent_in_fn(prefixed_fresh_local_final_clone_none_res,
+		'fill_array_from_prefixed_fresh_local')
 
 	multi_param_fresh_local_final_clone_res := run_v2_to_output(v2_binary, tmp_dir,
 		'autofree_multi_param_fresh_local_final_clone_cleanup_hosted',

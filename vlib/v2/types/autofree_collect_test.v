@@ -6577,6 +6577,184 @@ fn test_collect_autofree_facts_collects_fresh_scalar_array_final_clone_cleanup()
 	autofree_test_assert_fresh_array_final_clone_cleanup(env, flat, fn_name, array_type)
 }
 
+fn test_collect_autofree_facts_collects_prefixed_fresh_scalar_array_final_clone_cleanup() {
+	mut env := Environment.new()
+	fn_name := 'prefixed_fresh_array_final_clone_cleanup'
+	array_type := autofree_test_move_proof_array_type()
+	flat := autofree_test_flat_with_prefixed_fresh_array_final_clone_cleanup(fn_name, autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), []ast.Stmt{})
+	autofree_test_prepare_prefixed_fresh_array_final_clone_cleanup_env(mut env, fn_name,
+		array_type, array_type, map[string]Type{})
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_fresh_array_final_clone_cleanup(env, flat, fn_name, array_type)
+}
+
+fn test_collect_autofree_facts_rejects_prefixed_fresh_scalar_array_final_clone_cleanup_invalid_prefix_rhs() {
+	array_type := autofree_test_move_proof_array_type()
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_prefix_call', autofree_test_assign_stmt_with_op(autofree_test_ident_expr('seed',
+		autofree_test_other_lhs_pos), autofree_test_call_expr('seed_value', autofree_test_int_expr('1',
+		autofree_test_key_pos), autofree_test_call_pos), .decl_assign, 200), autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), array_type, array_type, map[string]Type{}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_prefix_selector', autofree_test_assign_stmt_with_op(autofree_test_ident_expr('seed',
+		autofree_test_other_lhs_pos), autofree_test_selector_expr_with_root_pos('holder', 'value',
+		autofree_test_holder_root_pos, autofree_test_field_pos, autofree_test_call_pos),
+		.decl_assign, 200), autofree_test_empty_array_expr('int', autofree_test_rhs_pos),
+		array_type, array_type, map[string]Type{}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_prefix_index', autofree_test_assign_stmt_with_op(autofree_test_ident_expr('seed',
+		autofree_test_other_lhs_pos), autofree_test_index_expr_from_lhs(autofree_test_ident_expr('items',
+		autofree_test_second_lhs_pos), autofree_test_int_expr('0', autofree_test_key_pos),
+		autofree_test_index_pos), .decl_assign, 200), autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), array_type, array_type, map[string]Type{}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_prefix_infix', autofree_test_assign_stmt_with_op(autofree_test_ident_expr('seed',
+		autofree_test_other_lhs_pos), autofree_test_infix_expr(autofree_test_int_expr('1',
+		autofree_test_key_pos), autofree_test_int_expr('2', autofree_test_third_rhs_pos), .plus,
+		autofree_test_return_type_pos), .decl_assign, 200), autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), array_type, array_type, map[string]Type{}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_prefix_ident', autofree_test_assign_stmt_with_op(autofree_test_ident_expr('seed',
+		autofree_test_other_lhs_pos), autofree_test_ident_expr('n', autofree_test_key_pos),
+		.decl_assign, 200), autofree_test_empty_array_expr('int', autofree_test_rhs_pos),
+		array_type, array_type, {
+		'n': Type(int_)
+	}, []ast.Stmt{})
+}
+
+fn test_collect_autofree_facts_rejects_prefixed_fresh_scalar_array_final_clone_cleanup_invalid_prefix_target() {
+	array_type := autofree_test_move_proof_array_type()
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_prefix_writes_arr', autofree_test_assign_stmt_with_op(autofree_test_ident_expr('arr',
+		autofree_test_other_lhs_pos), autofree_test_int_expr('1', autofree_test_key_pos),
+		.decl_assign, 200), autofree_test_empty_array_expr('int', autofree_test_rhs_pos),
+		array_type, array_type, map[string]Type{}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_prefix_writes_dst', autofree_test_assign_stmt_with_op(autofree_test_ident_expr('dst',
+		autofree_test_other_lhs_pos), autofree_test_int_expr('1', autofree_test_key_pos),
+		.decl_assign, 200), autofree_test_empty_array_expr('int', autofree_test_rhs_pos),
+		array_type, array_type, map[string]Type{}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_prefix_reads_dst', autofree_test_assign_stmt_with_op(autofree_test_ident_expr('seed',
+		autofree_test_other_lhs_pos), autofree_test_ident_expr('dst', autofree_test_key_pos),
+		.decl_assign, 200), autofree_test_empty_array_expr('int', autofree_test_rhs_pos),
+		array_type, array_type, map[string]Type{}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_prefix_mut', autofree_test_assign_stmt_with_op(autofree_test_modifier_expr(.key_mut, autofree_test_ident_expr('seed',
+		autofree_test_other_lhs_pos), autofree_test_other_lhs_pos), autofree_test_int_expr('1',
+		autofree_test_key_pos), .decl_assign, 200), autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), array_type, array_type, map[string]Type{}, []ast.Stmt{})
+}
+
+fn test_collect_autofree_facts_rejects_prefixed_fresh_scalar_array_final_clone_cleanup_invalid_prefix_value() {
+	array_type := autofree_test_move_proof_array_type()
+	string_type := Type(string_)
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_prefix_array', autofree_test_assign_stmt_with_op(autofree_test_ident_expr('seed',
+		autofree_test_other_lhs_pos), autofree_test_empty_array_expr('int', autofree_test_key_pos),
+		.decl_assign, 200), autofree_test_empty_array_expr('int', autofree_test_rhs_pos),
+		array_type, array_type, map[string]Type{}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_prefix_string', autofree_test_assign_stmt_with_op(autofree_test_ident_expr('seed',
+		autofree_test_other_lhs_pos), autofree_test_string_expr('x', autofree_test_key_pos),
+		.decl_assign, 200), autofree_test_empty_array_expr('int', autofree_test_rhs_pos),
+		array_type, array_type, {
+		'seed': string_type
+	}, []ast.Stmt{})
+}
+
+fn test_collect_autofree_facts_rejects_prefixed_fresh_scalar_array_final_clone_cleanup_invalid_source() {
+	array_type := autofree_test_move_proof_array_type()
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_source_cap',
+		autofree_test_prefixed_final_clone_scalar_prefix_stmt(), autofree_test_empty_array_expr_with_cap_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), array_type, array_type, {
+		'n': Type(int_)
+	}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_source_len',
+		autofree_test_prefixed_final_clone_scalar_prefix_stmt(), autofree_test_empty_array_expr_with_len_expr('int', autofree_test_ident_expr('n',
+		autofree_test_other_rhs_pos), autofree_test_rhs_pos), array_type, array_type, {
+		'n': Type(int_)
+	}, []ast.Stmt{})
+	string_array_type := Type(Array{
+		elem_type: Type(string_)
+	})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_source_resourceful',
+		autofree_test_prefixed_final_clone_scalar_prefix_stmt(), autofree_test_empty_array_expr('string',
+		autofree_test_rhs_pos), string_array_type, string_array_type, map[string]Type{},
+		[]ast.Stmt{})
+}
+
+fn test_collect_autofree_facts_rejects_prefixed_fresh_scalar_array_final_clone_cleanup_invalid_final_clone() {
+	array_type := autofree_test_move_proof_array_type()
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected_custom('prefixed_final_clone_local_dst',
+		[]ast.Parameter{}, autofree_test_prefixed_final_clone_scalar_prefix_stmt(), autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), autofree_test_ident_expr('dst', autofree_test_second_lhs_pos), autofree_test_clone_call_expr('arr',
+		autofree_test_second_rhs_pos), array_type, array_type, map[string]Type{}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected_custom('prefixed_final_clone_non_mut_dst', [
+		autofree_test_param_at('dst', '[]int', autofree_test_source_param_pos),
+	], autofree_test_prefixed_final_clone_scalar_prefix_stmt(), autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), autofree_test_ident_expr('dst', autofree_test_second_lhs_pos), autofree_test_clone_call_expr('arr',
+		autofree_test_second_rhs_pos), array_type, array_type, map[string]Type{}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected_custom('prefixed_final_clone_unknown_dst', [
+		autofree_test_mut_param_at('known', '[]int', autofree_test_source_param_pos),
+	], autofree_test_prefixed_final_clone_scalar_prefix_stmt(), autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), autofree_test_ident_expr('dst', autofree_test_second_lhs_pos), autofree_test_clone_call_expr('arr',
+		autofree_test_second_rhs_pos), array_type, array_type, map[string]Type{}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected_custom('prefixed_final_clone_wrong_receiver', [
+		autofree_test_mut_param_at('dst', '[]int', autofree_test_source_param_pos),
+	], autofree_test_prefixed_final_clone_scalar_prefix_stmt(), autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), autofree_test_ident_expr('dst', autofree_test_second_lhs_pos), autofree_test_clone_call_expr('other',
+		autofree_test_second_rhs_pos), array_type, array_type, map[string]Type{}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_local_source_clone',
+		autofree_test_prefixed_final_clone_scalar_prefix_stmt(), autofree_test_clone_call_expr('source',
+		autofree_test_rhs_pos), array_type, array_type, {
+		'source': array_type
+	}, []ast.Stmt{})
+}
+
+fn test_collect_autofree_facts_rejects_prefixed_fresh_scalar_array_final_clone_cleanup_extra_or_control() {
+	array_type := autofree_test_move_proof_array_type()
+	two_prefix_fn := 'prefixed_final_clone_two_prefixes'
+	two_prefix_flat := autofree_test_flat_with_free_function(two_prefix_fn, [
+		autofree_test_mut_param_at('dst', '[]int', autofree_test_source_param_pos),
+	], [
+		autofree_test_prefixed_final_clone_scalar_prefix_stmt(),
+		autofree_test_assign_stmt_with_op(autofree_test_ident_expr('other',
+			autofree_test_third_lhs_pos), autofree_test_int_expr('2', autofree_test_third_rhs_pos),
+			.decl_assign, 201),
+		autofree_test_assign_stmt_with_op(autofree_test_modifier_expr(.key_mut, autofree_test_ident_expr('arr',
+			autofree_test_lhs_pos), autofree_test_lhs_pos), autofree_test_empty_array_expr('int',
+			autofree_test_rhs_pos), .decl_assign, 202),
+		autofree_test_assign_stmt_with_op(autofree_test_ident_expr('dst',
+			autofree_test_second_lhs_pos), autofree_test_clone_call_expr('arr',
+			autofree_test_second_rhs_pos), .assign, 203),
+	])
+	mut two_prefix_env := Environment.new()
+	autofree_test_prepare_prefixed_fresh_array_final_clone_cleanup_env(mut two_prefix_env,
+		two_prefix_fn, array_type, array_type, {
+		'other': Type(int_)
+	})
+
+	two_prefix_env.collect_autofree_facts_from_flat(&two_prefix_flat)
+
+	autofree_test_assert_no_fresh_locals_or_transfers(two_prefix_env)
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_extra_after_clone',
+		autofree_test_prefixed_final_clone_scalar_prefix_stmt(), autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), array_type, array_type, map[string]Type{}, [
+		autofree_test_assign_stmt_with_op(autofree_test_ident_expr('after',
+			autofree_test_third_lhs_pos), autofree_test_int_expr('2', autofree_test_third_rhs_pos),
+			.decl_assign, 203),
+	])
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_prefix_return', autofree_test_return_stmt(autofree_test_int_expr('1',
+		autofree_test_key_pos)), autofree_test_empty_array_expr('int', autofree_test_rhs_pos),
+		array_type, array_type, map[string]Type{}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected('prefixed_final_clone_prefix_branch',
+		autofree_test_flow_control_stmt(.key_break), autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), array_type, array_type, map[string]Type{}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected_custom('prefixed_final_clone_final_mutation', [
+		autofree_test_mut_param_at('dst', '[]int', autofree_test_source_param_pos),
+	], autofree_test_prefixed_final_clone_scalar_prefix_stmt(), autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), autofree_test_ident_expr('arr', autofree_test_second_lhs_pos), autofree_test_empty_array_expr('int',
+		autofree_test_second_rhs_pos), array_type, array_type, map[string]Type{}, []ast.Stmt{})
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected_custom('prefixed_final_clone_final_alias', [
+		autofree_test_mut_param_at('dst', '[]int', autofree_test_source_param_pos),
+	], autofree_test_prefixed_final_clone_scalar_prefix_stmt(), autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), autofree_test_ident_expr('alias', autofree_test_second_lhs_pos), autofree_test_ident_expr('arr',
+		autofree_test_second_rhs_pos), array_type, array_type, map[string]Type{}, []ast.Stmt{})
+}
+
 fn test_collect_autofree_facts_collects_fresh_scalar_array_final_clone_cleanup_from_cap_param() {
 	mut env := Environment.new()
 	fn_name := 'fresh_array_final_clone_cap_param'
@@ -20012,6 +20190,35 @@ fn autofree_test_flat_with_fresh_array_final_clone_cleanup(fn_name string, elem_
 		autofree_test_second_rhs_pos), extra_stmts)
 }
 
+fn autofree_test_flat_with_prefixed_fresh_array_final_clone_cleanup(fn_name string, rhs ast.Expr, extra_stmts []ast.Stmt) ast.FlatAst {
+	return autofree_test_flat_with_prefixed_fresh_array_final_clone_cleanup_custom(fn_name, [
+		autofree_test_mut_param_at('dst', '[]int', autofree_test_source_param_pos),
+	], autofree_test_prefixed_final_clone_scalar_prefix_stmt(), rhs, autofree_test_ident_expr('dst',
+		autofree_test_second_lhs_pos), autofree_test_clone_call_expr('arr',
+		autofree_test_second_rhs_pos), extra_stmts)
+}
+
+fn autofree_test_flat_with_prefixed_fresh_array_final_clone_cleanup_custom(fn_name string, params []ast.Parameter, prefix_stmt ast.Stmt, rhs ast.Expr, final_lhs ast.Expr, final_rhs ast.Expr, extra_stmts []ast.Stmt) ast.FlatAst {
+	assign := autofree_test_assign_stmt_with_op(autofree_test_modifier_expr(.key_mut, autofree_test_ident_expr('arr',
+		autofree_test_lhs_pos), autofree_test_lhs_pos), rhs, .decl_assign, 201)
+	final_assign := autofree_test_assign_stmt_with_op(final_lhs, final_rhs, .assign, 202)
+	mut stmts := [
+		prefix_stmt,
+		assign,
+		final_assign,
+	]
+	for stmt in extra_stmts {
+		stmts << stmt
+	}
+	return autofree_test_flat_with_free_function(fn_name, params, stmts)
+}
+
+fn autofree_test_prefixed_final_clone_scalar_prefix_stmt() ast.Stmt {
+	return autofree_test_assign_stmt_with_op(autofree_test_ident_expr('seed',
+		autofree_test_other_lhs_pos), autofree_test_int_expr('1', autofree_test_key_pos),
+		.decl_assign, 200)
+}
+
 fn autofree_test_flat_with_fresh_array_final_clone_cleanup_custom(fn_name string, params []ast.Parameter, rhs ast.Expr, final_lhs ast.Expr, final_rhs ast.Expr, extra_stmts []ast.Stmt) ast.FlatAst {
 	assign := autofree_test_decl_assign_stmt(autofree_test_modifier_expr(.key_mut, autofree_test_ident_expr('arr',
 		autofree_test_lhs_pos), autofree_test_lhs_pos), rhs)
@@ -24735,6 +24942,31 @@ fn autofree_test_prepare_fresh_array_final_clone_cleanup_env(mut env Environment
 	env.set_expr_type(autofree_test_second_rhs_pos, array_type)
 }
 
+fn autofree_test_prepare_prefixed_fresh_array_final_clone_cleanup_env(mut env Environment, fn_name string, dst_type Type, array_type Type, extra_vars map[string]Type) {
+	mut vars := {
+		'dst':  dst_type
+		'arr':  array_type
+		'seed': Type(int_)
+	}
+	for name, typ in extra_vars {
+		vars[name] = typ
+	}
+	autofree_test_add_scope_with_var_types(mut env, fn_name, vars)
+	env.set_expr_type(autofree_test_source_param_pos, dst_type)
+	env.set_expr_type(autofree_test_lhs_pos, array_type)
+	env.set_expr_type(autofree_test_rhs_pos, array_type)
+	env.set_expr_type(autofree_test_second_lhs_pos, dst_type)
+	env.set_expr_type(autofree_test_second_rhs_pos, array_type)
+	env.set_expr_type(autofree_test_other_lhs_pos, vars['seed'] or { Type(int_) })
+	env.set_expr_type(autofree_test_key_pos, vars['seed'] or { Type(int_) })
+	env.set_expr_type(autofree_test_other_rhs_pos, Type(int_))
+	env.set_expr_type(autofree_test_third_lhs_pos, Type(int_))
+	env.set_expr_type(autofree_test_third_rhs_pos, Type(int_))
+	env.set_expr_type(autofree_test_return_type_pos, Type(int_))
+	env.set_expr_type(autofree_test_call_pos, Type(int_))
+	env.set_expr_type(autofree_test_index_pos, Type(int_))
+}
+
 fn autofree_test_prepare_fresh_array_final_clone_cleanup_env_with_cap_param(mut env Environment, fn_name string, array_type Type, cap_type Type) {
 	autofree_test_add_scope_with_var_types(mut env, fn_name, {
 		'dst': array_type
@@ -26144,6 +26376,25 @@ fn autofree_test_assert_single_fresh_array_final_len_cleanup(env Environment, fn
 	assert env.autofree_release_eligibility_by_fn_key.len == 0
 	assert env.autofree_releases_by_fn_key.len == 0
 	assert env.autofree_helper_roots.len == 0
+}
+
+fn autofree_test_assert_prefixed_fresh_array_final_clone_rejected(fn_name string, prefix_stmt ast.Stmt, rhs ast.Expr, dst_type Type, array_type Type, extra_vars map[string]Type, extra_stmts []ast.Stmt) {
+	autofree_test_assert_prefixed_fresh_array_final_clone_rejected_custom(fn_name, [
+		autofree_test_mut_param_at('dst', '[]int', autofree_test_source_param_pos),
+	], prefix_stmt, rhs, autofree_test_ident_expr('dst', autofree_test_second_lhs_pos), autofree_test_clone_call_expr('arr',
+		autofree_test_second_rhs_pos), dst_type, array_type, extra_vars, extra_stmts)
+}
+
+fn autofree_test_assert_prefixed_fresh_array_final_clone_rejected_custom(fn_name string, params []ast.Parameter, prefix_stmt ast.Stmt, rhs ast.Expr, final_lhs ast.Expr, final_rhs ast.Expr, dst_type Type, array_type Type, extra_vars map[string]Type, extra_stmts []ast.Stmt) {
+	flat := autofree_test_flat_with_prefixed_fresh_array_final_clone_cleanup_custom(fn_name,
+		params, prefix_stmt, rhs, final_lhs, final_rhs, extra_stmts)
+	mut env := Environment.new()
+	autofree_test_prepare_prefixed_fresh_array_final_clone_cleanup_env(mut env, fn_name, dst_type,
+		array_type, extra_vars)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_no_fresh_locals_or_transfers(env)
 }
 
 fn autofree_test_prepare_two_fresh_array_env(mut env Environment, fn_name string, first_name string, second_name string, array_type Type) {
