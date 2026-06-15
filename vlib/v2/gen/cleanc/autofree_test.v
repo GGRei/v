@@ -5324,6 +5324,18 @@ fn build_len_array_final_len(n int) {
 '
 }
 
+fn autofree_statement_cleanup_emit_test_local_array_push_literal_sink_source() string {
+	return 'module main
+
+fn build_local_array_push_literal_sink() {
+	mut items := []int{}
+	items << 1
+	items << 2
+	sink := items.len
+}
+'
+}
+
 fn autofree_statement_cleanup_emit_test_two_array_natural_release_source() string {
 	return 'module main
 
@@ -5487,6 +5499,11 @@ fn autofree_statement_cleanup_emit_test_len_only_natural_release_fixture() Autof
 fn autofree_statement_cleanup_emit_test_single_final_len_fixture() AutofreeStatementCleanupEmitPipelineFixture {
 	return autofree_statement_cleanup_emit_test_pipeline_fixture('single_final_len',
 		autofree_statement_cleanup_emit_test_single_final_len_source())
+}
+
+fn autofree_statement_cleanup_emit_test_local_array_push_literal_sink_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('local_array_push_literal_sink',
+		autofree_statement_cleanup_emit_test_local_array_push_literal_sink_source())
 }
 
 struct AutofreeStatementSingletonFinalLenMatcherFixture {
@@ -5932,6 +5949,60 @@ fn test_autofree_statement_cleanup_emit_single_final_len_pipeline_reaches_contex
 		'build_cap_array_final_len', 'cap-only scalar array literal')
 	autofree_statement_cleanup_emit_test_assert_single_final_len_pipeline_reaches_context(&fixture,
 		'build_len_array_final_len', 'len-only scalar array literal')
+}
+
+fn test_autofree_statement_cleanup_emit_local_array_push_literal_sink_pipeline_reaches_context() {
+	fixture := autofree_statement_cleanup_emit_test_local_array_push_literal_sink_fixture()
+	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat,
+		'build_local_array_push_literal_sink') or {
+		assert false
+		return
+	}
+	mut g := Gen.new_with_env_pref_and_flat(&fixture.flat, fixture.env, fixture.prefs)
+	fn_key := g.autofree_statement_cleanup_emit_fn_key_from_cursor(cursor.file_cursor,
+		cursor.fn_cursor) or {
+		assert false
+		return
+	}
+	assert fn_key == 'build_local_array_push_literal_sink'
+	transfers := fixture.env.autofree_transfers_by_fn_key[fn_key] or {
+		[]types.AutofreeTransferFact{}
+	}
+	assert transfers.len == 0
+	points := fixture.env.autofree_release_insertion_points_by_fn_key[fn_key] or {
+		[]types.AutofreeReleaseInsertionPointFact{}
+	}
+	assert points.len == 1
+	assert points[0].name == 'items'
+	assert points[0].move_kind == .fresh_local_binding
+	assert points[0].source_endpoint.reason == 'empty dynamic array literal'
+	assert points[0].release_after_node_id != points[0].node_id
+	assert points[0].release_after_pos_id > points[0].pos_id
+	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
+	assert bridge_facts.len == 1
+	anchors := autofree_statement_anchor_facts_from_bridge_facts(bridge_facts)
+	assert anchors.len == 1
+	locations := autofree_statement_location_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, anchors)
+	assert locations.len == 1
+	assert locations[0].stmt_node_id == points[0].release_after_node_id
+	assert locations[0].stmt_pos_id == points[0].release_after_pos_id
+	previews := autofree_statement_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, locations)
+	assert previews.len == 1
+	intents := autofree_statement_intent_facts_from_previews(previews)
+	assert intents.len == 1
+	slots := autofree_statement_emission_slot_facts_from_intents(intents)
+	assert slots.len == 1
+	cleanup_previews := autofree_statement_cleanup_preview_facts_from_slots(slots)
+	assert cleanup_previews.len == 1
+	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, cleanup_previews)
+	assert hook_previews.len == 1
+	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
+	assert contexts.len == 1
+	assert contexts[0].name == 'items'
+	assert contexts[0].cleanup_text == 'array__free(&items);'
 }
 
 fn autofree_statement_cleanup_emit_test_assert_two_array_pipeline_reaches_context(fixture &AutofreeStatementCleanupEmitPipelineFixture, fn_name string, reason string) {

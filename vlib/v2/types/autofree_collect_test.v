@@ -178,6 +178,16 @@ struct AutofreeLenOnlyFreshArrayRejectCase {
 	mut_lhs      bool
 }
 
+struct AutofreeLocalArrayPushRejectCase {
+	name        string
+	stmt        ast.Stmt
+	params      []ast.Parameter
+	extra_vars  map[string]Type
+	extra_types map[int]Type
+	global_name string
+	global_type Type
+}
+
 fn test_collect_autofree_facts_collects_scalar_array_clone_cleanup_after_final_clone_assignment() {
 	mut env := Environment.new()
 	fn_name := 'scalar_array_clone_cleanup'
@@ -8109,6 +8119,442 @@ fn test_collect_autofree_facts_rejects_single_fresh_array_final_len_invalid_sour
 		autofree_test_single_fresh_final_len_stmt(), array_type, {
 		'n': Type(int_)
 	})
+}
+
+fn test_collect_autofree_facts_collects_local_array_push_cleanup_after_one_literal_push_sink() {
+	mut env := Environment.new()
+	fn_name := 'local_array_push_one_literal_sink'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_local_array_push_sink(fn_name, [
+		autofree_test_local_array_push_literal_stmt('1', autofree_test_second_rhs_pos, 201),
+	])
+	autofree_test_prepare_local_array_push_sink_env(mut env, fn_name, array_type, {
+		autofree_test_second_rhs_pos: Type(int_)
+	})
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_single_fresh_array_final_len_cleanup(env, fn_name,
+		'empty dynamic array literal', 202)
+}
+
+fn test_collect_autofree_facts_collects_local_array_push_cleanup_after_two_literal_pushes_sink() {
+	mut env := Environment.new()
+	fn_name := 'local_array_push_two_literals_sink'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_local_array_push_sink(fn_name, [
+		autofree_test_local_array_push_literal_stmt('1', autofree_test_second_rhs_pos, 201),
+		autofree_test_local_array_push_literal_stmt('2', autofree_test_third_rhs_pos, 202),
+	])
+	autofree_test_prepare_local_array_push_sink_env(mut env, fn_name, array_type, {
+		autofree_test_second_rhs_pos: Type(int_)
+		autofree_test_third_rhs_pos:  Type(int_)
+	})
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_single_fresh_array_final_len_cleanup(env, fn_name,
+		'empty dynamic array literal', 203)
+}
+
+fn test_collect_autofree_facts_collects_local_array_push_cleanup_after_lowered_literal_pushes_sink() {
+	mut env := Environment.new()
+	fn_name := 'local_array_push_lowered_literals_sink'
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	flat := autofree_test_flat_with_local_array_push_sink(fn_name, [
+		autofree_test_local_array_push_lowered_literal_stmt('1', autofree_test_second_rhs_pos, 201),
+		autofree_test_local_array_push_lowered_literal_stmt('2', autofree_test_third_rhs_pos, 202),
+	])
+	autofree_test_prepare_local_array_push_sink_env(mut env, fn_name, array_type, {
+		autofree_test_second_rhs_pos: Type(int_)
+		autofree_test_third_rhs_pos:  Type(int_)
+	})
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_single_fresh_array_final_len_cleanup(env, fn_name,
+		'empty dynamic array literal', 203)
+}
+
+fn test_collect_autofree_facts_rejects_local_array_push_return_items_len_direct() {
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	return_stmt := autofree_test_return_stmt(autofree_test_single_fresh_final_len_rhs())
+	autofree_test_assert_local_array_push_sink_rejected('local_array_push_return_items_len', [
+		autofree_test_local_array_push_literal_stmt('1', autofree_test_second_rhs_pos, 201),
+		return_stmt,
+	], array_type, map[string]Type{}, {
+		autofree_test_second_rhs_pos: Type(int_)
+		autofree_test_call_pos:       Type(int_)
+	}, []ast.Parameter{})
+}
+
+fn test_collect_autofree_facts_rejects_local_array_push_materialized_len_then_return() {
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	autofree_test_assert_local_array_push_sink_rejected('local_array_push_sink_then_return', [
+		autofree_test_local_array_push_literal_stmt('1', autofree_test_second_rhs_pos, 201),
+		autofree_test_local_array_push_sink_stmt(202),
+		autofree_test_return_stmt(autofree_test_ident_expr('sink', autofree_test_return_pos)),
+	], array_type, {
+		'sink': Type(int_)
+	}, {
+		autofree_test_second_rhs_pos: Type(int_)
+		autofree_test_return_pos:     Type(int_)
+	}, []ast.Parameter{})
+}
+
+fn test_collect_autofree_facts_rejects_local_array_push_escape_and_mutation() {
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	map_type := Type(Map{
+		key_type:   Type(string_)
+		value_type: array_type
+	})
+	holder_type := autofree_test_holder_type(array_type)
+	invalid_cases := [
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_alias'
+			stmt:        autofree_test_assign_stmt_with_op(autofree_test_ident_expr('alias',
+				autofree_test_third_lhs_pos), autofree_test_ident_expr('items',
+				autofree_test_third_rhs_pos), .decl_assign, 202)
+			extra_vars:  {
+				'alias': array_type
+			}
+			extra_types: {
+				autofree_test_second_rhs_pos: Type(int_)
+				autofree_test_third_lhs_pos:  array_type
+				autofree_test_third_rhs_pos:  array_type
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_reassign'
+			stmt:        autofree_test_assign_stmt_with_op(autofree_test_ident_expr('items',
+				autofree_test_third_lhs_pos), autofree_test_empty_array_expr('int',
+				autofree_test_third_rhs_pos), .assign, 202)
+			extra_types: {
+				autofree_test_second_rhs_pos: Type(int_)
+				autofree_test_third_lhs_pos:  array_type
+				autofree_test_third_rhs_pos:  array_type
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_return_array'
+			stmt:        autofree_test_return_stmt(autofree_test_ident_expr('items',
+				autofree_test_return_pos))
+			extra_types: {
+				autofree_test_second_rhs_pos: Type(int_)
+				autofree_test_return_pos:     array_type
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_global_store'
+			stmt:        autofree_test_assign_stmt_with_op(autofree_test_ident_expr('cached',
+				autofree_test_third_lhs_pos), autofree_test_ident_expr('items',
+				autofree_test_third_rhs_pos), .assign, 202)
+			extra_vars:  {
+				'cached': array_type
+			}
+			global_name: 'cached'
+			global_type: array_type
+			extra_types: {
+				autofree_test_second_rhs_pos: Type(int_)
+				autofree_test_third_lhs_pos:  array_type
+				autofree_test_third_rhs_pos:  array_type
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_field_store'
+			stmt:        autofree_test_assign_stmt_with_op(autofree_test_selector_expr_with_root_pos('holder',
+				'items', autofree_test_holder_root_pos, autofree_test_field_pos,
+				autofree_test_third_lhs_pos), autofree_test_ident_expr('items',
+				autofree_test_third_rhs_pos), .assign, 202)
+			extra_vars:  {
+				'holder': holder_type
+			}
+			extra_types: {
+				autofree_test_second_rhs_pos:  Type(int_)
+				autofree_test_holder_root_pos: holder_type
+				autofree_test_third_lhs_pos:   array_type
+				autofree_test_third_rhs_pos:   array_type
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_map_store'
+			stmt:        autofree_test_assign_stmt_with_op(autofree_test_index_expr_from_lhs(autofree_test_ident_expr('cache',
+				autofree_test_cache_root_pos), autofree_test_string_expr('key',
+				autofree_test_key_pos), autofree_test_third_lhs_pos), autofree_test_ident_expr('items',
+				autofree_test_third_rhs_pos), .assign, 202)
+			extra_vars:  {
+				'cache': map_type
+			}
+			extra_types: {
+				autofree_test_second_rhs_pos: Type(int_)
+				autofree_test_cache_root_pos: map_type
+				autofree_test_key_pos:        Type(string_)
+				autofree_test_third_lhs_pos:  array_type
+				autofree_test_third_rhs_pos:  array_type
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_index_store'
+			stmt:        autofree_test_assign_stmt_with_op(autofree_test_index_expr_from_lhs(autofree_test_ident_expr('slots',
+				autofree_test_slots_root_pos), autofree_test_int_expr('0',
+				autofree_test_slots_index_pos), autofree_test_third_lhs_pos), autofree_test_ident_expr('items',
+				autofree_test_third_rhs_pos), .assign, 202)
+			extra_vars:  {
+				'slots': Type(Array{
+					elem_type: array_type
+				})
+			}
+			extra_types: {
+				autofree_test_second_rhs_pos:  Type(int_)
+				autofree_test_slots_root_pos:  Type(Array{
+					elem_type: array_type
+				})
+				autofree_test_slots_index_pos: Type(int_)
+				autofree_test_third_lhs_pos:   array_type
+				autofree_test_third_rhs_pos:   array_type
+			}
+		},
+	]
+	for invalid_case in invalid_cases {
+		autofree_test_assert_local_array_push_sink_rejected_with_global(invalid_case.name, [
+			autofree_test_local_array_push_literal_stmt('1', autofree_test_second_rhs_pos, 201),
+			invalid_case.stmt,
+			autofree_test_local_array_push_sink_stmt(203),
+		], array_type, invalid_case.extra_vars, invalid_case.extra_types, []ast.Parameter{},
+			invalid_case.global_name, invalid_case.global_type)
+	}
+}
+
+fn test_collect_autofree_facts_rejects_local_array_push_bad_statement_shapes() {
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	invalid_cases := [
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_param_store'
+			stmt:        autofree_test_assign_stmt_with_op(autofree_test_ident_expr('dst',
+				autofree_test_third_lhs_pos), autofree_test_ident_expr('items',
+				autofree_test_third_rhs_pos), .assign, 202)
+			params:      [
+				autofree_test_mut_param_at('dst', '[]int', autofree_test_source_param_pos),
+			]
+			extra_vars:  {
+				'dst': array_type
+			}
+			extra_types: {
+				autofree_test_second_rhs_pos:   Type(int_)
+				autofree_test_source_param_pos: array_type
+				autofree_test_third_lhs_pos:    array_type
+				autofree_test_third_rhs_pos:    array_type
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_param_rhs'
+			stmt:        autofree_test_local_array_push_ident_stmt('n',
+				autofree_test_third_rhs_pos, 202)
+			params:      [
+				autofree_test_param_at('n', 'int', autofree_test_source_param_pos),
+			]
+			extra_vars:  {
+				'n': Type(int_)
+			}
+			extra_types: {
+				autofree_test_second_rhs_pos:   Type(int_)
+				autofree_test_source_param_pos: Type(int_)
+				autofree_test_third_rhs_pos:    Type(int_)
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_global_rhs'
+			stmt:        autofree_test_local_array_push_ident_stmt('global_value',
+				autofree_test_third_rhs_pos, 202)
+			extra_vars:  {
+				'global_value': Type(int_)
+			}
+			global_name: 'global_value'
+			global_type: Type(int_)
+			extra_types: {
+				autofree_test_second_rhs_pos: Type(int_)
+				autofree_test_third_rhs_pos:  Type(int_)
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_call'
+			stmt:        autofree_test_call_stmt('consume', autofree_test_ident_expr('items',
+				autofree_test_third_rhs_pos), autofree_test_call_pos)
+			extra_types: {
+				autofree_test_second_rhs_pos: Type(int_)
+				autofree_test_third_rhs_pos:  array_type
+				autofree_test_call_pos:       Type(int_)
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_rhs_call'
+			stmt:        autofree_test_array_push_operator_stmt_with_pos(autofree_test_ident_expr('items',
+				autofree_test_slots_root_pos), autofree_test_call_expr('value', autofree_test_int_expr('1',
+				autofree_test_key_pos), autofree_test_third_rhs_pos), .left_shift, 202)
+			extra_types: {
+				autofree_test_second_rhs_pos: Type(int_)
+				autofree_test_key_pos:        Type(int_)
+				autofree_test_third_rhs_pos:  Type(int_)
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_rhs_selector'
+			stmt:        autofree_test_array_push_operator_stmt_with_pos(autofree_test_ident_expr('items',
+				autofree_test_slots_root_pos), autofree_test_selector_expr_with_root_pos('holder',
+				'value', autofree_test_holder_root_pos, autofree_test_field_pos,
+				autofree_test_third_rhs_pos), .left_shift, 202)
+			extra_vars:  {
+				'holder': autofree_test_holder_type(Type(int_))
+			}
+			extra_types: {
+				autofree_test_second_rhs_pos:  Type(int_)
+				autofree_test_holder_root_pos: autofree_test_holder_type(Type(int_))
+				autofree_test_third_rhs_pos:   Type(int_)
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_rhs_index'
+			stmt:        autofree_test_array_push_operator_stmt_with_pos(autofree_test_ident_expr('items',
+				autofree_test_slots_root_pos), autofree_test_index_expr_from_lhs(autofree_test_ident_expr('values',
+				autofree_test_cache_root_pos), autofree_test_int_expr('0', autofree_test_key_pos),
+				autofree_test_third_rhs_pos), .left_shift, 202)
+			extra_vars:  {
+				'values': Type(Array{
+					elem_type: Type(int_)
+				})
+			}
+			extra_types: {
+				autofree_test_second_rhs_pos: Type(int_)
+				autofree_test_cache_root_pos: Type(Array{
+					elem_type: Type(int_)
+				})
+				autofree_test_key_pos:        Type(int_)
+				autofree_test_third_rhs_pos:  Type(int_)
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_clone'
+			stmt:        autofree_test_assign_stmt_with_op(autofree_test_ident_expr('copy',
+				autofree_test_third_lhs_pos), autofree_test_clone_call_expr('items',
+				autofree_test_third_rhs_pos), .decl_assign, 202)
+			extra_vars:  {
+				'copy': array_type
+			}
+			extra_types: {
+				autofree_test_second_rhs_pos: Type(int_)
+				autofree_test_third_lhs_pos:  array_type
+				autofree_test_third_rhs_pos:  array_type
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_branch'
+			stmt:        autofree_test_flow_control_stmt(.key_break)
+			extra_types: {
+				autofree_test_second_rhs_pos: Type(int_)
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_loop'
+			stmt:        autofree_test_for_in_direct_array_push_loop_with_names('value', 'values', [
+				autofree_test_local_array_push_literal_stmt('1', autofree_test_third_rhs_pos, 202),
+			])
+			extra_vars:  {
+				'values': Type(Array{
+					elem_type: Type(int_)
+				})
+				'value':  Type(int_)
+			}
+			extra_types: {
+				autofree_test_second_rhs_pos: Type(int_)
+				autofree_test_iterable_pos:   Type(Array{
+					elem_type: Type(int_)
+				})
+				autofree_test_iterator_pos:   Type(int_)
+				autofree_test_third_rhs_pos:  Type(int_)
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_method_call'
+			stmt:        autofree_test_prior_local_parameter_array_push_call_stmt('items', autofree_test_int_expr('1',
+				autofree_test_third_rhs_pos))
+			extra_types: {
+				autofree_test_second_rhs_pos: Type(int_)
+				autofree_test_slots_root_pos: array_type
+				autofree_test_call_pos:       Type(int_)
+				autofree_test_third_rhs_pos:  Type(int_)
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_compound'
+			stmt:        autofree_test_array_push_operator_stmt_with_pos(autofree_test_ident_expr('items',
+				autofree_test_slots_root_pos), autofree_test_int_expr('1',
+				autofree_test_third_rhs_pos), .left_shift_assign, 202)
+			extra_types: {
+				autofree_test_second_rhs_pos: Type(int_)
+				autofree_test_third_rhs_pos:  Type(int_)
+			}
+		},
+		AutofreeLocalArrayPushRejectCase{
+			name:        'local_array_push_selector_lhs'
+			stmt:        autofree_test_array_push_operator_stmt_with_pos(autofree_test_selector_expr_with_root_pos('holder',
+				'items', autofree_test_holder_root_pos, autofree_test_field_pos,
+				autofree_test_slots_root_pos), autofree_test_int_expr('1',
+				autofree_test_third_rhs_pos), .left_shift, 202)
+			extra_vars:  {
+				'holder': autofree_test_holder_type(array_type)
+			}
+			extra_types: {
+				autofree_test_second_rhs_pos:  Type(int_)
+				autofree_test_holder_root_pos: autofree_test_holder_type(array_type)
+				autofree_test_slots_root_pos:  array_type
+				autofree_test_third_rhs_pos:   Type(int_)
+			}
+		},
+	]
+	for invalid_case in invalid_cases {
+		autofree_test_assert_local_array_push_sink_rejected(invalid_case.name, [
+			autofree_test_local_array_push_literal_stmt('1', autofree_test_second_rhs_pos, 201),
+			invalid_case.stmt,
+			autofree_test_local_array_push_sink_stmt(203),
+		], array_type, invalid_case.extra_vars, invalid_case.extra_types, invalid_case.params)
+	}
+}
+
+fn test_collect_autofree_facts_rejects_local_array_push_resourceful_shapes() {
+	array_type := Type(Array{
+		elem_type: Type(int_)
+	})
+	string_array_type := Type(Array{
+		elem_type: Type(string_)
+	})
+	autofree_test_assert_local_array_push_sink_rejected('local_array_push_resourceful_array', [
+		autofree_test_local_array_push_literal_stmt('1', autofree_test_second_rhs_pos, 201),
+		autofree_test_local_array_push_sink_stmt(202),
+	], string_array_type, map[string]Type{}, {
+		autofree_test_second_rhs_pos: Type(int_)
+	}, []ast.Parameter{})
+	autofree_test_assert_local_array_push_sink_rejected('local_array_push_resourceful_rhs', [
+		autofree_test_array_push_operator_stmt_with_pos(autofree_test_ident_expr('items',
+			autofree_test_slots_root_pos), autofree_test_string_expr('text',
+			autofree_test_second_rhs_pos), .left_shift, 201),
+		autofree_test_local_array_push_sink_stmt(202),
+	], array_type, map[string]Type{}, {
+		autofree_test_second_rhs_pos: Type(string_)
+	}, []ast.Parameter{})
 }
 
 fn test_collect_autofree_facts_collects_two_empty_scalar_array_locals() {
@@ -20088,6 +20534,57 @@ fn autofree_test_single_fresh_final_len_rhs() ast.Expr {
 		autofree_test_field_pos, autofree_test_call_pos)
 }
 
+fn autofree_test_flat_with_local_array_push_sink(fn_name string, after_fresh []ast.Stmt) ast.FlatAst {
+	return autofree_test_flat_with_local_array_push_sink_params(fn_name, []ast.Parameter{},
+		after_fresh)
+}
+
+fn autofree_test_flat_with_local_array_push_sink_params(fn_name string, params []ast.Parameter, after_fresh []ast.Stmt) ast.FlatAst {
+	fresh := autofree_test_fresh_array_decl_stmt('items', autofree_test_lhs_pos, autofree_test_empty_array_expr('int',
+		autofree_test_rhs_pos), 200)
+	mut stmts := [fresh]
+	for stmt in after_fresh {
+		stmts << stmt
+	}
+	stmts << autofree_test_local_array_push_sink_stmt(200 + stmts.len)
+	return autofree_test_flat_with_free_function(fn_name, params, stmts)
+}
+
+fn autofree_test_local_array_push_literal_stmt(value string, rhs_pos_id int, stmt_pos_id int) ast.Stmt {
+	return autofree_test_array_push_operator_stmt_with_pos(autofree_test_ident_expr('items',
+		autofree_test_slots_root_pos), autofree_test_int_expr(value, rhs_pos_id), .left_shift,
+		stmt_pos_id)
+}
+
+fn autofree_test_local_array_push_lowered_literal_stmt(value string, rhs_pos_id int, stmt_pos_id int) ast.Stmt {
+	arr_ptr := ast.Expr(ast.CastExpr{
+		typ:  autofree_test_ident_expr('array*', 0)
+		expr: autofree_test_prefix_expr(.amp, autofree_test_ident_expr('items',
+			autofree_test_slots_root_pos), stmt_pos_id)
+	})
+	wrapper := ast.Expr(ast.ArrayInitExpr{
+		typ:   autofree_test_array_type_expr('int')
+		exprs: [autofree_test_int_expr(value, rhs_pos_id)]
+	})
+	return ast.Stmt(ast.ExprStmt{
+		expr: autofree_test_lowered_call_expr('builtin__array_push_noscan', [arr_ptr, wrapper],
+			stmt_pos_id)
+	})
+}
+
+fn autofree_test_local_array_push_ident_stmt(name string, rhs_pos_id int, stmt_pos_id int) ast.Stmt {
+	return autofree_test_array_push_operator_stmt_with_pos(autofree_test_ident_expr('items',
+		autofree_test_slots_root_pos), autofree_test_ident_expr(name, rhs_pos_id), .left_shift,
+		stmt_pos_id)
+}
+
+fn autofree_test_local_array_push_sink_stmt(stmt_pos_id int) ast.Stmt {
+	return autofree_test_assign_stmt_with_op(autofree_test_ident_expr('sink',
+		autofree_test_third_lhs_pos), autofree_test_len_selector_expr('items',
+		autofree_test_post_root_pos, autofree_test_field_pos, autofree_test_post_rhs_pos),
+		.decl_assign, stmt_pos_id)
+}
+
 fn autofree_test_flat_with_two_fresh_array_locals(fn_name string, first_name string, second_name string, params []ast.Parameter, first_rhs ast.Expr, second_rhs ast.Expr) ast.FlatAst {
 	first := autofree_test_fresh_array_decl_stmt(first_name, autofree_test_lhs_pos, first_rhs, 200)
 	second := autofree_test_fresh_array_decl_stmt(second_name, autofree_test_second_lhs_pos,
@@ -26376,6 +26873,80 @@ fn autofree_test_assert_single_fresh_array_final_len_cleanup(env Environment, fn
 	assert env.autofree_release_eligibility_by_fn_key.len == 0
 	assert env.autofree_releases_by_fn_key.len == 0
 	assert env.autofree_helper_roots.len == 0
+}
+
+fn autofree_test_prepare_local_array_push_sink_env(mut env Environment, fn_name string, array_type Type, extra_types map[int]Type) {
+	autofree_test_prepare_local_array_push_sink_env_with_vars(mut env, fn_name, array_type,
+		map[string]Type{}, extra_types)
+}
+
+fn autofree_test_prepare_local_array_push_sink_env_with_vars(mut env Environment, fn_name string, array_type Type, extra_vars map[string]Type, extra_types map[int]Type) {
+	mut vars := {
+		'items': array_type
+		'sink':  Type(int_)
+	}
+	for name, typ in extra_vars {
+		vars[name] = typ
+	}
+	autofree_test_add_scope_with_var_types(mut env, fn_name, vars)
+	env.set_expr_type(autofree_test_lhs_pos, array_type)
+	env.set_expr_type(autofree_test_rhs_pos, array_type)
+	env.set_expr_type(autofree_test_slots_root_pos, array_type)
+	env.set_expr_type(autofree_test_third_lhs_pos, Type(int_))
+	env.set_expr_type(autofree_test_post_root_pos, array_type)
+	env.set_expr_type(autofree_test_post_rhs_pos, Type(int_))
+	env.set_expr_type(autofree_test_field_pos, Type(int_))
+	for pos_id, typ in extra_types {
+		env.set_expr_type(pos_id, typ)
+	}
+}
+
+fn autofree_test_assert_local_array_push_sink_rejected(fn_name string, after_fresh []ast.Stmt, array_type Type, extra_vars map[string]Type, extra_types map[int]Type, params []ast.Parameter) {
+	autofree_test_assert_local_array_push_sink_rejected_with_global(fn_name, after_fresh,
+		array_type, extra_vars, extra_types, params, '', Type(int_))
+}
+
+fn autofree_test_assert_local_array_push_sink_rejected_with_global(fn_name string, after_fresh []ast.Stmt, array_type Type, extra_vars map[string]Type, extra_types map[int]Type, params []ast.Parameter, global_name string, global_type Type) {
+	mut env := Environment.new()
+	flat := autofree_test_flat_with_local_array_push_sink_params(fn_name, params, after_fresh)
+	if global_name.len > 0 {
+		autofree_test_add_scope_with_global_and_vars(mut env, fn_name, global_name, global_type, autofree_test_local_array_push_scope_vars(array_type,
+			extra_vars))
+	} else {
+		autofree_test_prepare_local_array_push_sink_env_with_vars(mut env, fn_name, array_type,
+			extra_vars, extra_types)
+	}
+	if global_name.len > 0 {
+		autofree_test_set_local_array_push_sink_expr_types(mut env, array_type, extra_types)
+	}
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	autofree_test_assert_no_fresh_cleanup_for_fn(env, fn_name)
+}
+
+fn autofree_test_local_array_push_scope_vars(array_type Type, extra_vars map[string]Type) map[string]Type {
+	mut vars := {
+		'items': array_type
+		'sink':  Type(int_)
+	}
+	for name, typ in extra_vars {
+		vars[name] = typ
+	}
+	return vars
+}
+
+fn autofree_test_set_local_array_push_sink_expr_types(mut env Environment, array_type Type, extra_types map[int]Type) {
+	env.set_expr_type(autofree_test_lhs_pos, array_type)
+	env.set_expr_type(autofree_test_rhs_pos, array_type)
+	env.set_expr_type(autofree_test_slots_root_pos, array_type)
+	env.set_expr_type(autofree_test_third_lhs_pos, Type(int_))
+	env.set_expr_type(autofree_test_post_root_pos, array_type)
+	env.set_expr_type(autofree_test_post_rhs_pos, Type(int_))
+	env.set_expr_type(autofree_test_field_pos, Type(int_))
+	for pos_id, typ in extra_types {
+		env.set_expr_type(pos_id, typ)
+	}
 }
 
 fn autofree_test_assert_prefixed_fresh_array_final_clone_rejected(fn_name string, prefix_stmt ast.Stmt, rhs ast.Expr, dst_type Type, array_type Type, extra_vars map[string]Type, extra_stmts []ast.Stmt) {
