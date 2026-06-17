@@ -190,10 +190,57 @@ fn (mut g Gen) match_expr(node ast.MatchExpr) {
 	}
 }
 
+fn (mut g Gen) explicit_sumtype_match_variant_tags(node ast.MatchExpr) map[string]bool {
+	mut tags := map[string]bool{}
+	cond_sym := g.table.final_sym(node.cond_type)
+	if cond_sym.kind != .sum_type {
+		return tags
+	}
+	variants := g.sumtype_runtime_variants(node.cond_type)
+	for branch in node.branches {
+		for expr in branch.exprs {
+			if expr is ast.TypeNode {
+				branch_type := g.unwrap_generic(g.recheck_concrete_type(expr.typ))
+				for variant in variants {
+					if g.is_exact_sumtype_variant_match(variant, branch_type) {
+						tags[g.type_sidx(variant)] = true
+						break
+					}
+				}
+			}
+		}
+	}
+	return tags
+}
+
+fn (mut g Gen) matching_sumtype_variant_type_idx_exprs_for_match(parent_type ast.Type, target_type ast.Type, explicit_variant_tags map[string]bool) []string {
+	matching_variants := g.matching_sumtype_variant_types(parent_type, target_type)
+	if explicit_variant_tags.len == 0 {
+		return g.type_idx_exprs_for_types(matching_variants)
+	}
+	mut target_exact_tags := map[string]bool{}
+	for variant in matching_variants {
+		if g.is_exact_sumtype_variant_match(variant, target_type) {
+			target_exact_tags[g.type_sidx(variant)] = true
+		}
+	}
+	mut filtered_variants := []ast.Type{}
+	for variant in matching_variants {
+		variant_tag := g.type_sidx(variant)
+		if variant_tag in explicit_variant_tags
+			&& (target_exact_tags.len == 0 || variant_tag !in target_exact_tags) {
+			continue
+		}
+		filtered_variants << variant
+	}
+	return g.type_idx_exprs_for_types(filtered_variants)
+}
+
 fn (mut g Gen) match_expr_sumtype(node ast.MatchExpr, is_expr bool, cond_var string, tmp_var string, resolved_return_type ast.Type) {
 	dot_or_ptr := g.dot_or_ptr(node.cond_type)
 	use_ternary := is_expr && tmp_var == ''
 	cond_sym := g.table.final_sym(node.cond_type)
+	explicit_variant_tags := g.explicit_sumtype_match_variant_tags(node)
 	for j, branch in node.branches {
 		mut sumtype_index := 0
 		// iterates through all types in sumtype branches
@@ -249,8 +296,8 @@ fn (mut g Gen) match_expr_sumtype(node ast.MatchExpr, is_expr bool, cond_var str
 						g.write('${tag_expr} == ${ast.none_type.idx()} /* none */')
 					} else if cur_expr is ast.TypeNode {
 						variant_type := g.unwrap_generic(g.recheck_concrete_type(cur_expr.typ))
-						g.write_type_tag_condition(tag_expr, '==', g.matching_sumtype_variant_type_idx_exprs(node.cond_type,
-							variant_type))
+						g.write_type_tag_condition(tag_expr, '==', g.matching_sumtype_variant_type_idx_exprs_for_match(node.cond_type,
+							variant_type, explicit_variant_tags))
 					} else {
 						g.write('${tag_expr} == ')
 						g.expr(cur_expr)

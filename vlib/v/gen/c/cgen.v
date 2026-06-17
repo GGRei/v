@@ -12887,18 +12887,88 @@ fn (g &Gen) uses_msvc_ccompiler() bool {
 	return false
 }
 
-fn is_direct_call_expr(expr ast.Expr) bool {
+fn as_cast_receiver_has_call_expr(expr ast.Expr) bool {
 	match expr {
+		ast.AsCast {
+			return as_cast_receiver_has_call_expr(expr.expr)
+		}
 		ast.CallExpr {
 			return true
 		}
+		ast.CastExpr {
+			return as_cast_receiver_has_call_expr(expr.expr)
+		}
+		ast.IndexExpr {
+			return as_cast_receiver_has_call_expr(expr.left)
+				|| as_cast_receiver_has_call_expr(expr.index)
+		}
+		ast.InfixExpr {
+			return as_cast_receiver_has_call_expr(expr.left)
+				|| as_cast_receiver_has_call_expr(expr.right)
+		}
 		ast.ParExpr {
-			return is_direct_call_expr(expr.expr)
+			return as_cast_receiver_has_call_expr(expr.expr)
+		}
+		ast.PrefixExpr {
+			return as_cast_receiver_has_call_expr(expr.right)
+		}
+		ast.SelectorExpr {
+			return as_cast_receiver_has_call_expr(expr.expr)
+		}
+		ast.UnsafeExpr {
+			return as_cast_receiver_has_call_expr(expr.expr)
 		}
 		else {
 			return false
 		}
 	}
+}
+
+fn (mut g Gen) as_cast_receiver_ctemp_before_stmt(expr ast.Expr, expr_type ast.Type) string {
+	mut stmt_str := if g.inside_ternary > 0 {
+		g.go_before_ternary().trim_space()
+	} else {
+		g.go_before_last_stmt().trim_space()
+	}
+	if g.inside_return && stmt_str.ends_with('return') {
+		stmt_str += ' '
+	}
+	g.empty_line = true
+	tmp_name := g.new_tmp_var()
+	styp := g.styp(expr_type)
+	prefix := if g.pref.gc_mode in [.boehm_full, .boehm_incr, .boehm_full_opt, .boehm_incr_opt]
+		&& g.contains_ptr(expr_type) {
+		'volatile '
+	} else {
+		''
+	}
+	g.writeln(g.expr_string_surround('${prefix}${styp} ${tmp_name} = ', expr, ';').trim_space())
+	g.set_current_pos_as_last_stmt_pos()
+	g.write(stmt_str)
+	return tmp_name
+}
+
+fn (mut g Gen) as_cast_receiver_expr_str(expr ast.Expr, expr_type ast.Type, fallback_type ast.Type,
+	expr_is_option bool, use_msvc_compatible_code bool, use_msvc_ccompiler bool) string {
+	expr_needs_tmp := g.need_tmp_var_in_expr(expr)
+		|| (use_msvc_compatible_code && use_msvc_ccompiler && as_cast_receiver_has_call_expr(expr))
+	if expr_needs_tmp {
+		tmp_type := if expr_is_option && g.expr_has_or_block(expr) {
+			fallback_type
+		} else {
+			expr_type
+		}
+		tmp_name := g.as_cast_receiver_ctemp_before_stmt(expr, tmp_type)
+		return if expr_is_option && tmp_type == expr_type {
+			g.as_cast_option_payload_expr(expr_type, tmp_name, false)
+		} else {
+			tmp_name
+		}
+	}
+	if expr_is_option {
+		return g.as_cast_option_payload_expr_from_expr(expr_type, expr)
+	}
+	return g.expr_string(expr)
 }
 
 fn (mut g Gen) as_cast(node ast.AsCast) {
@@ -12941,8 +13011,6 @@ fn (mut g Gen) as_cast(node ast.AsCast) {
 		sidx := g.type_sidx(unwrapped_node_typ)
 		use_msvc_compatible_code := g.prefers_msvc_compatible_code()
 		use_msvc_ccompiler := g.uses_msvc_ccompiler()
-		expr_needs_msvc_tmp := use_msvc_compatible_code && use_msvc_ccompiler
-			&& is_direct_call_expr(node.expr)
 		if node.expr.has_fn_call() && !use_msvc_ccompiler {
 			tmp_var := g.new_tmp_var()
 			expr_styp := g.styp(node.expr_type)
@@ -12960,13 +13028,9 @@ fn (mut g Gen) as_cast(node ast.AsCast) {
 			g.write_as_cast_call(obj_expr, tag_expr, sidx, index_exprs)
 			g.write('; })')
 		} else {
-			expr_str := if expr_needs_msvc_tmp {
-				g.expr_to_ctemp_before_stmt(node.expr, node.expr_type).name
-			} else if expr_is_option {
-				g.as_cast_option_payload_expr_from_expr(unwrapped_expr_type, node.expr)
-			} else {
-				g.expr_string(node.expr)
-			}
+			expr_str := g.as_cast_receiver_expr_str(node.expr, node.expr_type,
+				expr_type_without_option, expr_is_option, use_msvc_compatible_code,
+				use_msvc_ccompiler)
 			obj_expr := '(${expr_str})${dot}_${payload_field}'
 			tag_expr := '(${expr_str})${dot}_typ'
 			g.write_as_cast_call_start(styp, sym)
@@ -13022,8 +13086,6 @@ fn (mut g Gen) as_cast(node ast.AsCast) {
 		sidx := g.type_sidx(unwrapped_node_typ)
 		use_msvc_compatible_code := g.prefers_msvc_compatible_code()
 		use_msvc_ccompiler := g.uses_msvc_ccompiler()
-		expr_needs_msvc_tmp := use_msvc_compatible_code && use_msvc_ccompiler
-			&& is_direct_call_expr(node.expr)
 		if node.expr.has_fn_call() && !use_msvc_ccompiler {
 			tmp_var := g.new_tmp_var()
 			expr_styp := g.styp(node.expr_type)
@@ -13036,11 +13098,8 @@ fn (mut g Gen) as_cast(node ast.AsCast) {
 			g.write_as_cast_call(obj_expr, tag_expr, sidx, index_exprs)
 			g.write('; })')
 		} else {
-			expr_str := if expr_needs_msvc_tmp {
-				g.expr_to_ctemp_before_stmt(node.expr, node.expr_type).name
-			} else {
-				g.expr_string(node.expr)
-			}
+			expr_str := g.as_cast_receiver_expr_str(node.expr, node.expr_type, node.expr_type,
+				false, use_msvc_compatible_code, use_msvc_ccompiler)
 			obj_expr := '(${expr_str})${dot}_${payload_field}'
 			tag_expr := 'v_typeof_interface_idx_${expr_type_sym.cname}((${expr_str})${dot}_typ)'
 			g.write_as_cast_call_start(styp, sym)

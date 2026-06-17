@@ -182,6 +182,81 @@ fn test_msvc_interface_direct_call_as_cast_evaluates_source_once() ! {
 	assert !use_thing.contains('main__make_thing())._')
 }
 
+fn test_msvc_selector_call_as_cast_evaluates_source_once() ! {
+	c_source := generated_windows_msvc_c('selector_call_as_cast', [
+		'module main',
+		'',
+		'struct Alpha {',
+		'	n int',
+		'}',
+		'struct Beta {',
+		'	n int',
+		'}',
+		'type Variant = Alpha | Beta',
+		'struct Box {',
+		'	value Variant',
+		'}',
+		'',
+		'fn make_box() Box {',
+		'	return Box{value: Variant(Alpha{n: 3})}',
+		'}',
+		'',
+		'fn use_variant() int {',
+		'	value := make_box().value as Alpha',
+		'	return value.n',
+		'}',
+		'',
+		'fn main() {',
+		'	_ = use_variant()',
+		'}',
+	].join('\n'))!
+	use_variant := c_chunk(c_source, 'main__use_variant(void) {')
+	assert use_variant.count('main__make_box()') == 1
+	assert use_variant.contains('main__Alpha value =*')
+	assert use_variant.contains('builtin____as_cast')
+	assert !use_variant.contains('({')
+	assert !use_variant.contains('main__make_box()).value')
+}
+
+fn test_msvc_index_call_as_cast_evaluates_source_once() ! {
+	c_source := generated_windows_msvc_c('index_call_as_cast', [
+		'module main',
+		'',
+		'struct Counter {',
+		'mut:',
+		'	n int',
+		'}',
+		'struct Alpha {',
+		'	n int',
+		'}',
+		'struct Beta {',
+		'	n int',
+		'}',
+		'type Variant = Alpha | Beta',
+		'',
+		'fn pick_index(mut counter Counter) int {',
+		'	counter.n++',
+		'	return 0',
+		'}',
+		'',
+		'fn use_variant(mut counter Counter) int {',
+		'	values := [Variant(Alpha{n: 3})]',
+		'	value := values[pick_index(mut counter)] as Alpha',
+		'	return value.n + counter.n',
+		'}',
+		'',
+		'fn main() {',
+		'	mut counter := Counter{}',
+		'	_ = use_variant(mut counter)',
+		'}',
+	].join('\n'))!
+	use_variant := c_chunk(c_source, 'main__use_variant(main__Counter* counter) {')
+	assert use_variant.count('main__pick_index(') == 1
+	assert use_variant.contains('main__Alpha value =*')
+	assert use_variant.contains('builtin____as_cast')
+	assert !use_variant.contains('({')
+}
+
 fn test_windows_gcc_plain_call_as_cast_evaluates_source_once() ! {
 	c_source := generated_windows_c('gcc', 'plain_call_as_cast', [
 		'module main',
@@ -212,6 +287,115 @@ fn test_windows_gcc_plain_call_as_cast_evaluates_source_once() ! {
 	assert use_variant.contains('({')
 	assert use_variant.contains('builtin____as_cast')
 	assert !use_variant.contains('main__make_variant())._')
+}
+
+fn test_msvc_statement_receiver_as_cast_uses_plain_temp() ! {
+	c_source := generated_windows_msvc_c('statement_receiver_as_cast', [
+		'module main',
+		'',
+		'type Any = int | string',
+		'',
+		'fn make_map() map[string]Any {',
+		"	return {'a': Any(7)}",
+		'}',
+		'',
+		'fn make_result(ok bool) !Any {',
+		'	if ok {',
+		'		return Any(9)',
+		'	}',
+		"	return error('missing')",
+		'}',
+		'',
+		'fn use_map() int {',
+		'	m := make_map()',
+		"	value := m['a'] or { Any(0) } as int",
+		'	return value',
+		'}',
+		'',
+		'fn use_result() string {',
+		"	value := make_result(false) or { Any('fallback') } as string",
+		'	return value',
+		'}',
+		'',
+		'fn return_map() int {',
+		'	m := make_map()',
+		"	return m['a'] or { Any(0) } as int",
+		'}',
+		'',
+		'fn main() {',
+		'	_ = use_map()',
+		'	_ = use_result()',
+		'	_ = return_map()',
+		'}',
+	].join('\n'))!
+	use_map := c_chunk(c_source, 'main__use_map(void) {')
+	use_result := c_chunk(c_source, 'main__use_result(void) {')
+	return_map := c_chunk(c_source, 'main__return_map(void) {')
+	for chunk in [use_map, use_result, return_map] {
+		assert chunk.contains('builtin____as_cast')
+		assert chunk.contains('main__Any _t')
+		assert !chunk.contains('builtin____as_cast((main__Any*')
+		assert !chunk.contains('builtin____as_cast((_option_')
+		assert !chunk.contains('builtin____as_cast((_result_')
+		assert !chunk.contains('({')
+	}
+	assert !use_result.contains('val__make_result')
+}
+
+fn test_msvc_statement_receiver_as_cast_keeps_branch_guards() ! {
+	c_source := generated_windows_msvc_c('statement_receiver_branch_guards', [
+		'module main',
+		'',
+		'type Any = int | string',
+		'',
+		'fn make_map() map[string]Any {',
+		"	return {'a': Any(7)}",
+		'}',
+		'',
+		'fn choose(flag bool) int {',
+		'	m := make_map()',
+		'	value := if flag {',
+		"		m['a'] or { Any(0) } as int",
+		'	} else {',
+		'		42',
+		'	}',
+		'	return value',
+		'}',
+		'',
+		'fn check(left bool, right bool) int {',
+		'	m := make_map()',
+		'	mut n := 0',
+		"	if left || (m['missing'] or { Any(0) } as int) == 0 {",
+		'		n += 1',
+		'	}',
+		"	if right && (m['missing'] or { Any(0) } as int) == 0 {",
+		'		n += 10',
+		'	}',
+		'	return n',
+		'}',
+		'',
+		'fn main() {',
+		'	_ = choose(false)',
+		'	_ = check(true, false)',
+		'}',
+	].join('\n'))!
+	choose := c_chunk(c_source, 'main__choose(bool flag) {')
+	choose_guard := must_index(choose, 'if (flag)')
+	choose_map_get := must_index_after(choose, 'builtin__map_get_check', choose_guard)
+	assert !choose[..choose_guard].contains('builtin__map_get_check')
+	assert choose_guard < choose_map_get
+	assert choose.contains('builtin____as_cast')
+	check := c_chunk(c_source, 'main__check(bool left, bool right) {')
+	left_guard := must_index(check, '= (left);\n\tif (!_t')
+	first_map_get := must_index_after(check, 'builtin__map_get_check', left_guard)
+	right_guard := must_index_after(check, '= (right);\n\tif (_t', first_map_get)
+	second_map_get := must_index_after(check, 'builtin__map_get_check', right_guard)
+	assert !check[..left_guard].contains('builtin__map_get_check')
+	assert left_guard < first_map_get
+	assert right_guard < second_map_get
+	assert !check[first_map_get + 1..right_guard].contains('builtin__map_get_check')
+	assert check.contains('builtin____as_cast')
+	assert !check.contains('({')
 }
 
 fn test_msvc_if_expr_as_cast_with_plain_call_is_not_hoisted() ! {
@@ -246,11 +430,13 @@ fn test_msvc_if_expr_as_cast_with_plain_call_is_not_hoisted() ! {
 		'}',
 	].join('\n'))!
 	choose := c_chunk(c_source, 'main__choose(main__TypeSym left, int idx) {')
-	assert choose.contains('main__Arr info = ((left.info)._typ')
-	assert choose.contains('main__sym(idx).info')
+	branch_guard := must_index(choose, 'if ((left.info)._typ')
+	sym_call := must_index_after(choose, 'main__sym(idx).info', branch_guard)
+	assert choose.count('main__sym(idx)') == 1
+	assert !choose[..branch_guard].contains('main__sym(idx)')
+	assert branch_guard < sym_call
 	assert choose.contains('builtin____as_cast')
-	assert !choose.contains('/* if prepend */')
-	assert !choose.contains('goto _t')
+	assert choose.contains('main__Arr info = _t')
 }
 
 fn test_msvc_direct_call_as_cast_in_if_expr_stays_in_branch() ! {
