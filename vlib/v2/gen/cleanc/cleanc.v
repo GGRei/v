@@ -31,15 +31,17 @@ mut:
 	// checker. Indexed positionally by `cur_fn_return_index`, which the
 	// ReturnStmt handler increments. Reset at every fn entry. Empty for
 	// fns the checker didn't see (e.g., plain V without `-d ownership`).
-	cur_fn_return_drops                    [][]types.DropEntry
-	cur_fn_return_index                    int
-	autofree_cleanup_emit_contexts         []AutofreeCleanCStatementCleanupEmitContextFact
-	has_autofree_cleanup_emit_context      bool
-	autofree_cleanup_emit_context_consumed bool
-	autofree_cleanup_emit_context_prepared bool
-	autofree_cleanup_emit_fn_key           string
-	autofree_cleanup_emit_fn_node_id       ast.FlatNodeId
-	autofree_cleanup_emit_fn_pos_id        int
+	cur_fn_return_drops                      [][]types.DropEntry
+	cur_fn_return_index                      int
+	autofree_cleanup_emit_contexts           []AutofreeCleanCStatementCleanupEmitContextFact
+	has_autofree_cleanup_emit_context        bool
+	autofree_cleanup_emit_context_consumed   bool
+	autofree_cleanup_emit_context_prepared   bool
+	autofree_cleanup_emit_fn_key             string
+	autofree_cleanup_emit_fn_node_id         ast.FlatNodeId
+	autofree_cleanup_emit_fn_pos_id          int
+	autofree_cleanup_emit_block_path         []int
+	autofree_cleanup_emit_current_stmt_index int
 	// Set true while gen_return_if_branch synthesizes ReturnStmts for
 	// `return if cond { x } else { y }`. The synthesized statements go
 	// through the same ReturnStmt handler, but they represent the SAME

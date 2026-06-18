@@ -65,8 +65,11 @@ fn (mut g Gen) gen_stmts(stmts []ast.Stmt) {
 	saved_file_name := g.cur_file_name
 	saved_module := g.cur_module
 	mut saved_import_modules := g.cur_import_modules.clone()
+	saved_autofree_stmt_index := g.autofree_cleanup_emit_current_stmt_index
 	for i in 0 .. stmts.len {
+		g.autofree_cleanup_emit_current_stmt_index = i
 		g.gen_stmt(stmts[i])
+		g.autofree_emit_statement_cleanup_context_after_stmt_index(i)
 		// A ModuleStmt (or a spliced generated-fn body) can switch the module
 		// context mid-list; restore the source context so the following
 		// statements resolve against the original module. The cheap dirty
@@ -83,6 +86,7 @@ fn (mut g Gen) gen_stmts(stmts []ast.Stmt) {
 	g.cur_file_name = saved_file_name
 	g.cur_module = saved_module
 	g.cur_import_modules = saved_import_modules.move()
+	g.autofree_cleanup_emit_current_stmt_index = saved_autofree_stmt_index
 	g.is_module_ident_cache.clear()
 	g.resolved_module_names.clear()
 }

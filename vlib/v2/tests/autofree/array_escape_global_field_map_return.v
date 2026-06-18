@@ -1,6 +1,8 @@
 module main
 
-__global mut cached_lines = map[string][]string{}
+__global (
+	cached_lines = map[string][]string{}
+)
 
 struct Holder {
 mut:

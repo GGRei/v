@@ -424,13 +424,27 @@ fn (mut g Gen) branch_declared_ident_type(stmts []ast.Stmt, before_idx int, name
 }
 
 fn (mut g Gen) gen_if_expr_stmt(node &ast.IfExpr) {
+	g.gen_if_expr_stmt_with_statement_cleanup(node, true)
+}
+
+fn (mut g Gen) gen_if_expr_scoped_stmts_with_statement_cleanup(stmts []ast.Stmt, track_then bool) {
+	if !track_then {
+		g.gen_scoped_stmts(stmts)
+		return
+	}
+	g.autofree_push_statement_cleanup_block(g.autofree_cleanup_emit_current_stmt_index)
+	g.gen_scoped_stmts(stmts)
+	g.autofree_pop_statement_cleanup_block()
+}
+
+fn (mut g Gen) gen_if_expr_stmt_with_statement_cleanup(node &ast.IfExpr, track_then bool) {
 	// Skip empty conditions (pure else blocks shouldn't appear at top level)
 	if node.cond is ast.EmptyExpr {
 		return
 	}
 	if cond_value := const_bool_value(node.cond) {
 		if cond_value {
-			g.gen_scoped_stmts(node.stmts)
+			g.gen_if_expr_scoped_stmts_with_statement_cleanup(node.stmts, track_then)
 			return
 		}
 		if node.else_expr is ast.IfExpr {
@@ -438,7 +452,7 @@ fn (mut g Gen) gen_if_expr_stmt(node &ast.IfExpr) {
 			if else_if.cond is ast.EmptyExpr {
 				g.gen_scoped_stmts(else_if.stmts)
 			} else {
-				g.gen_if_expr_stmt(&else_if)
+				g.gen_if_expr_stmt_with_statement_cleanup(&else_if, false)
 			}
 		} else if node.else_expr !is ast.EmptyExpr {
 			g.gen_scoped_expr_stmts(node.else_expr)
@@ -449,7 +463,7 @@ fn (mut g Gen) gen_if_expr_stmt(node &ast.IfExpr) {
 	g.expr(node.cond)
 	g.sb.writeln(') {')
 	g.indent++
-	g.gen_scoped_stmts(node.stmts)
+	g.gen_if_expr_scoped_stmts_with_statement_cleanup(node.stmts, track_then)
 	g.indent--
 	g.write_indent()
 	g.sb.write_string('}')
@@ -466,7 +480,7 @@ fn (mut g Gen) gen_if_expr_stmt(node &ast.IfExpr) {
 				g.sb.write_string('}')
 			} else {
 				g.sb.write_string(' else ')
-				g.gen_if_expr_stmt(&else_if)
+				g.gen_if_expr_stmt_with_statement_cleanup(&else_if, false)
 			}
 		} else {
 			g.sb.writeln(' else {')
