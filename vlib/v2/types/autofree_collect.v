@@ -45,6 +45,8 @@ pub fn (mut e Environment) collect_autofree_facts_from_flat(flat &ast.FlatAst) {
 	e.collect_autofree_move_proofs_from_fresh_locals()
 	e.collect_autofree_local_array_clone_move_proofs_from_flat(flat)
 	e.collect_autofree_fresh_array_final_clone_move_proofs_from_flat(flat)
+	e.collect_autofree_receiver_field_slice_clone_move_proofs_from_flat(flat)
+	e.collect_autofree_loop_local_clone_push_move_proofs_from_flat(flat)
 	e.collect_autofree_natural_release_candidates_from_move_proofs()
 	e.collect_autofree_release_plans_from_candidates()
 	e.collect_autofree_release_preflights_from_plans()
@@ -134,6 +136,7 @@ fn (mut e Environment) collect_autofree_fresh_locals_from_fn(flat &ast.FlatAst, 
 	if body_count >= 3 {
 		first_stmt_id := flat.edges[body_node.first_edge].child_id
 		if autofree_collect_fresh_array_decl_lhs_rhs_schema_is_exact(flat, first_stmt_id)
+			&& autofree_collect_fn_return_type_is_plain_int(flat, fn_id)
 			&& e.collect_autofree_local_array_push_natural_cleanup_from_body(flat, fn_key, fn_name, body_id, body_count, param_names) {
 			return
 		}
@@ -181,7 +184,7 @@ fn (mut e Environment) collect_autofree_fresh_locals_from_fn(flat &ast.FlatAst, 
 }
 
 fn (mut e Environment) collect_autofree_local_array_push_natural_cleanup_from_body(flat &ast.FlatAst, fn_key string, fn_name string, body_id ast.FlatNodeId, body_count int, param_names map[string]bool) bool {
-	if body_count < 3 || !autofree_collect_node_is_valid(flat, body_id) {
+	if body_count < 4 || body_count > 5 || !autofree_collect_node_is_valid(flat, body_id) {
 		return false
 	}
 	body_node := flat.nodes[body_id]
@@ -194,12 +197,14 @@ fn (mut e Environment) collect_autofree_local_array_push_natural_cleanup_from_bo
 	if !autofree_collect_local_array_push_source_is_supported(fresh) {
 		return false
 	}
-	final_stmt_id := flat.edges[body_node.first_edge + body_count - 1].child_id
-	if !e.autofree_collect_local_array_push_final_len_stmt_is_safe(flat, final_stmt_id, fresh.name,
-		param_names) {
+	final_stmt_id := flat.edges[body_node.first_edge + body_count - 2].child_id
+	return_stmt_id := flat.edges[body_node.first_edge + body_count - 1].child_id
+	final_name := e.autofree_collect_local_array_push_final_len_stmt_name(flat, final_stmt_id,
+		fresh.name, param_names) or { return false }
+	if !autofree_collect_return_ident_stmt_is_exact(flat, return_stmt_id, final_name) {
 		return false
 	}
-	for i in 1 .. body_count - 1 {
+	for i in 1 .. body_count - 2 {
 		stmt_id := flat.edges[body_node.first_edge + i].child_id
 		if !e.autofree_collect_local_array_push_stmt_is_safe(flat, stmt_id, fresh.name) {
 			return false
@@ -214,10 +219,9 @@ fn (mut e Environment) collect_autofree_local_array_push_natural_cleanup_from_bo
 }
 
 fn autofree_collect_local_array_push_source_is_supported(fresh AutofreeFreshLocalFact) bool {
-	return autofree_collect_fresh_local_is_empty_dynamic_array(fresh)
-		&& autofree_collect_name_is_usable(fresh.name) && fresh.state == .owned_unique
-		&& fresh.resource == .array_value && !fresh.shape.fail_closed && fresh.shape.kind == .array
-		&& fresh.shape.target_kind == .no_resource
+	return autofree_collect_fresh_local_is_empty_dynamic_array(fresh) && autofree_collect_name_is_usable(fresh.name) && fresh.state == .owned_unique && fresh.resource == .array_value && !fresh.shape.fail_closed && fresh.shape.kind == .array && fresh.shape.target_kind == .no_resource && same_type_name(fresh.typ, Type(Array{
+		elem_type: Type(int_)
+	}))
 }
 
 fn (mut e Environment) autofree_collect_local_array_push_stmt_is_safe(flat &ast.FlatAst, stmt_id ast.FlatNodeId, fresh_name string) bool {
@@ -250,6 +254,9 @@ fn (mut e Environment) autofree_collect_local_array_push_rhs_is_safe(flat &ast.F
 	if !type_has_valid_payload(rhs_typ) {
 		return false
 	}
+	if !rhs_typ.is_int_literal() && !same_type_name(rhs_typ, Type(int_)) {
+		return false
+	}
 	shape := e.autofree_resource_shape(rhs_typ)
 	return !shape.fail_closed && shape.kind == .no_resource
 }
@@ -274,6 +281,39 @@ fn autofree_collect_array_push_literal_root_and_rhs_ids(flat &ast.FlatAst, stmt_
 fn (mut e Environment) autofree_collect_local_array_push_final_len_stmt_is_safe(flat &ast.FlatAst, stmt_id ast.FlatNodeId, fresh_name string, param_names map[string]bool) bool {
 	return e.autofree_collect_single_fresh_final_len_stmt_is_safe(flat, stmt_id, fresh_name,
 		param_names)
+}
+
+fn (mut e Environment) autofree_collect_local_array_push_final_len_stmt_name(flat &ast.FlatAst, stmt_id ast.FlatNodeId, fresh_name string, param_names map[string]bool) ?string {
+	if !e.autofree_collect_local_array_push_final_len_stmt_is_safe(flat, stmt_id, fresh_name,
+		param_names) {
+		return none
+	}
+	stmt_node := flat.nodes[stmt_id]
+	raw_lhs_id := flat.edges[stmt_node.first_edge].child_id
+	lhs_id := autofree_collect_two_fresh_final_scalar_lhs_id(flat, raw_lhs_id)
+	if !autofree_collect_node_is(flat, lhs_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, lhs_id) != 0 {
+		return none
+	}
+	lhs_name := flat.string_at(flat.nodes[lhs_id].name_id)
+	if !autofree_collect_name_is_usable(lhs_name) {
+		return none
+	}
+	return lhs_name
+}
+
+fn autofree_collect_return_ident_stmt_is_exact(flat &ast.FlatAst, stmt_id ast.FlatNodeId, name string) bool {
+	if !autofree_collect_name_is_usable(name)
+		|| !autofree_collect_node_is(flat, stmt_id, .stmt_return)
+		|| autofree_collect_exact_edge_count(flat, stmt_id) != 1 {
+		return false
+	}
+	return_id := flat.edges[flat.nodes[stmt_id].first_edge].child_id
+	if !autofree_collect_node_is(flat, return_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, return_id) != 0 {
+		return false
+	}
+	return flat.string_at(flat.nodes[return_id].name_id) == name
 }
 
 fn (mut e Environment) collect_autofree_single_fresh_final_len_from_stmts(flat &ast.FlatAst, fn_key string, fn_name string, fresh_stmt_id ast.FlatNodeId, final_stmt_id ast.FlatNodeId, param_names map[string]bool) bool {
@@ -935,6 +975,67 @@ struct AutofreeLocalArrayCloneRhs {
 	call_pos_id     int
 }
 
+struct AutofreeReceiverFieldSliceCloneRhs {
+	receiver_name   string
+	receiver_id     ast.FlatNodeId
+	receiver_pos_id int
+	field_name      string
+	field_id        ast.FlatNodeId
+	field_pos_id    int
+	selector_id     ast.FlatNodeId
+	selector_pos_id int
+	slice_id        ast.FlatNodeId
+	slice_pos_id    int
+	range_id        ast.FlatNodeId
+	range_pos_id    int
+	start_id        ast.FlatNodeId
+	end_id          ast.FlatNodeId
+	call_id         ast.FlatNodeId
+	call_pos_id     int
+}
+
+struct AutofreeReceiverFieldSliceCloneReceiver {
+	name   string
+	id     ast.FlatNodeId
+	pos_id int
+}
+
+struct AutofreeReceiverFieldSliceCloneReadCheck {
+	ok              bool
+	saw_target_read bool
+}
+
+struct AutofreeLoopLocalClonePushReceiver {
+	name      string
+	id        ast.FlatNodeId
+	pos_id    int
+	type_name string
+}
+
+struct AutofreeLoopLocalClonePushTarget {
+	root_name       string
+	root_id         ast.FlatNodeId
+	root_pos_id     int
+	field_name      string
+	field_id        ast.FlatNodeId
+	field_pos_id    int
+	selector_id     ast.FlatNodeId
+	selector_pos_id int
+	stmt_id         ast.FlatNodeId
+	stmt_pos_id     int
+}
+
+struct AutofreeLoopLocalClonePushFinal {
+	target          AutofreeLoopLocalClonePushTarget
+	clone           AutofreeLocalArrayCloneRhs
+	index_write_end int
+}
+
+struct AutofreeLoopLocalClonePushProof {
+	fresh AutofreeFreshLocalFact
+	proof AutofreeMoveProofFact
+}
+
 fn (mut e Environment) collect_autofree_local_array_clone_move_proofs_from_flat(flat &ast.FlatAst) {
 	for file in flat.files {
 		if !autofree_collect_node_is(flat, file.file_id, .file) {
@@ -1199,6 +1300,1524 @@ fn autofree_collect_scalar_array_clone_cleanup_allowed(typ Type, shape AutofreeR
 	}
 }
 
+fn (mut e Environment) collect_autofree_receiver_field_slice_clone_move_proofs_from_flat(flat &ast.FlatAst) {
+	for file in flat.files {
+		if !autofree_collect_node_is(flat, file.file_id, .file) {
+			continue
+		}
+		module_name := flat.string_at(file.mod_idx)
+		stmts_id := autofree_collect_required_child(flat, file.file_id, 2, .aux_list)
+		if stmts_id == ast.invalid_flat_node_id {
+			continue
+		}
+		stmt_count := autofree_collect_exact_edge_count(flat, stmts_id)
+		if stmt_count < 0 {
+			continue
+		}
+		stmt_node := flat.nodes[stmts_id]
+		for i in 0 .. stmt_count {
+			fn_id := flat.edges[stmt_node.first_edge + i].child_id
+			if !autofree_collect_node_is(flat, fn_id, .stmt_fn_decl) {
+				continue
+			}
+			e.collect_autofree_receiver_field_slice_clone_move_proofs_from_fn(flat, module_name,
+				fn_id)
+		}
+	}
+}
+
+fn (mut e Environment) collect_autofree_receiver_field_slice_clone_move_proofs_from_fn(flat &ast.FlatAst, module_name string, fn_id ast.FlatNodeId) {
+	if !autofree_collect_node_is(flat, fn_id, .stmt_fn_decl)
+		|| !autofree_collect_fn_schema_is_complete(flat, fn_id) {
+		return
+	}
+	fn_node := flat.nodes[fn_id]
+	fn_name := flat.string_at(fn_node.name_id)
+	if fn_name.len == 0 {
+		return
+	}
+	receiver := autofree_collect_receiver_field_slice_clone_receiver_from_fn(flat, fn_id) or {
+		return
+	}
+	receiver_type := e.autofree_collect_receiver_type_name_from_fn_decl(flat, fn_id) or { return }
+	fn_key := autofree_fn_key(module_name, fn_name, receiver_type)
+	body_id := autofree_collect_required_child(flat, fn_id, 3, .aux_list)
+	if body_id == ast.invalid_flat_node_id {
+		return
+	}
+	proofs := e.collect_autofree_receiver_field_slice_clone_move_proofs_from_block(flat, fn_key,
+		fn_name, receiver, body_id, false, true)
+	if proofs.len == 0 {
+		return
+	}
+	mut existing := e.autofree_move_proofs_by_fn_key[fn_key] or { []AutofreeMoveProofFact{} }
+	existing << proofs
+	e.autofree_move_proofs_by_fn_key[fn_key] = existing
+}
+
+fn autofree_collect_receiver_field_slice_clone_receiver_from_fn(flat &ast.FlatAst, fn_id ast.FlatNodeId) ?AutofreeReceiverFieldSliceCloneReceiver {
+	if !autofree_collect_node_is(flat, fn_id, .stmt_fn_decl) {
+		return none
+	}
+	fn_node := flat.nodes[fn_id]
+	if (fn_node.flags & ast.flag_is_method) == 0 || (fn_node.flags & ast.flag_is_static) != 0
+		|| unsafe { ast.Language(int(fn_node.aux)) } != .v {
+		return none
+	}
+	receiver_id := autofree_collect_required_child(flat, fn_id, 0, .aux_parameter)
+	if receiver_id == ast.invalid_flat_node_id
+		|| !autofree_collect_parameter_schema_is_complete(flat, receiver_id)
+		|| (flat.nodes[receiver_id].flags & ast.flag_is_mut) != 0 {
+		return none
+	}
+	receiver_name := flat.string_at(flat.nodes[receiver_id].name_id)
+	receiver_pos_id := flat.nodes[receiver_id].pos.id
+	if !autofree_collect_name_is_usable(receiver_name) || receiver_pos_id <= 0 {
+		return none
+	}
+	return AutofreeReceiverFieldSliceCloneReceiver{
+		name:   receiver_name
+		id:     receiver_id
+		pos_id: receiver_pos_id
+	}
+}
+
+fn (mut e Environment) collect_autofree_receiver_field_slice_clone_move_proofs_from_block(flat &ast.FlatAst, fn_key string, fn_name string, receiver AutofreeReceiverFieldSliceCloneReceiver, body_id ast.FlatNodeId, require_final_for bool, allow_nested_then bool) []AutofreeMoveProofFact {
+	body_count := autofree_collect_receiver_field_slice_clone_block_stmt_count(flat, body_id)
+	if body_count <= 0 {
+		return []AutofreeMoveProofFact{}
+	}
+	mut proofs := []AutofreeMoveProofFact{}
+	for i in 0 .. body_count {
+		if proof := e.collect_autofree_receiver_field_slice_clone_move_proof_from_block_at(flat,
+			fn_key, fn_name, receiver, body_id, body_count, i, require_final_for)
+		{
+			proofs << proof
+		}
+		if !allow_nested_then {
+			continue
+		}
+		nested_stmt_id := autofree_collect_receiver_field_slice_clone_block_stmt(flat, body_id, i)
+		if nested_stmt_id == ast.invalid_flat_node_id {
+			return []AutofreeMoveProofFact{}
+		}
+		nested_proofs := e.collect_autofree_receiver_field_slice_clone_move_proofs_from_nested_then_stmt(flat,
+			fn_key, fn_name, receiver, nested_stmt_id)
+		for nested_proof in nested_proofs {
+			if autofree_collect_receiver_field_slice_clone_block_has_later_target_use(flat,
+				body_id, i, nested_proof.name)
+			{
+				return []AutofreeMoveProofFact{}
+			}
+			proofs << nested_proof
+		}
+	}
+	return proofs
+}
+
+fn autofree_collect_receiver_field_slice_clone_block_edge_start(flat &ast.FlatAst, body_id ast.FlatNodeId) int {
+	if autofree_collect_node_is(flat, body_id, .expr_if) {
+		return 2
+	}
+	return 0
+}
+
+fn autofree_collect_receiver_field_slice_clone_block_stmt_count(flat &ast.FlatAst, body_id ast.FlatNodeId) int {
+	if !autofree_collect_node_is_valid(flat, body_id) {
+		return -1
+	}
+	if !autofree_collect_node_is(flat, body_id, .aux_list)
+		&& !autofree_collect_node_is(flat, body_id, .expr_if) {
+		return -1
+	}
+	edge_count := autofree_collect_exact_edge_count(flat, body_id)
+	if edge_count < 0 {
+		return -1
+	}
+	start := autofree_collect_receiver_field_slice_clone_block_edge_start(flat, body_id)
+	if edge_count < start {
+		return -1
+	}
+	return edge_count - start
+}
+
+fn autofree_collect_receiver_field_slice_clone_block_stmt(flat &ast.FlatAst, body_id ast.FlatNodeId, stmt_index int) ast.FlatNodeId {
+	stmt_count := autofree_collect_receiver_field_slice_clone_block_stmt_count(flat, body_id)
+	if stmt_index < 0 || stmt_index >= stmt_count {
+		return ast.invalid_flat_node_id
+	}
+	body_node := flat.nodes[body_id]
+	start := autofree_collect_receiver_field_slice_clone_block_edge_start(flat, body_id)
+	stmt_edge := body_node.first_edge + start + stmt_index
+	if stmt_edge < 0 || stmt_edge >= flat.edges.len {
+		return ast.invalid_flat_node_id
+	}
+	return flat.edges[stmt_edge].child_id
+}
+
+fn (mut e Environment) collect_autofree_receiver_field_slice_clone_move_proofs_from_nested_then_stmt(flat &ast.FlatAst, fn_key string, fn_name string, receiver AutofreeReceiverFieldSliceCloneReceiver, stmt_id ast.FlatNodeId) []AutofreeMoveProofFact {
+	if !autofree_collect_node_is(flat, stmt_id, .stmt_expr)
+		|| autofree_collect_exact_edge_count(flat, stmt_id) != 1 {
+		return []AutofreeMoveProofFact{}
+	}
+	expr_id := flat.edges[flat.nodes[stmt_id].first_edge].child_id
+	if !autofree_collect_node_is(flat, expr_id, .expr_if)
+		|| !autofree_collect_receiver_field_slice_clone_if_has_only_then(flat, expr_id) {
+		return []AutofreeMoveProofFact{}
+	}
+	return e.collect_autofree_receiver_field_slice_clone_move_proofs_from_block(flat, fn_key,
+		fn_name, receiver, expr_id, true, false)
+}
+
+fn autofree_collect_receiver_field_slice_clone_if_has_only_then(flat &ast.FlatAst, expr_id ast.FlatNodeId) bool {
+	if !autofree_collect_node_is(flat, expr_id, .expr_if)
+		|| autofree_collect_exact_edge_count(flat, expr_id) < 2 {
+		return false
+	}
+	expr_node := flat.nodes[expr_id]
+	else_id := flat.edges[expr_node.first_edge + 1].child_id
+	return autofree_collect_node_is(flat, else_id, .expr_empty)
+}
+
+fn autofree_collect_receiver_field_slice_clone_block_has_later_target_use(flat &ast.FlatAst, body_id ast.FlatNodeId, stmt_index int, target_name string) bool {
+	if target_name.len == 0 {
+		return true
+	}
+	stmt_count := autofree_collect_receiver_field_slice_clone_block_stmt_count(flat, body_id)
+	if stmt_count < 0 || stmt_index < 0 || stmt_index >= stmt_count {
+		return true
+	}
+	for i in stmt_index + 1 .. stmt_count {
+		stmt_id := autofree_collect_receiver_field_slice_clone_block_stmt(flat, body_id, i)
+		if stmt_id == ast.invalid_flat_node_id
+			|| autofree_collect_subtree_contains_ident(flat, stmt_id, target_name) {
+			return true
+		}
+	}
+	return false
+}
+
+fn (mut e Environment) collect_autofree_receiver_field_slice_clone_move_proof_from_block_at(flat &ast.FlatAst, fn_key string, fn_name string, receiver AutofreeReceiverFieldSliceCloneReceiver, body_id ast.FlatNodeId, body_count int, decl_stmt_index int, require_final_for bool) ?AutofreeMoveProofFact {
+	if body_count < 2 || decl_stmt_index < 0 || decl_stmt_index >= body_count - 1 {
+		return none
+	}
+	decl_stmt_id := autofree_collect_receiver_field_slice_clone_block_stmt(flat, body_id,
+		decl_stmt_index)
+	if decl_stmt_id == ast.invalid_flat_node_id {
+		return none
+	}
+	final_stmt_index := body_count - 1
+	final_stmt_id := autofree_collect_receiver_field_slice_clone_block_stmt(flat, body_id,
+		final_stmt_index)
+	if final_stmt_id == ast.invalid_flat_node_id {
+		return none
+	}
+	if require_final_for && !autofree_collect_node_is(flat, final_stmt_id, .stmt_for) {
+		return none
+	}
+	target_id, target_name, clone := autofree_collect_receiver_field_slice_clone_decl(flat,
+		decl_stmt_id, receiver.name) or { return none }
+	if target_name == receiver.name {
+		return none
+	}
+	for i in decl_stmt_index + 1 .. final_stmt_index {
+		stmt_id := autofree_collect_receiver_field_slice_clone_block_stmt(flat, body_id, i)
+		if stmt_id == ast.invalid_flat_node_id {
+			return none
+		}
+		if !autofree_collect_receiver_field_slice_clone_intermediate_stmt_is_safe(flat, stmt_id,
+			target_name) {
+			return none
+		}
+	}
+	if !autofree_collect_receiver_field_slice_clone_final_stmt_is_safe(flat, final_stmt_id,
+		target_name) {
+		return none
+	}
+	target_pos_id := flat.nodes[target_id].pos.id
+	clone_pos_id := clone.call_pos_id
+	slice_pos_id := clone.slice_pos_id
+	if target_pos_id <= 0 || clone_pos_id <= 0 || slice_pos_id <= 0 {
+		return none
+	}
+	target_typ := e.get_expr_type(target_pos_id) or { return none }
+	clone_typ := e.get_expr_type(clone_pos_id) or { return none }
+	slice_typ := e.get_expr_type(slice_pos_id) or { return none }
+	if !type_has_valid_payload(target_typ) || !type_has_valid_payload(clone_typ)
+		|| !type_has_valid_payload(slice_typ) {
+		return none
+	}
+	transfer_typ := autofree_collect_canonical_decl_transfer_type(target_typ, clone_typ) or {
+		return none
+	}
+	_ = autofree_collect_canonical_decl_transfer_type(slice_typ, transfer_typ) or { return none }
+	shape := e.autofree_resource_shape(transfer_typ)
+	if !autofree_collect_no_resource_array_clone_cleanup_allowed(transfer_typ, shape) {
+		return none
+	}
+	final_pos_id := autofree_collect_statement_pos_id_or_fallback(flat, final_stmt_id,
+		target_pos_id)
+	if final_pos_id <= 0 {
+		return none
+	}
+	source_endpoint := AutofreeTransferEndpoint{
+		storage:      .array_element
+		root_storage: .receiver
+		root_name:    receiver.name
+		name:         '${receiver.name}.${clone.field_name}[..]'
+		root_node_id: receiver.id
+		root_pos_id:  receiver.pos_id
+		node_id:      clone.slice_id
+		pos_id:       clone.slice_pos_id
+		path:         [
+			AutofreeEndpointPathSegment{
+				storage: .struct_field
+				name:    clone.field_name
+				node_id: clone.selector_id
+				pos_id:  clone.selector_pos_id
+			},
+			AutofreeEndpointPathSegment{
+				storage:       .array_element
+				name:          '[..]'
+				node_id:       clone.slice_id
+				pos_id:        clone.slice_pos_id
+				index_node_id: clone.range_id
+				index_pos_id:  clone.range_pos_id
+			},
+		]
+		has_type:     true
+		typ:          transfer_typ
+		type_name:    transfer_typ.name()
+		resource:     .array_value
+		shape:        shape
+		state:        .borrowed_no_free
+		reason:       'borrowed receiver field slice clone source'
+	}
+	target_endpoint := AutofreeTransferEndpoint{
+		...autofree_collect_endpoint(flat, target_id, target_pos_id, target_id, target_name,
+			transfer_typ, shape, .local, 'receiver field slice clone target')
+		state: .owned_unique
+	}
+	return AutofreeMoveProofFact{
+		fn_key:          fn_key
+		fn_name:         fn_name
+		name:            target_name
+		kind:            .receiver_field_slice_clone_binding
+		source_endpoint: source_endpoint
+		target_endpoint: target_endpoint
+		state:           .owned_unique
+		resource:        .array_value
+		shape:           shape
+		typ:             transfer_typ
+		type_name:       transfer_typ.name()
+		node_id:         target_id
+		pos_id:          target_pos_id
+		stmt_node_id:    final_stmt_id
+		stmt_pos_id:     final_pos_id
+		reason:          'receiver field slice clone local cleanup'
+	}
+}
+
+fn autofree_collect_statement_pos_id_or_fallback(flat &ast.FlatAst, stmt_id ast.FlatNodeId, fallback_pos_id int) int {
+	if !autofree_collect_node_is_valid(flat, stmt_id) {
+		return 0
+	}
+	stmt_pos_id := flat.nodes[stmt_id].pos.id
+	if stmt_pos_id > 0 {
+		return stmt_pos_id
+	}
+	return fallback_pos_id
+}
+
+fn autofree_collect_receiver_field_slice_clone_decl(flat &ast.FlatAst, stmt_id ast.FlatNodeId, receiver_name string) ?(ast.FlatNodeId, string, AutofreeReceiverFieldSliceCloneRhs) {
+	if !autofree_collect_node_is(flat, stmt_id, .stmt_assign) {
+		return none
+	}
+	stmt_node := flat.nodes[stmt_id]
+	if unsafe { token.Token(int(stmt_node.aux)) } != .decl_assign || stmt_node.extra != 1
+		|| autofree_collect_exact_edge_count(flat, stmt_id) != 2 {
+		return none
+	}
+	lhs_expr_id := flat.edges[stmt_node.first_edge].child_id
+	lhs_id := autofree_collect_fresh_array_lhs_ident_id(flat, lhs_expr_id)
+	if lhs_id == ast.invalid_flat_node_id {
+		return none
+	}
+	target_name := flat.string_at(flat.nodes[lhs_id].name_id)
+	if !autofree_collect_name_is_usable(target_name) || target_name == receiver_name {
+		return none
+	}
+	rhs_id := flat.edges[stmt_node.first_edge + 1].child_id
+	clone := autofree_collect_receiver_field_slice_clone_rhs(flat, rhs_id, receiver_name,
+		target_name) or { return none }
+	return lhs_id, target_name, clone
+}
+
+fn autofree_collect_receiver_field_slice_clone_rhs(flat &ast.FlatAst, rhs_id ast.FlatNodeId, receiver_name string, target_name string) ?AutofreeReceiverFieldSliceCloneRhs {
+	if !autofree_collect_node_is(flat, rhs_id, .expr_call) {
+		return none
+	}
+	call_node := flat.nodes[rhs_id]
+	if call_node.pos.id <= 0 {
+		return none
+	}
+	edge_count := autofree_collect_exact_edge_count(flat, rhs_id)
+	if edge_count < 1 {
+		return none
+	}
+	lhs_id := flat.edges[call_node.first_edge].child_id
+	if edge_count == 1 {
+		if !autofree_collect_node_is(flat, lhs_id, .expr_selector)
+			|| autofree_collect_exact_edge_count(flat, lhs_id) != 2 {
+			return none
+		}
+		selector_node := flat.nodes[lhs_id]
+		source_id := flat.edges[selector_node.first_edge].child_id
+		method_id := flat.edges[selector_node.first_edge + 1].child_id
+		if !autofree_collect_node_is(flat, method_id, .expr_ident)
+			|| autofree_collect_exact_edge_count(flat, method_id) != 0
+			|| flat.string_at(flat.nodes[method_id].name_id) != 'clone' {
+			return none
+		}
+		return autofree_collect_receiver_field_slice_clone_source_expr(flat, source_id,
+			receiver_name, target_name, rhs_id, call_node.pos.id)
+	}
+	if !autofree_collect_node_is(flat, lhs_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, lhs_id) != 0 {
+		return none
+	}
+	call_name := flat.string_at(flat.nodes[lhs_id].name_id)
+	match call_name {
+		'array__clone' {
+			if edge_count != 2 {
+				return none
+			}
+		}
+		'array__clone_to_depth' {
+			if edge_count != 3
+				|| !autofree_collect_numeric_zero_node(flat, flat.edges[call_node.first_edge + 2].child_id) {
+				return none
+			}
+		}
+		else {
+			return none
+		}
+	}
+
+	source_id := flat.edges[call_node.first_edge + 1].child_id
+	return autofree_collect_receiver_field_slice_clone_source_expr(flat, source_id, receiver_name,
+		target_name, rhs_id, call_node.pos.id)
+}
+
+fn autofree_collect_receiver_field_slice_clone_source_expr(flat &ast.FlatAst, source_id ast.FlatNodeId, receiver_name string, target_name string, call_id ast.FlatNodeId, call_pos_id int) ?AutofreeReceiverFieldSliceCloneRhs {
+	if slice_clone := autofree_collect_receiver_field_slice_clone_index_source(flat, source_id,
+		receiver_name, target_name, call_id, call_pos_id)
+	{
+		return slice_clone
+	}
+	return autofree_collect_receiver_field_slice_clone_lowered_slice_source(flat, source_id,
+		receiver_name, target_name, call_id, call_pos_id)
+}
+
+fn autofree_collect_receiver_field_slice_clone_index_source(flat &ast.FlatAst, source_id ast.FlatNodeId, receiver_name string, target_name string, call_id ast.FlatNodeId, call_pos_id int) ?AutofreeReceiverFieldSliceCloneRhs {
+	if !autofree_collect_node_is(flat, source_id, .expr_index)
+		|| autofree_collect_exact_edge_count(flat, source_id) != 2 {
+		return none
+	}
+	source_node := flat.nodes[source_id]
+	selector_id := flat.edges[source_node.first_edge].child_id
+	range_id := flat.edges[source_node.first_edge + 1].child_id
+	if !autofree_collect_node_is(flat, range_id, .expr_range)
+		|| autofree_collect_exact_edge_count(flat, range_id) != 2 {
+		return none
+	}
+	range_node := flat.nodes[range_id]
+	start_id := flat.edges[range_node.first_edge].child_id
+	end_id := flat.edges[range_node.first_edge + 1].child_id
+	if !autofree_collect_receiver_field_slice_clone_index_bounds_are_safe(flat, start_id, end_id,
+		target_name) {
+		return none
+	}
+	return autofree_collect_receiver_field_slice_clone_from_selector(flat, selector_id,
+		receiver_name, source_id, source_node.pos.id, range_id, range_node.pos.id, start_id,
+		end_id, call_id, call_pos_id)
+}
+
+fn autofree_collect_receiver_field_slice_clone_lowered_slice_source(flat &ast.FlatAst, source_id ast.FlatNodeId, receiver_name string, target_name string, call_id ast.FlatNodeId, call_pos_id int) ?AutofreeReceiverFieldSliceCloneRhs {
+	if !autofree_collect_node_is(flat, source_id, .expr_call)
+		|| autofree_collect_exact_edge_count(flat, source_id) != 4 {
+		return none
+	}
+	slice_node := flat.nodes[source_id]
+	lhs_id := flat.edges[slice_node.first_edge].child_id
+	if !autofree_collect_node_is(flat, lhs_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, lhs_id) != 0
+		|| flat.string_at(flat.nodes[lhs_id].name_id) != 'array__slice' {
+		return none
+	}
+	selector_id := flat.edges[slice_node.first_edge + 1].child_id
+	start_id := flat.edges[slice_node.first_edge + 2].child_id
+	end_id := flat.edges[slice_node.first_edge + 3].child_id
+	if !autofree_collect_receiver_field_slice_clone_index_bounds_are_safe(flat, start_id, end_id,
+		target_name) {
+		return none
+	}
+	mut slice_pos_id := slice_node.pos.id
+	if slice_pos_id <= 0 && autofree_collect_node_is_valid(flat, selector_id) {
+		slice_pos_id = flat.nodes[selector_id].pos.id
+	}
+	return autofree_collect_receiver_field_slice_clone_from_selector(flat, selector_id,
+		receiver_name, source_id, slice_pos_id, source_id, slice_pos_id, start_id, end_id, call_id,
+		call_pos_id)
+}
+
+fn autofree_collect_receiver_field_slice_clone_from_selector(flat &ast.FlatAst, selector_id ast.FlatNodeId, receiver_name string, slice_id ast.FlatNodeId, slice_pos_id int, range_id ast.FlatNodeId, range_pos_id int, start_id ast.FlatNodeId, end_id ast.FlatNodeId, call_id ast.FlatNodeId, call_pos_id int) ?AutofreeReceiverFieldSliceCloneRhs {
+	if !autofree_collect_node_is(flat, selector_id, .expr_selector)
+		|| autofree_collect_exact_edge_count(flat, selector_id) != 2 {
+		return none
+	}
+	selector_node := flat.nodes[selector_id]
+	root_id := flat.edges[selector_node.first_edge].child_id
+	field_id := flat.edges[selector_node.first_edge + 1].child_id
+	if !autofree_collect_node_is(flat, root_id, .expr_ident)
+		|| !autofree_collect_node_is(flat, field_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, root_id) != 0
+		|| autofree_collect_exact_edge_count(flat, field_id) != 0 {
+		return none
+	}
+	root_name := flat.string_at(flat.nodes[root_id].name_id)
+	field_name := flat.string_at(flat.nodes[field_id].name_id)
+	if root_name != receiver_name || !autofree_collect_name_is_usable(field_name)
+		|| slice_pos_id <= 0 || range_pos_id <= 0 || selector_node.pos.id <= 0 {
+		return none
+	}
+	return AutofreeReceiverFieldSliceCloneRhs{
+		receiver_name:   root_name
+		receiver_id:     root_id
+		receiver_pos_id: flat.nodes[root_id].pos.id
+		field_name:      field_name
+		field_id:        field_id
+		field_pos_id:    flat.nodes[field_id].pos.id
+		selector_id:     selector_id
+		selector_pos_id: selector_node.pos.id
+		slice_id:        slice_id
+		slice_pos_id:    slice_pos_id
+		range_id:        range_id
+		range_pos_id:    range_pos_id
+		start_id:        start_id
+		end_id:          end_id
+		call_id:         call_id
+		call_pos_id:     call_pos_id
+	}
+}
+
+fn autofree_collect_receiver_field_slice_clone_index_bounds_are_safe(flat &ast.FlatAst, start_id ast.FlatNodeId, end_id ast.FlatNodeId, target_name string) bool {
+	return
+		autofree_collect_receiver_field_slice_clone_index_bound_is_safe(flat, start_id, target_name)
+		&& autofree_collect_receiver_field_slice_clone_index_bound_is_safe(flat, end_id, target_name)
+}
+
+fn autofree_collect_receiver_field_slice_clone_index_bound_is_safe(flat &ast.FlatAst, node_id ast.FlatNodeId, target_name string) bool {
+	if !autofree_collect_node_is_valid(flat, node_id)
+		|| autofree_collect_subtree_contains_ident(flat, node_id, target_name) {
+		return false
+	}
+	node := flat.nodes[node_id]
+	match node.kind {
+		.expr_call, .expr_call_or_cast, .expr_fn_literal, .expr_lambda, .expr_selector,
+		.expr_index {
+			return false
+		}
+		else {}
+	}
+
+	for i in 0 .. node.edge_count {
+		if !autofree_collect_child_is_valid(flat, node_id, i) {
+			return false
+		}
+		child_id := flat.edges[node.first_edge + i].child_id
+		if !autofree_collect_receiver_field_slice_clone_index_bound_is_safe(flat, child_id,
+			target_name) {
+			return false
+		}
+	}
+	return true
+}
+
+fn autofree_collect_no_resource_array_clone_cleanup_allowed(typ Type, shape AutofreeResourceShape) bool {
+	if shape.kind != .array || shape.fail_closed || !shape.needs_autofree() {
+		return false
+	}
+	if typ is Array {
+		elem_shape := autofree_resource_shape_for_type(typ.elem_type)
+		return !elem_shape.fail_closed && !elem_shape.has_owned_resource
+	}
+	return false
+}
+
+fn autofree_collect_receiver_field_slice_clone_intermediate_stmt_is_safe(flat &ast.FlatAst, stmt_id ast.FlatNodeId, target_name string) bool {
+	if !autofree_collect_node_is_valid(flat, stmt_id)
+		|| autofree_collect_subtree_contains_ident(flat, stmt_id, target_name) {
+		return false
+	}
+	return !autofree_collect_receiver_field_slice_clone_has_unsupported_node(flat, stmt_id,
+		target_name)
+}
+
+fn autofree_collect_receiver_field_slice_clone_final_stmt_is_safe(flat &ast.FlatAst, stmt_id ast.FlatNodeId, target_name string) bool {
+	if autofree_collect_node_is(flat, stmt_id, .stmt_for) {
+		check := autofree_collect_receiver_field_slice_clone_for_stmt_is_safe(flat, stmt_id,
+			target_name)
+		return check.ok && check.saw_target_read
+	}
+	check := autofree_collect_receiver_field_slice_clone_stmt_is_read_or_inert(flat, stmt_id,
+		target_name)
+	return check.ok && check.saw_target_read
+}
+
+fn autofree_collect_receiver_field_slice_clone_for_stmt_is_safe(flat &ast.FlatAst, stmt_id ast.FlatNodeId, target_name string) AutofreeReceiverFieldSliceCloneReadCheck {
+	if !autofree_collect_node_is(flat, stmt_id, .stmt_for) {
+		return AutofreeReceiverFieldSliceCloneReadCheck{}
+	}
+	stmt_node := flat.nodes[stmt_id]
+	edge_count := autofree_collect_exact_edge_count(flat, stmt_id)
+	if edge_count < 3 {
+		return AutofreeReceiverFieldSliceCloneReadCheck{}
+	}
+	for i in 0 .. 3 {
+		child_id := flat.edges[stmt_node.first_edge + i].child_id
+		if autofree_collect_subtree_contains_ident(flat, child_id, target_name)
+			|| autofree_collect_receiver_field_slice_clone_has_unsupported_node(flat, child_id, target_name) {
+			return AutofreeReceiverFieldSliceCloneReadCheck{}
+		}
+	}
+	mut saw_target_read := false
+	for i in 3 .. edge_count {
+		body_stmt_id := flat.edges[stmt_node.first_edge + i].child_id
+		check := autofree_collect_receiver_field_slice_clone_stmt_is_read_or_inert(flat,
+			body_stmt_id, target_name)
+		if !check.ok {
+			return AutofreeReceiverFieldSliceCloneReadCheck{}
+		}
+		saw_target_read = saw_target_read || check.saw_target_read
+	}
+	return AutofreeReceiverFieldSliceCloneReadCheck{
+		ok:              true
+		saw_target_read: saw_target_read
+	}
+}
+
+fn autofree_collect_receiver_field_slice_clone_stmt_is_read_or_inert(flat &ast.FlatAst, stmt_id ast.FlatNodeId, target_name string) AutofreeReceiverFieldSliceCloneReadCheck {
+	if !autofree_collect_node_is_valid(flat, stmt_id) {
+		return AutofreeReceiverFieldSliceCloneReadCheck{}
+	}
+	if autofree_collect_node_is(flat, stmt_id, .stmt_assign) {
+		return autofree_collect_receiver_field_slice_clone_assign_is_read_or_inert(flat, stmt_id,
+			target_name)
+	}
+	if autofree_collect_receiver_field_slice_clone_has_unsupported_node(flat, stmt_id, target_name) {
+		return AutofreeReceiverFieldSliceCloneReadCheck{}
+	}
+	if autofree_collect_subtree_contains_ident(flat, stmt_id, target_name) {
+		return AutofreeReceiverFieldSliceCloneReadCheck{}
+	}
+	return AutofreeReceiverFieldSliceCloneReadCheck{
+		ok: true
+	}
+}
+
+fn autofree_collect_receiver_field_slice_clone_assign_is_read_or_inert(flat &ast.FlatAst, stmt_id ast.FlatNodeId, target_name string) AutofreeReceiverFieldSliceCloneReadCheck {
+	stmt_node := flat.nodes[stmt_id]
+	edge_count := autofree_collect_exact_edge_count(flat, stmt_id)
+	lhs_count := stmt_node.extra
+	if lhs_count <= 0 || edge_count < lhs_count {
+		return AutofreeReceiverFieldSliceCloneReadCheck{}
+	}
+	for lhs_i in 0 .. lhs_count {
+		lhs_id := flat.edges[stmt_node.first_edge + lhs_i].child_id
+		if autofree_collect_subtree_contains_ident(flat, lhs_id, target_name) {
+			return AutofreeReceiverFieldSliceCloneReadCheck{}
+		}
+	}
+	mut saw_target_read := false
+	for rhs_i in lhs_count .. edge_count {
+		rhs_id := flat.edges[stmt_node.first_edge + rhs_i].child_id
+		if !autofree_collect_subtree_contains_ident(flat, rhs_id, target_name) {
+			continue
+		}
+		if !autofree_collect_receiver_field_slice_clone_expr_is_safe_target_read(flat, rhs_id,
+			target_name) {
+			return AutofreeReceiverFieldSliceCloneReadCheck{}
+		}
+		saw_target_read = true
+	}
+	return AutofreeReceiverFieldSliceCloneReadCheck{
+		ok:              true
+		saw_target_read: saw_target_read
+	}
+}
+
+fn autofree_collect_receiver_field_slice_clone_expr_is_safe_target_read(flat &ast.FlatAst, node_id ast.FlatNodeId, target_name string) bool {
+	if !autofree_collect_node_is_valid(flat, node_id)
+		|| !autofree_collect_subtree_contains_ident(flat, node_id, target_name) {
+		return false
+	}
+	node := flat.nodes[node_id]
+	match node.kind {
+		.expr_index {
+			if autofree_collect_exact_edge_count(flat, node_id) != 2 {
+				return false
+			}
+			root_id := flat.edges[node.first_edge].child_id
+			index_id := flat.edges[node.first_edge + 1].child_id
+			return autofree_collect_node_is(flat, root_id, .expr_ident)
+				&& autofree_collect_exact_edge_count(flat, root_id) == 0
+				&& flat.string_at(flat.nodes[root_id].name_id) == target_name
+				&& !autofree_collect_subtree_contains_ident(flat, index_id, target_name)
+				&& !autofree_collect_receiver_field_slice_clone_has_unsupported_node(flat, index_id, target_name)
+		}
+		.expr_selector {
+			if autofree_collect_exact_edge_count(flat, node_id) != 2 {
+				return false
+			}
+			lhs_id := flat.edges[node.first_edge].child_id
+			rhs_id := flat.edges[node.first_edge + 1].child_id
+			return
+				autofree_collect_receiver_field_slice_clone_expr_is_safe_target_read(flat, lhs_id, target_name)
+				&& autofree_collect_node_is(flat, rhs_id, .expr_ident)
+				&& autofree_collect_exact_edge_count(flat, rhs_id) == 0
+		}
+		.expr_infix {
+			if autofree_collect_exact_edge_count(flat, node_id) != 2 {
+				return false
+			}
+			left_id := flat.edges[node.first_edge].child_id
+			right_id := flat.edges[node.first_edge + 1].child_id
+			left_ok := !autofree_collect_subtree_contains_ident(flat, left_id, target_name)
+				|| autofree_collect_receiver_field_slice_clone_expr_is_safe_target_read(flat, left_id, target_name)
+			right_ok := !autofree_collect_subtree_contains_ident(flat, right_id, target_name)
+				|| autofree_collect_receiver_field_slice_clone_expr_is_safe_target_read(flat, right_id, target_name)
+			return left_ok && right_ok
+		}
+		.expr_paren {
+			if autofree_collect_exact_edge_count(flat, node_id) != 1 {
+				return false
+			}
+			return autofree_collect_receiver_field_slice_clone_expr_is_safe_target_read(flat,
+				flat.edges[node.first_edge].child_id, target_name)
+		}
+		.expr_call {
+			return autofree_collect_receiver_field_slice_clone_call_is_safe_target_read(flat,
+				node_id, target_name)
+		}
+		else {
+			return false
+		}
+	}
+}
+
+fn autofree_collect_receiver_field_slice_clone_call_is_safe_target_read(flat &ast.FlatAst, node_id ast.FlatNodeId, target_name string) bool {
+	if !autofree_collect_node_is(flat, node_id, .expr_call) {
+		return false
+	}
+	node := flat.nodes[node_id]
+	edge_count := autofree_collect_exact_edge_count(flat, node_id)
+	if edge_count <= 0 {
+		return false
+	}
+	lhs_id := flat.edges[node.first_edge].child_id
+	if edge_count == 1 {
+		return autofree_collect_receiver_field_slice_clone_method_call_is_safe_target_read(flat,
+			lhs_id, target_name)
+	}
+	if !autofree_collect_node_is(flat, lhs_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, lhs_id) != 0 {
+		return false
+	}
+	call_name := flat.string_at(flat.nodes[lhs_id].name_id)
+	match call_name {
+		'array__clone' {
+			if edge_count != 2 {
+				return false
+			}
+		}
+		'array__clone_to_depth' {
+			if edge_count != 3
+				|| !autofree_collect_numeric_zero_node(flat, flat.edges[node.first_edge + 2].child_id) {
+				return false
+			}
+		}
+		else {
+			return false
+		}
+	}
+
+	source_id := flat.edges[node.first_edge + 1].child_id
+	return autofree_collect_receiver_field_slice_clone_target_ident(flat, source_id, target_name)
+}
+
+fn autofree_collect_receiver_field_slice_clone_method_call_is_safe_target_read(flat &ast.FlatAst, selector_id ast.FlatNodeId, target_name string) bool {
+	if !autofree_collect_node_is(flat, selector_id, .expr_selector)
+		|| autofree_collect_exact_edge_count(flat, selector_id) != 2 {
+		return false
+	}
+	selector := flat.nodes[selector_id]
+	source_id := flat.edges[selector.first_edge].child_id
+	method_id := flat.edges[selector.first_edge + 1].child_id
+	return autofree_collect_receiver_field_slice_clone_target_ident(flat, source_id, target_name)
+		&& autofree_collect_node_is(flat, method_id, .expr_ident)
+		&& autofree_collect_exact_edge_count(flat, method_id) == 0
+		&& flat.string_at(flat.nodes[method_id].name_id) == 'clone'
+}
+
+fn autofree_collect_receiver_field_slice_clone_target_ident(flat &ast.FlatAst, node_id ast.FlatNodeId, target_name string) bool {
+	return autofree_collect_node_is(flat, node_id, .expr_ident)
+		&& autofree_collect_exact_edge_count(flat, node_id) == 0
+		&& flat.string_at(flat.nodes[node_id].name_id) == target_name
+}
+
+fn autofree_collect_receiver_field_slice_clone_has_unsupported_node(flat &ast.FlatAst, node_id ast.FlatNodeId, target_name string) bool {
+	if !autofree_collect_node_is_valid(flat, node_id) {
+		return true
+	}
+	node := flat.nodes[node_id]
+	match node.kind {
+		.stmt_return, .stmt_flow_control, .stmt_defer, .expr_fn_literal, .expr_lambda, .expr_if {
+			return true
+		}
+		.expr_call, .expr_call_or_cast {
+			return autofree_collect_subtree_contains_ident(flat, node_id, target_name)
+		}
+		else {}
+	}
+
+	for i in 0 .. node.edge_count {
+		if !autofree_collect_child_is_valid(flat, node_id, i) {
+			return true
+		}
+		child_id := flat.edges[node.first_edge + i].child_id
+		if autofree_collect_receiver_field_slice_clone_has_unsupported_node(flat, child_id,
+			target_name)
+		{
+			return true
+		}
+	}
+	return false
+}
+
+fn (mut e Environment) collect_autofree_loop_local_clone_push_move_proofs_from_flat(flat &ast.FlatAst) {
+	for file in flat.files {
+		if !autofree_collect_node_is(flat, file.file_id, .file) {
+			continue
+		}
+		module_name := flat.string_at(file.mod_idx)
+		stmts_id := autofree_collect_required_child(flat, file.file_id, 2, .aux_list)
+		if stmts_id == ast.invalid_flat_node_id {
+			continue
+		}
+		stmt_count := autofree_collect_exact_edge_count(flat, stmts_id)
+		if stmt_count < 0 {
+			continue
+		}
+		stmt_node := flat.nodes[stmts_id]
+		for i in 0 .. stmt_count {
+			fn_id := flat.edges[stmt_node.first_edge + i].child_id
+			if !autofree_collect_node_is(flat, fn_id, .stmt_fn_decl) {
+				continue
+			}
+			e.collect_autofree_loop_local_clone_push_move_proofs_from_fn(flat, module_name, fn_id)
+		}
+	}
+}
+
+fn (mut e Environment) collect_autofree_loop_local_clone_push_move_proofs_from_fn(flat &ast.FlatAst, module_name string, fn_id ast.FlatNodeId) {
+	if !autofree_collect_node_is(flat, fn_id, .stmt_fn_decl)
+		|| !autofree_collect_fn_schema_is_complete(flat, fn_id) {
+		return
+	}
+	fn_name := flat.string_at(flat.nodes[fn_id].name_id)
+	if fn_name.len == 0 {
+		return
+	}
+	receiver := e.autofree_collect_loop_local_clone_push_receiver_from_fn(flat, fn_id) or { return }
+	body_id := autofree_collect_required_child(flat, fn_id, 3, .aux_list)
+	if body_id == ast.invalid_flat_node_id {
+		return
+	}
+	body_count := autofree_collect_exact_edge_count(flat, body_id)
+	if body_count <= 0 {
+		return
+	}
+	param_names := autofree_collect_param_names(flat, autofree_collect_fn_param_ids(flat, fn_id))
+	fn_key := autofree_fn_key(module_name, fn_name, receiver.type_name)
+	body_node := flat.nodes[body_id]
+	mut loop_proofs := []AutofreeLoopLocalClonePushProof{}
+	for i in 0 .. body_count {
+		stmt_id := flat.edges[body_node.first_edge + i].child_id
+		if !autofree_collect_node_is(flat, stmt_id, .stmt_for) {
+			continue
+		}
+		loop_proof := e.collect_autofree_loop_local_clone_push_move_proof_from_loop(flat, fn_key,
+			fn_name, receiver, stmt_id, param_names) or { continue }
+		loop_proofs << loop_proof
+	}
+	if loop_proofs.len == 0 {
+		return
+	}
+	mut fresh_locals := e.autofree_fresh_locals_by_fn_key[fn_key] or { []AutofreeFreshLocalFact{} }
+	mut proofs := e.autofree_move_proofs_by_fn_key[fn_key] or { []AutofreeMoveProofFact{} }
+	for loop_proof in loop_proofs {
+		fresh_locals << loop_proof.fresh
+		proofs << loop_proof.proof
+	}
+	e.autofree_fresh_locals_by_fn_key[fn_key] = fresh_locals
+	e.autofree_move_proofs_by_fn_key[fn_key] = proofs
+}
+
+fn (mut e Environment) autofree_collect_loop_local_clone_push_receiver_from_fn(flat &ast.FlatAst, fn_id ast.FlatNodeId) ?AutofreeLoopLocalClonePushReceiver {
+	if !autofree_collect_node_is(flat, fn_id, .stmt_fn_decl) {
+		return none
+	}
+	fn_node := flat.nodes[fn_id]
+	if (fn_node.flags & ast.flag_is_method) == 0 || (fn_node.flags & ast.flag_is_static) != 0
+		|| unsafe { ast.Language(int(fn_node.aux)) } != .v {
+		return none
+	}
+	receiver_id := autofree_collect_required_child(flat, fn_id, 0, .aux_parameter)
+	if receiver_id == ast.invalid_flat_node_id
+		|| !autofree_collect_parameter_schema_is_complete(flat, receiver_id) {
+		return none
+	}
+	receiver_name := flat.string_at(flat.nodes[receiver_id].name_id)
+	receiver_pos_id := flat.nodes[receiver_id].pos.id
+	receiver_type_name := e.autofree_collect_receiver_type_name_from_fn_decl_allowing_mut(flat,
+		fn_id) or { return none }
+	if !autofree_collect_name_is_usable(receiver_name) || receiver_pos_id <= 0
+		|| !autofree_collect_name_is_usable(receiver_type_name) {
+		return none
+	}
+	return AutofreeLoopLocalClonePushReceiver{
+		name:      receiver_name
+		id:        receiver_id
+		pos_id:    receiver_pos_id
+		type_name: receiver_type_name
+	}
+}
+
+fn (mut e Environment) collect_autofree_loop_local_clone_push_move_proof_from_loop(flat &ast.FlatAst, fn_key string, fn_name string, receiver AutofreeLoopLocalClonePushReceiver, loop_stmt_id ast.FlatNodeId, param_names map[string]bool) ?AutofreeLoopLocalClonePushProof {
+	body_count := autofree_collect_loop_local_clone_push_loop_body_count(flat, loop_stmt_id)
+	if body_count < 2 {
+		return none
+	}
+	fresh_stmt_id := autofree_collect_loop_local_clone_push_loop_body_stmt(flat, loop_stmt_id, 0)
+	final_stmt_id := autofree_collect_loop_local_clone_push_loop_body_stmt(flat, loop_stmt_id,
+		body_count - 1)
+	if fresh_stmt_id == ast.invalid_flat_node_id || final_stmt_id == ast.invalid_flat_node_id {
+		return none
+	}
+	fresh := e.collect_autofree_loop_local_clone_push_fresh_from_stmt(flat, fn_key, fn_name,
+		fresh_stmt_id, receiver.name, param_names) or { return none }
+	if !autofree_collect_scalar_array_clone_cleanup_allowed(fresh.typ, fresh.shape) {
+		return none
+	}
+	final := autofree_collect_loop_local_clone_push_final_from_loop(flat, loop_stmt_id, body_count,
+		receiver.name, fresh.name) or { return none }
+	for i in 1 .. final.index_write_end {
+		stmt_id := autofree_collect_loop_local_clone_push_loop_body_stmt(flat, loop_stmt_id, i)
+		if stmt_id == ast.invalid_flat_node_id
+			|| !e.autofree_collect_loop_local_clone_push_index_write_is_safe(flat, stmt_id, fresh, receiver.name) {
+			return none
+		}
+	}
+	target := final.target
+	clone := final.clone
+	if target.root_name != receiver.name || target.root_pos_id <= 0
+		|| clone.receiver_name != fresh.name || clone.receiver_pos_id <= 0 || clone.call_pos_id <= 0 {
+		return none
+	}
+	clone_typ := e.get_expr_type(clone.call_pos_id) or { return none }
+	dest_typ := e.get_expr_type(target.selector_pos_id) or { return none }
+	if !type_has_valid_payload(clone_typ) || !type_has_valid_payload(dest_typ) {
+		return none
+	}
+	transfer_typ := autofree_collect_canonical_decl_transfer_type(clone_typ, fresh.typ) or {
+		return none
+	}
+	if !same_type_name(transfer_typ, fresh.typ)
+		|| !autofree_collect_loop_local_clone_push_destination_accepts(dest_typ, transfer_typ) {
+		return none
+	}
+	proof := autofree_collect_move_proof_from_fresh_local(fresh) or { return none }
+	return AutofreeLoopLocalClonePushProof{
+		fresh: fresh
+		proof: AutofreeMoveProofFact{
+			...proof
+			kind:         .loop_local_clone_push_binding
+			stmt_node_id: target.stmt_id
+			stmt_pos_id:  target.stmt_pos_id
+			reason:       'loop local clone push cleanup'
+		}
+	}
+}
+
+fn autofree_collect_loop_local_clone_push_loop_body_count(flat &ast.FlatAst, loop_stmt_id ast.FlatNodeId) int {
+	if !autofree_collect_node_is(flat, loop_stmt_id, .stmt_for) {
+		return -1
+	}
+	edge_count := autofree_collect_exact_edge_count(flat, loop_stmt_id)
+	if edge_count < 3 {
+		return -1
+	}
+	return edge_count - 3
+}
+
+fn autofree_collect_loop_local_clone_push_loop_body_stmt(flat &ast.FlatAst, loop_stmt_id ast.FlatNodeId, stmt_index int) ast.FlatNodeId {
+	body_count := autofree_collect_loop_local_clone_push_loop_body_count(flat, loop_stmt_id)
+	if stmt_index < 0 || stmt_index >= body_count {
+		return ast.invalid_flat_node_id
+	}
+	loop_node := flat.nodes[loop_stmt_id]
+	edge_index := loop_node.first_edge + 3 + stmt_index
+	if edge_index < 0 || edge_index >= flat.edges.len {
+		return ast.invalid_flat_node_id
+	}
+	return flat.edges[edge_index].child_id
+}
+
+fn (mut e Environment) collect_autofree_loop_local_clone_push_fresh_from_stmt(flat &ast.FlatAst, fn_key string, fn_name string, stmt_id ast.FlatNodeId, receiver_name string, param_names map[string]bool) ?AutofreeFreshLocalFact {
+	if !autofree_collect_fresh_array_decl_lhs_rhs_schema_is_exact(flat, stmt_id) {
+		return none
+	}
+	stmt_node := flat.nodes[stmt_id]
+	stmt_pos_id := stmt_node.pos.id
+	if stmt_pos_id <= 0 {
+		return none
+	}
+	lhs_expr_id := flat.edges[stmt_node.first_edge].child_id
+	lhs_id := autofree_collect_fresh_array_lhs_ident_id(flat, lhs_expr_id)
+	if lhs_id == ast.invalid_flat_node_id {
+		return none
+	}
+	rhs_id := flat.edges[stmt_node.first_edge + 1].child_id
+	lhs_name := flat.string_at(flat.nodes[lhs_id].name_id)
+	if !autofree_collect_name_is_usable(lhs_name) || lhs_name in param_names
+		|| lhs_name == receiver_name {
+		return none
+	}
+	lhs_pos_id := flat.nodes[lhs_id].pos.id
+	rhs_pos_id := flat.nodes[rhs_id].pos.id
+	if lhs_pos_id <= 0 || rhs_pos_id <= 0 {
+		return none
+	}
+	lhs_typ := e.get_expr_type(lhs_pos_id) or {
+		lhs_expr_pos_id := flat.nodes[lhs_expr_id].pos.id
+		if lhs_expr_id == lhs_id || lhs_expr_pos_id <= 0 {
+			return none
+		}
+		e.get_expr_type(lhs_expr_pos_id) or { return none }
+	}
+	rhs_typ := e.get_expr_type(rhs_pos_id) or { return none }
+	if !type_has_valid_payload(lhs_typ) || !type_has_valid_payload(rhs_typ) {
+		return none
+	}
+	fact_typ := autofree_collect_canonical_decl_transfer_type(lhs_typ, rhs_typ) or { return none }
+	match fact_typ {
+		Array {
+			if !autofree_collect_fresh_array_lhs_is_mut(flat, lhs_expr_id)
+				|| !e.autofree_collect_loop_local_clone_push_len_only_array_init_is_exact(flat, rhs_id, fact_typ.elem_type, lhs_name, receiver_name) {
+				return none
+			}
+		}
+		else {
+			return none
+		}
+	}
+
+	shape := e.autofree_resource_shape(fact_typ)
+	endpoint := autofree_collect_fresh_local_endpoint(flat, lhs_id, lhs_name, fact_typ, shape)
+	source_endpoint := autofree_collect_fresh_literal_endpoint_with_reason(flat, rhs_id, fact_typ,
+		shape, 'len-only scalar array literal')
+	if !autofree_collect_array_container_cleanup_allowed(shape, source_endpoint, true) {
+		return none
+	}
+	return AutofreeFreshLocalFact{
+		fn_key:          fn_key
+		fn_name:         fn_name
+		name:            lhs_name
+		endpoint:        endpoint
+		source_endpoint: source_endpoint
+		state:           .owned_unique
+		resource:        endpoint.resource
+		shape:           shape
+		typ:             fact_typ
+		type_name:       fact_typ.name()
+		node_id:         lhs_id
+		pos_id:          lhs_pos_id
+		stmt_node_id:    stmt_id
+		stmt_pos_id:     stmt_pos_id
+		reason:          'len-only scalar array literal'
+	}
+}
+
+fn (mut e Environment) autofree_collect_loop_local_clone_push_len_only_array_init_is_exact(flat &ast.FlatAst, node_id ast.FlatNodeId, elem_type Type, target_name string, receiver_name string) bool {
+	if e.autofree_collect_loop_local_clone_push_len_only_array_literal_is_exact(flat, node_id,
+		elem_type, target_name, receiver_name)
+	{
+		return true
+	}
+	return e.autofree_collect_loop_local_clone_push_len_only_array_alloc_call_is_exact(flat,
+		node_id, elem_type, target_name, receiver_name)
+}
+
+fn (mut e Environment) autofree_collect_loop_local_clone_push_len_only_array_literal_is_exact(flat &ast.FlatAst, node_id ast.FlatNodeId, elem_type Type, target_name string, receiver_name string) bool {
+	if !autofree_collect_node_is(flat, node_id, .expr_array_init)
+		|| autofree_collect_exact_edge_count(flat, node_id) != 5 {
+		return false
+	}
+	type_id := autofree_collect_required_child(flat, node_id, 0, .typ_array)
+	if type_id == ast.invalid_flat_node_id || autofree_collect_exact_edge_count(flat, type_id) != 1
+		|| !autofree_collect_child_is_valid(flat, type_id, 0) {
+		return false
+	}
+	elem_type_id := flat.edges[flat.nodes[type_id].first_edge].child_id
+	if !autofree_collect_type_expr_matches(flat, elem_type_id, elem_type) {
+		return false
+	}
+	if autofree_collect_required_child(flat, node_id, 1, .expr_empty) == ast.invalid_flat_node_id
+		|| autofree_collect_required_child(flat, node_id, 2, .expr_empty) == ast.invalid_flat_node_id
+		|| autofree_collect_required_child(flat, node_id, 4, .expr_empty) == ast.invalid_flat_node_id {
+		return false
+	}
+	len_id := flat.edges[flat.nodes[node_id].first_edge + 3].child_id
+	return e.autofree_collect_loop_local_clone_push_scalar_expr_is_safe(flat, len_id, target_name,
+		receiver_name)
+}
+
+fn (mut e Environment) autofree_collect_loop_local_clone_push_len_only_array_alloc_call_is_exact(flat &ast.FlatAst, node_id ast.FlatNodeId, elem_type Type, target_name string, receiver_name string) bool {
+	if !autofree_collect_node_is(flat, node_id, .expr_call)
+		|| autofree_collect_exact_edge_count(flat, node_id) != 5 {
+		return false
+	}
+	callee_id := autofree_collect_required_child(flat, node_id, 0, .expr_ident)
+	if callee_id == ast.invalid_flat_node_id
+		|| autofree_collect_exact_edge_count(flat, callee_id) != 0 {
+		return false
+	}
+	callee_name := flat.string_at(flat.nodes[callee_id].name_id)
+	if callee_name !in ['__new_array_with_default_noscan', 'builtin____new_array_with_default_noscan'] {
+		return false
+	}
+	len_id := flat.edges[flat.nodes[node_id].first_edge + 1].child_id
+	if !e.autofree_collect_loop_local_clone_push_scalar_expr_is_safe(flat, len_id, target_name, receiver_name)
+		|| !autofree_collect_numeric_zero_child(flat, node_id, 2) {
+		return false
+	}
+	sizeof_id := autofree_collect_required_child(flat, node_id, 3, .expr_keyword_operator)
+	if sizeof_id == ast.invalid_flat_node_id
+		|| autofree_collect_exact_edge_count(flat, sizeof_id) != 1
+		|| unsafe { token.Token(int(flat.nodes[sizeof_id].aux)) } != .key_sizeof
+		|| !autofree_collect_child_is_valid(flat, sizeof_id, 0) {
+		return false
+	}
+	sizeof_type_id := flat.edges[flat.nodes[sizeof_id].first_edge].child_id
+	if !autofree_collect_type_expr_matches(flat, sizeof_type_id, elem_type) {
+		return false
+	}
+	return autofree_collect_empty_array_alloc_init_is_zero(flat, node_id, 4)
+}
+
+fn (mut e Environment) autofree_collect_loop_local_clone_push_index_write_is_safe(flat &ast.FlatAst, stmt_id ast.FlatNodeId, fresh AutofreeFreshLocalFact, receiver_name string) bool {
+	if !autofree_collect_node_is(flat, stmt_id, .stmt_assign) {
+		return false
+	}
+	stmt_node := flat.nodes[stmt_id]
+	if unsafe { token.Token(int(stmt_node.aux)) } != .assign || stmt_node.extra != 1
+		|| autofree_collect_exact_edge_count(flat, stmt_id) != 2 {
+		return false
+	}
+	lhs_id := flat.edges[stmt_node.first_edge].child_id
+	rhs_id := flat.edges[stmt_node.first_edge + 1].child_id
+	if !autofree_collect_node_is(flat, lhs_id, .expr_index)
+		|| autofree_collect_exact_edge_count(flat, lhs_id) != 2 {
+		return false
+	}
+	index_node := flat.nodes[lhs_id]
+	root_id := flat.edges[index_node.first_edge].child_id
+	index_id := flat.edges[index_node.first_edge + 1].child_id
+	if !autofree_collect_node_is(flat, root_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, root_id) != 0
+		|| flat.string_at(flat.nodes[root_id].name_id) != fresh.name {
+		return false
+	}
+	if !e.autofree_collect_loop_local_clone_push_scalar_expr_is_safe(flat, index_id, fresh.name, receiver_name)
+		|| !e.autofree_collect_loop_local_clone_push_scalar_expr_is_safe(flat, rhs_id, fresh.name, receiver_name) {
+		return false
+	}
+	index_lhs_typ := e.get_expr_type(index_node.pos.id) or { return false }
+	rhs_typ := e.get_expr_type(flat.nodes[rhs_id].pos.id) or { return false }
+	if !type_has_valid_payload(index_lhs_typ) || !type_has_valid_payload(rhs_typ) {
+		return false
+	}
+	match fresh.typ {
+		Array {
+			return
+				autofree_collect_loop_local_clone_push_value_type_matches(fresh.typ.elem_type, index_lhs_typ)
+				&& autofree_collect_loop_local_clone_push_value_type_matches(index_lhs_typ, rhs_typ)
+		}
+		else {
+			return false
+		}
+	}
+}
+
+fn autofree_collect_loop_local_clone_push_final_from_loop(flat &ast.FlatAst, loop_stmt_id ast.FlatNodeId, body_count int, receiver_name string, local_name string) ?AutofreeLoopLocalClonePushFinal {
+	final_idx := body_count - 1
+	final_stmt_id := autofree_collect_loop_local_clone_push_loop_body_stmt(flat, loop_stmt_id,
+		final_idx)
+	if final_stmt_id == ast.invalid_flat_node_id {
+		return none
+	}
+	if target, clone := autofree_collect_loop_local_clone_push_source_final_stmt(flat,
+		final_stmt_id, receiver_name, local_name)
+	{
+		return AutofreeLoopLocalClonePushFinal{
+			target:          target
+			clone:           clone
+			index_write_end: final_idx
+		}
+	}
+	if body_count < 3 {
+		return none
+	}
+	clone_stmt_idx := final_idx - 1
+	clone_stmt_id := autofree_collect_loop_local_clone_push_loop_body_stmt(flat, loop_stmt_id,
+		clone_stmt_idx)
+	if clone_stmt_id == ast.invalid_flat_node_id {
+		return none
+	}
+	target, clone := autofree_collect_loop_local_clone_push_lowered_final_stmt(flat, final_stmt_id,
+		clone_stmt_id, receiver_name, local_name) or { return none }
+	return AutofreeLoopLocalClonePushFinal{
+		target:          target
+		clone:           clone
+		index_write_end: clone_stmt_idx
+	}
+}
+
+fn autofree_collect_loop_local_clone_push_source_final_stmt(flat &ast.FlatAst, stmt_id ast.FlatNodeId, receiver_name string, local_name string) ?(AutofreeLoopLocalClonePushTarget, AutofreeLocalArrayCloneRhs) {
+	if !autofree_collect_node_is(flat, stmt_id, .stmt_expr)
+		|| autofree_collect_exact_edge_count(flat, stmt_id) != 1 {
+		return none
+	}
+	push_id := flat.edges[flat.nodes[stmt_id].first_edge].child_id
+	if !autofree_collect_node_is(flat, push_id, .expr_infix)
+		|| autofree_collect_exact_edge_count(flat, push_id) != 2
+		|| unsafe { token.Token(int(flat.nodes[push_id].aux)) } != .left_shift {
+		return none
+	}
+	lhs_id := flat.edges[flat.nodes[push_id].first_edge].child_id
+	rhs_id := flat.edges[flat.nodes[push_id].first_edge + 1].child_id
+	target := autofree_collect_loop_local_clone_push_receiver_field_target(flat, lhs_id,
+		receiver_name) or { return none }
+	clone := autofree_collect_loop_local_clone_push_clone_rhs(flat, rhs_id, local_name) or {
+		return none
+	}
+	push_pos_id := flat.nodes[push_id].pos.id
+	if push_pos_id <= 0 {
+		return none
+	}
+	return AutofreeLoopLocalClonePushTarget{
+		...target
+		stmt_id:     stmt_id
+		stmt_pos_id: push_pos_id
+	}, clone
+}
+
+fn autofree_collect_loop_local_clone_push_lowered_final_stmt(flat &ast.FlatAst, stmt_id ast.FlatNodeId, clone_stmt_id ast.FlatNodeId, receiver_name string, local_name string) ?(AutofreeLoopLocalClonePushTarget, AutofreeLocalArrayCloneRhs) {
+	if !autofree_collect_node_is(flat, stmt_id, .stmt_expr)
+		|| autofree_collect_exact_edge_count(flat, stmt_id) != 1 {
+		return none
+	}
+	push_id := flat.edges[flat.nodes[stmt_id].first_edge].child_id
+	if !autofree_collect_node_is(flat, push_id, .expr_call)
+		|| autofree_collect_exact_edge_count(flat, push_id) != 3 {
+		return none
+	}
+	call_node := flat.nodes[push_id]
+	callee_id := autofree_collect_required_child(flat, push_id, 0, .expr_ident)
+	if callee_id == ast.invalid_flat_node_id
+		|| autofree_collect_exact_edge_count(flat, callee_id) != 0
+		|| flat.string_at(flat.nodes[callee_id].name_id) != 'builtin__array_push_noscan'
+		|| call_node.pos.id <= 0 {
+		return none
+	}
+	arr_ptr_id := flat.edges[call_node.first_edge + 1].child_id
+	selector_id := autofree_collect_loop_local_clone_push_lowered_receiver_field_selector(flat,
+		arr_ptr_id) or { return none }
+	target := autofree_collect_loop_local_clone_push_receiver_field_target(flat, selector_id,
+		receiver_name) or { return none }
+	wrapper_id := flat.edges[call_node.first_edge + 2].child_id
+	temp_id := autofree_collect_loop_local_clone_push_lowered_single_wrapper_temp(flat, wrapper_id) or {
+		return none
+	}
+	temp_name := flat.string_at(flat.nodes[temp_id].name_id)
+	clone := autofree_collect_loop_local_clone_push_clone_temp_stmt(flat, clone_stmt_id, temp_name,
+		local_name, receiver_name) or { return none }
+	return AutofreeLoopLocalClonePushTarget{
+		...target
+		stmt_id:     stmt_id
+		stmt_pos_id: call_node.pos.id
+	}, clone
+}
+
+fn autofree_collect_loop_local_clone_push_lowered_receiver_field_selector(flat &ast.FlatAst, arr_ptr_id ast.FlatNodeId) ?ast.FlatNodeId {
+	if !autofree_collect_node_is(flat, arr_ptr_id, .expr_cast)
+		|| autofree_collect_exact_edge_count(flat, arr_ptr_id) != 2 {
+		return none
+	}
+	typ_id := autofree_collect_required_child(flat, arr_ptr_id, 0, .expr_ident)
+	if typ_id == ast.invalid_flat_node_id || autofree_collect_exact_edge_count(flat, typ_id) != 0
+		|| flat.string_at(flat.nodes[typ_id].name_id) != 'array*' {
+		return none
+	}
+	amp_id := autofree_collect_required_child(flat, arr_ptr_id, 1, .expr_prefix)
+	if amp_id == ast.invalid_flat_node_id || autofree_collect_exact_edge_count(flat, amp_id) != 1
+		|| unsafe { token.Token(int(flat.nodes[amp_id].aux)) } != .amp
+		|| !autofree_collect_child_is_valid(flat, amp_id, 0) {
+		return none
+	}
+	selector_id := flat.edges[flat.nodes[amp_id].first_edge].child_id
+	if !autofree_collect_node_is(flat, selector_id, .expr_selector) {
+		return none
+	}
+	return selector_id
+}
+
+fn autofree_collect_loop_local_clone_push_lowered_single_wrapper_temp(flat &ast.FlatAst, wrapper_id ast.FlatNodeId) ?ast.FlatNodeId {
+	if !autofree_collect_node_is(flat, wrapper_id, .expr_array_init)
+		|| autofree_collect_exact_edge_count(flat, wrapper_id) != 6 {
+		return none
+	}
+	temp_id := flat.edges[flat.nodes[wrapper_id].first_edge + 5].child_id
+	if !autofree_collect_node_is(flat, temp_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, temp_id) != 0 {
+		return none
+	}
+	return temp_id
+}
+
+fn autofree_collect_loop_local_clone_push_clone_temp_stmt(flat &ast.FlatAst, stmt_id ast.FlatNodeId, temp_name string, local_name string, receiver_name string) ?AutofreeLocalArrayCloneRhs {
+	if !autofree_collect_node_is(flat, stmt_id, .stmt_assign) {
+		return none
+	}
+	stmt_node := flat.nodes[stmt_id]
+	if unsafe { token.Token(int(stmt_node.aux)) } != .decl_assign || stmt_node.extra != 1
+		|| autofree_collect_exact_edge_count(flat, stmt_id) != 2 {
+		return none
+	}
+	lhs_expr_id := flat.edges[stmt_node.first_edge].child_id
+	lhs_id := autofree_collect_fresh_array_lhs_ident_id(flat, lhs_expr_id)
+	if lhs_id == ast.invalid_flat_node_id {
+		return none
+	}
+	lhs_name := flat.string_at(flat.nodes[lhs_id].name_id)
+	if lhs_name != temp_name || !autofree_collect_name_is_usable(lhs_name) || lhs_name == local_name
+		|| lhs_name == receiver_name {
+		return none
+	}
+	rhs_id := flat.edges[stmt_node.first_edge + 1].child_id
+	return autofree_collect_loop_local_clone_push_clone_temp_rhs(flat, rhs_id, local_name)
+}
+
+fn autofree_collect_loop_local_clone_push_clone_temp_rhs(flat &ast.FlatAst, rhs_id ast.FlatNodeId, local_name string) ?AutofreeLocalArrayCloneRhs {
+	if clone := autofree_collect_loop_local_clone_push_clone_rhs(flat, rhs_id, local_name) {
+		return clone
+	}
+	if !autofree_collect_node_is(flat, rhs_id, .expr_call)
+		|| autofree_collect_exact_edge_count(flat, rhs_id) != 2 {
+		return none
+	}
+	call_node := flat.nodes[rhs_id]
+	if call_node.pos.id <= 0 {
+		return none
+	}
+	call_lhs_id := flat.edges[call_node.first_edge].child_id
+	receiver_id := flat.edges[call_node.first_edge + 1].child_id
+	if !autofree_collect_node_is(flat, call_lhs_id, .expr_ident)
+		|| !autofree_collect_node_is(flat, receiver_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, call_lhs_id) != 0
+		|| autofree_collect_exact_edge_count(flat, receiver_id) != 0
+		|| flat.string_at(flat.nodes[call_lhs_id].name_id) != 'array__clone' {
+		return none
+	}
+	receiver_name := flat.string_at(flat.nodes[receiver_id].name_id)
+	if receiver_name != local_name {
+		return none
+	}
+	return AutofreeLocalArrayCloneRhs{
+		receiver_name:   receiver_name
+		receiver_id:     receiver_id
+		receiver_pos_id: flat.nodes[receiver_id].pos.id
+		call_id:         rhs_id
+		call_pos_id:     call_node.pos.id
+	}
+}
+
+fn autofree_collect_loop_local_clone_push_receiver_field_target(flat &ast.FlatAst, selector_id ast.FlatNodeId, receiver_name string) ?AutofreeLoopLocalClonePushTarget {
+	if !autofree_collect_node_is(flat, selector_id, .expr_selector)
+		|| autofree_collect_exact_edge_count(flat, selector_id) != 2 {
+		return none
+	}
+	selector_node := flat.nodes[selector_id]
+	root_id := flat.edges[selector_node.first_edge].child_id
+	field_id := flat.edges[selector_node.first_edge + 1].child_id
+	if !autofree_collect_node_is(flat, root_id, .expr_ident)
+		|| !autofree_collect_node_is(flat, field_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, root_id) != 0
+		|| autofree_collect_exact_edge_count(flat, field_id) != 0 {
+		return none
+	}
+	root_name := flat.string_at(flat.nodes[root_id].name_id)
+	field_name := flat.string_at(flat.nodes[field_id].name_id)
+	root_pos_id := flat.nodes[root_id].pos.id
+	field_pos_id := flat.nodes[field_id].pos.id
+	selector_pos_id := selector_node.pos.id
+	if root_name != receiver_name || !autofree_collect_name_is_usable(field_name)
+		|| root_pos_id <= 0 || field_pos_id <= 0 || selector_pos_id <= 0 {
+		return none
+	}
+	return AutofreeLoopLocalClonePushTarget{
+		root_name:       root_name
+		root_id:         root_id
+		root_pos_id:     root_pos_id
+		field_name:      field_name
+		field_id:        field_id
+		field_pos_id:    field_pos_id
+		selector_id:     selector_id
+		selector_pos_id: selector_pos_id
+	}
+}
+
+fn autofree_collect_loop_local_clone_push_clone_rhs(flat &ast.FlatAst, rhs_id ast.FlatNodeId, local_name string) ?AutofreeLocalArrayCloneRhs {
+	if clone := autofree_collect_direct_clone_rhs(flat, rhs_id) {
+		if clone.receiver_name == local_name {
+			return clone
+		}
+		return none
+	}
+	if !autofree_collect_node_is(flat, rhs_id, .expr_call)
+		|| autofree_collect_exact_edge_count(flat, rhs_id) != 3 {
+		return none
+	}
+	call_node := flat.nodes[rhs_id]
+	if call_node.pos.id <= 0 {
+		return none
+	}
+	call_lhs_id := flat.edges[call_node.first_edge].child_id
+	receiver_id := flat.edges[call_node.first_edge + 1].child_id
+	depth_id := flat.edges[call_node.first_edge + 2].child_id
+	if !autofree_collect_node_is(flat, call_lhs_id, .expr_ident)
+		|| !autofree_collect_node_is(flat, receiver_id, .expr_ident)
+		|| autofree_collect_exact_edge_count(flat, call_lhs_id) != 0
+		|| autofree_collect_exact_edge_count(flat, receiver_id) != 0
+		|| flat.string_at(flat.nodes[call_lhs_id].name_id) != 'array__clone_to_depth'
+		|| !autofree_collect_numeric_zero_node(flat, depth_id) {
+		return none
+	}
+	receiver_name := flat.string_at(flat.nodes[receiver_id].name_id)
+	if receiver_name != local_name {
+		return none
+	}
+	return AutofreeLocalArrayCloneRhs{
+		receiver_name:   receiver_name
+		receiver_id:     receiver_id
+		receiver_pos_id: flat.nodes[receiver_id].pos.id
+		call_id:         rhs_id
+		call_pos_id:     call_node.pos.id
+	}
+}
+
+fn (mut e Environment) autofree_collect_loop_local_clone_push_scalar_expr_is_safe(flat &ast.FlatAst, node_id ast.FlatNodeId, target_name string, receiver_name string) bool {
+	if !autofree_collect_node_is_valid(flat, node_id)
+		|| autofree_collect_subtree_contains_ident(flat, node_id, target_name)
+		|| autofree_collect_subtree_contains_ident(flat, node_id, receiver_name) {
+		return false
+	}
+	node := flat.nodes[node_id]
+	match node.kind {
+		.expr_basic_literal, .expr_ident {
+			return e.autofree_collect_loop_local_clone_push_integer_type_at(flat, node_id)
+		}
+		.expr_paren {
+			if autofree_collect_exact_edge_count(flat, node_id) != 1
+				|| !e.autofree_collect_loop_local_clone_push_integer_type_at(flat, node_id) {
+				return false
+			}
+			return e.autofree_collect_loop_local_clone_push_scalar_expr_is_safe(flat,
+				flat.edges[node.first_edge].child_id, target_name, receiver_name)
+		}
+		.expr_prefix {
+			if autofree_collect_exact_edge_count(flat, node_id) != 1
+				|| unsafe { token.Token(int(node.aux)) } != .minus
+				|| !e.autofree_collect_loop_local_clone_push_integer_type_at(flat, node_id) {
+				return false
+			}
+			return e.autofree_collect_loop_local_clone_push_scalar_expr_is_safe(flat,
+				flat.edges[node.first_edge].child_id, target_name, receiver_name)
+		}
+		.expr_infix {
+			op := unsafe { token.Token(int(node.aux)) }
+			if autofree_collect_exact_edge_count(flat, node_id) != 2 || op !in [.plus, .minus, .mul]
+				|| !e.autofree_collect_loop_local_clone_push_integer_type_at(flat, node_id) {
+				return false
+			}
+			left_id := flat.edges[node.first_edge].child_id
+			right_id := flat.edges[node.first_edge + 1].child_id
+			return
+				e.autofree_collect_loop_local_clone_push_scalar_expr_is_safe(flat, left_id, target_name, receiver_name)
+				&& e.autofree_collect_loop_local_clone_push_scalar_expr_is_safe(flat, right_id, target_name, receiver_name)
+		}
+		else {
+			return false
+		}
+	}
+}
+
+fn (mut e Environment) autofree_collect_loop_local_clone_push_integer_type_at(flat &ast.FlatAst, node_id ast.FlatNodeId) bool {
+	if !autofree_collect_node_is_valid(flat, node_id) {
+		return false
+	}
+	pos_id := flat.nodes[node_id].pos.id
+	if pos_id <= 0 {
+		return false
+	}
+	typ := e.get_expr_type(pos_id) or { return false }
+	if !type_has_valid_payload(typ) || (!typ.is_int_literal() && !typ.is_integer()) {
+		return false
+	}
+	shape := e.autofree_resource_shape(typ)
+	return !shape.fail_closed && shape.kind == .no_resource
+}
+
+fn autofree_collect_loop_local_clone_push_value_type_matches(dst Type, src Type) bool {
+	if same_type_name(dst, src) {
+		return true
+	}
+	return src.is_int_literal() && dst.is_integer()
+}
+
+fn autofree_collect_loop_local_clone_push_destination_accepts(dest_typ Type, item_typ Type) bool {
+	match dest_typ {
+		Array {
+			return autofree_collect_loop_local_clone_push_value_type_matches(dest_typ.elem_type,
+				item_typ)
+		}
+		else {
+			return false
+		}
+	}
+}
+
 fn (mut e Environment) collect_autofree_fresh_array_final_clone_move_proofs_from_flat(flat &ast.FlatAst) {
 	for file in flat.files {
 		if !autofree_collect_node_is(flat, file.file_id, .file) {
@@ -1229,9 +2848,6 @@ fn (mut e Environment) collect_autofree_fresh_array_final_clone_move_proof_from_
 		return
 	}
 	fn_node := flat.nodes[fn_id]
-	if (fn_node.flags & ast.flag_is_method) != 0 {
-		return
-	}
 	fn_name := flat.string_at(fn_node.name_id)
 	if fn_name.len == 0 || !autofree_collect_fn_schema_is_complete(flat, fn_id) {
 		return
@@ -1248,7 +2864,8 @@ fn (mut e Environment) collect_autofree_fresh_array_final_clone_move_proof_from_
 	param_names := autofree_collect_param_names(flat, param_ids)
 	param_ids_by_name := autofree_collect_param_ids_by_name(flat, param_ids)
 	body_node := flat.nodes[body_id]
-	fn_key := autofree_fn_key(module_name, fn_name, '')
+	receiver_type := e.autofree_collect_receiver_type_name_from_fn_decl(flat, fn_id) or { return }
+	fn_key := autofree_fn_key(module_name, fn_name, receiver_type)
 	proof := if body_count == 2 {
 		fresh_stmt_id := flat.edges[body_node.first_edge].child_id
 		final_stmt_id := flat.edges[body_node.first_edge + 1].child_id
@@ -1832,6 +3449,7 @@ fn autofree_collect_natural_release_candidate_from_move_proof(proof AutofreeMove
 
 fn autofree_collect_natural_release_move_kind_is_supported(kind AutofreeMoveProofKind) bool {
 	return kind == .fresh_local_binding || kind == .local_array_clone_binding
+		|| kind == .receiver_field_slice_clone_binding || kind == .loop_local_clone_push_binding
 }
 
 fn autofree_collect_source_endpoint_matches_natural_release_kind(kind AutofreeMoveProofKind, source AutofreeTransferEndpoint) bool {
@@ -1845,6 +3463,12 @@ fn autofree_collect_source_endpoint_matches_natural_release_kind(kind AutofreeMo
 			return source.storage == .parameter && source.root_storage == .parameter
 				&& source.path.len == 0
 		}
+		.receiver_field_slice_clone_binding {
+			return autofree_collect_receiver_field_slice_clone_source_endpoint_is_allowed(source)
+		}
+		.loop_local_clone_push_binding {
+			return autofree_collect_loop_local_clone_push_source_endpoint_is_allowed(source)
+		}
 		else {
 			return false
 		}
@@ -1853,15 +3477,25 @@ fn autofree_collect_source_endpoint_matches_natural_release_kind(kind AutofreeMo
 
 fn autofree_collect_source_endpoint_ids_match_natural_release_kind(kind AutofreeMoveProofKind, source AutofreeTransferEndpoint) bool {
 	if source.root_node_id < 0 || source.root_pos_id <= 0 || source.node_id < 0
-		|| source.pos_id <= 0 || source.name.len == 0 || source.root_name != source.name {
+		|| source.pos_id <= 0 || source.name.len == 0 || source.root_name.len == 0 {
 		return false
 	}
 	match kind {
 		.fresh_local_binding {
-			return source.root_node_id == source.node_id && source.root_pos_id == source.pos_id
+			return source.root_name == source.name && source.root_node_id == source.node_id
+				&& source.root_pos_id == source.pos_id
 		}
 		.local_array_clone_binding {
-			return true
+			return source.root_name == source.name
+		}
+		.receiver_field_slice_clone_binding {
+			return autofree_collect_receiver_field_slice_clone_source_endpoint_is_allowed(source)
+				&& source.root_name != source.name
+		}
+		.loop_local_clone_push_binding {
+			return autofree_collect_loop_local_clone_push_source_endpoint_is_allowed(source)
+				&& source.root_name == source.name && source.root_node_id == source.node_id
+				&& source.root_pos_id == source.pos_id
 		}
 		else {
 			return false
@@ -1877,6 +3511,12 @@ fn autofree_collect_source_state_matches_natural_release_kind(kind AutofreeMoveP
 		.local_array_clone_binding {
 			return state == .ambiguous_no_free
 		}
+		.receiver_field_slice_clone_binding {
+			return state == .borrowed_no_free
+		}
+		.loop_local_clone_push_binding {
+			return state == .owned_unique
+		}
 		else {
 			return false
 		}
@@ -1891,10 +3531,49 @@ fn autofree_collect_natural_release_shape_allowed(kind AutofreeMoveProofKind, sh
 		.local_array_clone_binding {
 			return autofree_collect_scalar_array_clone_cleanup_allowed(typ, shape)
 		}
+		.receiver_field_slice_clone_binding {
+			return autofree_collect_no_resource_array_clone_cleanup_allowed(typ, shape)
+				&& source.reason == 'borrowed receiver field slice clone source'
+		}
+		.loop_local_clone_push_binding {
+			return autofree_collect_array_container_cleanup_allowed(shape, source, true)
+				&& source.reason == 'len-only scalar array literal'
+		}
 		else {
 			return false
 		}
 	}
+}
+
+fn autofree_collect_loop_local_clone_push_source_endpoint_is_allowed(source AutofreeTransferEndpoint) bool {
+	return source.storage == .literal && source.root_storage == .literal && source.path.len == 0
+		&& source.root_node_id == source.node_id && source.root_pos_id == source.pos_id
+		&& source.state == .owned_unique && source.reason == 'len-only scalar array literal'
+}
+
+fn autofree_collect_receiver_field_slice_clone_source_endpoint_is_allowed(source AutofreeTransferEndpoint) bool {
+	if source.storage != .array_element || source.root_storage != .receiver
+		|| source.state != .borrowed_no_free || source.path.len != 2
+		|| source.reason != 'borrowed receiver field slice clone source' {
+		return false
+	}
+	if !autofree_collect_name_is_usable(source.root_name) || source.name.len == 0
+		|| source.root_node_id < 0 || source.root_pos_id <= 0 || source.node_id < 0
+		|| source.pos_id <= 0 || source.root_name == source.name {
+		return false
+	}
+	field := source.path[0]
+	slice := source.path[1]
+	if field.storage != .struct_field || !autofree_collect_name_is_usable(field.name)
+		|| field.node_id < 0 || field.pos_id <= 0 {
+		return false
+	}
+	if slice.storage != .array_element || slice.name != '[..]' || slice.node_id < 0
+		|| slice.pos_id <= 0 || slice.index_node_id < 0 || slice.index_pos_id <= 0 {
+		return false
+	}
+	return source.name == '${source.root_name}.${field.name}[..]' && slice.node_id == source.node_id
+		&& slice.pos_id == source.pos_id
 }
 
 fn (mut e Environment) collect_autofree_release_plans_from_candidates() {
@@ -1977,8 +3656,10 @@ fn autofree_collect_release_candidate_slot_matches_proof(proof AutofreeMoveProof
 fn autofree_collect_endpoints_match_for_release_plan(a AutofreeTransferEndpoint, b AutofreeTransferEndpoint) bool {
 	if a.storage != b.storage || a.root_storage != b.root_storage || a.root_name != b.root_name
 		|| a.name != b.name || a.root_node_id != b.root_node_id || a.root_pos_id != b.root_pos_id
-		|| a.node_id != b.node_id || a.pos_id != b.pos_id || a.path.len != 0 || b.path.len != 0
-		|| a.has_type != b.has_type || !a.has_type {
+		|| a.node_id != b.node_id || a.pos_id != b.pos_id || a.has_type != b.has_type || !a.has_type {
+		return false
+	}
+	if !autofree_collect_endpoint_paths_match_for_release_plan(a.path, b.path) {
 		return false
 	}
 	if !type_has_valid_payload(a.typ) || !type_has_valid_payload(b.typ)
@@ -1987,6 +3668,24 @@ fn autofree_collect_endpoints_match_for_release_plan(a AutofreeTransferEndpoint,
 	}
 	return a.resource == b.resource && a.state == b.state
 		&& autofree_collect_shapes_match_for_move_proof(a.shape, b.shape)
+}
+
+fn autofree_collect_endpoint_paths_match_for_release_plan(a []AutofreeEndpointPathSegment, b []AutofreeEndpointPathSegment) bool {
+	if a.len != b.len {
+		return false
+	}
+	for i in 0 .. a.len {
+		if !autofree_collect_endpoint_path_segments_match_for_release_plan(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+fn autofree_collect_endpoint_path_segments_match_for_release_plan(a AutofreeEndpointPathSegment, b AutofreeEndpointPathSegment) bool {
+	return a.storage == b.storage && a.name == b.name && a.node_id == b.node_id
+		&& a.pos_id == b.pos_id && a.index_node_id == b.index_node_id
+		&& a.index_pos_id == b.index_pos_id
 }
 
 fn autofree_collect_release_plan_from_candidate(candidate AutofreeNaturalReleaseCandidateFact, proof AutofreeMoveProofFact) ?AutofreeReleasePlanFact {
@@ -9569,7 +11268,12 @@ fn autofree_collect_type_expr_matches(flat &ast.FlatAst, type_id ast.FlatNodeId,
 
 fn autofree_collect_numeric_zero_child(flat &ast.FlatAst, parent ast.FlatNodeId, edge_i int) bool {
 	child_id := autofree_collect_required_child(flat, parent, edge_i, .expr_basic_literal)
+	return autofree_collect_numeric_zero_node(flat, child_id)
+}
+
+fn autofree_collect_numeric_zero_node(flat &ast.FlatAst, child_id ast.FlatNodeId) bool {
 	if child_id == ast.invalid_flat_node_id
+		|| !autofree_collect_node_is(flat, child_id, .expr_basic_literal)
 		|| autofree_collect_exact_edge_count(flat, child_id) != 0 {
 		return false
 	}
@@ -9649,6 +11353,129 @@ fn autofree_collect_name_is_usable(name string) bool {
 	return name.len > 0 && name != '_'
 }
 
+fn (mut e Environment) autofree_collect_receiver_type_name_from_fn_decl(flat &ast.FlatAst, fn_id ast.FlatNodeId) ?string {
+	if !autofree_collect_node_is(flat, fn_id, .stmt_fn_decl) {
+		return none
+	}
+	fn_node := flat.nodes[fn_id]
+	if (fn_node.flags & ast.flag_is_static) != 0 || unsafe { ast.Language(int(fn_node.aux)) } != .v {
+		return none
+	}
+	if (fn_node.flags & ast.flag_is_method) == 0 {
+		return ''
+	}
+	receiver_id := autofree_collect_required_child(flat, fn_id, 0, .aux_parameter)
+	if receiver_id == ast.invalid_flat_node_id
+		|| !autofree_collect_parameter_schema_is_complete(flat, receiver_id)
+		|| (flat.nodes[receiver_id].flags & ast.flag_is_mut) != 0 {
+		return none
+	}
+	receiver_node := flat.nodes[receiver_id]
+	receiver_type_id := flat.edges[receiver_node.first_edge].child_id
+	receiver_pos_id := receiver_node.pos.id
+	if receiver_pos_id > 0 {
+		if typ := e.get_expr_type(receiver_pos_id) {
+			if name := autofree_collect_receiver_type_name_from_type(typ) {
+				return name
+			}
+		}
+	}
+	receiver_type_pos_id := flat.nodes[receiver_type_id].pos.id
+	if receiver_type_pos_id > 0 {
+		if typ := e.get_expr_type(receiver_type_pos_id) {
+			if name := autofree_collect_receiver_type_name_from_type(typ) {
+				return name
+			}
+		}
+	}
+	return autofree_collect_receiver_type_name_from_type_node(flat, receiver_type_id)
+}
+
+fn (mut e Environment) autofree_collect_receiver_type_name_from_fn_decl_allowing_mut(flat &ast.FlatAst, fn_id ast.FlatNodeId) ?string {
+	if !autofree_collect_node_is(flat, fn_id, .stmt_fn_decl) {
+		return none
+	}
+	fn_node := flat.nodes[fn_id]
+	if (fn_node.flags & ast.flag_is_static) != 0 || unsafe { ast.Language(int(fn_node.aux)) } != .v {
+		return none
+	}
+	if (fn_node.flags & ast.flag_is_method) == 0 {
+		return ''
+	}
+	receiver_id := autofree_collect_required_child(flat, fn_id, 0, .aux_parameter)
+	if receiver_id == ast.invalid_flat_node_id
+		|| !autofree_collect_parameter_schema_is_complete(flat, receiver_id) {
+		return none
+	}
+	receiver_node := flat.nodes[receiver_id]
+	receiver_type_id := flat.edges[receiver_node.first_edge].child_id
+	receiver_pos_id := receiver_node.pos.id
+	if receiver_pos_id > 0 {
+		if typ := e.get_expr_type(receiver_pos_id) {
+			if name := autofree_collect_receiver_type_name_from_type(typ) {
+				return name
+			}
+		}
+	}
+	receiver_type_pos_id := flat.nodes[receiver_type_id].pos.id
+	if receiver_type_pos_id > 0 {
+		if typ := e.get_expr_type(receiver_type_pos_id) {
+			if name := autofree_collect_receiver_type_name_from_type(typ) {
+				return name
+			}
+		}
+	}
+	return autofree_collect_receiver_type_name_from_type_node(flat, receiver_type_id)
+}
+
+fn autofree_collect_receiver_type_name_from_type(typ Type) ?string {
+	match typ {
+		Pointer {
+			name := typ.base_type.name()
+			if !autofree_collect_name_is_usable(name) {
+				return none
+			}
+			return name
+		}
+		else {
+			name := typ.name()
+			if !autofree_collect_name_is_usable(name) {
+				return none
+			}
+			return name
+		}
+	}
+}
+
+fn autofree_collect_receiver_type_name_from_type_node(flat &ast.FlatAst, typ_id ast.FlatNodeId) ?string {
+	if !autofree_collect_node_is_valid(flat, typ_id) {
+		return none
+	}
+	typ_node := flat.nodes[typ_id]
+	match typ_node.kind {
+		.typ_pointer {
+			if autofree_collect_exact_edge_count(flat, typ_id) != 1 {
+				return none
+			}
+			return autofree_collect_receiver_type_name_from_type_node(flat,
+				flat.edges[typ_node.first_edge].child_id)
+		}
+		.expr_ident {
+			if autofree_collect_exact_edge_count(flat, typ_id) != 0 {
+				return none
+			}
+			name := flat.string_at(typ_node.name_id)
+			if !autofree_collect_name_is_usable(name) {
+				return none
+			}
+			return name
+		}
+		else {
+			return none
+		}
+	}
+}
+
 fn autofree_collect_fn_schema_is_complete(flat &ast.FlatAst, fn_id ast.FlatNodeId) bool {
 	if autofree_collect_exact_edge_count(flat, fn_id) != 4 {
 		return false
@@ -9725,6 +11552,16 @@ fn autofree_collect_fn_return_type_id(flat &ast.FlatAst, fn_id ast.FlatNodeId) a
 		return ast.invalid_flat_node_id
 	}
 	return autofree_collect_required_child(flat, fn_type_id, 2, .expr_ident)
+}
+
+fn autofree_collect_fn_return_type_is_plain_int(flat &ast.FlatAst, fn_id ast.FlatNodeId) bool {
+	return_type_id := autofree_collect_fn_return_type_id(flat, fn_id)
+	if return_type_id == ast.invalid_flat_node_id
+		|| autofree_collect_exact_edge_count(flat, return_type_id) != 0 {
+		return false
+	}
+	return_type_name := flat.string_at(flat.nodes[return_type_id].name_id)
+	return return_type_name == 'int'
 }
 
 fn autofree_collect_parameter_schema_is_complete(flat &ast.FlatAst, param_id ast.FlatNodeId) bool {

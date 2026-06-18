@@ -19,6 +19,7 @@ struct AutofreeCleanCBridgeFact {
 	fn_key               string
 	fn_name              string
 	name                 string
+	move_kind            types.AutofreeMoveProofKind
 	bridge_status        AutofreeCleanCBridgeStatus
 	target_node_id       ast.FlatNodeId
 	target_pos_id        int
@@ -146,6 +147,7 @@ fn autofree_bridge_fact_from_insertion_point(point types.AutofreeReleaseInsertio
 		fn_key:               point.fn_key
 		fn_name:              point.fn_name
 		name:                 point.name
+		move_kind:            point.move_kind
 		bridge_status:        .inert
 		target_node_id:       target.node_id
 		target_pos_id:        target.pos_id
@@ -157,6 +159,7 @@ fn autofree_bridge_fact_from_insertion_point(point types.AutofreeReleaseInsertio
 
 fn autofree_bridge_move_kind_is_supported(kind types.AutofreeMoveProofKind) bool {
 	return kind == .fresh_local_binding || kind == .local_array_clone_binding
+		|| kind == .receiver_field_slice_clone_binding || kind == .loop_local_clone_push_binding
 }
 
 fn autofree_bridge_source_endpoint_is_allowed(kind types.AutofreeMoveProofKind, shape types.AutofreeResourceShape, source types.AutofreeTransferEndpoint) bool {
@@ -168,6 +171,12 @@ fn autofree_bridge_source_endpoint_is_allowed(kind types.AutofreeMoveProofKind, 
 		}
 		.local_array_clone_binding {
 			return autofree_bridge_local_array_clone_source_is_allowed(shape, source)
+		}
+		.receiver_field_slice_clone_binding {
+			return autofree_bridge_receiver_field_slice_clone_source_is_allowed(shape, source)
+		}
+		.loop_local_clone_push_binding {
+			return autofree_bridge_loop_local_clone_push_source_is_allowed(shape, source)
 		}
 		else {
 			return false
@@ -240,6 +249,37 @@ fn autofree_bridge_local_array_clone_source_is_allowed(shape types.AutofreeResou
 		&& source.pos_id > 0 && source.name.len > 0 && source.root_name == source.name
 }
 
+fn autofree_bridge_receiver_field_slice_clone_source_is_allowed(shape types.AutofreeResourceShape, source types.AutofreeTransferEndpoint) bool {
+	if shape.kind != .array || shape.fail_closed || !shape.needs_autofree() {
+		return false
+	}
+	if source.storage != .array_element || source.root_storage != .receiver
+		|| source.state != .borrowed_no_free || source.path.len != 2
+		|| source.reason != 'borrowed receiver field slice clone source' {
+		return false
+	}
+	if source.root_node_id < 0 || source.root_pos_id <= 0 || source.node_id < 0
+		|| source.pos_id <= 0 || source.name.len == 0 || source.root_name.len == 0
+		|| source.root_name == source.name {
+		return false
+	}
+	field := source.path[0]
+	slice := source.path[1]
+	if field.storage != .struct_field || field.name.len == 0 || field.node_id < 0
+		|| field.pos_id <= 0 {
+		return false
+	}
+	if slice.storage != .array_element || slice.name != '[..]' || slice.node_id < 0
+		|| slice.pos_id <= 0 || slice.index_node_id < 0 || slice.index_pos_id <= 0 {
+		return false
+	}
+	return true
+}
+
+fn autofree_bridge_loop_local_clone_push_source_is_allowed(shape types.AutofreeResourceShape, source types.AutofreeTransferEndpoint) bool {
+	return autofree_bridge_len_only_array_container_shape_is_allowed(shape, source)
+}
+
 fn autofree_bridge_shapes_match(a types.AutofreeResourceShape, b types.AutofreeResourceShape) bool {
 	return a.kind == b.kind && a.identity == b.identity && a.target_kind == b.target_kind
 		&& a.target_identity == b.target_identity && a.map_container_owned == b.map_container_owned
@@ -264,6 +304,7 @@ struct AutofreeCleanCStatementAnchorFact {
 	fn_key               string
 	fn_name              string
 	name                 string
+	move_kind            types.AutofreeMoveProofKind
 	anchor_status        AutofreeCleanCStatementAnchorStatus
 	target_node_id       ast.FlatNodeId
 	target_pos_id        int
@@ -310,6 +351,7 @@ fn autofree_statement_anchor_fact_from_bridge_fact(fact AutofreeCleanCBridgeFact
 		fn_key:               fact.fn_key
 		fn_name:              fact.fn_name
 		name:                 fact.name
+		move_kind:            fact.move_kind
 		anchor_status:        .inert
 		target_node_id:       fact.target_node_id
 		target_pos_id:        fact.target_pos_id
@@ -402,6 +444,7 @@ struct AutofreeCleanCStatementLocationFact {
 	fn_key               string
 	fn_name              string
 	name                 string
+	move_kind            types.AutofreeMoveProofKind
 	location_status      AutofreeCleanCStatementLocationStatus
 	fn_node_id           ast.FlatNodeId
 	fn_pos_id            int
@@ -411,6 +454,7 @@ struct AutofreeCleanCStatementLocationFact {
 	insert_after_pos_id  int
 	stmt_node_id         ast.FlatNodeId
 	stmt_pos_id          int
+	block_path           string
 	stmt_index           int
 	lhs_index            int
 	reason               string
@@ -452,10 +496,11 @@ fn autofree_statement_location_facts_from_file_cursor(file_cursor ast.FileCursor
 			|| anchor.fn_name.len == 0 || anchor.fn_name != fn_name {
 			return []AutofreeCleanCStatementLocationFact{}
 		}
-		location := autofree_statement_location_fact_from_body(fn_cursor, body, anchor, anchors) or {
+		locations := autofree_statement_location_facts_from_body(fn_cursor, body, anchor, anchors)
+		if locations.len != 1 {
 			return []AutofreeCleanCStatementLocationFact{}
 		}
-		facts << location
+		facts << locations[0]
 	}
 	return facts
 }
@@ -490,7 +535,7 @@ fn autofree_statement_location_fn_key_from_file_cursor(file_cursor ast.FileCurso
 		|| !autofree_statement_location_cursor_edge_range_is_valid(fn_cursor) {
 		return none
 	}
-	if fn_cursor.flag(ast.flag_is_method) || fn_cursor.flag(ast.flag_is_static) {
+	if fn_cursor.flag(ast.flag_is_static) {
 		return none
 	}
 	if unsafe { ast.Language(int(fn_cursor.aux())) } != .v {
@@ -508,46 +553,310 @@ fn autofree_statement_location_fn_key_from_file_cursor(file_cursor ast.FileCurso
 	if !typ.is_valid() || !body.is_valid() {
 		return none
 	}
-	return types.autofree_fn_key(file_cursor.mod(), fn_name, '')
+	receiver_type := autofree_statement_location_receiver_type_name_from_fn_cursor(fn_cursor) or {
+		return none
+	}
+	return types.autofree_fn_key(file_cursor.mod(), fn_name, receiver_type)
 }
 
-fn autofree_statement_location_fact_from_body(fn_cursor ast.Cursor, body ast.Cursor, anchor AutofreeCleanCStatementAnchorFact, anchors []AutofreeCleanCStatementAnchorFact) ?AutofreeCleanCStatementLocationFact {
-	mut matches := []AutofreeCleanCStatementLocationFact{}
-	for stmt_i in 0 .. body.edge_count() {
-		stmt := autofree_statement_location_edge_cursor(body, stmt_i) or { return none }
-		if !stmt.is_valid() {
+fn autofree_statement_location_receiver_type_name_from_fn_cursor(fn_cursor ast.Cursor) ?string {
+	if !fn_cursor.is_valid() || fn_cursor.kind() != .stmt_fn_decl || fn_cursor.edge_count() != 4
+		|| !autofree_statement_location_cursor_edge_range_is_valid(fn_cursor) {
+		return none
+	}
+	if fn_cursor.flag(ast.flag_is_static) {
+		return none
+	}
+	if unsafe { ast.Language(int(fn_cursor.aux())) } != .v {
+		return none
+	}
+	if !fn_cursor.flag(ast.flag_is_method) {
+		return ''
+	}
+	receiver := autofree_statement_location_child_cursor(fn_cursor, 0, .aux_parameter) or {
+		return none
+	}
+	if receiver.edge_count() != 1 {
+		return none
+	}
+	typ := autofree_statement_location_edge_cursor(receiver, 0) or { return none }
+	return autofree_statement_location_receiver_type_name_from_type_cursor(typ)
+}
+
+fn autofree_statement_location_receiver_type_name_from_type_cursor(typ ast.Cursor) ?string {
+	if !typ.is_valid() {
+		return none
+	}
+	match typ.kind() {
+		.typ_pointer {
+			if typ.edge_count() != 1 {
+				return none
+			}
+			base := autofree_statement_location_edge_cursor(typ, 0) or { return none }
+			return autofree_statement_location_receiver_type_name_from_type_cursor(base)
+		}
+		.expr_ident {
+			if typ.edge_count() != 0 {
+				return none
+			}
+			name := typ.name()
+			if name.len == 0 || name == '_' {
+				return none
+			}
+			return name
+		}
+		else {
 			return none
 		}
-		if stmt.id != anchor.insert_after_node_id || stmt.pos().id != anchor.insert_after_pos_id {
-			continue
-		}
-		location := autofree_statement_location_fact_from_stmt(fn_cursor, body, stmt, stmt_i,
-			anchor, anchors) or { continue }
-		matches << location
 	}
-	if matches.len != 1 {
-		return none
-	}
-	return matches[0]
 }
 
-fn autofree_statement_location_fact_from_stmt(fn_cursor ast.Cursor, body ast.Cursor, stmt ast.Cursor, stmt_index int, anchor AutofreeCleanCStatementAnchorFact, anchors []AutofreeCleanCStatementAnchorFact) ?AutofreeCleanCStatementLocationFact {
-	if !stmt.is_valid() || stmt.kind() != .stmt_assign {
+fn autofree_statement_block_edge_start(block ast.Cursor) int {
+	if block.kind() == .expr_if {
+		return 2
+	}
+	if block.kind() == .stmt_for {
+		return 3
+	}
+	return 0
+}
+
+fn autofree_statement_block_edge_count(block ast.Cursor) int {
+	if !block.is_valid() || !autofree_statement_location_cursor_edge_range_is_valid(block) {
+		return -1
+	}
+	start := autofree_statement_block_edge_start(block)
+	if block.edge_count() < start {
+		return -1
+	}
+	return block.edge_count() - start
+}
+
+fn autofree_statement_block_stmt(block ast.Cursor, stmt_index int) ?ast.Cursor {
+	count := autofree_statement_block_edge_count(block)
+	if stmt_index < 0 || stmt_index >= count {
 		return none
 	}
-	if stmt.id != anchor.insert_after_node_id || stmt.pos().id != anchor.insert_after_pos_id {
+	return autofree_statement_location_edge_cursor(block,
+
+		autofree_statement_block_edge_start(block) + stmt_index)
+}
+
+fn autofree_statement_block_path_append(block_path string, stmt_index int) string {
+	if stmt_index < 0 {
+		return ''
+	}
+	if block_path.len == 0 {
+		return stmt_index.str()
+	}
+	return '${block_path}.${stmt_index}'
+}
+
+fn autofree_statement_block_path_part_is_valid(part string) bool {
+	if part.len == 0 {
+		return false
+	}
+	for ch in part {
+		if ch < `0` || ch > `9` {
+			return false
+		}
+	}
+	return true
+}
+
+fn autofree_statement_block_path_indexes(block_path string) ?[]int {
+	if block_path.len == 0 {
+		return []int{}
+	}
+	parts := block_path.split('.')
+	mut indexes := []int{cap: parts.len}
+	for part in parts {
+		if !autofree_statement_block_path_part_is_valid(part) {
+			return none
+		}
+		indexes << part.int()
+	}
+	return indexes
+}
+
+fn autofree_statement_block_for_path(root ast.Cursor, block_path string) ?ast.Cursor {
+	indexes := autofree_statement_block_path_indexes(block_path) or { return none }
+	mut block := root
+	for index in indexes {
+		stmt := autofree_statement_block_stmt(block, index) or { return none }
+		if stmt.kind() == .stmt_expr && stmt.edge_count() == 1 {
+			expr := autofree_statement_location_edge_cursor(stmt, 0) or { return none }
+			if expr.kind() == .expr_if {
+				block = expr
+				continue
+			}
+		}
+		if stmt.kind() == .stmt_block {
+			block = stmt
+			continue
+		}
+		if stmt.kind() == .stmt_for {
+			block = stmt
+			continue
+		}
+		return none
+	}
+	return block
+}
+
+fn autofree_statement_location_stmt_matches_anchor(stmt ast.Cursor, node_id ast.FlatNodeId, pos_id int) bool {
+	if !stmt.is_valid() || stmt.id != node_id || pos_id <= 0 {
+		return false
+	}
+	stmt_pos_id := stmt.pos().id
+	return stmt_pos_id == pos_id || stmt_pos_id <= 0
+}
+
+fn autofree_statement_location_stmt_is_supported_slot(stmt ast.Cursor) bool {
+	return stmt.kind() == .stmt_assign || stmt.kind() == .stmt_for
+}
+
+fn autofree_statement_location_facts_from_body(fn_cursor ast.Cursor, body ast.Cursor, anchor AutofreeCleanCStatementAnchorFact, anchors []AutofreeCleanCStatementAnchorFact) []AutofreeCleanCStatementLocationFact {
+	return autofree_statement_location_facts_from_block(fn_cursor, body, anchor, anchors, '')
+}
+
+fn autofree_statement_location_facts_from_block(fn_cursor ast.Cursor, block ast.Cursor, anchor AutofreeCleanCStatementAnchorFact, anchors []AutofreeCleanCStatementAnchorFact, block_path string) []AutofreeCleanCStatementLocationFact {
+	count := autofree_statement_block_edge_count(block)
+	if count < 0 {
+		return []AutofreeCleanCStatementLocationFact{}
+	}
+	mut matches := []AutofreeCleanCStatementLocationFact{}
+	for stmt_i in 0 .. count {
+		stmt := autofree_statement_block_stmt(block, stmt_i) or {
+			return []AutofreeCleanCStatementLocationFact{}
+		}
+		if !stmt.is_valid() {
+			return []AutofreeCleanCStatementLocationFact{}
+		}
+		if autofree_statement_location_stmt_matches_anchor(stmt, anchor.insert_after_node_id,
+			anchor.insert_after_pos_id)
+		{
+			location := autofree_statement_location_fact_from_stmt(fn_cursor, block, stmt, stmt_i,
+				anchor, anchors, block_path) or { continue }
+			matches << location
+		}
+		if block_path.len == 0 && autofree_statement_location_anchor_allows_nested_then(anchor) {
+			matches << autofree_statement_location_facts_from_nested_stmt(fn_cursor, stmt, stmt_i,
+				anchor, anchors, block_path)
+		}
+		if autofree_statement_location_anchor_allows_loop_body(anchor) {
+			matches << autofree_statement_location_facts_from_loop_body_stmt(fn_cursor, stmt,
+				stmt_i, anchor, anchors, block_path)
+		}
+	}
+	return matches
+}
+
+fn autofree_statement_location_facts_from_loop_body_stmt(fn_cursor ast.Cursor, stmt ast.Cursor, stmt_index int, anchor AutofreeCleanCStatementAnchorFact, anchors []AutofreeCleanCStatementAnchorFact, block_path string) []AutofreeCleanCStatementLocationFact {
+	if !stmt.is_valid() || stmt.kind() != .stmt_for || stmt_index < 0 {
+		return []AutofreeCleanCStatementLocationFact{}
+	}
+	count := autofree_statement_block_edge_count(stmt)
+	if count <= 0 {
+		return []AutofreeCleanCStatementLocationFact{}
+	}
+	loop_block_path := autofree_statement_block_path_append(block_path, stmt_index)
+	if loop_block_path.len == 0 {
+		return []AutofreeCleanCStatementLocationFact{}
+	}
+	mut matches := []AutofreeCleanCStatementLocationFact{}
+	for body_i in 0 .. count {
+		body_stmt := autofree_statement_block_stmt(stmt, body_i) or {
+			return []AutofreeCleanCStatementLocationFact{}
+		}
+		if !body_stmt.is_valid() {
+			return []AutofreeCleanCStatementLocationFact{}
+		}
+		if !autofree_statement_location_stmt_matches_anchor(body_stmt, anchor.insert_after_node_id,
+			anchor.insert_after_pos_id) {
+			continue
+		}
+		location := autofree_statement_location_fact_from_stmt(fn_cursor, stmt, body_stmt, body_i,
+			anchor, anchors, loop_block_path) or { continue }
+		matches << location
+	}
+	return matches
+}
+
+fn autofree_statement_location_facts_from_nested_stmt(fn_cursor ast.Cursor, stmt ast.Cursor, stmt_index int, anchor AutofreeCleanCStatementAnchorFact, anchors []AutofreeCleanCStatementAnchorFact, block_path string) []AutofreeCleanCStatementLocationFact {
+	if !stmt.is_valid() || stmt_index < 0 {
+		return []AutofreeCleanCStatementLocationFact{}
+	}
+	nested_path := autofree_statement_block_path_append(block_path, stmt_index)
+	if nested_path.len == 0 {
+		return []AutofreeCleanCStatementLocationFact{}
+	}
+	if stmt.kind() == .stmt_expr && stmt.edge_count() == 1 {
+		expr := autofree_statement_location_edge_cursor(stmt, 0) or {
+			return []AutofreeCleanCStatementLocationFact{}
+		}
+		if expr.kind() == .expr_if {
+			if !autofree_statement_location_if_has_only_then(expr) {
+				return []AutofreeCleanCStatementLocationFact{}
+			}
+			return autofree_statement_location_facts_from_block(fn_cursor, expr, anchor, anchors,
+				nested_path)
+		}
+	}
+	return []AutofreeCleanCStatementLocationFact{}
+}
+
+fn autofree_statement_location_anchor_allows_nested_then(anchor AutofreeCleanCStatementAnchorFact) bool {
+	return anchor.move_kind == .receiver_field_slice_clone_binding
+}
+
+fn autofree_statement_location_anchor_allows_loop_body(anchor AutofreeCleanCStatementAnchorFact) bool {
+	return anchor.move_kind == .loop_local_clone_push_binding
+}
+
+fn autofree_statement_location_if_has_only_then(expr ast.Cursor) bool {
+	if !expr.is_valid() || expr.kind() != .expr_if || expr.edge_count() < 2
+		|| !autofree_statement_location_cursor_edge_range_is_valid(expr) {
+		return false
+	}
+	else_expr := autofree_statement_location_edge_cursor(expr, 1) or { return false }
+	return else_expr.kind() == .expr_empty
+}
+
+fn autofree_statement_location_fact_from_stmt(fn_cursor ast.Cursor, body ast.Cursor, stmt ast.Cursor, stmt_index int, anchor AutofreeCleanCStatementAnchorFact, anchors []AutofreeCleanCStatementAnchorFact, block_path string) ?AutofreeCleanCStatementLocationFact {
+	if !stmt.is_valid()
+		|| !autofree_statement_location_stmt_is_supported_slot_for_anchor(stmt, anchor) {
+		return none
+	}
+	if !autofree_statement_location_stmt_matches_anchor(stmt, anchor.insert_after_node_id,
+		anchor.insert_after_pos_id) {
+		return none
+	}
+	if autofree_statement_location_nested_receiver_field_slice_clone_requires_for(anchor, block_path)
+		&& stmt.kind() != .stmt_for {
+		return none
+	}
+	if stmt.kind() != .stmt_assign {
+		if anchors.len == 1
+			&& autofree_statement_location_body_declares_target_before(body, stmt_index, anchor) {
+			return autofree_statement_location_fact_from_anchor(fn_cursor, stmt, stmt_index,
+				anchor, block_path)
+		}
 		return none
 	}
 	if autofree_statement_location_stmt_declares_target(stmt, anchor) {
-		return autofree_statement_location_fact_from_anchor(fn_cursor, stmt, stmt_index, anchor)
+		return autofree_statement_location_fact_from_anchor(fn_cursor, stmt, stmt_index, anchor,
+			block_path)
 	}
 	if autofree_statement_location_stmt_is_group_shared_slot(stmt, anchor, anchors)
 		&& autofree_statement_location_body_declares_target_before(body, stmt_index, anchor) {
-		return autofree_statement_location_fact_from_anchor(fn_cursor, stmt, stmt_index, anchor)
+		return autofree_statement_location_fact_from_anchor(fn_cursor, stmt, stmt_index, anchor,
+			block_path)
 	}
 	if autofree_statement_location_stmt_is_singleton_final_len_slot(stmt, anchor, anchors)
 		&& autofree_statement_location_body_declares_target_before(body, stmt_index, anchor) {
-		return autofree_statement_location_fact_from_anchor(fn_cursor, stmt, stmt_index, anchor)
+		return autofree_statement_location_fact_from_anchor(fn_cursor, stmt, stmt_index, anchor,
+			block_path)
 	}
 	if anchors.len >= 2 {
 		return none
@@ -558,7 +867,19 @@ fn autofree_statement_location_fact_from_stmt(fn_cursor ast.Cursor, body ast.Cur
 	if !autofree_statement_location_body_declares_target_before(body, stmt_index, anchor) {
 		return none
 	}
-	return autofree_statement_location_fact_from_anchor(fn_cursor, stmt, stmt_index, anchor)
+	return autofree_statement_location_fact_from_anchor(fn_cursor, stmt, stmt_index, anchor,
+		block_path)
+}
+
+fn autofree_statement_location_stmt_is_supported_slot_for_anchor(stmt ast.Cursor, anchor AutofreeCleanCStatementAnchorFact) bool {
+	if autofree_statement_location_stmt_is_supported_slot(stmt) {
+		return true
+	}
+	return anchor.move_kind == .loop_local_clone_push_binding && stmt.kind() == .stmt_expr
+}
+
+fn autofree_statement_location_nested_receiver_field_slice_clone_requires_for(anchor AutofreeCleanCStatementAnchorFact, block_path string) bool {
+	return block_path.len > 0 && anchor.move_kind == .receiver_field_slice_clone_binding
 }
 
 fn autofree_statement_location_stmt_is_group_shared_slot(stmt ast.Cursor, anchor AutofreeCleanCStatementAnchorFact, anchors []AutofreeCleanCStatementAnchorFact) bool {
@@ -700,10 +1021,14 @@ fn autofree_statement_location_body_declares_target_before(body ast.Cursor, stmt
 	if stmt_index <= 0 {
 		return false
 	}
+	count := autofree_statement_block_edge_count(body)
+	if count < 0 || stmt_index > count {
+		return false
+	}
 	mut matching_names := 0
 	mut matching_target := 0
 	for i in 0 .. stmt_index {
-		stmt := autofree_statement_location_edge_cursor(body, i) or { return false }
+		stmt := autofree_statement_block_stmt(body, i) or { return false }
 		if !stmt.is_valid() {
 			return false
 		}
@@ -722,11 +1047,12 @@ fn autofree_statement_location_body_declares_target_before(body ast.Cursor, stmt
 	return matching_names == 1 && matching_target == 1
 }
 
-fn autofree_statement_location_fact_from_anchor(fn_cursor ast.Cursor, stmt ast.Cursor, stmt_index int, anchor AutofreeCleanCStatementAnchorFact) AutofreeCleanCStatementLocationFact {
+fn autofree_statement_location_fact_from_anchor(fn_cursor ast.Cursor, stmt ast.Cursor, stmt_index int, anchor AutofreeCleanCStatementAnchorFact, block_path string) AutofreeCleanCStatementLocationFact {
 	return AutofreeCleanCStatementLocationFact{
 		fn_key:               anchor.fn_key
 		fn_name:              fn_cursor.name()
 		name:                 anchor.name
+		move_kind:            anchor.move_kind
 		location_status:      .inert
 		fn_node_id:           fn_cursor.id
 		fn_pos_id:            fn_cursor.pos().id
@@ -735,7 +1061,8 @@ fn autofree_statement_location_fact_from_anchor(fn_cursor ast.Cursor, stmt ast.C
 		insert_after_node_id: anchor.insert_after_node_id
 		insert_after_pos_id:  anchor.insert_after_pos_id
 		stmt_node_id:         stmt.id
-		stmt_pos_id:          stmt.pos().id
+		stmt_pos_id:          anchor.insert_after_pos_id
+		block_path:           block_path
 		stmt_index:           stmt_index
 		lhs_index:            0
 		reason:               'inert statement location accepted'
@@ -973,6 +1300,7 @@ struct AutofreeCleanCStatementPreviewFact {
 	fn_key               string
 	fn_name              string
 	name                 string
+	move_kind            types.AutofreeMoveProofKind
 	preview_status       AutofreeCleanCStatementPreviewStatus
 	fn_node_id           ast.FlatNodeId
 	fn_pos_id            int
@@ -982,6 +1310,7 @@ struct AutofreeCleanCStatementPreviewFact {
 	stmt_pos_id          int
 	insert_after_node_id ast.FlatNodeId
 	insert_after_pos_id  int
+	block_path           string
 	stmt_index           int
 	lhs_index            int
 	reason               string
@@ -1023,7 +1352,10 @@ fn autofree_statement_preview_facts_from_file_cursor(file_cursor ast.FileCursor,
 			|| location.fn_node_id != fn_cursor.id || location.fn_pos_id != fn_cursor.pos().id {
 			return []AutofreeCleanCStatementPreviewFact{}
 		}
-		preview := autofree_statement_preview_fact_from_location_in_body(body, location) or {
+		block := autofree_statement_block_for_path(body, location.block_path) or {
+			return []AutofreeCleanCStatementPreviewFact{}
+		}
+		preview := autofree_statement_preview_fact_from_location_in_body(block, location) or {
 			return []AutofreeCleanCStatementPreviewFact{}
 		}
 		previews << preview
@@ -1032,32 +1364,116 @@ fn autofree_statement_preview_facts_from_file_cursor(file_cursor ast.FileCursor,
 }
 
 fn autofree_statement_preview_fact_from_location_in_body(body ast.Cursor, location AutofreeCleanCStatementLocationFact) ?AutofreeCleanCStatementPreviewFact {
-	if location.stmt_index < 0 || location.stmt_index >= body.edge_count() {
+	if location.move_kind == .loop_local_clone_push_binding {
+		return autofree_statement_preview_loop_local_clone_push_fact_from_loop_body(body, location)
+	}
+	count := autofree_statement_block_edge_count(body)
+	if count < 0 || location.stmt_index < 0 || location.stmt_index >= count {
 		return none
 	}
-	if location.stmt_index != body.edge_count() - 1 {
+	stmt := autofree_statement_block_stmt(body, location.stmt_index) or { return none }
+	pre_return_bridge := autofree_statement_preview_location_is_top_level_pre_return_scalar_bridge(body,
+		stmt, location)
+	if location.stmt_index != count - 1 && !pre_return_bridge {
 		return none
 	}
-	stmt := autofree_statement_location_edge_cursor(body, location.stmt_index) or { return none }
-	if !stmt.is_valid() || stmt.kind() != .stmt_assign {
+	if !stmt.is_valid() || !autofree_statement_location_stmt_is_supported_slot(stmt) {
 		return none
 	}
-	if stmt.id != location.stmt_node_id || stmt.pos().id != location.stmt_pos_id
-		|| stmt.id != location.insert_after_node_id || stmt.pos().id != location.insert_after_pos_id {
+	if autofree_statement_preview_nested_receiver_field_slice_clone_requires_for(location)
+		&& stmt.kind() != .stmt_for {
 		return none
 	}
-	if autofree_statement_preview_later_assigns_target(body, location.stmt_index, location.name) {
+	if !autofree_statement_location_stmt_matches_anchor(stmt, location.stmt_node_id, location.stmt_pos_id)
+		|| !autofree_statement_location_stmt_matches_anchor(stmt, location.insert_after_node_id, location.insert_after_pos_id) {
+		return none
+	}
+	if !pre_return_bridge
+		&& autofree_statement_preview_later_assigns_target(body, location.stmt_index, location.name) {
 		return none
 	}
 	return autofree_statement_preview_fact_from_location(location)
+}
+
+fn autofree_statement_preview_loop_local_clone_push_fact_from_loop_body(loop_body ast.Cursor, location AutofreeCleanCStatementLocationFact) ?AutofreeCleanCStatementPreviewFact {
+	if !loop_body.is_valid() || loop_body.kind() != .stmt_for || location.stmt_index < 0 {
+		return none
+	}
+	loop_count := autofree_statement_block_edge_count(loop_body)
+	if loop_count <= 0 || location.stmt_index != loop_count - 1 {
+		return none
+	}
+	body_stmt := autofree_statement_block_stmt(loop_body, location.stmt_index) or { return none }
+	if !autofree_statement_preview_loop_local_clone_push_stmt_matches_location(loop_body,
+		body_stmt, location) {
+		return none
+	}
+	return autofree_statement_preview_fact_from_location(location)
+}
+
+fn autofree_statement_preview_loop_local_clone_push_stmt_matches_location(loop_body ast.Cursor, stmt ast.Cursor, location AutofreeCleanCStatementLocationFact) bool {
+	if !stmt.is_valid() || stmt.kind() != .stmt_expr {
+		return false
+	}
+	if !autofree_statement_location_stmt_matches_anchor(stmt, location.stmt_node_id, location.stmt_pos_id)
+		|| !autofree_statement_location_stmt_matches_anchor(stmt, location.insert_after_node_id, location.insert_after_pos_id) {
+		return false
+	}
+	anchor := AutofreeCleanCStatementAnchorFact{
+		fn_key:               location.fn_key
+		fn_name:              location.fn_name
+		name:                 location.name
+		move_kind:            location.move_kind
+		anchor_status:        .inert
+		target_node_id:       location.target_node_id
+		target_pos_id:        location.target_pos_id
+		insert_after_node_id: location.insert_after_node_id
+		insert_after_pos_id:  location.insert_after_pos_id
+		reason:               location.reason
+	}
+	return
+		autofree_statement_location_body_declares_target_before(loop_body, location.stmt_index, anchor)
+		&& !autofree_statement_preview_later_assigns_target(loop_body, location.stmt_index, location.name)
+}
+
+fn autofree_statement_preview_location_is_top_level_pre_return_scalar_bridge(body ast.Cursor, stmt ast.Cursor, location AutofreeCleanCStatementLocationFact) bool {
+	if location.block_path.len != 0 || location.move_kind != .fresh_local_binding {
+		return false
+	}
+	if !autofree_statement_location_stmt_matches_anchor(stmt, location.stmt_node_id, location.stmt_pos_id)
+		|| !autofree_statement_location_stmt_matches_anchor(stmt, location.insert_after_node_id, location.insert_after_pos_id) {
+		return false
+	}
+	anchor := AutofreeCleanCStatementAnchorFact{
+		fn_key:               location.fn_key
+		fn_name:              location.fn_name
+		name:                 location.name
+		move_kind:            location.move_kind
+		anchor_status:        .inert
+		target_node_id:       location.target_node_id
+		target_pos_id:        location.target_pos_id
+		insert_after_node_id: location.insert_after_node_id
+		insert_after_pos_id:  location.insert_after_pos_id
+		reason:               location.reason
+	}
+	return autofree_statement_body_has_top_level_pre_return_scalar_bridge(body,
+		location.stmt_index, stmt, anchor)
+}
+
+fn autofree_statement_preview_nested_receiver_field_slice_clone_requires_for(location AutofreeCleanCStatementLocationFact) bool {
+	return location.block_path.len > 0 && location.move_kind == .receiver_field_slice_clone_binding
 }
 
 fn autofree_statement_preview_later_assigns_target(body ast.Cursor, stmt_index int, target_name string) bool {
 	if target_name.len == 0 {
 		return true
 	}
-	for i in stmt_index + 1 .. body.edge_count() {
-		stmt := autofree_statement_location_edge_cursor(body, i) or { return true }
+	count := autofree_statement_block_edge_count(body)
+	if count < 0 {
+		return true
+	}
+	for i in stmt_index + 1 .. count {
+		stmt := autofree_statement_block_stmt(body, i) or { return true }
 		if !stmt.is_valid() || stmt.kind() != .stmt_assign
 			|| !autofree_statement_location_cursor_edge_range_is_valid(stmt) {
 			return true
@@ -1077,6 +1493,40 @@ fn autofree_statement_preview_later_assigns_target(body ast.Cursor, stmt_index i
 		}
 	}
 	return false
+}
+
+fn autofree_statement_body_has_top_level_pre_return_scalar_bridge(body ast.Cursor, stmt_index int, stmt ast.Cursor, anchor AutofreeCleanCStatementAnchorFact) bool {
+	count := autofree_statement_block_edge_count(body)
+	if count < 2 || stmt_index != count - 2 || anchor.name.len == 0 {
+		return false
+	}
+	lhs_name := autofree_statement_pre_return_scalar_bridge_lhs_name(stmt, anchor) or {
+		return false
+	}
+	return_stmt := autofree_statement_block_stmt(body, stmt_index + 1) or { return false }
+	return autofree_statement_return_stmt_is_exact_ident(return_stmt, lhs_name)
+}
+
+fn autofree_statement_pre_return_scalar_bridge_lhs_name(stmt ast.Cursor, anchor AutofreeCleanCStatementAnchorFact) ?string {
+	if !autofree_statement_location_stmt_has_singleton_final_len_shape(stmt, anchor) {
+		return none
+	}
+	lhs := autofree_statement_location_edge_cursor(stmt, 0) or { return none }
+	lhs_ident := autofree_statement_location_direct_lhs_ident(lhs) or { return none }
+	lhs_name := lhs_ident.name()
+	if lhs_name.len == 0 || lhs_name == anchor.name {
+		return none
+	}
+	return lhs_name
+}
+
+fn autofree_statement_return_stmt_is_exact_ident(stmt ast.Cursor, name string) bool {
+	if name.len == 0 || !stmt.is_valid() || stmt.kind() != .stmt_return || stmt.edge_count() != 1 {
+		return false
+	}
+	expr := stmt.edge(0)
+	return expr.is_valid() && expr.kind() == .expr_ident && expr.edge_count() == 0
+		&& expr.name() == name
 }
 
 fn autofree_statement_preview_fact_from_location(location AutofreeCleanCStatementLocationFact) ?AutofreeCleanCStatementPreviewFact {
@@ -1103,6 +1553,7 @@ fn autofree_statement_preview_fact_from_location(location AutofreeCleanCStatemen
 		fn_key:               location.fn_key
 		fn_name:              location.fn_name
 		name:                 location.name
+		move_kind:            location.move_kind
 		preview_status:       .inert
 		fn_node_id:           location.fn_node_id
 		fn_pos_id:            location.fn_pos_id
@@ -1112,6 +1563,7 @@ fn autofree_statement_preview_fact_from_location(location AutofreeCleanCStatemen
 		stmt_pos_id:          location.stmt_pos_id
 		insert_after_node_id: location.insert_after_node_id
 		insert_after_pos_id:  location.insert_after_pos_id
+		block_path:           location.block_path
 		stmt_index:           location.stmt_index
 		lhs_index:            location.lhs_index
 		reason:               'inert statement preview accepted'
@@ -1205,14 +1657,14 @@ fn autofree_statement_preview_insert_slot_key(location AutofreeCleanCStatementLo
 		|| location.insert_after_pos_id <= 0 {
 		return ''
 	}
-	return '${location.fn_key.len}:${location.fn_key}:${location.insert_after_node_id}:${location.insert_after_pos_id}'
+	return '${location.fn_key.len}:${location.fn_key}:${location.block_path.len}:${location.block_path}:${location.insert_after_node_id}:${location.insert_after_pos_id}'
 }
 
 fn autofree_statement_preview_statement_position_key(location AutofreeCleanCStatementLocationFact) string {
 	if location.fn_key.len == 0 || location.stmt_node_id < 0 || location.stmt_pos_id <= 0 {
 		return ''
 	}
-	return '${location.fn_key.len}:${location.fn_key}:${location.stmt_node_id}:${location.stmt_pos_id}'
+	return '${location.fn_key.len}:${location.fn_key}:${location.block_path.len}:${location.block_path}:${location.stmt_node_id}:${location.stmt_pos_id}'
 }
 
 // autofree_statement_intent
@@ -1231,6 +1683,7 @@ struct AutofreeCleanCStatementIntentFact {
 	fn_key               string
 	fn_name              string
 	name                 string
+	move_kind            types.AutofreeMoveProofKind
 	intent_status        AutofreeCleanCStatementIntentStatus
 	intent_kind          AutofreeCleanCStatementIntentKind
 	fn_node_id           ast.FlatNodeId
@@ -1241,6 +1694,7 @@ struct AutofreeCleanCStatementIntentFact {
 	stmt_pos_id          int
 	insert_after_node_id ast.FlatNodeId
 	insert_after_pos_id  int
+	block_path           string
 	stmt_index           int
 	lhs_index            int
 	reason               string
@@ -1287,6 +1741,7 @@ fn autofree_statement_intent_fact_from_preview(preview AutofreeCleanCStatementPr
 		fn_key:               preview.fn_key
 		fn_name:              preview.fn_name
 		name:                 preview.name
+		move_kind:            preview.move_kind
 		intent_status:        .inert
 		intent_kind:          .after_statement
 		fn_node_id:           preview.fn_node_id
@@ -1297,6 +1752,7 @@ fn autofree_statement_intent_fact_from_preview(preview AutofreeCleanCStatementPr
 		stmt_pos_id:          preview.stmt_pos_id
 		insert_after_node_id: preview.insert_after_node_id
 		insert_after_pos_id:  preview.insert_after_pos_id
+		block_path:           preview.block_path
 		stmt_index:           preview.stmt_index
 		lhs_index:            preview.lhs_index
 		reason:               'inert statement intent accepted'
@@ -1341,6 +1797,7 @@ struct AutofreeCleanCStatementEmissionSlotFact {
 	fn_key               string
 	fn_name              string
 	name                 string
+	move_kind            types.AutofreeMoveProofKind
 	slot_status          AutofreeCleanCStatementEmissionSlotStatus
 	slot_kind            AutofreeCleanCStatementEmissionSlotKind
 	fn_node_id           ast.FlatNodeId
@@ -1351,6 +1808,7 @@ struct AutofreeCleanCStatementEmissionSlotFact {
 	stmt_pos_id          int
 	insert_after_node_id ast.FlatNodeId
 	insert_after_pos_id  int
+	block_path           string
 	stmt_index           int
 	lhs_index            int
 	reason               string
@@ -1397,6 +1855,7 @@ fn autofree_statement_emission_slot_fact_from_intent(intent AutofreeCleanCStatem
 		fn_key:               intent.fn_key
 		fn_name:              intent.fn_name
 		name:                 intent.name
+		move_kind:            intent.move_kind
 		slot_status:          .inert
 		slot_kind:            .after_statement
 		fn_node_id:           intent.fn_node_id
@@ -1407,6 +1866,7 @@ fn autofree_statement_emission_slot_fact_from_intent(intent AutofreeCleanCStatem
 		stmt_pos_id:          intent.stmt_pos_id
 		insert_after_node_id: intent.insert_after_node_id
 		insert_after_pos_id:  intent.insert_after_pos_id
+		block_path:           intent.block_path
 		stmt_index:           intent.stmt_index
 		lhs_index:            intent.lhs_index
 		reason:               'inert statement emission slot accepted'
@@ -1451,6 +1911,7 @@ struct AutofreeCleanCStatementCleanupPreviewFact {
 	fn_key               string
 	fn_name              string
 	name                 string
+	move_kind            types.AutofreeMoveProofKind
 	cleanup_status       AutofreeCleanCStatementCleanupPreviewStatus
 	cleanup_kind         AutofreeCleanCStatementCleanupPreviewKind
 	fn_node_id           ast.FlatNodeId
@@ -1461,6 +1922,7 @@ struct AutofreeCleanCStatementCleanupPreviewFact {
 	stmt_pos_id          int
 	insert_after_node_id ast.FlatNodeId
 	insert_after_pos_id  int
+	block_path           string
 	stmt_index           int
 	lhs_index            int
 	target_c_name        string
@@ -1515,6 +1977,7 @@ fn autofree_statement_cleanup_preview_fact_from_slot(slot AutofreeCleanCStatemen
 		fn_key:               slot.fn_key
 		fn_name:              slot.fn_name
 		name:                 slot.name
+		move_kind:            slot.move_kind
 		cleanup_status:       .inert
 		cleanup_kind:         .array_after_statement
 		fn_node_id:           slot.fn_node_id
@@ -1525,6 +1988,7 @@ fn autofree_statement_cleanup_preview_fact_from_slot(slot AutofreeCleanCStatemen
 		stmt_pos_id:          slot.stmt_pos_id
 		insert_after_node_id: slot.insert_after_node_id
 		insert_after_pos_id:  slot.insert_after_pos_id
+		block_path:           slot.block_path
 		stmt_index:           slot.stmt_index
 		lhs_index:            slot.lhs_index
 		target_c_name:        target_c_name
@@ -1572,12 +2036,14 @@ enum AutofreeCleanCStatementCleanupHookPreviewStatus {
 enum AutofreeCleanCStatementCleanupHookPreviewKind {
 	unknown
 	after_body_before_scheduled_drops
+	after_statement
 }
 
 struct AutofreeCleanCStatementCleanupHookPreviewFact {
 	fn_key               string
 	fn_name              string
 	name                 string
+	move_kind            types.AutofreeMoveProofKind
 	hook_status          AutofreeCleanCStatementCleanupHookPreviewStatus
 	hook_kind            AutofreeCleanCStatementCleanupHookPreviewKind
 	fn_node_id           ast.FlatNodeId
@@ -1588,6 +2054,7 @@ struct AutofreeCleanCStatementCleanupHookPreviewFact {
 	stmt_pos_id          int
 	insert_after_node_id ast.FlatNodeId
 	insert_after_pos_id  int
+	block_path           string
 	stmt_index           int
 	lhs_index            int
 	target_c_name        string
@@ -1638,22 +2105,36 @@ fn autofree_statement_cleanup_hook_preview_fact_from_body(fn_cursor ast.Cursor, 
 		|| preview.fn_pos_id != fn_cursor.pos().id {
 		return none
 	}
-	if preview.stmt_index < 0 || preview.stmt_index >= body.edge_count() {
+	block := autofree_statement_block_for_path(body, preview.block_path) or { return none }
+	if preview.move_kind == .loop_local_clone_push_binding {
+		return autofree_statement_cleanup_hook_preview_loop_local_clone_push_fact_from_parent_body(fn_cursor,
+			block, preview, previews, fn_key, fn_name)
+	}
+	count := autofree_statement_block_edge_count(block)
+	if count < 0 || preview.stmt_index < 0 || preview.stmt_index >= count {
 		return none
 	}
-	if preview.stmt_index != body.edge_count() - 1 {
+	stmt := autofree_statement_block_stmt(block, preview.stmt_index) or { return none }
+	pre_return_bridge := autofree_statement_cleanup_hook_preview_is_top_level_pre_return_scalar_bridge(block,
+		stmt, preview, previews)
+	if preview.stmt_index != count - 1 && !pre_return_bridge {
 		return none
 	}
-	stmt := autofree_statement_location_edge_cursor(body, preview.stmt_index) or { return none }
-	if !autofree_statement_cleanup_hook_preview_stmt_matches_preview(body, stmt, preview, previews) {
+	if !autofree_statement_cleanup_hook_preview_stmt_matches_preview(block, stmt, preview, previews) {
 		return none
+	}
+	hook_kind := if pre_return_bridge {
+		AutofreeCleanCStatementCleanupHookPreviewKind.after_statement
+	} else {
+		AutofreeCleanCStatementCleanupHookPreviewKind.after_body_before_scheduled_drops
 	}
 	return AutofreeCleanCStatementCleanupHookPreviewFact{
 		fn_key:               preview.fn_key
 		fn_name:              preview.fn_name
 		name:                 preview.name
+		move_kind:            preview.move_kind
 		hook_status:          .inert
-		hook_kind:            .after_body_before_scheduled_drops
+		hook_kind:            hook_kind
 		fn_node_id:           preview.fn_node_id
 		fn_pos_id:            preview.fn_pos_id
 		target_node_id:       preview.target_node_id
@@ -1662,6 +2143,7 @@ fn autofree_statement_cleanup_hook_preview_fact_from_body(fn_cursor ast.Cursor, 
 		stmt_pos_id:          preview.stmt_pos_id
 		insert_after_node_id: preview.insert_after_node_id
 		insert_after_pos_id:  preview.insert_after_pos_id
+		block_path:           preview.block_path
 		stmt_index:           preview.stmt_index
 		lhs_index:            preview.lhs_index
 		target_c_name:        preview.target_c_name
@@ -1669,6 +2151,84 @@ fn autofree_statement_cleanup_hook_preview_fact_from_body(fn_cursor ast.Cursor, 
 		cleanup_text:         preview.cleanup_text
 		reason:               'inert statement cleanup hook preview accepted'
 	}
+}
+
+fn autofree_statement_cleanup_hook_preview_loop_local_clone_push_fact_from_parent_body(fn_cursor ast.Cursor, body ast.Cursor, preview AutofreeCleanCStatementCleanupPreviewFact, previews []AutofreeCleanCStatementCleanupPreviewFact, fn_key string, fn_name string) ?AutofreeCleanCStatementCleanupHookPreviewFact {
+	if previews.len != 1 || !autofree_statement_cleanup_hook_preview_is_valid(preview) {
+		return none
+	}
+	if preview.fn_key != fn_key || preview.fn_name != fn_name || preview.fn_node_id != fn_cursor.id
+		|| preview.fn_pos_id != fn_cursor.pos().id {
+		return none
+	}
+	location := AutofreeCleanCStatementLocationFact{
+		fn_key:               preview.fn_key
+		fn_name:              preview.fn_name
+		name:                 preview.name
+		move_kind:            preview.move_kind
+		location_status:      .inert
+		fn_node_id:           preview.fn_node_id
+		fn_pos_id:            preview.fn_pos_id
+		target_node_id:       preview.target_node_id
+		target_pos_id:        preview.target_pos_id
+		insert_after_node_id: preview.insert_after_node_id
+		insert_after_pos_id:  preview.insert_after_pos_id
+		stmt_node_id:         preview.stmt_node_id
+		stmt_pos_id:          preview.stmt_pos_id
+		block_path:           preview.block_path
+		stmt_index:           preview.stmt_index
+		lhs_index:            preview.lhs_index
+		reason:               preview.reason
+	}
+	if autofree_statement_preview_loop_local_clone_push_fact_from_loop_body(body, location) == none {
+		return none
+	}
+	return AutofreeCleanCStatementCleanupHookPreviewFact{
+		fn_key:               preview.fn_key
+		fn_name:              preview.fn_name
+		name:                 preview.name
+		move_kind:            preview.move_kind
+		hook_status:          .inert
+		hook_kind:            .after_statement
+		fn_node_id:           preview.fn_node_id
+		fn_pos_id:            preview.fn_pos_id
+		target_node_id:       preview.target_node_id
+		target_pos_id:        preview.target_pos_id
+		stmt_node_id:         preview.stmt_node_id
+		stmt_pos_id:          preview.stmt_pos_id
+		insert_after_node_id: preview.insert_after_node_id
+		insert_after_pos_id:  preview.insert_after_pos_id
+		block_path:           preview.block_path
+		stmt_index:           preview.stmt_index
+		lhs_index:            preview.lhs_index
+		target_c_name:        preview.target_c_name
+		cleanup_symbol:       preview.cleanup_symbol
+		cleanup_text:         preview.cleanup_text
+		reason:               'inert statement cleanup hook preview accepted'
+	}
+}
+
+fn autofree_statement_cleanup_hook_preview_is_top_level_pre_return_scalar_bridge(body ast.Cursor, stmt ast.Cursor, preview AutofreeCleanCStatementCleanupPreviewFact, previews []AutofreeCleanCStatementCleanupPreviewFact) bool {
+	if previews.len != 1 || preview.block_path.len != 0 {
+		return false
+	}
+	if !autofree_statement_location_stmt_matches_anchor(stmt, preview.stmt_node_id, preview.stmt_pos_id)
+		|| !autofree_statement_location_stmt_matches_anchor(stmt, preview.insert_after_node_id, preview.insert_after_pos_id) {
+		return false
+	}
+	anchor := AutofreeCleanCStatementAnchorFact{
+		fn_key:               preview.fn_key
+		fn_name:              preview.fn_name
+		name:                 preview.name
+		anchor_status:        .inert
+		target_node_id:       preview.target_node_id
+		target_pos_id:        preview.target_pos_id
+		insert_after_node_id: preview.insert_after_node_id
+		insert_after_pos_id:  preview.insert_after_pos_id
+		reason:               preview.reason
+	}
+	return autofree_statement_body_has_top_level_pre_return_scalar_bridge(body, preview.stmt_index,
+		stmt, anchor)
 }
 
 fn autofree_statement_cleanup_hook_preview_is_valid(preview AutofreeCleanCStatementCleanupPreviewFact) bool {
@@ -1697,11 +2257,11 @@ fn autofree_statement_cleanup_hook_preview_is_valid(preview AutofreeCleanCStatem
 }
 
 fn autofree_statement_cleanup_hook_preview_stmt_matches_preview(body ast.Cursor, stmt ast.Cursor, preview AutofreeCleanCStatementCleanupPreviewFact, previews []AutofreeCleanCStatementCleanupPreviewFact) bool {
-	if !stmt.is_valid() || stmt.kind() != .stmt_assign {
+	if !stmt.is_valid() || !autofree_statement_location_stmt_is_supported_slot(stmt) {
 		return false
 	}
-	if stmt.id != preview.stmt_node_id || stmt.pos().id != preview.stmt_pos_id
-		|| stmt.id != preview.insert_after_node_id || stmt.pos().id != preview.insert_after_pos_id {
+	if !autofree_statement_location_stmt_matches_anchor(stmt, preview.stmt_node_id, preview.stmt_pos_id)
+		|| !autofree_statement_location_stmt_matches_anchor(stmt, preview.insert_after_node_id, preview.insert_after_pos_id) {
 		return false
 	}
 	anchor := AutofreeCleanCStatementAnchorFact{
@@ -1714,6 +2274,10 @@ fn autofree_statement_cleanup_hook_preview_stmt_matches_preview(body ast.Cursor,
 		insert_after_node_id: preview.insert_after_node_id
 		insert_after_pos_id:  preview.insert_after_pos_id
 		reason:               preview.reason
+	}
+	if stmt.kind() != .stmt_assign {
+		return previews.len == 1
+			&& autofree_statement_location_body_declares_target_before(body, preview.stmt_index, anchor)
 	}
 	if autofree_statement_location_stmt_declares_target(stmt, anchor) {
 		return true
@@ -1901,7 +2465,7 @@ fn autofree_statement_cleanup_preview_slot_key(preview AutofreeCleanCStatementCl
 		|| preview.insert_after_node_id < 0 || preview.insert_after_pos_id <= 0 {
 		return ''
 	}
-	return '${preview.fn_key}:${preview.fn_node_id}:${preview.fn_pos_id}:${preview.insert_after_node_id}:${preview.insert_after_pos_id}'
+	return '${preview.fn_key}:${preview.fn_node_id}:${preview.fn_pos_id}:${preview.block_path.len}:${preview.block_path}:${preview.insert_after_node_id}:${preview.insert_after_pos_id}'
 }
 
 // autofree_statement_cleanup_emit_context
@@ -1914,12 +2478,14 @@ enum AutofreeCleanCStatementCleanupEmitContextStatus {
 enum AutofreeCleanCStatementCleanupEmitContextKind {
 	unknown
 	after_body_before_scheduled_drops
+	after_statement
 }
 
 struct AutofreeCleanCStatementCleanupEmitContextFact {
 	fn_key               string
 	fn_name              string
 	name                 string
+	move_kind            types.AutofreeMoveProofKind
 	context_status       AutofreeCleanCStatementCleanupEmitContextStatus
 	context_kind         AutofreeCleanCStatementCleanupEmitContextKind
 	fn_node_id           ast.FlatNodeId
@@ -1930,6 +2496,7 @@ struct AutofreeCleanCStatementCleanupEmitContextFact {
 	stmt_pos_id          int
 	insert_after_node_id ast.FlatNodeId
 	insert_after_pos_id  int
+	block_path           string
 	stmt_index           int
 	lhs_index            int
 	target_c_name        string
@@ -1968,8 +2535,9 @@ fn autofree_statement_cleanup_emit_context_fact_from_hook_preview(preview Autofr
 		fn_key:               preview.fn_key
 		fn_name:              preview.fn_name
 		name:                 preview.name
+		move_kind:            preview.move_kind
 		context_status:       .inert
-		context_kind:         .after_body_before_scheduled_drops
+		context_kind:         autofree_statement_cleanup_emit_context_kind_from_hook_kind(preview.hook_kind)
 		fn_node_id:           preview.fn_node_id
 		fn_pos_id:            preview.fn_pos_id
 		target_node_id:       preview.target_node_id
@@ -1978,6 +2546,7 @@ fn autofree_statement_cleanup_emit_context_fact_from_hook_preview(preview Autofr
 		stmt_pos_id:          preview.stmt_pos_id
 		insert_after_node_id: preview.insert_after_node_id
 		insert_after_pos_id:  preview.insert_after_pos_id
+		block_path:           preview.block_path
 		stmt_index:           preview.stmt_index
 		lhs_index:            preview.lhs_index
 		target_c_name:        preview.target_c_name
@@ -1985,6 +2554,13 @@ fn autofree_statement_cleanup_emit_context_fact_from_hook_preview(preview Autofr
 		cleanup_text:         preview.cleanup_text
 		context_key:          context_key
 		reason:               'inert statement cleanup emit context accepted'
+	}
+}
+
+fn autofree_statement_cleanup_emit_context_kind_from_hook_kind(kind AutofreeCleanCStatementCleanupHookPreviewKind) AutofreeCleanCStatementCleanupEmitContextKind {
+	return match kind {
+		.after_statement { .after_statement }
+		else { .after_body_before_scheduled_drops }
 	}
 }
 
@@ -2028,12 +2604,14 @@ fn autofree_statement_cleanup_hook_preview_slot_key(preview AutofreeCleanCStatem
 		|| preview.insert_after_node_id < 0 || preview.insert_after_pos_id <= 0 {
 		return ''
 	}
-	return '${preview.fn_key}:${preview.fn_node_id}:${preview.fn_pos_id}:${preview.insert_after_node_id}:${preview.insert_after_pos_id}'
+	return '${preview.fn_key}:${preview.fn_node_id}:${preview.fn_pos_id}:${int(preview.hook_kind)}:${preview.block_path.len}:${preview.block_path}:${preview.insert_after_node_id}:${preview.insert_after_pos_id}'
 }
 
 fn autofree_statement_cleanup_emit_context_hook_preview_is_valid(preview AutofreeCleanCStatementCleanupHookPreviewFact) bool {
-	if preview.hook_status != .inert || preview.hook_kind != .after_body_before_scheduled_drops
-		|| preview.fn_key.len == 0 || preview.fn_name.len == 0 || preview.name.len == 0 {
+	if preview.hook_status != .inert
+		|| (preview.hook_kind != .after_body_before_scheduled_drops
+		&& preview.hook_kind != .after_statement) || preview.fn_key.len == 0
+		|| preview.fn_name.len == 0 || preview.name.len == 0 {
 		return false
 	}
 	if preview.fn_node_id < 0 || preview.fn_pos_id <= 0 || preview.target_node_id < 0
@@ -2058,7 +2636,7 @@ fn autofree_statement_cleanup_emit_context_hook_preview_is_valid(preview Autofre
 }
 
 fn autofree_statement_cleanup_emit_context_key(preview AutofreeCleanCStatementCleanupHookPreviewFact) string {
-	return '${preview.fn_key}:${preview.fn_node_id}:${preview.fn_pos_id}:${preview.target_node_id}:${preview.target_pos_id}:${preview.insert_after_node_id}:${preview.insert_after_pos_id}:${preview.name}'
+	return '${preview.fn_key}:${preview.fn_node_id}:${preview.fn_pos_id}:${preview.block_path.len}:${preview.block_path}:${preview.target_node_id}:${preview.target_pos_id}:${preview.insert_after_node_id}:${preview.insert_after_pos_id}:${preview.name}'
 }
 
 fn autofree_statement_cleanup_emit_context_group_is_valid(contexts []AutofreeCleanCStatementCleanupEmitContextFact) bool {
@@ -2103,7 +2681,7 @@ fn autofree_statement_cleanup_emit_context_slot_key(context AutofreeCleanCStatem
 		|| context.insert_after_node_id < 0 || context.insert_after_pos_id <= 0 {
 		return ''
 	}
-	return '${context.fn_key}:${context.fn_node_id}:${context.fn_pos_id}:${context.insert_after_node_id}:${context.insert_after_pos_id}'
+	return '${context.fn_key}:${context.fn_node_id}:${context.fn_pos_id}:${int(context.context_kind)}:${context.block_path.len}:${context.block_path}:${context.insert_after_node_id}:${context.insert_after_pos_id}'
 }
 
 fn autofree_statement_cleanup_emit_contexts_reverse_lexical(contexts []AutofreeCleanCStatementCleanupEmitContextFact) []AutofreeCleanCStatementCleanupEmitContextFact {
@@ -2134,6 +2712,21 @@ fn autofree_statement_cleanup_emit_context_is_after(left AutofreeCleanCStatement
 	return left.name > right.name
 }
 
+fn autofree_statement_block_path_from_indexes(indexes []int) string {
+	mut path := ''
+	for index in indexes {
+		if index < 0 {
+			return ''
+		}
+		if path.len == 0 {
+			path = index.str()
+		} else {
+			path = '${path}.${index}'
+		}
+	}
+	return path
+}
+
 // autofree_statement_cleanup_emit
 
 fn (mut g Gen) autofree_clear_statement_cleanup_emit_context() {
@@ -2144,6 +2737,37 @@ fn (mut g Gen) autofree_clear_statement_cleanup_emit_context() {
 	g.autofree_cleanup_emit_fn_key = ''
 	g.autofree_cleanup_emit_fn_node_id = ast.invalid_flat_node_id
 	g.autofree_cleanup_emit_fn_pos_id = 0
+	g.autofree_cleanup_emit_block_path = []int{}
+	g.autofree_cleanup_emit_current_stmt_index = -1
+}
+
+fn (mut g Gen) autofree_push_statement_cleanup_block(stmt_index int) {
+	if stmt_index < 0 {
+		return
+	}
+	g.autofree_cleanup_emit_block_path << stmt_index
+}
+
+fn (mut g Gen) autofree_pop_statement_cleanup_block() {
+	if g.autofree_cleanup_emit_block_path.len == 0 {
+		return
+	}
+	g.autofree_cleanup_emit_block_path.delete(g.autofree_cleanup_emit_block_path.len - 1)
+}
+
+fn (mut g Gen) autofree_gen_stmts_in_statement_cleanup_block(stmts []ast.Stmt) {
+	stmt_index := g.autofree_cleanup_emit_current_stmt_index
+	if stmt_index < 0 {
+		g.gen_stmts(stmts)
+		return
+	}
+	g.autofree_push_statement_cleanup_block(stmt_index)
+	g.gen_stmts(stmts)
+	g.autofree_pop_statement_cleanup_block()
+}
+
+fn (g &Gen) autofree_statement_cleanup_current_block_path() string {
+	return autofree_statement_block_path_from_indexes(g.autofree_cleanup_emit_block_path)
 }
 
 fn (mut g Gen) gen_fn_decl_ptr_with_autofree_cleanup_context(file_cursor ast.FileCursor, fn_cursor ast.Cursor) {
@@ -2223,13 +2847,63 @@ fn (mut g Gen) autofree_emit_statement_cleanup_context(fn_name string, node &ast
 	}
 	g.autofree_cleanup_emit_context_consumed = true
 	for context in g.autofree_cleanup_emit_contexts {
+		if context.context_kind != .after_body_before_scheduled_drops {
+			g.autofree_cleanup_emit_context_consumed = false
+			return
+		}
 		if !g.autofree_statement_cleanup_emit_context_matches_current_fn(context, fn_name, node) {
+			g.autofree_cleanup_emit_context_consumed = false
+			return
+		}
+		if context.block_path.len != 0 {
 			g.autofree_cleanup_emit_context_consumed = false
 			return
 		}
 	}
 	g.autofree_cleanup_emit_context_consumed = true
 	for context in g.autofree_cleanup_emit_contexts {
+		g.write_indent()
+		g.sb.writeln(context.cleanup_text)
+	}
+}
+
+fn (mut g Gen) autofree_emit_statement_cleanup_context_after_stmt_index(stmt_index int) {
+	if g.pref == unsafe { nil } || !g.pref.autofree || g.pref.is_freestanding()
+		|| !g.has_autofree_cleanup_emit_context || g.autofree_cleanup_emit_context_consumed
+		|| !g.autofree_cleanup_emit_context_prepared || stmt_index < 0 {
+		return
+	}
+	if !autofree_statement_cleanup_emit_context_group_is_valid(g.autofree_cleanup_emit_contexts) {
+		return
+	}
+	block_path := g.autofree_statement_cleanup_current_block_path()
+	mut matched := []AutofreeCleanCStatementCleanupEmitContextFact{}
+	for context in g.autofree_cleanup_emit_contexts {
+		if !autofree_statement_cleanup_emit_context_is_valid(context) {
+			return
+		}
+		if context.context_kind == .after_body_before_scheduled_drops && block_path.len == 0 {
+			continue
+		}
+		if context.context_kind == .after_statement && context.block_path.len != 0
+			&& context.move_kind != .loop_local_clone_push_binding {
+			return
+		}
+		if context.fn_key != g.autofree_cleanup_emit_fn_key
+			|| context.fn_node_id != g.autofree_cleanup_emit_fn_node_id
+			|| context.fn_pos_id != g.autofree_cleanup_emit_fn_pos_id {
+			return
+		}
+		if context.block_path != block_path || context.stmt_index != stmt_index {
+			continue
+		}
+		matched << context
+	}
+	if matched.len == 0 {
+		return
+	}
+	g.autofree_cleanup_emit_context_consumed = true
+	for context in matched {
 		g.write_indent()
 		g.sb.writeln(context.cleanup_text)
 	}
@@ -2245,8 +2919,10 @@ fn (g &Gen) autofree_statement_cleanup_emit_context_matches_current_fn(context A
 
 fn autofree_statement_cleanup_emit_context_is_valid(context AutofreeCleanCStatementCleanupEmitContextFact) bool {
 	if context.context_status != .inert
-		|| context.context_kind != .after_body_before_scheduled_drops || context.fn_key.len == 0
-		|| context.fn_name.len == 0 || context.name.len == 0 || context.context_key.len == 0 {
+		|| (context.context_kind != .after_body_before_scheduled_drops
+		&& context.context_kind != .after_statement) || context.fn_key.len == 0
+		|| context.fn_name.len == 0 || context.name.len == 0
+		|| context.context_key.len == 0 {
 		return false
 	}
 	if context.fn_node_id < 0 || context.fn_pos_id <= 0 || context.target_node_id < 0
@@ -2265,7 +2941,7 @@ fn autofree_statement_cleanup_emit_context_is_valid(context AutofreeCleanCStatem
 		return false
 	}
 	target_c_name := c_local_name(context.name)
-	expected_key := '${context.fn_key}:${context.fn_node_id}:${context.fn_pos_id}:${context.target_node_id}:${context.target_pos_id}:${context.insert_after_node_id}:${context.insert_after_pos_id}:${context.name}'
+	expected_key := '${context.fn_key}:${context.fn_node_id}:${context.fn_pos_id}:${context.block_path.len}:${context.block_path}:${context.target_node_id}:${context.target_pos_id}:${context.insert_after_node_id}:${context.insert_after_pos_id}:${context.name}'
 	return target_c_name.len > 0 && context.target_c_name == target_c_name
 		&& context.cleanup_symbol == 'array__free'
 		&& context.cleanup_text == '${context.cleanup_symbol}(&${target_c_name});'

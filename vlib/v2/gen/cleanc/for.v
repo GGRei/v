@@ -55,7 +55,7 @@ fn (mut g Gen) gen_for_stmt(node ast.ForStmt) {
 	// Without save/restore, the inner type overwrites the outer in the flat map.
 	saved_local_types := g.runtime_local_types.clone()
 	saved_decl_types := g.runtime_decl_types.clone()
-	g.gen_stmts(node.stmts)
+	g.autofree_gen_stmts_in_statement_cleanup_block(node.stmts)
 	g.runtime_local_types = saved_local_types.clone()
 	g.runtime_decl_types = saved_decl_types.clone()
 	g.not_local_var_cache.clear()
@@ -139,7 +139,7 @@ fn (mut g Gen) gen_map_for_in_stmt(node ast.ForStmt, for_in ast.ForInStmt) bool 
 		}
 		g.remember_runtime_local_type(value_name, value_type)
 	}
-	g.gen_stmts(node.stmts)
+	g.autofree_gen_stmts_in_statement_cleanup_block(node.stmts)
 	g.runtime_local_types = saved_local_types.clone()
 	g.runtime_decl_types = saved_decl_types.clone()
 	g.not_local_var_cache.clear()
@@ -222,7 +222,7 @@ fn (mut g Gen) gen_array_for_in_stmt(node ast.ForStmt, for_in ast.ForInStmt) boo
 			g.remember_runtime_local_type(value_name, elem_type)
 		}
 	}
-	g.gen_stmts(node.stmts)
+	g.autofree_gen_stmts_in_statement_cleanup_block(node.stmts)
 	g.runtime_local_types = saved_local_types.clone()
 	g.runtime_decl_types = saved_decl_types.clone()
 	g.not_local_var_cache.clear()

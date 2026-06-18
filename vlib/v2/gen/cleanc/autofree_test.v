@@ -216,6 +216,22 @@ fn autofree_bridge_test_local_array_clone_target_endpoint() types.AutofreeTransf
 	}
 }
 
+fn autofree_bridge_test_loop_local_clone_push_source_endpoint() types.AutofreeTransferEndpoint {
+	return types.AutofreeTransferEndpoint{
+		...autofree_bridge_test_len_only_source_endpoint()
+		reason: 'len-only scalar array literal'
+	}
+}
+
+fn autofree_bridge_test_loop_local_clone_push_target_endpoint() types.AutofreeTransferEndpoint {
+	return types.AutofreeTransferEndpoint{
+		...autofree_bridge_test_target_endpoint()
+		root_name: 'row'
+		name:      'row'
+		reason:    'loop local clone push target'
+	}
+}
+
 fn autofree_bridge_test_valid_insertion_point() types.AutofreeReleaseInsertionPointFact {
 	array_type := autofree_bridge_test_array_type()
 	array_shape := autofree_bridge_test_array_shape()
@@ -299,6 +315,41 @@ fn autofree_bridge_test_local_array_clone_insertion_point() types.AutofreeReleas
 		release_after_pos_id:  202
 		insert_after_node_id:  10
 		insert_after_pos_id:   202
+		reason:                'release insertion point accepted'
+	}
+}
+
+fn autofree_bridge_test_loop_local_clone_push_insertion_point() types.AutofreeReleaseInsertionPointFact {
+	array_type := autofree_bridge_test_array_type()
+	array_shape := autofree_bridge_test_array_shape()
+	array_type_name := array_type.name()
+	target := autofree_bridge_test_loop_local_clone_push_target_endpoint()
+	return types.AutofreeReleaseInsertionPointFact{
+		fn_key:                'Board__fill_rows'
+		fn_name:               'fill_rows'
+		name:                  'row'
+		move_kind:             .loop_local_clone_push_binding
+		plan_kind:             .natural_exit
+		plan_action:           .array_container_cleanup
+		helper_requirement:    .none
+		preflight_status:      .inert
+		insertion_kind:        .after_statement
+		insertion_status:      .inert
+		source_endpoint:       autofree_bridge_test_loop_local_clone_push_source_endpoint()
+		endpoint:              target
+		state:                 .owned_unique
+		resource:              .array_value
+		shape:                 array_shape
+		typ:                   array_type
+		type_name:             array_type_name
+		node_id:               target.node_id
+		pos_id:                target.pos_id
+		proof_node_id:         target.node_id
+		proof_pos_id:          target.pos_id
+		release_after_node_id: 12
+		release_after_pos_id:  203
+		insert_after_node_id:  12
+		insert_after_pos_id:   203
 		reason:                'release insertion point accepted'
 	}
 }
@@ -461,6 +512,24 @@ fn test_autofree_bridge_accepts_local_array_clone_insertion_point() {
 	assert bridge_fact.fn_key == point.fn_key
 	assert bridge_fact.fn_name == point.fn_name
 	assert bridge_fact.name == point.name
+	assert bridge_fact.bridge_status == .inert
+	assert bridge_fact.target_node_id == point.endpoint.node_id
+	assert bridge_fact.target_pos_id == point.endpoint.pos_id
+	assert bridge_fact.insert_after_node_id == point.insert_after_node_id
+	assert bridge_fact.insert_after_pos_id == point.insert_after_pos_id
+	assert bridge_fact.insert_after_node_id == point.release_after_node_id
+	assert bridge_fact.reason.len > 0
+}
+
+fn test_autofree_bridge_accepts_loop_local_clone_push_insertion_point() {
+	point := autofree_bridge_test_loop_local_clone_push_insertion_point()
+	bridge_facts := autofree_bridge_facts_from_insertion_points([point])
+	assert bridge_facts.len == 1
+	bridge_fact := bridge_facts[0]
+	assert bridge_fact.fn_key == point.fn_key
+	assert bridge_fact.fn_name == point.fn_name
+	assert bridge_fact.name == 'row'
+	assert bridge_fact.move_kind == .loop_local_clone_push_binding
 	assert bridge_fact.bridge_status == .inert
 	assert bridge_fact.target_node_id == point.endpoint.node_id
 	assert bridge_fact.target_pos_id == point.endpoint.pos_id
@@ -1391,6 +1460,17 @@ struct AutofreeStatementLocatorTestFlat {
 	next_rhs_id   ast.FlatNodeId
 }
 
+struct AutofreeStatementLocatorTwoMethodTestFlat {
+	flat           ast.FlatAst
+	fn_name        string
+	first_fn_id    ast.FlatNodeId
+	first_stmt_id  ast.FlatNodeId
+	first_lhs_id   ast.FlatNodeId
+	second_fn_id   ast.FlatNodeId
+	second_stmt_id ast.FlatNodeId
+	second_lhs_id  ast.FlatNodeId
+}
+
 fn autofree_statement_locator_test_pos(id int) token.Pos {
 	return token.Pos{
 		offset: id
@@ -1432,6 +1512,102 @@ fn autofree_statement_locator_test_flat_with_assign(fn_name string, module_name 
 		first_stmt_id: stmt_id
 		first_lhs_id:  lhs_id
 		first_rhs_id:  rhs_id
+	}
+}
+
+fn autofree_statement_locator_test_flat_with_method_receiver(fn_name string, module_name string, receiver_type string, receiver_is_mut bool, is_static bool, language ast.Language) AutofreeStatementLocatorTestFlat {
+	mut b := ast.new_flat_builder()
+	lhs_id := b.emit_ident_by_name('items', autofree_statement_locator_test_pos(120))
+	rhs_id := autofree_statement_locator_test_array_init(mut b, 130)
+	stmt_id := b.emit_assign_stmt_by_ids(.decl_assign, [lhs_id], [rhs_id],
+		autofree_statement_locator_test_pos(210))
+	body_id := b.emit_aux_list_from_ids([stmt_id])
+	fn_type_id := b.emit_type(ast.Type(ast.FnType{}))
+	attrs_id := b.emit_attribute_list([])
+	mut receiver := ast.Parameter{
+		name: 'g'
+		typ:  ast.Expr(ast.Type(ast.PointerType{
+			base_type: ast.Expr(ast.Ident{
+				name: receiver_type
+				pos:  autofree_statement_locator_test_pos(91)
+			})
+		}))
+		pos:  autofree_statement_locator_test_pos(90)
+	}
+	receiver.is_mut = receiver_is_mut
+	receiver_id := b.emit_parameter(receiver)
+	fn_id := b.emit_fn_decl_by_ids(fn_name, false, true, is_static, language,
+		autofree_statement_locator_test_pos(100), receiver_id, fn_type_id, attrs_id, body_id)
+	b.append_file_with_stmt_ids(ast.File{
+		name: 'autofree_statement_locator_method_test.v'
+		mod:  module_name
+	}, [fn_id])
+	return AutofreeStatementLocatorTestFlat{
+		flat:          b.take_flat()
+		fn_id:         fn_id
+		first_stmt_id: stmt_id
+		first_lhs_id:  lhs_id
+		first_rhs_id:  rhs_id
+	}
+}
+
+fn autofree_statement_locator_test_flat_with_two_method_receivers(fn_name string, module_name string, first_receiver_type string, second_receiver_type string) AutofreeStatementLocatorTwoMethodTestFlat {
+	mut b := ast.new_flat_builder()
+	first_lhs_id := b.emit_ident_by_name('items', autofree_statement_locator_test_pos(120))
+	first_rhs_id := autofree_statement_locator_test_array_init(mut b, 130)
+	first_stmt_id := b.emit_assign_stmt_by_ids(.decl_assign, [first_lhs_id], [
+		first_rhs_id,
+	], autofree_statement_locator_test_pos(210))
+	first_body_id := b.emit_aux_list_from_ids([first_stmt_id])
+	first_fn_type_id := b.emit_type(ast.Type(ast.FnType{}))
+	first_attrs_id := b.emit_attribute_list([])
+	first_receiver_id := b.emit_parameter(ast.Parameter{
+		name: 'g'
+		typ:  ast.Expr(ast.Type(ast.PointerType{
+			base_type: ast.Expr(ast.Ident{
+				name: first_receiver_type
+				pos:  autofree_statement_locator_test_pos(91)
+			})
+		}))
+		pos:  autofree_statement_locator_test_pos(90)
+	})
+	first_fn_id := b.emit_fn_decl_by_ids(fn_name, false, true, false, .v,
+		autofree_statement_locator_test_pos(100), first_receiver_id, first_fn_type_id,
+		first_attrs_id, first_body_id)
+	second_lhs_id := b.emit_ident_by_name('items', autofree_statement_locator_test_pos(220))
+	second_rhs_id := autofree_statement_locator_test_array_init(mut b, 230)
+	second_stmt_id := b.emit_assign_stmt_by_ids(.decl_assign, [second_lhs_id], [
+		second_rhs_id,
+	], autofree_statement_locator_test_pos(310))
+	second_body_id := b.emit_aux_list_from_ids([second_stmt_id])
+	second_fn_type_id := b.emit_type(ast.Type(ast.FnType{}))
+	second_attrs_id := b.emit_attribute_list([])
+	second_receiver_id := b.emit_parameter(ast.Parameter{
+		name: 'g'
+		typ:  ast.Expr(ast.Type(ast.PointerType{
+			base_type: ast.Expr(ast.Ident{
+				name: second_receiver_type
+				pos:  autofree_statement_locator_test_pos(191)
+			})
+		}))
+		pos:  autofree_statement_locator_test_pos(190)
+	})
+	second_fn_id := b.emit_fn_decl_by_ids(fn_name, false, true, false, .v,
+		autofree_statement_locator_test_pos(200), second_receiver_id, second_fn_type_id,
+		second_attrs_id, second_body_id)
+	b.append_file_with_stmt_ids(ast.File{
+		name: 'autofree_statement_locator_two_method_test.v'
+		mod:  module_name
+	}, [first_fn_id, second_fn_id])
+	return AutofreeStatementLocatorTwoMethodTestFlat{
+		flat:           b.take_flat()
+		fn_name:        fn_name
+		first_fn_id:    first_fn_id
+		first_stmt_id:  first_stmt_id
+		first_lhs_id:   first_lhs_id
+		second_fn_id:   second_fn_id
+		second_stmt_id: second_stmt_id
+		second_lhs_id:  second_lhs_id
 	}
 }
 
@@ -1683,6 +1859,45 @@ fn autofree_statement_locator_test_flat_with_nested_assign() AutofreeStatementLo
 	}
 }
 
+fn autofree_statement_locator_test_flat_with_receiver_field_nested_final_assign() AutofreeStatementLocatorTestFlat {
+	mut b := ast.new_flat_builder()
+	target_lhs_id := b.emit_ident_by_name('next', autofree_statement_locator_test_pos(120))
+	target_rhs_id := autofree_statement_locator_test_array_init(mut b, 130)
+	target_stmt_id := b.emit_assign_stmt_by_ids(.decl_assign, [target_lhs_id], [
+		target_rhs_id,
+	], autofree_statement_locator_test_pos(210))
+	final_lhs_id := b.emit_ident_by_name('sink', autofree_statement_locator_test_pos(220))
+	final_rhs_id := b.emit_ident_by_name('next', autofree_statement_locator_test_pos(230))
+	final_stmt_id := b.emit_assign_stmt_by_ids(.decl_assign, [final_lhs_id], [
+		final_rhs_id,
+	], autofree_statement_locator_test_pos(310))
+	cond_id := b.emit_ident_by_name('ok', autofree_statement_locator_test_pos(200))
+	else_id := b.emit_expr(ast.empty_expr)
+	if_id := b.emit_if_expr_by_ids(cond_id, else_id, [target_stmt_id, final_stmt_id],
+		autofree_statement_locator_test_pos(205))
+	if_stmt_id := b.emit_expr_stmt_by_id(if_id)
+	body_id := b.emit_aux_list_from_ids([if_stmt_id])
+	fn_type_id := b.emit_type(ast.Type(ast.FnType{}))
+	attrs_id := b.emit_attribute_list([])
+	fn_id := b.emit_fn_decl_by_ids('make_items', false, false, false, .v,
+		autofree_statement_locator_test_pos(100), ast.invalid_flat_node_id, fn_type_id, attrs_id,
+		body_id)
+	b.append_file_with_stmt_ids(ast.File{
+		name: 'autofree_statement_locator_receiver_field_nested_assign.v'
+		mod:  'main'
+	}, [fn_id])
+	return AutofreeStatementLocatorTestFlat{
+		flat:          b.take_flat()
+		fn_id:         fn_id
+		first_stmt_id: target_stmt_id
+		first_lhs_id:  target_lhs_id
+		first_rhs_id:  target_rhs_id
+		next_stmt_id:  final_stmt_id
+		next_lhs_id:   final_lhs_id
+		next_rhs_id:   final_rhs_id
+	}
+}
+
 fn autofree_statement_locator_test_flat_with_invalid_body_edge() AutofreeStatementLocatorTestFlat {
 	mut b := ast.new_flat_builder()
 	lhs_id := b.emit_ident_by_name('items', autofree_statement_locator_test_pos(120))
@@ -1718,6 +1933,21 @@ fn autofree_statement_locator_test_anchor(fixture &AutofreeStatementLocatorTestF
 		insert_after_node_id: fixture.first_stmt_id
 		insert_after_pos_id:  210
 		reason:               'anchor accepted'
+	}
+}
+
+fn autofree_statement_locator_test_receiver_field_nested_final_assign_anchor(fixture &AutofreeStatementLocatorTestFlat) AutofreeCleanCStatementAnchorFact {
+	return AutofreeCleanCStatementAnchorFact{
+		fn_key:               'make_items'
+		fn_name:              'make_items'
+		name:                 'next'
+		move_kind:            .receiver_field_slice_clone_binding
+		anchor_status:        .inert
+		target_node_id:       fixture.first_lhs_id
+		target_pos_id:        120
+		insert_after_node_id: fixture.next_stmt_id
+		insert_after_pos_id:  310
+		reason:               'receiver field nested assign anchor'
 	}
 }
 
@@ -1759,6 +1989,20 @@ fn autofree_statement_locator_test_later_insert_anchor(fixture &AutofreeStatemen
 		target_pos_id:        120
 		insert_after_node_id: fixture.next_stmt_id
 		insert_after_pos_id:  410
+		reason:               'anchor accepted'
+	}
+}
+
+fn autofree_statement_locator_two_method_test_anchor(fixture &AutofreeStatementLocatorTwoMethodTestFlat, receiver_type string, second bool) AutofreeCleanCStatementAnchorFact {
+	return AutofreeCleanCStatementAnchorFact{
+		fn_key:               types.autofree_fn_key('main', fixture.fn_name, receiver_type)
+		fn_name:              fixture.fn_name
+		name:                 'items'
+		anchor_status:        .inert
+		target_node_id:       if second { fixture.second_lhs_id } else { fixture.first_lhs_id }
+		target_pos_id:        if second { 220 } else { 120 }
+		insert_after_node_id: if second { fixture.second_stmt_id } else { fixture.first_stmt_id }
+		insert_after_pos_id:  if second { 310 } else { 210 }
 		reason:               'anchor accepted'
 	}
 }
@@ -1957,6 +2201,39 @@ fn test_autofree_statement_locator_rejects_nested_assign() {
 	autofree_statement_locator_test_assert_no_location(&fixture, [anchor])
 }
 
+fn test_autofree_statement_locator_rejects_receiver_field_nested_final_assign_slot() {
+	fixture := autofree_statement_locator_test_flat_with_receiver_field_nested_final_assign()
+	anchor := autofree_statement_locator_test_receiver_field_nested_final_assign_anchor(&fixture)
+	autofree_statement_locator_test_assert_no_location(&fixture, [anchor])
+}
+
+fn test_autofree_statement_preview_rejects_receiver_field_nested_final_assign_slot() {
+	fixture := autofree_statement_locator_test_flat_with_receiver_field_nested_final_assign()
+	fn_cursor := autofree_statement_locator_test_fn_cursor(&fixture)
+	location := AutofreeCleanCStatementLocationFact{
+		fn_key:               'make_items'
+		fn_name:              'make_items'
+		name:                 'next'
+		move_kind:            .receiver_field_slice_clone_binding
+		location_status:      .inert
+		fn_node_id:           fixture.fn_id
+		fn_pos_id:            100
+		target_node_id:       fixture.first_lhs_id
+		target_pos_id:        120
+		insert_after_node_id: fixture.next_stmt_id
+		insert_after_pos_id:  310
+		stmt_node_id:         fixture.next_stmt_id
+		stmt_pos_id:          310
+		block_path:           '0'
+		stmt_index:           1
+		lhs_index:            0
+		reason:               'receiver field nested assign location'
+	}
+	previews := autofree_statement_preview_facts_from_file_cursor(fixture.flat.file_cursor(0),
+		fn_cursor, [location])
+	assert previews.len == 0
+}
+
 fn test_autofree_statement_locator_rejects_invalid_body_edge() {
 	fixture := autofree_statement_locator_test_flat_with_invalid_body_edge()
 	anchor := autofree_statement_locator_test_anchor(&fixture)
@@ -2006,17 +2283,127 @@ fn test_autofree_statement_locator_rejects_mixed_function_group() {
 	autofree_statement_locator_test_assert_no_location(&fixture, [anchor, mixed])
 }
 
-fn test_autofree_statement_locator_rejects_method_function() {
+fn test_autofree_statement_locator_accepts_method_function_receiver_key() {
+	fixture := autofree_statement_locator_test_flat_with_method_receiver('make_items', 'main',
+		'Game', false, false, .v)
+	anchor := AutofreeCleanCStatementAnchorFact{
+		...autofree_statement_locator_test_anchor(&fixture)
+		fn_key: types.autofree_fn_key('main', 'make_items', 'Game')
+	}
+	file_cursor := fixture.flat.file_cursor(0)
+	fn_cursor := autofree_statement_locator_test_fn_cursor(&fixture)
+	locations := autofree_statement_location_facts_from_file_cursor(file_cursor, fn_cursor, [
+		anchor,
+	])
+	assert locations.len == 1
+	autofree_statement_locator_test_assert_location(locations[0], &fixture, anchor)
+}
+
+fn test_autofree_statement_locator_separates_free_and_method_function_keys() {
+	free_fixture := autofree_statement_locator_test_flat_with_assign('make_items', 'main', false,
+		false, .v, 1)
+	method_fixture := autofree_statement_locator_test_flat_with_method_receiver('make_items',
+		'main', 'Game', false, false, .v)
+	free_anchor := autofree_statement_locator_test_anchor(&free_fixture)
+	method_anchor := AutofreeCleanCStatementAnchorFact{
+		...autofree_statement_locator_test_anchor(&method_fixture)
+		fn_key: types.autofree_fn_key('main', 'make_items', 'Game')
+	}
+	free_locations := autofree_statement_locator_test_locations(&free_fixture, [
+		free_anchor,
+	])
+	method_locations := autofree_statement_locator_test_locations(&method_fixture, [
+		method_anchor,
+	])
+	assert free_locations.len == 1
+	assert method_locations.len == 1
+	assert free_locations[0].fn_key != method_locations[0].fn_key
+}
+
+fn test_autofree_statement_locator_separates_same_method_name_receiver_keys() {
+	fixture := autofree_statement_locator_test_flat_with_two_method_receivers('make_items', 'main',
+		'Game', 'OtherGame')
+	file_cursor := fixture.flat.file_cursor(0)
+	first_cursor := ast.Cursor{
+		flat: &fixture.flat
+		id:   fixture.first_fn_id
+	}
+	second_cursor := ast.Cursor{
+		flat: &fixture.flat
+		id:   fixture.second_fn_id
+	}
+	first_anchor := autofree_statement_locator_two_method_test_anchor(&fixture, 'Game', false)
+	second_anchor := autofree_statement_locator_two_method_test_anchor(&fixture, 'OtherGame', true)
+	wrong_first_anchor := autofree_statement_locator_two_method_test_anchor(&fixture, 'OtherGame',
+		false)
+	wrong_second_anchor := autofree_statement_locator_two_method_test_anchor(&fixture, 'Game', true)
+	assert first_anchor.fn_key != second_anchor.fn_key
+	first_locations := autofree_statement_location_facts_from_file_cursor(file_cursor,
+		first_cursor, [first_anchor])
+	second_locations := autofree_statement_location_facts_from_file_cursor(file_cursor,
+		second_cursor, [second_anchor])
+	wrong_first_locations := autofree_statement_location_facts_from_file_cursor(file_cursor,
+		first_cursor, [wrong_first_anchor])
+	wrong_second_locations := autofree_statement_location_facts_from_file_cursor(file_cursor,
+		second_cursor, [wrong_second_anchor])
+	assert first_locations.len == 1
+	assert first_locations[0].fn_key == first_anchor.fn_key
+	assert first_locations[0].target_node_id == fixture.first_lhs_id
+	assert first_locations[0].target_pos_id == 120
+	assert second_locations.len == 1
+	assert second_locations[0].fn_key == second_anchor.fn_key
+	assert second_locations[0].target_node_id == fixture.second_lhs_id
+	assert second_locations[0].target_pos_id == 220
+	assert wrong_first_locations.len == 0
+	assert wrong_second_locations.len == 0
+}
+
+fn test_autofree_statement_locator_rejects_method_function_without_supported_receiver() {
 	fixture := autofree_statement_locator_test_flat_with_assign('make_items', 'main', true, false,
 		.v, 1)
-	anchor := autofree_statement_locator_test_anchor(&fixture)
+	anchor := AutofreeCleanCStatementAnchorFact{
+		...autofree_statement_locator_test_anchor(&fixture)
+		fn_key: types.autofree_fn_key('main', 'make_items', 'Game')
+	}
 	autofree_statement_locator_test_assert_no_location(&fixture, [anchor])
+}
+
+fn test_autofree_statement_locator_accepts_mut_receiver_method_function() {
+	fixture := autofree_statement_locator_test_flat_with_method_receiver('make_items', 'main',
+		'Game', true, false, .v)
+	anchor := AutofreeCleanCStatementAnchorFact{
+		...autofree_statement_locator_test_anchor(&fixture)
+		fn_key: types.autofree_fn_key('main', 'make_items', 'Game')
+	}
+	locations := autofree_statement_locator_test_locations(&fixture, [anchor])
+	assert locations.len == 1
+	autofree_statement_locator_test_assert_location(locations[0], &fixture, anchor)
 }
 
 fn test_autofree_statement_locator_rejects_static_function() {
 	fixture := autofree_statement_locator_test_flat_with_assign('make_items', 'main', false, true,
 		.v, 1)
 	anchor := autofree_statement_locator_test_anchor(&fixture)
+	autofree_statement_locator_test_assert_no_location(&fixture, [anchor])
+}
+
+fn test_autofree_statement_locator_rejects_static_method_function() {
+	fixture := autofree_statement_locator_test_flat_with_method_receiver('make_items', 'main',
+		'Game', false, true, .v)
+	anchor := AutofreeCleanCStatementAnchorFact{
+		...autofree_statement_locator_test_anchor(&fixture)
+		fn_key: types.autofree_fn_key('main', 'make_items', 'Game')
+	}
+	autofree_statement_locator_test_assert_no_location(&fixture, [anchor])
+}
+
+fn test_autofree_statement_locator_rejects_foreign_method_function() {
+	fixture := autofree_statement_locator_test_flat_with_method_receiver('make_items', 'main',
+		'Game', false, false, .c)
+	anchor := AutofreeCleanCStatementAnchorFact{
+		...autofree_statement_locator_test_anchor(&fixture)
+		fn_key: types.autofree_fn_key('main', 'make_items', 'Game')
+	}
 	autofree_statement_locator_test_assert_no_location(&fixture, [anchor])
 }
 
@@ -4429,6 +4816,7 @@ mut:
 	stmt_pos_id          int
 	insert_after_node_id ast.FlatNodeId
 	insert_after_pos_id  int
+	block_path           string
 	stmt_index           int
 	lhs_index            int
 	target_c_name        string
@@ -4452,6 +4840,7 @@ fn autofree_statement_cleanup_emit_context_test_hook_preview_fields() AutofreeSt
 		stmt_pos_id:          210
 		insert_after_node_id: ast.FlatNodeId(30)
 		insert_after_pos_id:  210
+		block_path:           ''
 		stmt_index:           0
 		lhs_index:            0
 		target_c_name:        'items'
@@ -4476,6 +4865,7 @@ fn autofree_statement_cleanup_emit_context_test_hook_preview_from_fields(fields 
 		stmt_pos_id:          fields.stmt_pos_id
 		insert_after_node_id: fields.insert_after_node_id
 		insert_after_pos_id:  fields.insert_after_pos_id
+		block_path:           fields.block_path
 		stmt_index:           fields.stmt_index
 		lhs_index:            fields.lhs_index
 		target_c_name:        fields.target_c_name
@@ -4548,7 +4938,7 @@ fn test_autofree_statement_cleanup_emit_context_accepts_last_statement_items_con
 	assert context.insert_after_pos_id == 310
 	assert context.cleanup_symbol == 'array__free'
 	assert context.cleanup_text == 'array__free(&items);'
-	assert context.context_key == 'make_items:10:100:40:220:50:310:items'
+	assert context.context_key == 'make_items:10:100:0::40:220:50:310:items'
 	assert !context.cleanup_text.contains('copy')
 	assert !context.cleanup_text.contains('source')
 	assert !context.cleanup_text.contains('string__free')
@@ -4828,6 +5218,7 @@ mut:
 	stmt_pos_id          int
 	insert_after_node_id ast.FlatNodeId
 	insert_after_pos_id  int
+	block_path           string
 	stmt_index           int
 	lhs_index            int
 	target_c_name        string
@@ -4852,12 +5243,13 @@ fn autofree_statement_cleanup_emit_test_context_fields() AutofreeStatementCleanu
 		stmt_pos_id:          210
 		insert_after_node_id: ast.FlatNodeId(30)
 		insert_after_pos_id:  210
+		block_path:           ''
 		stmt_index:           0
 		lhs_index:            0
 		target_c_name:        'items'
 		cleanup_symbol:       'array__free'
 		cleanup_text:         'array__free(&items);'
-		context_key:          'make_items:10:100:20:120:30:210:items'
+		context_key:          'make_items:10:100:0::20:120:30:210:items'
 		reason:               'statement cleanup emit context accepted'
 	}
 }
@@ -4877,6 +5269,7 @@ fn autofree_statement_cleanup_emit_test_context_from_fields(fields AutofreeState
 		stmt_pos_id:          fields.stmt_pos_id
 		insert_after_node_id: fields.insert_after_node_id
 		insert_after_pos_id:  fields.insert_after_pos_id
+		block_path:           fields.block_path
 		stmt_index:           fields.stmt_index
 		lhs_index:            fields.lhs_index
 		target_c_name:        fields.target_c_name
@@ -4977,14 +5370,14 @@ fn test_autofree_statement_cleanup_emit_writes_context_list_in_reverse_order_onc
 	first_fields.name = 'first'
 	first_fields.target_c_name = 'first'
 	first_fields.cleanup_text = 'array__free(&first);'
-	first_fields.context_key = 'make_items:10:100:20:120:30:210:first'
+	first_fields.context_key = 'make_items:10:100:0::20:120:30:210:first'
 	mut second_fields := autofree_statement_cleanup_emit_test_context_fields()
 	second_fields.name = 'second'
 	second_fields.target_node_id = ast.FlatNodeId(40)
 	second_fields.target_pos_id = 220
 	second_fields.target_c_name = 'second'
 	second_fields.cleanup_text = 'array__free(&second);'
-	second_fields.context_key = 'make_items:10:100:40:220:30:210:second'
+	second_fields.context_key = 'make_items:10:100:0::40:220:30:210:second'
 	contexts := autofree_statement_cleanup_emit_contexts_reverse_lexical([
 		autofree_statement_cleanup_emit_test_context_from_fields(first_fields),
 		autofree_statement_cleanup_emit_test_context_from_fields(second_fields),
@@ -5010,7 +5403,7 @@ fn test_autofree_statement_cleanup_emit_rejects_invalid_context_group_without_si
 	second_fields.insert_after_pos_id = 310
 	second_fields.target_c_name = 'second'
 	second_fields.cleanup_text = 'array__free(&second);'
-	second_fields.context_key = 'make_items:10:100:40:220:50:310:second'
+	second_fields.context_key = 'make_items:10:100:0::40:220:50:310:second'
 	second := autofree_statement_cleanup_emit_test_context_from_fields(second_fields)
 	node := autofree_statement_cleanup_emit_test_fn_decl()
 	autofree_statement_cleanup_emit_test_install_contexts(mut g, [first, second], true)
@@ -5029,7 +5422,7 @@ fn test_autofree_statement_cleanup_emit_writes_last_statement_items_context_once
 	fields.insert_after_node_id = ast.FlatNodeId(50)
 	fields.insert_after_pos_id = 310
 	fields.stmt_index = 1
-	fields.context_key = 'make_items:10:100:40:220:50:310:items'
+	fields.context_key = 'make_items:10:100:0::40:220:50:310:items'
 	context := autofree_statement_cleanup_emit_test_context_from_fields(fields)
 	node := autofree_statement_cleanup_emit_test_fn_decl()
 	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
@@ -5191,7 +5584,7 @@ fn test_autofree_statement_cleanup_emit_skips_wrong_prepared_fn_node_id() {
 	mut g := autofree_statement_cleanup_emit_test_gen(true)
 	mut fields := autofree_statement_cleanup_emit_test_context_fields()
 	fields.fn_node_id = ast.FlatNodeId(11)
-	fields.context_key = 'make_items:11:100:20:120:30:210:items'
+	fields.context_key = 'make_items:11:100:0::20:120:30:210:items'
 	context := autofree_statement_cleanup_emit_test_context_from_fields(fields)
 	node := autofree_statement_cleanup_emit_test_fn_decl()
 	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
@@ -5216,7 +5609,7 @@ fn test_autofree_statement_cleanup_emit_skips_clean_c_name_mismatch() {
 	mut g := autofree_statement_cleanup_emit_test_gen(true)
 	mut fields := autofree_statement_cleanup_emit_test_context_fields()
 	fields.fn_key = 'main__make_items'
-	fields.context_key = 'main__make_items:10:100:20:120:30:210:items'
+	fields.context_key = 'main__make_items:10:100:0::20:120:30:210:items'
 	context := autofree_statement_cleanup_emit_test_context_from_fields(fields)
 	node := autofree_statement_cleanup_emit_test_fn_decl()
 	autofree_statement_cleanup_emit_test_install_context(mut g, context, true)
@@ -5245,6 +5638,11 @@ mut:
 	flat  ast.FlatAst
 	env   &types.Environment = unsafe { nil }
 	prefs &vpref.Preferences = unsafe { nil }
+}
+
+struct AutofreeEprintlnStringInterpolationGenResult {
+	c_source        string
+	called_fn_names map[string]bool
 }
 
 struct AutofreeStatementCleanupEmitPipelineCursor {
@@ -5327,11 +5725,12 @@ fn build_len_array_final_len(n int) {
 fn autofree_statement_cleanup_emit_test_local_array_push_literal_sink_source() string {
 	return 'module main
 
-fn build_local_array_push_literal_sink() {
+fn build_local_array_push_literal_return() int {
 	mut items := []int{}
 	items << 1
 	items << 2
-	sink := items.len
+	n := items.len
+	return n
 }
 '
 }
@@ -5441,6 +5840,83 @@ fn fill_array_from_fresh_local_with_extra(x int, mut dst []int) {
 '
 }
 
+fn autofree_statement_cleanup_emit_test_receiver_field_slice_clone_source() string {
+	return 'module main
+
+struct Game {
+	items []int
+}
+
+fn (g &Game) fill_array_from_field_slice(idx int, n int, mut dst []int) {
+	next := g.items[idx..idx + n].clone()
+	dst = next.clone()
+}
+
+fn main() {
+	g := Game{
+		items: [1, 2, 3, 4]
+	}
+	mut dst := []int{}
+	g.fill_array_from_field_slice(0, 2, mut dst)
+}
+'
+}
+
+fn autofree_statement_cleanup_emit_test_receiver_field_slice_clone_nested_then_source() string {
+	return 'module main
+
+struct Game {
+	items []int
+}
+
+fn (g &Game) fill_array_from_field_slice_then_loop(idx int, n int, mut dst []int) {
+	if idx >= 0 {
+		next := g.items[idx..idx + n].clone()
+		for i := 0; i < n; i++ {
+			value := next[i]
+			dst << value
+		}
+	}
+}
+
+fn main() {
+	g := Game{
+		items: [1, 2, 3, 4]
+	}
+	mut dst := []int{}
+	g.fill_array_from_field_slice_then_loop(0, 2, mut dst)
+}
+'
+}
+
+fn autofree_statement_cleanup_emit_test_loop_local_clone_push_source() string {
+	return 'module main
+
+struct Board {
+mut:
+	rows [][]int
+}
+
+fn (mut b Board) fill_rows(height int, width int) {
+	start := 0
+	limit := height + start
+	right := width - 1
+	adjusted_width := width + start
+	for _ in 0 .. limit {
+		mut row := []int{len: adjusted_width}
+		row[0] = -1
+		row[right] = -1
+		b.rows << row.clone()
+	}
+}
+
+fn main() {
+	mut b := Board{}
+	b.fill_rows(2, 4)
+}
+'
+}
+
 fn autofree_statement_cleanup_emit_test_pipeline_fixture(name string, source string) AutofreeStatementCleanupEmitPipelineFixture {
 	tmp_file := os.join_path(os.vtmp_dir(), 'v2_cleanc_autofree_${name}_${os.getpid()}.v')
 	os.write_file(tmp_file, source) or { panic('failed to write temp file') }
@@ -5469,6 +5945,277 @@ fn autofree_statement_cleanup_emit_test_pipeline_fixture(name string, source str
 		env:   env
 		prefs: prefs
 	}
+}
+
+fn autofree_eprintln_string_interpolation_expr() string {
+	dollar := '$'
+	return '"AI ${dollar}{n}"'
+}
+
+fn autofree_eprintln_string_interpolation_source(body string) string {
+	return 'module main
+
+struct Gg {
+}
+
+fn println(text string) {
+	_ := text
+}
+
+fn (g Gg) draw_text(text string) {
+	_ := text
+}
+
+fn some_fn(text string) {
+	_ := text
+}
+
+fn print_value(n int) string {
+	${body}
+}
+
+fn main() {
+	_ := print_value(7)
+}
+'
+}
+
+fn autofree_builtin_eprintln_string_interpolation_source(body string) string {
+	return 'module builtin
+
+fn eprintln(text string) {
+	_ := text
+}
+
+fn print_value(n int) string {
+	${body}
+}
+'
+}
+
+fn autofree_eprintln_string_interpolation_generated_result(name string, source string, autofree bool, freestanding bool, target_os string) AutofreeEprintlnStringInterpolationGenResult {
+	tmp_file := os.join_path(os.vtmp_dir(), 'v2_cleanc_autofree_${name}_${os.getpid()}.v')
+	os.write_file(tmp_file, source) or { panic('failed to write temp file') }
+	defer {
+		os.rm(tmp_file) or {}
+	}
+	prefs := &vpref.Preferences{
+		backend:               .cleanc
+		autofree:              autofree
+		freestanding:          freestanding
+		target_os:             target_os
+		no_parallel:           true
+		no_parallel_transform: true
+	}
+	mut file_set := token.FileSet.new()
+	mut par := parser.Parser.new(prefs)
+	files := par.parse_files([tmp_file], mut file_set)
+	mut env := types.Environment.new()
+	mut checker := types.Checker.new(prefs, file_set, env)
+	checker.check_files(files)
+	flat := ast.flatten_files(files)
+	mut trans := transformer.Transformer.new_with_pref(env, prefs)
+	trans.set_file_set(file_set)
+	transformed_flat := trans.transform_flat_to_flat_direct(&flat, []ast.File{})
+	if prefs.autofree {
+		env.collect_autofree_facts_from_flat(&transformed_flat)
+	}
+	mut gen := Gen.new_with_env_pref_and_flat(&transformed_flat, env, prefs)
+	c_source := gen.gen()
+	return AutofreeEprintlnStringInterpolationGenResult{
+		c_source:        c_source
+		called_fn_names: gen.called_fn_names.clone()
+	}
+}
+
+fn autofree_eprintln_string_interpolation_generated_c(name string, source string, autofree bool, freestanding bool, target_os string) string {
+	return autofree_eprintln_string_interpolation_generated_result(name, source, autofree,
+		freestanding, target_os).c_source
+}
+
+fn autofree_eprintln_string_interpolation_generated_c_from_files(name string, sources map[string]string) string {
+	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_cleanc_autofree_${name}_${os.getpid()}')
+	os.rmdir_all(tmp_dir) or {}
+	os.mkdir_all(tmp_dir) or { panic('failed to create temp dir') }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+	mut paths := []string{cap: sources.len}
+	for rel_path, source in sources {
+		path := os.join_path(tmp_dir, rel_path)
+		parent := os.dir(path)
+		os.mkdir_all(parent) or { panic('failed to create temp source dir') }
+		os.write_file(path, source) or { panic('failed to write temp source file') }
+		paths << path
+	}
+	paths.sort()
+	prefs := &vpref.Preferences{
+		backend:               .cleanc
+		autofree:              true
+		target_os:             'linux'
+		no_parallel:           true
+		no_parallel_transform: true
+	}
+	mut file_set := token.FileSet.new()
+	mut par := parser.Parser.new(prefs)
+	files := par.parse_files(paths, mut file_set)
+	mut env := types.Environment.new()
+	mut checker := types.Checker.new(prefs, file_set, env)
+	checker.check_files(files)
+	flat := ast.flatten_files(files)
+	mut trans := transformer.Transformer.new_with_pref(env, prefs)
+	trans.set_file_set(file_set)
+	transformed_flat := trans.transform_flat_to_flat_direct(&flat, []ast.File{})
+	env.collect_autofree_facts_from_flat(&transformed_flat)
+	mut gen := Gen.new_with_env_pref_and_flat(&transformed_flat, env, prefs)
+	return gen.gen()
+}
+
+fn autofree_assert_eprintln_string_interpolation_cleanup_present(c_source string) {
+	decl_idx := c_source.index('string _eprintln_inter_tmp_') or {
+		assert false, c_source
+		return
+	}
+	call_idx := c_source.index_after('eprintln(_eprintln_inter_tmp_', decl_idx) or {
+		assert false, c_source
+		return
+	}
+	free_idx := c_source.index_after('string__free(&_eprintln_inter_tmp_', call_idx) or {
+		assert false, c_source
+		return
+	}
+	assert decl_idx < call_idx, c_source
+	assert call_idx < free_idx, c_source
+	assert c_source.count('string _eprintln_inter_tmp_') == 1, c_source
+	assert c_source.count('eprintln(_eprintln_inter_tmp_') == 1, c_source
+	assert c_source.count('string__free(&_eprintln_inter_tmp_') == 1, c_source
+	assert !c_source.contains('array__free(&_eprintln_inter_tmp_'), c_source
+}
+
+fn autofree_assert_no_eprintln_string_interpolation_cleanup(c_source string) {
+	assert !c_source.contains('string _eprintln_inter_tmp_'), c_source
+	assert !c_source.contains('eprintln(_eprintln_inter_tmp_'), c_source
+	assert !c_source.contains('string__free(&_eprintln_inter_tmp_'), c_source
+}
+
+fn test_autofree_eprintln_string_interpolation_codegen_materializes_and_frees_temp() {
+	expr := autofree_eprintln_string_interpolation_expr()
+	source := autofree_builtin_eprintln_string_interpolation_source('eprintln(${expr})
+	return "ok"')
+	result := autofree_eprintln_string_interpolation_generated_result('eprintln_interpolation_positive',
+		source, true, false, 'linux')
+	autofree_assert_eprintln_string_interpolation_cleanup_present(result.c_source)
+	assert 'eprintln' in result.called_fn_names
+}
+
+fn test_autofree_eprintln_string_interpolation_codegen_respects_target_modes() {
+	expr := autofree_eprintln_string_interpolation_expr()
+	source := autofree_builtin_eprintln_string_interpolation_source('eprintln(${expr})
+	return "ok"')
+	disabled := autofree_eprintln_string_interpolation_generated_c('eprintln_interpolation_disabled',
+		source, false, false, 'linux')
+	freestanding := autofree_eprintln_string_interpolation_generated_c('eprintln_interpolation_freestanding',
+		source, true, true, 'linux')
+	none_target := autofree_eprintln_string_interpolation_generated_c('eprintln_interpolation_none',
+		source, true, true, 'none')
+	autofree_assert_no_eprintln_string_interpolation_cleanup(disabled)
+	autofree_assert_no_eprintln_string_interpolation_cleanup(freestanding)
+	autofree_assert_no_eprintln_string_interpolation_cleanup(none_target)
+}
+
+fn test_autofree_eprintln_string_interpolation_codegen_rejects_other_call_and_value_shapes() {
+	expr := autofree_eprintln_string_interpolation_expr()
+	cases := {
+		'println':       'println(${expr})
+	return "ok"'
+		'function_call': 'some_fn(${expr})
+	return "ok"'
+		'method_call':   'g := Gg{}
+	g.draw_text(${expr})
+	return "ok"'
+		'assignment':    'x := ${expr}
+	return x'
+		'return_value':  'return ${expr}'
+	}
+	for name, body in cases {
+		source := autofree_eprintln_string_interpolation_source(body)
+		c_source := autofree_eprintln_string_interpolation_generated_c('eprintln_interpolation_reject_${name}',
+			source, true, false, 'linux')
+		autofree_assert_no_eprintln_string_interpolation_cleanup(c_source)
+	}
+}
+
+fn test_autofree_eprintln_string_interpolation_codegen_rejects_non_exact_eprintln_shapes() {
+	expr := autofree_eprintln_string_interpolation_expr()
+	cases := {
+		'existing_local':     'text := "AI"
+	eprintln(text)
+	return "ok"'
+		'literal':            'eprintln("AI")
+	return "ok"'
+		'parenthesized_arg':  'eprintln((${expr}))
+	return "ok"'
+		'parenthesized_call': '(eprintln(${expr}))
+	return "ok"'
+	}
+	for name, body in cases {
+		source := autofree_builtin_eprintln_string_interpolation_source(body)
+		c_source := autofree_eprintln_string_interpolation_generated_c('eprintln_interpolation_reject_${name}',
+			source, true, false, 'linux')
+		autofree_assert_no_eprintln_string_interpolation_cleanup(c_source)
+	}
+}
+
+fn test_autofree_eprintln_string_interpolation_codegen_rejects_shadowed_eprintln() {
+	expr := autofree_eprintln_string_interpolation_expr()
+	source := 'module main
+
+fn eprintln(text string) {
+	_ := text
+}
+
+fn main() {
+	n := 7
+	eprintln(${expr})
+}
+'
+	c_source := autofree_eprintln_string_interpolation_generated_c('eprintln_interpolation_shadowed',
+		source, true, false, 'linux')
+	autofree_assert_no_eprintln_string_interpolation_cleanup(c_source)
+}
+
+fn test_autofree_eprintln_string_interpolation_codegen_rejects_local_callable_shadow() {
+	expr := autofree_eprintln_string_interpolation_expr()
+	source := autofree_eprintln_string_interpolation_source('eprintln := fn (text string) {
+	_ := text
+}
+	eprintln(${expr})
+	return "ok"')
+	c_source := autofree_eprintln_string_interpolation_generated_c('eprintln_interpolation_local_shadow',
+		source, true, false, 'linux')
+	autofree_assert_no_eprintln_string_interpolation_cleanup(c_source)
+}
+
+fn test_autofree_eprintln_string_interpolation_codegen_rejects_selective_import_shadow() {
+	expr := autofree_eprintln_string_interpolation_expr()
+	c_source := autofree_eprintln_string_interpolation_generated_c_from_files('eprintln_interpolation_selective_import_shadow', {
+		'mymod/mymod.v': 'module mymod
+
+pub fn eprintln(text string) {
+	_ := text
+}
+'
+		'main.v':        'module main
+
+import mymod { eprintln }
+
+fn print_value(n int) string {
+	eprintln(${expr})
+	return "ok"
+}
+'
+	})
+	autofree_assert_no_eprintln_string_interpolation_cleanup(c_source)
 }
 
 fn autofree_statement_cleanup_emit_test_rule110_style_fixture() AutofreeStatementCleanupEmitPipelineFixture {
@@ -5502,7 +6249,7 @@ fn autofree_statement_cleanup_emit_test_single_final_len_fixture() AutofreeState
 }
 
 fn autofree_statement_cleanup_emit_test_local_array_push_literal_sink_fixture() AutofreeStatementCleanupEmitPipelineFixture {
-	return autofree_statement_cleanup_emit_test_pipeline_fixture('local_array_push_literal_sink',
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('local_array_push_literal_return',
 		autofree_statement_cleanup_emit_test_local_array_push_literal_sink_source())
 }
 
@@ -5694,6 +6441,21 @@ fn autofree_statement_cleanup_emit_test_multi_param_fresh_local_final_clone_fixt
 		autofree_statement_cleanup_emit_test_multi_param_fresh_local_final_clone_source())
 }
 
+fn autofree_statement_cleanup_emit_test_receiver_field_slice_clone_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('receiver_field_slice_clone',
+		autofree_statement_cleanup_emit_test_receiver_field_slice_clone_source())
+}
+
+fn autofree_statement_cleanup_emit_test_receiver_field_slice_clone_nested_then_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('receiver_field_slice_clone_nested_then',
+		autofree_statement_cleanup_emit_test_receiver_field_slice_clone_nested_then_source())
+}
+
+fn autofree_statement_cleanup_emit_test_loop_local_clone_push_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('loop_local_clone_push',
+		autofree_statement_cleanup_emit_test_loop_local_clone_push_source())
+}
+
 fn autofree_statement_cleanup_emit_test_find_fn_cursor(flat &ast.FlatAst, fn_name string) ?AutofreeStatementCleanupEmitPipelineCursor {
 	for file_i in 0 .. flat.files.len {
 		file_cursor := flat.file_cursor(file_i)
@@ -5802,6 +6564,149 @@ fn test_autofree_statement_cleanup_emit_multi_param_fresh_local_final_clone_pipe
 	assert contexts[0].cleanup_text == 'array__free(&arr);'
 }
 
+fn test_autofree_statement_cleanup_emit_receiver_field_slice_clone_real_pipeline_reaches_context() {
+	mut fixture := autofree_statement_cleanup_emit_test_receiver_field_slice_clone_fixture()
+	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat,
+		'fill_array_from_field_slice') or {
+		assert false
+		return
+	}
+	mut g := Gen.new_with_env_pref_and_flat(&fixture.flat, fixture.env, fixture.prefs)
+	fn_key := g.autofree_statement_cleanup_emit_fn_key_from_cursor(cursor.file_cursor,
+		cursor.fn_cursor) or {
+		assert false
+		return
+	}
+	assert fn_key == 'Game__fill_array_from_field_slice'
+	points := fixture.env.autofree_release_insertion_points_by_fn_key[fn_key] or {
+		[]types.AutofreeReleaseInsertionPointFact{}
+	}
+	assert points.len == 1
+	assert points[0].name == 'next'
+	assert points[0].move_kind == .receiver_field_slice_clone_binding
+	assert points[0].source_endpoint.name == 'g.items[..]'
+	assert points[0].source_endpoint.root_name == 'g'
+	assert points[0].source_endpoint.path.len == 2
+	assert points[0].source_endpoint.path[0].name == 'items'
+	assert points[0].source_endpoint.path[1].name == '[..]'
+	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
+	assert bridge_facts.len == 1
+	anchors := autofree_statement_anchor_facts_from_bridge_facts(bridge_facts)
+	assert anchors.len == 1
+	locations := autofree_statement_location_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, anchors)
+	assert locations.len == 1
+	previews := autofree_statement_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, locations)
+	assert previews.len == 1
+	intents := autofree_statement_intent_facts_from_previews(previews)
+	assert intents.len == 1
+	slots := autofree_statement_emission_slot_facts_from_intents(intents)
+	assert slots.len == 1
+	cleanup_previews := autofree_statement_cleanup_preview_facts_from_slots(slots)
+	assert cleanup_previews.len == 1
+	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, cleanup_previews)
+	assert hook_previews.len == 1
+	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
+	assert contexts.len == 1
+	assert contexts[0].fn_key == fn_key
+	assert contexts[0].fn_name == 'fill_array_from_field_slice'
+	assert contexts[0].name == 'next'
+	assert contexts[0].cleanup_text == 'array__free(&next);'
+}
+
+fn test_autofree_statement_cleanup_emit_receiver_field_slice_clone_nested_then_real_pipeline_reaches_context() {
+	mut fixture :=
+		autofree_statement_cleanup_emit_test_receiver_field_slice_clone_nested_then_fixture()
+	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat,
+		'fill_array_from_field_slice_then_loop') or {
+		assert false
+		return
+	}
+	mut g := Gen.new_with_env_pref_and_flat(&fixture.flat, fixture.env, fixture.prefs)
+	fn_key := g.autofree_statement_cleanup_emit_fn_key_from_cursor(cursor.file_cursor,
+		cursor.fn_cursor) or {
+		assert false
+		return
+	}
+	assert fn_key == 'Game__fill_array_from_field_slice_then_loop'
+	points := fixture.env.autofree_release_insertion_points_by_fn_key[fn_key] or {
+		[]types.AutofreeReleaseInsertionPointFact{}
+	}
+	assert points.len == 1
+	assert points[0].name == 'next'
+	assert points[0].move_kind == .receiver_field_slice_clone_binding
+	assert points[0].source_endpoint.name == 'g.items[..]'
+	assert points[0].source_endpoint.root_name == 'g'
+	assert points[0].source_endpoint.path.len == 2
+	assert points[0].source_endpoint.path[0].name == 'items'
+	assert points[0].source_endpoint.path[1].name == '[..]'
+	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
+	assert bridge_facts.len == 1
+	assert bridge_facts[0].move_kind == .receiver_field_slice_clone_binding
+	anchors := autofree_statement_anchor_facts_from_bridge_facts(bridge_facts)
+	assert anchors.len == 1
+	assert anchors[0].move_kind == .receiver_field_slice_clone_binding
+	locations := autofree_statement_location_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, anchors)
+	assert locations.len == 1
+	assert locations[0].block_path == '0'
+	assert locations[0].stmt_index == 1
+	assert locations[0].stmt_node_id == points[0].insert_after_node_id
+	previews := autofree_statement_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, locations)
+	assert previews.len == 1
+	intents := autofree_statement_intent_facts_from_previews(previews)
+	assert intents.len == 1
+	slots := autofree_statement_emission_slot_facts_from_intents(intents)
+	assert slots.len == 1
+	cleanup_previews := autofree_statement_cleanup_preview_facts_from_slots(slots)
+	assert cleanup_previews.len == 1
+	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, cleanup_previews)
+	assert hook_previews.len == 1
+	assert hook_previews[0].block_path == '0'
+	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
+	assert contexts.len == 1
+	assert contexts[0].fn_key == fn_key
+	assert contexts[0].fn_name == 'fill_array_from_field_slice_then_loop'
+	assert contexts[0].name == 'next'
+	assert contexts[0].block_path == '0'
+	assert contexts[0].cleanup_text == 'array__free(&next);'
+}
+
+fn test_autofree_statement_cleanup_emit_loop_local_clone_push_pipeline_reaches_loop_body_context() {
+	mut fixture := autofree_statement_cleanup_emit_test_loop_local_clone_push_fixture()
+	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat, 'fill_rows') or {
+		assert false
+		return
+	}
+	mut g := Gen.new_with_env_pref_and_flat(&fixture.flat, fixture.env, fixture.prefs)
+	fn_key := g.autofree_statement_cleanup_emit_fn_key_from_cursor(cursor.file_cursor,
+		cursor.fn_cursor) or {
+		assert false
+		return
+	}
+	assert fn_key == 'Board__fill_rows'
+	points := fixture.env.autofree_release_insertion_points_by_fn_key[fn_key] or {
+		[]types.AutofreeReleaseInsertionPointFact{}
+	}
+	assert points.len == 1
+	assert points[0].name == 'row'
+	assert points[0].move_kind == .loop_local_clone_push_binding
+	contexts := g.autofree_statement_cleanup_emit_contexts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor)
+	assert contexts.len == 1
+	assert contexts[0].context_kind == .after_statement
+	assert contexts[0].move_kind == .loop_local_clone_push_binding
+	assert contexts[0].fn_key == fn_key
+	assert contexts[0].fn_name == 'fill_rows'
+	assert contexts[0].name == 'row'
+	assert contexts[0].block_path == '4'
+	assert contexts[0].cleanup_text == 'array__free(&row);'
+}
+
 fn test_autofree_statement_cleanup_emit_cap_only_natural_release_pipeline_reaches_context() {
 	mut fixture := autofree_statement_cleanup_emit_test_cap_only_natural_release_fixture()
 	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat,
@@ -5841,8 +6746,12 @@ fn test_autofree_statement_cleanup_emit_cap_only_natural_release_pipeline_reache
 	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
 		cursor.fn_cursor, cleanup_previews)
 	assert hook_previews.len == 1
+	assert hook_previews[0].hook_kind == .after_body_before_scheduled_drops
+	assert hook_previews[0].block_path == ''
 	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
 	assert contexts.len == 1
+	assert contexts[0].context_kind == .after_body_before_scheduled_drops
+	assert contexts[0].block_path == ''
 	assert contexts[0].name == 'items'
 	assert contexts[0].cleanup_text == 'array__free(&items);'
 }
@@ -5887,8 +6796,12 @@ fn test_autofree_statement_cleanup_emit_len_only_natural_release_pipeline_reache
 	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
 		cursor.fn_cursor, cleanup_previews)
 	assert hook_previews.len == 1
+	assert hook_previews[0].hook_kind == .after_body_before_scheduled_drops
+	assert hook_previews[0].block_path == ''
 	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
 	assert contexts.len == 1
+	assert contexts[0].context_kind == .after_body_before_scheduled_drops
+	assert contexts[0].block_path == ''
 	assert contexts[0].name == 'items'
 	assert contexts[0].cleanup_text == 'array__free(&items);'
 }
@@ -5935,8 +6848,12 @@ fn autofree_statement_cleanup_emit_test_assert_single_final_len_pipeline_reaches
 	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
 		cursor.fn_cursor, cleanup_previews)
 	assert hook_previews.len == 1
+	assert hook_previews[0].hook_kind == .after_body_before_scheduled_drops
+	assert hook_previews[0].block_path == ''
 	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
 	assert contexts.len == 1
+	assert contexts[0].context_kind == .after_body_before_scheduled_drops
+	assert contexts[0].block_path == ''
 	assert contexts[0].name == 'items'
 	assert contexts[0].cleanup_text == 'array__free(&items);'
 }
@@ -5954,7 +6871,7 @@ fn test_autofree_statement_cleanup_emit_single_final_len_pipeline_reaches_contex
 fn test_autofree_statement_cleanup_emit_local_array_push_literal_sink_pipeline_reaches_context() {
 	fixture := autofree_statement_cleanup_emit_test_local_array_push_literal_sink_fixture()
 	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat,
-		'build_local_array_push_literal_sink') or {
+		'build_local_array_push_literal_return') or {
 		assert false
 		return
 	}
@@ -5964,7 +6881,7 @@ fn test_autofree_statement_cleanup_emit_local_array_push_literal_sink_pipeline_r
 		assert false
 		return
 	}
-	assert fn_key == 'build_local_array_push_literal_sink'
+	assert fn_key == 'build_local_array_push_literal_return'
 	transfers := fixture.env.autofree_transfers_by_fn_key[fn_key] or {
 		[]types.AutofreeTransferFact{}
 	}
@@ -5999,8 +6916,12 @@ fn test_autofree_statement_cleanup_emit_local_array_push_literal_sink_pipeline_r
 	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
 		cursor.fn_cursor, cleanup_previews)
 	assert hook_previews.len == 1
+	assert hook_previews[0].hook_kind == .after_statement
+	assert hook_previews[0].block_path == ''
 	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
 	assert contexts.len == 1
+	assert contexts[0].context_kind == .after_statement
+	assert contexts[0].block_path == ''
 	assert contexts[0].name == 'items'
 	assert contexts[0].cleanup_text == 'array__free(&items);'
 }
