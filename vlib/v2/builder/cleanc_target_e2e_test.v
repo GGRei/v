@@ -795,6 +795,22 @@ fn main() {
 '
 }
 
+fn autofree_fresh_local_string_clone_push_local_destination_cleanup_source() string {
+	return 'module main
+
+fn build(left string, right string) int {
+	mut items := []string{}
+	text := left + right
+	items << text
+	return items.len
+}
+
+fn main() {
+	_ := build("a", "b")
+}
+'
+}
+
 fn autofree_eprintln_string_interpolation_cleanup_source() string {
 	dollar := '$'
 	return 'module main
@@ -4328,6 +4344,27 @@ fn test_cleanc_autofree_fresh_local_string_clone_push_cleanup_generates_local_on
 	for res in run_cleanc_autofree_absent_target_results(v2_binary, tmp_dir,
 		'autofree_fresh_local_string_clone_push_cleanup', source) {
 		assert_autofree_fresh_local_string_clone_push_cleanup_absent_in_fn(res, 'push_joined')
+	}
+}
+
+fn test_cleanc_autofree_fresh_local_string_clone_push_local_destination_cleanup_generates_local_only_free() {
+	tmp_dir := os.join_path(os.vtmp_dir(),
+		'v2_cleanc_fresh_local_string_clone_push_local_destination_${os.getpid()}')
+	os.rmdir_all(tmp_dir) or {}
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+	v2_binary := build_v2_for_target_e2e(tmp_dir)
+	source := autofree_fresh_local_string_clone_push_local_destination_cleanup_source()
+	hosted_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_fresh_local_string_clone_push_local_destination_cleanup_hosted',
+		cleanc_autofree_hosted_args(), source, os.join_path(tmp_dir,
+		'autofree_fresh_local_string_clone_push_local_destination_cleanup_hosted.c'))
+	assert_autofree_fresh_local_string_clone_push_cleanup_present_in_fn(hosted_res, 'build')
+	for res in run_cleanc_autofree_absent_target_results(v2_binary, tmp_dir,
+		'autofree_fresh_local_string_clone_push_local_destination_cleanup', source) {
+		assert_autofree_fresh_local_string_clone_push_cleanup_absent_in_fn(res, 'build')
 	}
 }
 

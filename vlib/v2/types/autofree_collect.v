@@ -2906,48 +2906,78 @@ fn (mut e Environment) collect_autofree_fresh_string_clone_push_move_proofs_from
 	}
 	param_names := autofree_collect_param_names(flat, autofree_collect_fn_param_ids(flat, fn_id))
 	fn_key := autofree_fn_key(module_name, fn_name, '')
-	fresh_stmt_id := flat.edges[body_node.first_edge].child_id
+	string_proof := e.collect_autofree_fresh_string_clone_push_move_proof_from_window(flat,
+		module_name, fn_key, fn_name, body_id, body_count, 0, -1, param_names) or {
+		e.collect_autofree_fresh_string_clone_push_move_proof_from_window(flat, module_name,
+			fn_key, fn_name, body_id, body_count, 1, 0, param_names) or { return }
+	}
+	mut fresh_locals := e.autofree_fresh_locals_by_fn_key[fn_key] or { []AutofreeFreshLocalFact{} }
+	mut proofs := e.autofree_move_proofs_by_fn_key[fn_key] or { []AutofreeMoveProofFact{} }
+	fresh_locals << string_proof.fresh
+	proofs << string_proof.proof
+	e.autofree_fresh_locals_by_fn_key[fn_key] = fresh_locals
+	e.autofree_move_proofs_by_fn_key[fn_key] = proofs
+}
+
+fn (mut e Environment) collect_autofree_fresh_string_clone_push_move_proof_from_window(flat &ast.FlatAst, module_name string, fn_key string, fn_name string, body_id ast.FlatNodeId, body_count int, fresh_stmt_index int, prefix_stmt_index int, param_names map[string]bool) ?AutofreeFreshStringClonePushProof {
+	if !autofree_collect_node_is(flat, body_id, .aux_list) || fresh_stmt_index < 0
+		|| fresh_stmt_index >= body_count {
+		return none
+	}
+	body_node := flat.nodes[body_id]
+	fresh_stmt_id := flat.edges[body_node.first_edge + fresh_stmt_index].child_id
 	fresh := e.collect_autofree_fresh_string_clone_push_fresh_from_stmt(flat, fn_key, fn_name,
-		fresh_stmt_id, param_names) or { return }
+		fresh_stmt_id, param_names) or { return none }
 	final := autofree_collect_fresh_string_clone_push_final_from_body(flat, body_id, body_count,
-		fresh.name) or { return }
+		fresh_stmt_index, fresh.name) or { return none }
 	if !autofree_collect_fresh_string_clone_push_tail_is_safe(flat, body_id, body_count,
 		final.push_stmt_index, fresh.name, final.temp_name) {
-		return
+		return none
 	}
 	target := final.target
 	clone := final.clone
 	if clone.receiver_name != fresh.name || clone.receiver_pos_id <= 0 || target.pos_id <= 0
 		|| target.stmt_pos_id <= 0 {
-		return
+		return none
 	}
-	if target.pointer_destination
-		&& !e.autofree_collect_fresh_string_clone_push_pointer_target_is_local(module_name, fn_name, target) {
-		return
+	if !e.autofree_collect_fresh_string_clone_push_target_is_local(module_name, fn_name, target) {
+		return none
 	}
-	target_typ := e.get_expr_type(target.pos_id) or { return }
+	target_typ := e.get_expr_type(target.pos_id) or { return none }
 	if !type_has_valid_payload(target_typ) {
-		return
+		return none
 	}
 	if clone.lowered_wrapper_clone {
 		if clone.call_pos_id != 0 {
-			return
+			return none
 		}
 	} else {
 		if clone.call_pos_id <= 0 {
-			return
+			return none
 		}
-		clone_typ := e.get_expr_type(clone.call_pos_id) or { return }
+		clone_typ := e.get_expr_type(clone.call_pos_id) or { return none }
 		if !type_has_valid_payload(clone_typ) || !same_type_name(clone_typ, fresh.typ) {
-			return
+			return none
 		}
 	}
 	if !autofree_collect_fresh_string_clone_push_destination_accepts(target_typ, fresh.typ,
 		target.pointer_destination) {
-		return
+		return none
 	}
-	proof := autofree_collect_fresh_string_clone_push_move_proof_from_fresh(fresh) or { return }
-	string_proof := AutofreeFreshStringClonePushProof{
+	if prefix_stmt_index >= 0 {
+		if prefix_stmt_index >= body_count {
+			return none
+		}
+		prefix_stmt_id := flat.edges[body_node.first_edge + prefix_stmt_index].child_id
+		if !autofree_collect_fresh_string_clone_push_local_destination_prefix_is_exact(flat,
+			prefix_stmt_id, target.name, target_typ, param_names) {
+			return none
+		}
+	}
+	proof := autofree_collect_fresh_string_clone_push_move_proof_from_fresh(fresh) or {
+		return none
+	}
+	return AutofreeFreshStringClonePushProof{
 		fresh: fresh
 		proof: AutofreeMoveProofFact{
 			...proof
@@ -2956,12 +2986,6 @@ fn (mut e Environment) collect_autofree_fresh_string_clone_push_move_proofs_from
 			reason:       'fresh local string clone push cleanup'
 		}
 	}
-	mut fresh_locals := e.autofree_fresh_locals_by_fn_key[fn_key] or { []AutofreeFreshLocalFact{} }
-	mut proofs := e.autofree_move_proofs_by_fn_key[fn_key] or { []AutofreeMoveProofFact{} }
-	fresh_locals << string_proof.fresh
-	proofs << string_proof.proof
-	e.autofree_fresh_locals_by_fn_key[fn_key] = fresh_locals
-	e.autofree_move_proofs_by_fn_key[fn_key] = proofs
 }
 
 fn (mut e Environment) collect_autofree_fresh_string_clone_push_fresh_from_stmt(flat &ast.FlatAst, fn_key string, fn_name string, stmt_id ast.FlatNodeId, param_names map[string]bool) ?AutofreeFreshLocalFact {
@@ -3061,19 +3085,21 @@ fn (mut e Environment) autofree_collect_fresh_string_clone_push_plus_call_is_own
 	return true
 }
 
-fn autofree_collect_fresh_string_clone_push_final_from_body(flat &ast.FlatAst, body_id ast.FlatNodeId, body_count int, local_name string) ?AutofreeFreshStringClonePushFinal {
-	if body_count < 2 || !autofree_collect_node_is(flat, body_id, .aux_list) {
+fn autofree_collect_fresh_string_clone_push_final_from_body(flat &ast.FlatAst, body_id ast.FlatNodeId, body_count int, fresh_stmt_index int, local_name string) ?AutofreeFreshStringClonePushFinal {
+	if body_count < 2 || fresh_stmt_index < 0 || fresh_stmt_index + 1 >= body_count
+		|| !autofree_collect_node_is(flat, body_id, .aux_list) {
 		return none
 	}
 	body_node := flat.nodes[body_id]
-	source_push_stmt_id := flat.edges[body_node.first_edge + 1].child_id
+	push_stmt_index := fresh_stmt_index + 1
+	source_push_stmt_id := flat.edges[body_node.first_edge + push_stmt_index].child_id
 	if target, clone := autofree_collect_fresh_string_clone_push_source_final_stmt(flat,
 		source_push_stmt_id, local_name)
 	{
 		return AutofreeFreshStringClonePushFinal{
 			target:          target
 			clone:           clone
-			push_stmt_index: 1
+			push_stmt_index: push_stmt_index
 		}
 	}
 	target, clone := autofree_collect_fresh_string_clone_push_lowered_final_stmt(flat,
@@ -3081,7 +3107,7 @@ fn autofree_collect_fresh_string_clone_push_final_from_body(flat &ast.FlatAst, b
 	return AutofreeFreshStringClonePushFinal{
 		target:          target
 		clone:           clone
-		push_stmt_index: 1
+		push_stmt_index: push_stmt_index
 	}
 }
 
@@ -3315,6 +3341,44 @@ fn autofree_collect_fresh_string_clone_push_tail_is_safe(flat &ast.FlatAst, body
 		|| !autofree_collect_subtree_contains_ident(flat, tail_stmt_id, temp_name))
 }
 
+fn autofree_collect_fresh_string_clone_push_local_destination_prefix_is_exact(flat &ast.FlatAst, stmt_id ast.FlatNodeId, target_name string, target_typ Type, param_names map[string]bool) bool {
+	if !autofree_collect_node_is(flat, stmt_id, .stmt_assign) {
+		return false
+	}
+	string_type := Type(string_)
+	string_array_type := Type(Array{
+		elem_type: string_type
+	})
+	if !same_type_name(target_typ, string_array_type) {
+		return false
+	}
+	stmt_node := flat.nodes[stmt_id]
+	if unsafe { token.Token(int(stmt_node.aux)) } != .decl_assign || stmt_node.extra != 1
+		|| autofree_collect_exact_edge_count(flat, stmt_id) != 2 || stmt_node.pos.id <= 0 {
+		return false
+	}
+	lhs_id := flat.edges[stmt_node.first_edge].child_id
+	rhs_id := flat.edges[stmt_node.first_edge + 1].child_id
+	if !autofree_collect_fresh_array_lhs_is_mut(flat, lhs_id) {
+		return false
+	}
+	target_id := autofree_collect_fresh_array_lhs_ident_id(flat, lhs_id)
+	if target_id == ast.invalid_flat_node_id
+		|| autofree_collect_exact_edge_count(flat, target_id) != 0 {
+		return false
+	}
+	lhs_name := flat.string_at(flat.nodes[target_id].name_id)
+	if lhs_name != target_name || !autofree_collect_name_is_usable(lhs_name)
+		|| lhs_name in param_names {
+		return false
+	}
+	lhs_pos_id := flat.nodes[target_id].pos.id
+	if lhs_pos_id <= 0 {
+		return false
+	}
+	return autofree_collect_empty_dynamic_array_init_is_exact(flat, rhs_id, string_type)
+}
+
 fn autofree_collect_fresh_string_clone_push_destination_accepts(dest_typ Type, item_typ Type, pointer_destination bool) bool {
 	string_type := Type(string_)
 	string_array_type := Type(Array{
@@ -3335,7 +3399,7 @@ fn autofree_collect_fresh_string_clone_push_destination_accepts(dest_typ Type, i
 	return false
 }
 
-fn (e &Environment) autofree_collect_fresh_string_clone_push_pointer_target_is_local(module_name string, fn_name string, target AutofreeFreshStringClonePushTarget) bool {
+fn (e &Environment) autofree_collect_fresh_string_clone_push_target_is_local(module_name string, fn_name string, target AutofreeFreshStringClonePushTarget) bool {
 	fn_scope := e.get_fn_scope(module_name, fn_name) or { return false }
 	obj := fn_scope.lookup_parent(target.name, target.pos_id) or { return false }
 	return obj is Type || obj is TypeObject

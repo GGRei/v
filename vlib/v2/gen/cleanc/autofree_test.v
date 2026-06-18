@@ -6068,6 +6068,22 @@ fn main() {
 '
 }
 
+fn autofree_statement_cleanup_emit_test_fresh_local_string_clone_push_local_destination_source() string {
+	return 'module main
+
+fn build(left string, right string) int {
+	mut items := []string{}
+	text := left + right
+	items << text
+	return items.len
+}
+
+fn main() {
+	_ := build("a", "b")
+}
+'
+}
+
 fn autofree_statement_cleanup_emit_test_pipeline_fixture(name string, source string) AutofreeStatementCleanupEmitPipelineFixture {
 	tmp_file := os.join_path(os.vtmp_dir(), 'v2_cleanc_autofree_${name}_${os.getpid()}.v')
 	os.write_file(tmp_file, source) or { panic('failed to write temp file') }
@@ -6612,6 +6628,11 @@ fn autofree_statement_cleanup_emit_test_fresh_local_string_clone_push_fixture() 
 		autofree_statement_cleanup_emit_test_fresh_local_string_clone_push_source())
 }
 
+fn autofree_statement_cleanup_emit_test_fresh_local_string_clone_push_local_destination_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('fresh_local_string_clone_push_local_destination',
+		autofree_statement_cleanup_emit_test_fresh_local_string_clone_push_local_destination_source())
+}
+
 fn autofree_statement_cleanup_emit_test_find_fn_cursor(flat &ast.FlatAst, fn_name string) ?AutofreeStatementCleanupEmitPipelineCursor {
 	for file_i in 0 .. flat.files.len {
 		file_cursor := flat.file_cursor(file_i)
@@ -6913,6 +6934,66 @@ fn test_autofree_statement_cleanup_emit_fresh_local_string_clone_push_pipeline_r
 	assert contexts[0].move_kind == .fresh_local_string_clone_push_binding
 	assert contexts[0].fn_key == fn_key
 	assert contexts[0].fn_name == 'push_joined'
+	assert contexts[0].name == 'text'
+	assert contexts[0].cleanup_symbol == 'string__free'
+	assert contexts[0].cleanup_text == 'string__free(&text);'
+	assert !contexts[0].cleanup_text.contains('array__free')
+	assert !contexts[0].cleanup_text.contains('items')
+}
+
+fn test_autofree_statement_cleanup_emit_fresh_local_string_clone_push_local_destination_pipeline_reaches_context() {
+	mut fixture :=
+		autofree_statement_cleanup_emit_test_fresh_local_string_clone_push_local_destination_fixture()
+	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat, 'build') or {
+		assert false
+		return
+	}
+	mut g := Gen.new_with_env_pref_and_flat(&fixture.flat, fixture.env, fixture.prefs)
+	fn_key := g.autofree_statement_cleanup_emit_fn_key_from_cursor(cursor.file_cursor,
+		cursor.fn_cursor) or {
+		assert false
+		return
+	}
+	assert fn_key == 'build'
+	points := fixture.env.autofree_release_insertion_points_by_fn_key[fn_key] or {
+		[]types.AutofreeReleaseInsertionPointFact{}
+	}
+	assert points.len == 1
+	assert points[0].name == 'text'
+	assert points[0].move_kind == .fresh_local_string_clone_push_binding
+	assert points[0].plan_action == .string_value_cleanup
+	assert points[0].resource == .string_value
+	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
+	assert bridge_facts.len == 1
+	assert bridge_facts[0].move_kind == .fresh_local_string_clone_push_binding
+	anchors := autofree_statement_anchor_facts_from_bridge_facts(bridge_facts)
+	assert anchors.len == 1
+	locations := autofree_statement_location_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, anchors)
+	assert locations.len == 1
+	assert locations[0].stmt_index == 2
+	previews := autofree_statement_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, locations)
+	assert previews.len == 1
+	intents := autofree_statement_intent_facts_from_previews(previews)
+	assert intents.len == 1
+	slots := autofree_statement_emission_slot_facts_from_intents(intents)
+	assert slots.len == 1
+	cleanup_previews := autofree_statement_cleanup_preview_facts_from_slots(slots)
+	assert cleanup_previews.len == 1
+	assert cleanup_previews[0].cleanup_kind == .string_after_statement
+	assert cleanup_previews[0].cleanup_symbol == 'string__free'
+	assert cleanup_previews[0].cleanup_text == 'string__free(&text);'
+	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, cleanup_previews)
+	assert hook_previews.len == 1
+	assert hook_previews[0].stmt_index == 2
+	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
+	assert contexts.len == 1
+	assert contexts[0].context_kind == .after_statement
+	assert contexts[0].move_kind == .fresh_local_string_clone_push_binding
+	assert contexts[0].fn_key == fn_key
+	assert contexts[0].fn_name == 'build'
 	assert contexts[0].name == 'text'
 	assert contexts[0].cleanup_symbol == 'string__free'
 	assert contexts[0].cleanup_text == 'string__free(&text);'

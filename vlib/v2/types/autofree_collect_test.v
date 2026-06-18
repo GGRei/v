@@ -1119,6 +1119,36 @@ fn test_collect_autofree_facts_collects_fresh_string_lowered_clone_push_cleanup(
 		autofree_test_loop_local_clone_push_lowered_push_pos)
 }
 
+fn test_collect_autofree_facts_collects_fresh_string_lowered_clone_push_local_destination_prefix_cleanup() {
+	cases := [
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_local_destination_prefix_cleanup'
+			body: autofree_test_fresh_string_clone_push_local_destination_real_lowered_body()
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_local_destination_prefix_source_literal_cleanup'
+			body: autofree_test_fresh_string_clone_push_local_destination_body_with_prefix(autofree_test_fresh_string_clone_push_local_destination_literal_prefix_stmt())
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_local_destination_prefix_untyped_rhs_cleanup'
+			body: autofree_test_fresh_string_clone_push_local_destination_body_with_prefix(autofree_test_fresh_string_clone_push_local_destination_lowered_prefix_stmt_for('items',
+				'string', 'NULL', 0))
+		},
+	]
+	for valid_case in cases {
+		mut env := Environment.new()
+		flat := autofree_test_flat_with_fresh_string_clone_push_local_destination_body(valid_case.name,
+			valid_case.body)
+		autofree_test_prepare_fresh_string_clone_push_env(mut env, valid_case.name)
+
+		env.collect_autofree_facts_from_flat(&flat)
+
+		fn_key := autofree_fn_key('main', valid_case.name, '')
+		autofree_test_assert_fresh_string_clone_push_local_destination_prefix_cleanup(env, flat,
+			fn_key, .expr_call, autofree_test_loop_local_clone_push_lowered_push_pos)
+	}
+}
+
 fn test_collect_autofree_facts_collects_fresh_string_lowered_clone_push_pointer_destination_cleanup() {
 	mut env := Environment.new()
 	fn_name := 'fresh_string_lowered_clone_push_pointer_destination_cleanup'
@@ -1476,6 +1506,70 @@ fn test_collect_autofree_facts_rejects_fresh_string_lowered_clone_push_invalid_s
 	}
 }
 
+fn test_collect_autofree_facts_rejects_fresh_string_lowered_clone_push_local_destination_prefix_invalid_shapes() {
+	cases := [
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_local_destination_source_direct'
+			body: [
+				autofree_test_fresh_string_clone_push_local_destination_prefix_stmt(),
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_ident_expr('text',
+					autofree_test_post_rhs_pos)),
+				autofree_test_fresh_string_clone_push_return_stmt(),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_local_destination_wrong_prefix_name'
+			body: [
+				autofree_test_fresh_string_clone_push_local_destination_lowered_prefix_stmt_for('other',
+					'string', 'nil', autofree_test_slots_param_pos),
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_lowered_clone_final_stmt(),
+				autofree_test_fresh_string_clone_push_return_stmt(),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_local_destination_wrong_prefix_rhs'
+			body: [
+				autofree_test_fresh_string_clone_push_local_destination_lowered_prefix_stmt_for('items',
+					'int', 'nil', 0),
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_lowered_clone_final_stmt(),
+				autofree_test_fresh_string_clone_push_return_stmt(),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_local_destination_wrong_receiver'
+			body: [
+				autofree_test_fresh_string_clone_push_local_destination_prefix_stmt(),
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_lowered_clone_final_stmt_for('other',
+					autofree_test_post_rhs_pos, 0),
+				autofree_test_fresh_string_clone_push_return_stmt(),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_local_destination_param_shadow'
+			body: autofree_test_fresh_string_clone_push_local_destination_real_lowered_body()
+		},
+	]
+	for invalid_case in cases {
+		mut env := Environment.new()
+		mut flat := autofree_test_flat_with_fresh_string_clone_push_local_destination_body(invalid_case.name,
+			invalid_case.body)
+		if invalid_case.name == 'fresh_string_lowered_clone_push_local_destination_param_shadow' {
+			flat = autofree_test_flat_with_fresh_string_clone_push_body(invalid_case.name,
+				invalid_case.body)
+		}
+		autofree_test_prepare_fresh_string_clone_push_env(mut env, invalid_case.name)
+
+		env.collect_autofree_facts_from_flat(&flat)
+
+		fn_key := autofree_fn_key('main', invalid_case.name, '')
+		autofree_test_assert_no_fresh_string_clone_push_cleanup_or_releases(env, fn_key)
+	}
+}
+
 fn test_collect_autofree_facts_rejects_fresh_string_lowered_clone_push_wrong_destination_type() {
 	mut env := Environment.new()
 	fn_name := 'fresh_string_lowered_clone_push_wrong_destination_type'
@@ -1542,6 +1636,23 @@ fn test_collect_autofree_facts_rejects_fresh_string_lowered_clone_push_global_po
 	autofree_test_prepare_fresh_string_clone_push_global_pointer_destination_env(mut env, fn_name, Type(Pointer{
 		base_type: string_array_type
 	}))
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	fn_key := autofree_fn_key('main', fn_name, '')
+	autofree_test_assert_no_fresh_string_clone_push_cleanup_or_releases(env, fn_key)
+}
+
+fn test_collect_autofree_facts_rejects_fresh_string_lowered_clone_push_global_non_pointer_destination() {
+	mut env := Environment.new()
+	fn_name := 'fresh_string_lowered_clone_push_global_non_pointer_destination'
+	flat := autofree_test_flat_with_fresh_string_clone_push_global_destination_body(fn_name,
+		autofree_test_fresh_string_clone_push_real_lowered_body())
+	string_array_type := Type(Array{
+		elem_type: Type(string_)
+	})
+	autofree_test_prepare_fresh_string_clone_push_global_destination_env(mut env, fn_name,
+		string_array_type)
 
 	env.collect_autofree_facts_from_flat(&flat)
 
@@ -22564,6 +22675,13 @@ fn autofree_test_flat_with_fresh_string_clone_push_body(fn_name string, body []a
 	], body)
 }
 
+fn autofree_test_flat_with_fresh_string_clone_push_local_destination_body(fn_name string, body []ast.Stmt) ast.FlatAst {
+	return autofree_test_flat_with_free_function(fn_name, [
+		autofree_test_param_at('left', 'string', autofree_test_source_param_pos),
+		autofree_test_param_at('right', 'string', autofree_test_other_rhs_pos),
+	], body)
+}
+
 fn autofree_test_flat_with_fresh_string_clone_push_global_destination_body(fn_name string, body []ast.Stmt) ast.FlatAst {
 	return autofree_test_flat_with_free_function(fn_name, [
 		autofree_test_param_at('left', 'string', autofree_test_source_param_pos),
@@ -22602,6 +22720,39 @@ fn autofree_test_fresh_string_clone_push_real_lowered_pointer_body() []ast.Stmt 
 		autofree_test_fresh_string_clone_push_lowered_pointer_clone_final_stmt(),
 		autofree_test_fresh_string_clone_push_return_stmt(),
 	]
+}
+
+fn autofree_test_fresh_string_clone_push_local_destination_real_lowered_body() []ast.Stmt {
+	return autofree_test_fresh_string_clone_push_local_destination_body_with_prefix(autofree_test_fresh_string_clone_push_local_destination_prefix_stmt())
+}
+
+fn autofree_test_fresh_string_clone_push_local_destination_body_with_prefix(prefix ast.Stmt) []ast.Stmt {
+	return [
+		prefix,
+		autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+		autofree_test_fresh_string_clone_push_lowered_clone_final_stmt(),
+		autofree_test_fresh_string_clone_push_return_stmt(),
+	]
+}
+
+fn autofree_test_fresh_string_clone_push_local_destination_prefix_stmt() ast.Stmt {
+	return autofree_test_fresh_string_clone_push_local_destination_lowered_prefix_stmt_for('items',
+		'string', 'nil', autofree_test_slots_param_pos)
+}
+
+fn autofree_test_fresh_string_clone_push_local_destination_literal_prefix_stmt() ast.Stmt {
+	return autofree_test_fresh_string_clone_push_local_destination_prefix_stmt_for('items', autofree_test_empty_array_expr('string',
+		autofree_test_slots_param_pos))
+}
+
+fn autofree_test_fresh_string_clone_push_local_destination_lowered_prefix_stmt_for(name string, elem_type_name string, init_name string, pos_id int) ast.Stmt {
+	return autofree_test_fresh_string_clone_push_local_destination_prefix_stmt_for(name, autofree_test_lowered_array_alloc_expr('__new_array_with_default_noscan',
+		'0', '0', elem_type_name, init_name, pos_id))
+}
+
+fn autofree_test_fresh_string_clone_push_local_destination_prefix_stmt_for(name string, rhs ast.Expr) ast.Stmt {
+	return autofree_test_assign_stmt_with_op(autofree_test_modifier_expr(.key_mut, autofree_test_ident_expr(name,
+		autofree_test_slots_root_pos), autofree_test_slots_root_pos), rhs, .decl_assign, 199)
 }
 
 fn autofree_test_fresh_string_clone_push_fresh_stmt(rhs ast.Expr) ast.Stmt {
@@ -27618,6 +27769,20 @@ fn autofree_test_prepare_fresh_string_clone_push_global_pointer_destination_env(
 		string_type)
 }
 
+fn autofree_test_prepare_fresh_string_clone_push_global_destination_env(mut env Environment, fn_name string, target_type Type) {
+	string_type := Type(string_)
+	autofree_test_add_scope_with_global_and_vars(mut env, fn_name, 'items', target_type, {
+		'left':   string_type
+		'right':  string_type
+		'text':   string_type
+		'_sp':    string_type
+		'other':  string_type
+		'holder': autofree_test_named_field_holder_type('items', target_type)
+	})
+	autofree_test_set_fresh_string_clone_push_pointer_destination_expr_types(mut env, target_type,
+		string_type)
+}
+
 fn autofree_test_set_fresh_string_clone_push_pointer_destination_expr_types(mut env Environment, target_type Type, string_type Type) {
 	env.set_expr_type(autofree_test_slots_param_pos, target_type)
 	env.set_expr_type(autofree_test_slots_root_pos, target_type)
@@ -30357,6 +30522,133 @@ fn autofree_test_assert_fresh_string_clone_push_cleanup(env Environment, flat as
 	assert env.autofree_release_eligibility_by_fn_key.len == 0
 	assert env.autofree_releases_by_fn_key.len == 0
 	assert env.autofree_helper_roots.len == 0
+}
+
+fn autofree_test_assert_fresh_string_clone_push_local_destination_prefix_cleanup(env Environment, flat ast.FlatAst, fn_key string, push_kind ast.FlatNodeKind, push_pos_id int) {
+	move_kind := AutofreeMoveProofKind.fresh_local_string_clone_push_binding
+	text_id := autofree_test_node_id_by_kind_name_pos(flat, .expr_ident, 'text',
+		autofree_test_lhs_pos)
+	source_id := autofree_test_node_id_by_kind_pos(flat, .expr_call, autofree_test_rhs_pos)
+	push_expr_id := autofree_test_node_id_by_kind_pos(flat, push_kind, push_pos_id)
+	push_stmt_id := autofree_test_stmt_expr_id_with_single_child(flat, push_expr_id)
+	assert text_id != ast.invalid_flat_node_id
+	assert source_id != ast.invalid_flat_node_id
+	assert push_expr_id != ast.invalid_flat_node_id
+	assert push_stmt_id != ast.invalid_flat_node_id
+
+	assert fn_key in env.autofree_fresh_locals_by_fn_key
+	mut text_fresh_count := 0
+	for fresh in env.autofree_fresh_locals_by_fn_key[fn_key] {
+		if fresh.name != 'text' {
+			continue
+		}
+		text_fresh_count++
+		assert fresh.reason == 'owned string plus call result'
+		assert fresh.state == .owned_unique
+		assert fresh.resource == .string_value
+		assert fresh.shape.kind == .string_
+		assert same_type_name(fresh.typ, Type(string_))
+		assert fresh.node_id == text_id
+		assert fresh.pos_id == autofree_test_lhs_pos
+		assert fresh.stmt_pos_id == 200
+		assert fresh.source_endpoint.storage == .call_result
+		assert fresh.source_endpoint.root_storage == .call_result
+		assert fresh.source_endpoint.root_node_id == source_id
+		assert fresh.source_endpoint.root_pos_id == autofree_test_rhs_pos
+		assert fresh.endpoint.storage == .local
+		assert fresh.endpoint.root_storage == .local
+	}
+	assert text_fresh_count == 1
+
+	assert fn_key in env.autofree_move_proofs_by_fn_key
+	mut text_proof_count := 0
+	for proof in env.autofree_move_proofs_by_fn_key[fn_key] {
+		assert !(proof.kind == move_kind && proof.name != 'text')
+		if proof.kind != move_kind || proof.name != 'text' {
+			continue
+		}
+		text_proof_count++
+		assert proof.kind != .fresh_local_binding
+		assert proof.reason == 'fresh local string clone push cleanup'
+		assert proof.resource == .string_value
+		assert proof.shape.kind == .string_
+		assert same_type_name(proof.typ, Type(string_))
+		assert proof.node_id == text_id
+		assert proof.pos_id == autofree_test_lhs_pos
+		assert proof.stmt_node_id == push_stmt_id
+		assert proof.stmt_pos_id == push_pos_id
+		assert proof.source_endpoint.storage == .call_result
+		assert proof.target_endpoint.storage == .local
+	}
+	assert text_proof_count == 1
+
+	assert fn_key in env.autofree_natural_release_candidates_by_fn_key
+	mut text_candidate_count := 0
+	for candidate in env.autofree_natural_release_candidates_by_fn_key[fn_key] {
+		assert !(candidate.move_kind == move_kind && candidate.name != 'text')
+		if candidate.move_kind != move_kind || candidate.name != 'text' {
+			continue
+		}
+		text_candidate_count++
+		assert candidate.resource == .string_value
+		assert candidate.release_after_node_id == push_stmt_id
+		assert candidate.release_after_pos_id == push_pos_id
+	}
+	assert text_candidate_count == 1
+
+	assert fn_key in env.autofree_release_plans_by_fn_key
+	mut text_plan_count := 0
+	for plan in env.autofree_release_plans_by_fn_key[fn_key] {
+		assert !(plan.move_kind == move_kind && plan.name != 'text')
+		if plan.move_kind != move_kind || plan.name != 'text' {
+			continue
+		}
+		text_plan_count++
+		assert plan.plan_kind == .natural_exit
+		assert plan.plan_action == .string_value_cleanup
+		assert plan.helper_requirement == .none
+		assert plan.resource == .string_value
+		assert plan.release_after_node_id == push_stmt_id
+		assert plan.release_after_pos_id == push_pos_id
+	}
+	assert text_plan_count == 1
+
+	assert fn_key in env.autofree_release_preflights_by_fn_key
+	mut text_preflight_count := 0
+	for preflight in env.autofree_release_preflights_by_fn_key[fn_key] {
+		assert !(preflight.move_kind == move_kind && preflight.name != 'text')
+		if preflight.move_kind != move_kind || preflight.name != 'text' {
+			continue
+		}
+		text_preflight_count++
+		assert preflight.plan_action == .string_value_cleanup
+		assert preflight.preflight_status == .inert
+		assert preflight.resource == .string_value
+		assert preflight.release_after_node_id == push_stmt_id
+		assert preflight.release_after_pos_id == push_pos_id
+	}
+	assert text_preflight_count == 1
+
+	assert fn_key in env.autofree_release_insertion_points_by_fn_key
+	mut text_insertion_count := 0
+	for insertion_point in env.autofree_release_insertion_points_by_fn_key[fn_key] {
+		assert !(insertion_point.move_kind == move_kind && insertion_point.name != 'text')
+		if insertion_point.move_kind != move_kind || insertion_point.name != 'text' {
+			continue
+		}
+		text_insertion_count++
+		assert insertion_point.plan_action == .string_value_cleanup
+		assert insertion_point.insertion_kind == .after_statement
+		assert insertion_point.insertion_status == .inert
+		assert insertion_point.resource == .string_value
+		assert insertion_point.endpoint.name == 'text'
+		assert insertion_point.endpoint.storage == .local
+		assert insertion_point.source_endpoint.storage == .call_result
+		assert insertion_point.insert_after_node_id == push_stmt_id
+		assert insertion_point.insert_after_pos_id == push_pos_id
+	}
+	assert text_insertion_count == 1
+	assert env.autofree_releases_by_fn_key.len == 0
 }
 
 fn autofree_test_assert_no_fresh_string_clone_push_cleanup_or_releases(env Environment, fn_key string) {
