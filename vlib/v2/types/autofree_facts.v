@@ -80,6 +80,7 @@ pub enum AutofreeMoveProofKind {
 	local_array_clone_binding
 	receiver_field_slice_clone_binding
 	loop_local_clone_push_binding
+	fresh_local_string_clone_push_binding
 }
 
 pub enum AutofreeReleaseKind {
@@ -114,6 +115,7 @@ pub enum AutofreeReleasePlanKind {
 pub enum AutofreeReleasePlanAction {
 	unknown
 	array_container_cleanup
+	string_value_cleanup
 }
 
 pub enum AutofreeReleasePlanHelperRequirement {

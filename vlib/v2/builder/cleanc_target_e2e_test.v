@@ -779,6 +779,22 @@ fn main() {
 '
 }
 
+fn autofree_fresh_local_string_clone_push_cleanup_source() string {
+	return 'module main
+
+fn push_joined(left string, right string, mut items []string) int {
+	text := left + right
+	items << text
+	return items.len
+}
+
+fn main() {
+	mut items := []string{}
+	_ := push_joined("a", "b", mut items)
+}
+'
+}
+
 fn autofree_eprintln_string_interpolation_cleanup_source() string {
 	dollar := '$'
 	return 'module main
@@ -1352,6 +1368,66 @@ fn assert_autofree_loop_local_clone_push_cleanup_absent_in_fn(res CleancCliResul
 	assert !body.contains('array__free(&adjusted_width);'), res.c_source
 	assert !body.contains('array__free(&scratch);'), res.c_source
 	assert !body.contains('string__free'), res.c_source
+}
+
+fn assert_autofree_fresh_local_string_clone_push_cleanup_present_in_fn(res CleancCliResult, fn_name string) {
+	assert_cli_success(res)
+	body := generated_c_function_body_or_fail(res, fn_name)
+	free_count := generated_c_body_substring_count(body, 'string__free(&text);')
+	assert free_count == 1, res.c_source
+	assert generated_c_body_substring_count(body, 'string__free(') == 1, res.c_source
+	plus_idx := body.index_after('string__plus', 0) or {
+		assert false, res.c_source
+		return
+	}
+	push_idx := body.index_after('array__push', plus_idx) or {
+		assert false, res.c_source
+		return
+	}
+	clone_idx := body.index_after('string__clone(text)', plus_idx) or {
+		assert false, res.c_source
+		return
+	}
+	cleanup_idx := body.index_after('string__free(&text);', push_idx) or {
+		assert false, res.c_source
+		return
+	}
+	return_idx := body.index_after('return ', cleanup_idx) or {
+		assert false, res.c_source
+		return
+	}
+	assert plus_idx < push_idx, res.c_source
+	assert push_idx < clone_idx, res.c_source
+	assert clone_idx < cleanup_idx, res.c_source
+	assert cleanup_idx < return_idx, res.c_source
+	assert !body[..push_idx].contains('string__free(&text);'), res.c_source
+	assert generated_c_body_substring_count(body, 'array__push') == 1, res.c_source
+	assert generated_c_body_substring_count(body, 'string__clone(text)') == 1, res.c_source
+	assert generated_c_body_substring_count(body, 'array__free(') == 0, res.c_source
+	assert !body.contains('array__free(&items);'), res.c_source
+	assert !body.contains('string__free(&items);'), res.c_source
+	assert !body.contains('string__free(&left);'), res.c_source
+	assert !body.contains('string__free(&right);'), res.c_source
+	assert !body.contains('string__free(&_ap'), res.c_source
+	assert !body.contains('string__free(&g'), res.c_source
+}
+
+fn assert_autofree_fresh_local_string_clone_push_cleanup_absent_in_fn(res CleancCliResult, fn_name string) {
+	assert res.exit_code == 0, res.output
+	assert res.c_source.len > 0, res.output
+	body := generated_c_function_body_or_fail(res, fn_name)
+	assert generated_c_body_substring_count(body, 'string__free(&text);') == 0, res.c_source
+	assert generated_c_body_substring_count(body, 'string__free(') == 0, res.c_source
+	assert generated_c_body_substring_count(body, 'array__free(') == 0, res.c_source
+	assert body.contains('string__plus'), res.c_source
+	assert body.contains('array__push'), res.c_source
+	assert body.contains('string__clone(text)'), res.c_source
+	assert !body.contains('array__free(&items);'), res.c_source
+	assert !body.contains('string__free(&items);'), res.c_source
+	assert !body.contains('string__free(&left);'), res.c_source
+	assert !body.contains('string__free(&right);'), res.c_source
+	assert !body.contains('string__free(&_ap'), res.c_source
+	assert !body.contains('string__free(&g'), res.c_source
 }
 
 fn assert_autofree_eprintln_string_interpolation_cleanup_present_in_fn(res CleancCliResult, fn_name string) {
@@ -4233,6 +4309,25 @@ fn test_cleanc_autofree_loop_local_clone_push_cleanup_handles_preamble_before_lo
 		'autofree_loop_local_clone_push_preamble_cleanup', source) {
 		assert_autofree_loop_local_clone_push_cleanup_absent_in_fn(res,
 			'Board__fill_rows_after_setup')
+	}
+}
+
+fn test_cleanc_autofree_fresh_local_string_clone_push_cleanup_generates_local_only_free() {
+	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_cleanc_fresh_local_string_clone_push_${os.getpid()}')
+	os.rmdir_all(tmp_dir) or {}
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+	v2_binary := build_v2_for_target_e2e(tmp_dir)
+	source := autofree_fresh_local_string_clone_push_cleanup_source()
+	hosted_res := run_v2_to_output(v2_binary, tmp_dir,
+		'autofree_fresh_local_string_clone_push_cleanup_hosted', cleanc_autofree_hosted_args(),
+		source, os.join_path(tmp_dir, 'autofree_fresh_local_string_clone_push_cleanup_hosted.c'))
+	assert_autofree_fresh_local_string_clone_push_cleanup_present_in_fn(hosted_res, 'push_joined')
+	for res in run_cleanc_autofree_absent_target_results(v2_binary, tmp_dir,
+		'autofree_fresh_local_string_clone_push_cleanup', source) {
+		assert_autofree_fresh_local_string_clone_push_cleanup_absent_in_fn(res, 'push_joined')
 	}
 }
 

@@ -23,6 +23,10 @@ fn autofree_bridge_test_string_array_type() types.Type {
 	})
 }
 
+fn autofree_bridge_test_string_type() types.Type {
+	return types.Type(types.string_)
+}
+
 fn autofree_bridge_test_array_shape() types.AutofreeResourceShape {
 	return types.AutofreeResourceShape{
 		kind:               .array
@@ -62,6 +66,29 @@ fn autofree_bridge_test_string_shape() types.AutofreeResourceShape {
 		target_identity:    ''
 		has_owned_resource: true
 		may_need_free:      true
+	}
+}
+
+fn autofree_bridge_test_fresh_string_clone_push_source_endpoint() types.AutofreeTransferEndpoint {
+	string_type := autofree_bridge_test_string_type()
+	string_shape := autofree_bridge_test_string_shape()
+	string_type_name := string_type.name()
+	return types.AutofreeTransferEndpoint{
+		storage:      .call_result
+		root_storage: .call_result
+		root_name:    'string__plus'
+		name:         'string__plus'
+		root_node_id: 8
+		root_pos_id:  130
+		node_id:      8
+		pos_id:       130
+		has_type:     true
+		typ:          string_type
+		type_name:    string_type_name
+		resource:     .string_value
+		shape:        string_shape
+		state:        .owned_unique
+		reason:       'owned string plus call result'
 	}
 }
 
@@ -232,6 +259,29 @@ fn autofree_bridge_test_loop_local_clone_push_target_endpoint() types.AutofreeTr
 	}
 }
 
+fn autofree_bridge_test_fresh_string_clone_push_target_endpoint() types.AutofreeTransferEndpoint {
+	string_type := autofree_bridge_test_string_type()
+	string_shape := autofree_bridge_test_string_shape()
+	string_type_name := string_type.name()
+	return types.AutofreeTransferEndpoint{
+		storage:      .local
+		root_storage: .local
+		root_name:    'text'
+		name:         'text'
+		root_node_id: 9
+		root_pos_id:  120
+		node_id:      9
+		pos_id:       120
+		has_type:     true
+		typ:          string_type
+		type_name:    string_type_name
+		resource:     .string_value
+		shape:        string_shape
+		state:        .owned_unique
+		reason:       'fresh local string clone push target'
+	}
+}
+
 fn autofree_bridge_test_valid_insertion_point() types.AutofreeReleaseInsertionPointFact {
 	array_type := autofree_bridge_test_array_type()
 	array_shape := autofree_bridge_test_array_shape()
@@ -342,6 +392,41 @@ fn autofree_bridge_test_loop_local_clone_push_insertion_point() types.AutofreeRe
 		shape:                 array_shape
 		typ:                   array_type
 		type_name:             array_type_name
+		node_id:               target.node_id
+		pos_id:                target.pos_id
+		proof_node_id:         target.node_id
+		proof_pos_id:          target.pos_id
+		release_after_node_id: 12
+		release_after_pos_id:  203
+		insert_after_node_id:  12
+		insert_after_pos_id:   203
+		reason:                'release insertion point accepted'
+	}
+}
+
+fn autofree_bridge_test_fresh_string_clone_push_insertion_point() types.AutofreeReleaseInsertionPointFact {
+	string_type := autofree_bridge_test_string_type()
+	string_shape := autofree_bridge_test_string_shape()
+	string_type_name := string_type.name()
+	target := autofree_bridge_test_fresh_string_clone_push_target_endpoint()
+	return types.AutofreeReleaseInsertionPointFact{
+		fn_key:                'push_joined'
+		fn_name:               'push_joined'
+		name:                  'text'
+		move_kind:             .fresh_local_string_clone_push_binding
+		plan_kind:             .natural_exit
+		plan_action:           .string_value_cleanup
+		helper_requirement:    .none
+		preflight_status:      .inert
+		insertion_kind:        .after_statement
+		insertion_status:      .inert
+		source_endpoint:       autofree_bridge_test_fresh_string_clone_push_source_endpoint()
+		endpoint:              target
+		state:                 .owned_unique
+		resource:              .string_value
+		shape:                 string_shape
+		typ:                   string_type
+		type_name:             string_type_name
 		node_id:               target.node_id
 		pos_id:                target.pos_id
 		proof_node_id:         target.node_id
@@ -530,6 +615,24 @@ fn test_autofree_bridge_accepts_loop_local_clone_push_insertion_point() {
 	assert bridge_fact.fn_name == point.fn_name
 	assert bridge_fact.name == 'row'
 	assert bridge_fact.move_kind == .loop_local_clone_push_binding
+	assert bridge_fact.bridge_status == .inert
+	assert bridge_fact.target_node_id == point.endpoint.node_id
+	assert bridge_fact.target_pos_id == point.endpoint.pos_id
+	assert bridge_fact.insert_after_node_id == point.insert_after_node_id
+	assert bridge_fact.insert_after_pos_id == point.insert_after_pos_id
+	assert bridge_fact.insert_after_node_id == point.release_after_node_id
+	assert bridge_fact.reason.len > 0
+}
+
+fn test_autofree_bridge_accepts_fresh_local_string_clone_push_insertion_point() {
+	point := autofree_bridge_test_fresh_string_clone_push_insertion_point()
+	bridge_facts := autofree_bridge_facts_from_insertion_points([point])
+	assert bridge_facts.len == 1
+	bridge_fact := bridge_facts[0]
+	assert bridge_fact.fn_key == point.fn_key
+	assert bridge_fact.fn_name == point.fn_name
+	assert bridge_fact.name == 'text'
+	assert bridge_fact.move_kind == .fresh_local_string_clone_push_binding
 	assert bridge_fact.bridge_status == .inert
 	assert bridge_fact.target_node_id == point.endpoint.node_id
 	assert bridge_fact.target_pos_id == point.endpoint.pos_id
@@ -3570,6 +3673,7 @@ fn autofree_statement_cleanup_preview_test_slot() AutofreeCleanCStatementEmissio
 		fn_key:               'make_items'
 		fn_name:              'make_items'
 		name:                 'items'
+		move_kind:            .fresh_local_binding
 		slot_status:          .inert
 		slot_kind:            .after_statement
 		fn_node_id:           ast.FlatNodeId(10)
@@ -3619,6 +3723,29 @@ fn test_autofree_statement_cleanup_preview_accepts_normal_name() {
 	assert preview.target_c_name == 'items'
 	assert preview.cleanup_symbol == 'array__free'
 	assert preview.cleanup_text == 'array__free(&items);'
+	assert preview.reason.len > 0
+}
+
+fn test_autofree_statement_cleanup_preview_accepts_fresh_local_string_clone_push_name() {
+	slot := AutofreeCleanCStatementEmissionSlotFact{
+		...autofree_statement_cleanup_preview_test_slot()
+		fn_key:    'push_joined'
+		fn_name:   'push_joined'
+		name:      'text'
+		move_kind: .fresh_local_string_clone_push_binding
+	}
+	previews := autofree_statement_cleanup_preview_facts_from_slots([slot])
+	assert previews.len == 1
+	preview := previews[0]
+	assert preview.fn_key == slot.fn_key
+	assert preview.fn_name == slot.fn_name
+	assert preview.name == 'text'
+	assert preview.move_kind == .fresh_local_string_clone_push_binding
+	assert preview.cleanup_status == .inert
+	assert preview.cleanup_kind == .string_after_statement
+	assert preview.target_c_name == 'text'
+	assert preview.cleanup_symbol == 'string__free'
+	assert preview.cleanup_text == 'string__free(&text);'
 	assert preview.reason.len > 0
 }
 
@@ -4122,6 +4249,7 @@ fn autofree_statement_cleanup_hook_preview_test_preview_with_name(fixture Autofr
 		fn_key:               'make_items'
 		fn_name:              'make_items'
 		name:                 name
+		move_kind:            .fresh_local_binding
 		cleanup_status:       .inert
 		cleanup_kind:         .array_after_statement
 		fn_node_id:           fixture.fn_id
@@ -4160,6 +4288,7 @@ fn autofree_statement_cleanup_hook_preview_test_later_insert_preview(fixture Aut
 		fn_key:               'next_generation'
 		fn_name:              'next_generation'
 		name:                 'arr'
+		move_kind:            .fresh_local_binding
 		cleanup_status:       .inert
 		cleanup_kind:         .array_after_statement
 		fn_node_id:           fixture.fn_id
@@ -4806,6 +4935,7 @@ mut:
 	fn_key               string
 	fn_name              string
 	name                 string
+	move_kind            types.AutofreeMoveProofKind
 	hook_status          AutofreeCleanCStatementCleanupHookPreviewStatus
 	hook_kind            AutofreeCleanCStatementCleanupHookPreviewKind
 	fn_node_id           ast.FlatNodeId
@@ -4830,6 +4960,7 @@ fn autofree_statement_cleanup_emit_context_test_hook_preview_fields() AutofreeSt
 		fn_key:               'make_items'
 		fn_name:              'make_items'
 		name:                 'items'
+		move_kind:            .fresh_local_binding
 		hook_status:          .inert
 		hook_kind:            .after_body_before_scheduled_drops
 		fn_node_id:           ast.FlatNodeId(10)
@@ -4855,6 +4986,7 @@ fn autofree_statement_cleanup_emit_context_test_hook_preview_from_fields(fields 
 		fn_key:               fields.fn_key
 		fn_name:              fields.fn_name
 		name:                 fields.name
+		move_kind:            fields.move_kind
 		hook_status:          fields.hook_status
 		hook_kind:            fields.hook_kind
 		fn_node_id:           fields.fn_node_id
@@ -5208,6 +5340,7 @@ mut:
 	fn_key               string
 	fn_name              string
 	name                 string
+	move_kind            types.AutofreeMoveProofKind
 	context_status       AutofreeCleanCStatementCleanupEmitContextStatus
 	context_kind         AutofreeCleanCStatementCleanupEmitContextKind
 	fn_node_id           ast.FlatNodeId
@@ -5233,6 +5366,7 @@ fn autofree_statement_cleanup_emit_test_context_fields() AutofreeStatementCleanu
 		fn_key:               'make_items'
 		fn_name:              'make_items'
 		name:                 'items'
+		move_kind:            .fresh_local_binding
 		context_status:       .inert
 		context_kind:         .after_body_before_scheduled_drops
 		fn_node_id:           ast.FlatNodeId(10)
@@ -5259,6 +5393,7 @@ fn autofree_statement_cleanup_emit_test_context_from_fields(fields AutofreeState
 		fn_key:               fields.fn_key
 		fn_name:              fields.fn_name
 		name:                 fields.name
+		move_kind:            fields.move_kind
 		context_status:       fields.context_status
 		context_kind:         fields.context_kind
 		fn_node_id:           fields.fn_node_id
@@ -5917,6 +6052,22 @@ fn main() {
 '
 }
 
+fn autofree_statement_cleanup_emit_test_fresh_local_string_clone_push_source() string {
+	return 'module main
+
+fn push_joined(left string, right string, mut items []string) int {
+	text := left + right
+	items << text
+	return items.len
+}
+
+fn main() {
+	mut items := []string{}
+	_ := push_joined("a", "b", mut items)
+}
+'
+}
+
 fn autofree_statement_cleanup_emit_test_pipeline_fixture(name string, source string) AutofreeStatementCleanupEmitPipelineFixture {
 	tmp_file := os.join_path(os.vtmp_dir(), 'v2_cleanc_autofree_${name}_${os.getpid()}.v')
 	os.write_file(tmp_file, source) or { panic('failed to write temp file') }
@@ -6456,6 +6607,11 @@ fn autofree_statement_cleanup_emit_test_loop_local_clone_push_fixture() Autofree
 		autofree_statement_cleanup_emit_test_loop_local_clone_push_source())
 }
 
+fn autofree_statement_cleanup_emit_test_fresh_local_string_clone_push_fixture() AutofreeStatementCleanupEmitPipelineFixture {
+	return autofree_statement_cleanup_emit_test_pipeline_fixture('fresh_local_string_clone_push',
+		autofree_statement_cleanup_emit_test_fresh_local_string_clone_push_source())
+}
+
 fn autofree_statement_cleanup_emit_test_find_fn_cursor(flat &ast.FlatAst, fn_name string) ?AutofreeStatementCleanupEmitPipelineCursor {
 	for file_i in 0 .. flat.files.len {
 		file_cursor := flat.file_cursor(file_i)
@@ -6705,6 +6861,63 @@ fn test_autofree_statement_cleanup_emit_loop_local_clone_push_pipeline_reaches_l
 	assert contexts[0].name == 'row'
 	assert contexts[0].block_path == '4'
 	assert contexts[0].cleanup_text == 'array__free(&row);'
+}
+
+fn test_autofree_statement_cleanup_emit_fresh_local_string_clone_push_pipeline_reaches_context() {
+	mut fixture := autofree_statement_cleanup_emit_test_fresh_local_string_clone_push_fixture()
+	cursor := autofree_statement_cleanup_emit_test_find_fn_cursor(&fixture.flat, 'push_joined') or {
+		assert false
+		return
+	}
+	mut g := Gen.new_with_env_pref_and_flat(&fixture.flat, fixture.env, fixture.prefs)
+	fn_key := g.autofree_statement_cleanup_emit_fn_key_from_cursor(cursor.file_cursor,
+		cursor.fn_cursor) or {
+		assert false
+		return
+	}
+	assert fn_key == 'push_joined'
+	points := fixture.env.autofree_release_insertion_points_by_fn_key[fn_key] or {
+		[]types.AutofreeReleaseInsertionPointFact{}
+	}
+	assert points.len == 1
+	assert points[0].name == 'text'
+	assert points[0].move_kind == .fresh_local_string_clone_push_binding
+	assert points[0].plan_action == .string_value_cleanup
+	assert points[0].resource == .string_value
+	bridge_facts := autofree_bridge_facts_from_insertion_points(points)
+	assert bridge_facts.len == 1
+	assert bridge_facts[0].move_kind == .fresh_local_string_clone_push_binding
+	anchors := autofree_statement_anchor_facts_from_bridge_facts(bridge_facts)
+	assert anchors.len == 1
+	locations := autofree_statement_location_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, anchors)
+	assert locations.len == 1
+	previews := autofree_statement_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, locations)
+	assert previews.len == 1
+	intents := autofree_statement_intent_facts_from_previews(previews)
+	assert intents.len == 1
+	slots := autofree_statement_emission_slot_facts_from_intents(intents)
+	assert slots.len == 1
+	cleanup_previews := autofree_statement_cleanup_preview_facts_from_slots(slots)
+	assert cleanup_previews.len == 1
+	assert cleanup_previews[0].cleanup_kind == .string_after_statement
+	assert cleanup_previews[0].cleanup_symbol == 'string__free'
+	assert cleanup_previews[0].cleanup_text == 'string__free(&text);'
+	hook_previews := autofree_statement_cleanup_hook_preview_facts_from_file_cursor(cursor.file_cursor,
+		cursor.fn_cursor, cleanup_previews)
+	assert hook_previews.len == 1
+	contexts := autofree_statement_cleanup_emit_context_facts_from_hook_previews(hook_previews)
+	assert contexts.len == 1
+	assert contexts[0].context_kind == .after_statement
+	assert contexts[0].move_kind == .fresh_local_string_clone_push_binding
+	assert contexts[0].fn_key == fn_key
+	assert contexts[0].fn_name == 'push_joined'
+	assert contexts[0].name == 'text'
+	assert contexts[0].cleanup_symbol == 'string__free'
+	assert contexts[0].cleanup_text == 'string__free(&text);'
+	assert !contexts[0].cleanup_text.contains('array__free')
+	assert !contexts[0].cleanup_text.contains('items')
 }
 
 fn test_autofree_statement_cleanup_emit_cap_only_natural_release_pipeline_reaches_context() {

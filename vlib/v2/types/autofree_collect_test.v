@@ -175,6 +175,16 @@ struct AutofreeLoopLocalClonePushBodyRejectCase {
 	body []ast.Stmt
 }
 
+struct AutofreeFreshStringClonePushRejectCase {
+	name string
+	body []ast.Stmt
+}
+
+struct AutofreeFreshStringClonePushDestinationRejectCase {
+	name        string
+	target_type Type
+}
+
 struct AutofreeFreshArrayFinalCloneRejectCase {
 	name           string
 	elem_type_name string
@@ -1080,6 +1090,532 @@ fn test_collect_autofree_facts_rejects_loop_local_clone_push_invalid_receivers()
 		fn_key := autofree_fn_key('main', invalid_case.name, 'Game')
 		autofree_test_assert_no_loop_local_clone_push_cleanup_or_releases(env, fn_key)
 	}
+}
+
+fn test_collect_autofree_facts_collects_fresh_string_clone_push_cleanup() {
+	mut env := Environment.new()
+	fn_name := 'fresh_string_clone_push_cleanup'
+	flat := autofree_test_flat_with_fresh_string_clone_push_body(fn_name, autofree_test_fresh_string_clone_push_body(autofree_test_clone_call_expr('text',
+		autofree_test_post_rhs_pos)))
+	autofree_test_prepare_fresh_string_clone_push_env(mut env, fn_name)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	fn_key := autofree_fn_key('main', fn_name, '')
+	autofree_test_assert_fresh_string_clone_push_cleanup(env, flat, fn_key, .expr_infix, 202)
+}
+
+fn test_collect_autofree_facts_collects_fresh_string_lowered_clone_push_cleanup() {
+	mut env := Environment.new()
+	fn_name := 'fresh_string_lowered_clone_push_cleanup'
+	flat := autofree_test_flat_with_fresh_string_clone_push_body(fn_name,
+		autofree_test_fresh_string_clone_push_real_lowered_body())
+	autofree_test_prepare_fresh_string_clone_push_env(mut env, fn_name)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	fn_key := autofree_fn_key('main', fn_name, '')
+	autofree_test_assert_fresh_string_clone_push_cleanup(env, flat, fn_key, .expr_call,
+		autofree_test_loop_local_clone_push_lowered_push_pos)
+}
+
+fn test_collect_autofree_facts_collects_fresh_string_lowered_clone_push_pointer_destination_cleanup() {
+	mut env := Environment.new()
+	fn_name := 'fresh_string_lowered_clone_push_pointer_destination_cleanup'
+	flat := autofree_test_flat_with_fresh_string_clone_push_body(fn_name,
+		autofree_test_fresh_string_clone_push_real_lowered_pointer_body())
+	string_array_type := Type(Array{
+		elem_type: Type(string_)
+	})
+	autofree_test_prepare_fresh_string_clone_push_pointer_destination_env(mut env, fn_name, Type(Pointer{
+		base_type: string_array_type
+	}))
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	fn_key := autofree_fn_key('main', fn_name, '')
+	autofree_test_assert_fresh_string_clone_push_cleanup(env, flat, fn_key, .expr_call,
+		autofree_test_loop_local_clone_push_lowered_push_pos)
+}
+
+fn test_collect_autofree_facts_rejects_fresh_string_clone_push_bad_sources() {
+	cases := [
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_literal_source'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_expr('literal',
+					autofree_test_rhs_pos)),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_param_source'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_ident_expr('left',
+					autofree_test_rhs_pos)),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_selector_source'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_selector_expr_with_root_pos('holder',
+					'name', autofree_test_holder_root_pos, autofree_test_field_pos,
+					autofree_test_rhs_pos)),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_index_source'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_index_expr_from_lhs(autofree_test_ident_expr('names',
+					autofree_test_slots_root_pos), autofree_test_int_expr('0',
+					autofree_test_index_pos), autofree_test_rhs_pos)),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_map_source'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_cache_index_expr_at(autofree_test_cache_root_pos, autofree_test_int_expr('0',
+					autofree_test_key_pos), autofree_test_rhs_pos)),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_unsupported_call_source'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_call_expr('make_text', autofree_test_ident_expr('left',
+					autofree_test_source_param_pos), autofree_test_rhs_pos)),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+	]
+	for invalid_case in cases {
+		mut env := Environment.new()
+		flat := autofree_test_flat_with_fresh_string_clone_push_body(invalid_case.name,
+			invalid_case.body)
+		autofree_test_prepare_fresh_string_clone_push_env(mut env, invalid_case.name)
+
+		env.collect_autofree_facts_from_flat(&flat)
+
+		fn_key := autofree_fn_key('main', invalid_case.name, '')
+		autofree_test_assert_no_fresh_string_clone_push_cleanup_or_releases(env, fn_key)
+	}
+}
+
+fn test_collect_autofree_facts_rejects_fresh_string_clone_push_global_sources() {
+	cases := [
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_global_source'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_ident_expr('global_name',
+					autofree_test_rhs_pos)),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_direct_global_clone'
+			body: [
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('global_name',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_global_receiver'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_lowered_clone_final_stmt_for('global_name',
+					autofree_test_post_rhs_pos, 0),
+			]
+		},
+	]
+	for invalid_case in cases {
+		mut env := Environment.new()
+		flat := autofree_test_flat_with_fresh_string_clone_push_body(invalid_case.name,
+			invalid_case.body)
+		autofree_test_prepare_fresh_string_clone_push_env_with_global(mut env, invalid_case.name)
+
+		env.collect_autofree_facts_from_flat(&flat)
+
+		fn_key := autofree_fn_key('main', invalid_case.name, '')
+		autofree_test_assert_no_fresh_string_clone_push_cleanup_or_releases(env, fn_key)
+	}
+}
+
+fn test_collect_autofree_facts_rejects_fresh_string_clone_push_bad_pushes_and_escapes() {
+	cases := [
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_direct_push'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_ident_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_field_target'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_array_push_operator_stmt_with_pos(autofree_test_selector_expr_with_root_pos('holder',
+					'items', autofree_test_holder_root_pos, autofree_test_field_pos,
+					autofree_test_second_lhs_pos), autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos), .left_shift, 202),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_second_push'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_alias'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_assign_stmt_with_op(autofree_test_ident_expr('other',
+					autofree_test_third_lhs_pos), autofree_test_ident_expr('text',
+					autofree_test_third_rhs_pos), .decl_assign, 201),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_reassign'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_assign_stmt_with_op(autofree_test_ident_expr('text',
+					autofree_test_third_lhs_pos), autofree_test_string_plus_call_expr(), .assign, 201),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_address'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_assign_stmt_with_op(autofree_test_ident_expr('ptr',
+					autofree_test_third_lhs_pos), autofree_test_prefix_expr(.amp, autofree_test_ident_expr('text',
+					autofree_test_third_rhs_pos), autofree_test_third_rhs_pos), .decl_assign, 201),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_return_before_push'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_return_stmt(autofree_test_ident_expr('text',
+					autofree_test_third_rhs_pos)),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_field_store'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_assign_stmt_with_op(autofree_test_selector_expr_with_root_pos('holder',
+					'name', autofree_test_holder_root_pos, autofree_test_field_pos,
+					autofree_test_third_lhs_pos), autofree_test_ident_expr('text',
+					autofree_test_third_rhs_pos), .assign, 201),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_capture'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fn_literal_capture_stmt('text'),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_call'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_call_stmt('touch', autofree_test_ident_expr('text',
+					autofree_test_third_rhs_pos), 201),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_defer'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				ast.Stmt(ast.DeferStmt{
+					stmts: [
+						autofree_test_call_stmt('touch', autofree_test_ident_expr('text',
+							autofree_test_third_rhs_pos), 201),
+					]
+				}),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_break'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_flow_control_stmt(.key_break),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_continue'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_flow_control_stmt(.key_continue),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_clone_push_use_after_push'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_final_stmt(autofree_test_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+				autofree_test_return_stmt(autofree_test_ident_expr('text',
+					autofree_test_third_rhs_pos)),
+			]
+		},
+	]
+	for invalid_case in cases {
+		mut env := Environment.new()
+		flat := autofree_test_flat_with_fresh_string_clone_push_body(invalid_case.name,
+			invalid_case.body)
+		autofree_test_prepare_fresh_string_clone_push_env(mut env, invalid_case.name)
+
+		env.collect_autofree_facts_from_flat(&flat)
+
+		fn_key := autofree_fn_key('main', invalid_case.name, '')
+		autofree_test_assert_no_fresh_string_clone_push_cleanup_or_releases(env, fn_key)
+	}
+}
+
+fn test_collect_autofree_facts_rejects_fresh_string_lowered_clone_push_invalid_shapes() {
+	cases := [
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_temp_form'
+			body: autofree_test_fresh_string_clone_push_lowered_body(autofree_test_lowered_string_clone_call_expr('text',
+				autofree_test_post_rhs_pos),
+				autofree_test_fresh_string_clone_push_lowered_final_stmt('_sp'))
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_temp_not_immediate'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_clone_temp_stmt('_sp', autofree_test_lowered_string_clone_call_expr('text',
+					autofree_test_post_rhs_pos)),
+				autofree_test_fresh_string_clone_push_return_stmt(),
+				autofree_test_fresh_string_clone_push_lowered_final_stmt('_sp'),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_temp_not_clone'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_clone_temp_stmt('_sp', autofree_test_ident_expr('text',
+					autofree_test_post_rhs_pos)),
+				autofree_test_fresh_string_clone_push_lowered_final_stmt('_sp'),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_direct_text_push'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_lowered_final_stmt('text'),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_wrong_receiver'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_lowered_clone_final_stmt_for('other',
+					autofree_test_post_rhs_pos, 0),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_wrapper_multi_values'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_lowered_final_stmt_with_values([
+					autofree_test_lowered_string_clone_call_expr_with_call_pos('text',
+						autofree_test_post_rhs_pos, 0),
+					autofree_test_ident_expr('other', autofree_test_third_rhs_pos),
+				]),
+			]
+		},
+	]
+	for invalid_case in cases {
+		mut env := Environment.new()
+		flat := autofree_test_flat_with_fresh_string_clone_push_body(invalid_case.name,
+			invalid_case.body)
+		autofree_test_prepare_fresh_string_clone_push_env(mut env, invalid_case.name)
+
+		env.collect_autofree_facts_from_flat(&flat)
+
+		fn_key := autofree_fn_key('main', invalid_case.name, '')
+		autofree_test_assert_no_fresh_string_clone_push_cleanup_or_releases(env, fn_key)
+	}
+}
+
+fn test_collect_autofree_facts_rejects_fresh_string_lowered_clone_push_wrong_destination_type() {
+	mut env := Environment.new()
+	fn_name := 'fresh_string_lowered_clone_push_wrong_destination_type'
+	flat := autofree_test_flat_with_fresh_string_clone_push_body(fn_name,
+		autofree_test_fresh_string_clone_push_real_lowered_body())
+	autofree_test_prepare_fresh_string_clone_push_env(mut env, fn_name)
+	env.set_expr_type(autofree_test_slots_root_pos, Type(Array{
+		elem_type: Type(int_)
+	}))
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	fn_key := autofree_fn_key('main', fn_name, '')
+	autofree_test_assert_no_fresh_string_clone_push_cleanup_or_releases(env, fn_key)
+}
+
+fn test_collect_autofree_facts_rejects_fresh_string_lowered_clone_push_pointer_destination_bad_types() {
+	string_type := Type(string_)
+	string_array_type := Type(Array{
+		elem_type: string_type
+	})
+	cases := [
+		AutofreeFreshStringClonePushDestinationRejectCase{
+			name:        'fresh_string_lowered_clone_push_pointer_destination_int_array'
+			target_type: Type(Pointer{
+				base_type: Type(Array{
+					elem_type: Type(int_)
+				})
+			})
+		},
+		AutofreeFreshStringClonePushDestinationRejectCase{
+			name:        'fresh_string_lowered_clone_push_pointer_destination_scalar'
+			target_type: Type(Pointer{
+				base_type: Type(int_)
+			})
+		},
+		AutofreeFreshStringClonePushDestinationRejectCase{
+			name:        'fresh_string_lowered_clone_push_pointer_destination_non_pointer'
+			target_type: string_array_type
+		},
+	]
+	for invalid_case in cases {
+		mut env := Environment.new()
+		flat := autofree_test_flat_with_fresh_string_clone_push_body(invalid_case.name,
+			autofree_test_fresh_string_clone_push_real_lowered_pointer_body())
+		autofree_test_prepare_fresh_string_clone_push_pointer_destination_env(mut env,
+			invalid_case.name, invalid_case.target_type)
+
+		env.collect_autofree_facts_from_flat(&flat)
+
+		fn_key := autofree_fn_key('main', invalid_case.name, '')
+		autofree_test_assert_no_fresh_string_clone_push_cleanup_or_releases(env, fn_key)
+	}
+}
+
+fn test_collect_autofree_facts_rejects_fresh_string_lowered_clone_push_global_pointer_destination() {
+	mut env := Environment.new()
+	fn_name := 'fresh_string_lowered_clone_push_global_pointer_destination'
+	flat := autofree_test_flat_with_fresh_string_clone_push_global_destination_body(fn_name,
+		autofree_test_fresh_string_clone_push_real_lowered_pointer_body())
+	string_array_type := Type(Array{
+		elem_type: Type(string_)
+	})
+	autofree_test_prepare_fresh_string_clone_push_global_pointer_destination_env(mut env, fn_name, Type(Pointer{
+		base_type: string_array_type
+	}))
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	fn_key := autofree_fn_key('main', fn_name, '')
+	autofree_test_assert_no_fresh_string_clone_push_cleanup_or_releases(env, fn_key)
+}
+
+fn test_collect_autofree_facts_rejects_fresh_string_lowered_clone_push_pointer_destination_non_ident_targets() {
+	cases := [
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_pointer_destination_selector'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_lowered_pointer_clone_final_stmt_with_target(autofree_test_selector_expr_with_root_pos('holder',
+					'items', autofree_test_holder_root_pos, autofree_test_field_pos,
+					autofree_test_slots_root_pos)),
+				autofree_test_fresh_string_clone_push_return_stmt(),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_pointer_destination_index'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_lowered_pointer_clone_final_stmt_with_target(autofree_test_index_expr_from_lhs(autofree_test_ident_expr('items',
+					autofree_test_slots_root_pos), autofree_test_int_expr('0',
+					autofree_test_key_pos), autofree_test_nested_index_pos)),
+				autofree_test_fresh_string_clone_push_return_stmt(),
+			]
+		},
+		AutofreeFreshStringClonePushRejectCase{
+			name: 'fresh_string_lowered_clone_push_pointer_destination_call'
+			body: [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_clone_push_lowered_pointer_clone_final_stmt_with_target(autofree_test_call_expr('items', autofree_test_ident_expr('text',
+					autofree_test_post_rhs_pos), autofree_test_slots_root_pos)),
+				autofree_test_fresh_string_clone_push_return_stmt(),
+			]
+		},
+	]
+	string_array_type := Type(Array{
+		elem_type: Type(string_)
+	})
+	pointer_type := Type(Pointer{
+		base_type: string_array_type
+	})
+	for invalid_case in cases {
+		mut env := Environment.new()
+		flat := autofree_test_flat_with_fresh_string_clone_push_body(invalid_case.name,
+			invalid_case.body)
+		autofree_test_prepare_fresh_string_clone_push_pointer_destination_env(mut env,
+			invalid_case.name, pointer_type)
+
+		env.collect_autofree_facts_from_flat(&flat)
+
+		fn_key := autofree_fn_key('main', invalid_case.name, '')
+		autofree_test_assert_no_fresh_string_clone_push_cleanup_or_releases(env, fn_key)
+	}
+}
+
+fn test_collect_autofree_facts_rejects_fresh_string_clone_push_borrowed_string_type() {
+	mut env := Environment.new()
+	fn_name := 'fresh_string_clone_push_borrowed_string_type'
+	flat := autofree_test_flat_with_fresh_string_clone_push_body(fn_name, autofree_test_fresh_string_clone_push_body(autofree_test_clone_call_expr('text',
+		autofree_test_post_rhs_pos)))
+	autofree_test_prepare_fresh_string_clone_push_env(mut env, fn_name)
+	borrowed_string_type := Type(Pointer{
+		base_type: Type(string_)
+	})
+	env.set_expr_type(autofree_test_lhs_pos, borrowed_string_type)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	fn_key := autofree_fn_key('main', fn_name, '')
+	autofree_test_assert_no_fresh_string_clone_push_cleanup_or_releases(env, fn_key)
 }
 
 fn test_collect_autofree_return_transfers_collects_direct_empty_int_array_return() {
@@ -22020,6 +22556,156 @@ fn autofree_test_loop_local_clone_push_lowered_final_stmt_with_values_and_target
 	})
 }
 
+fn autofree_test_flat_with_fresh_string_clone_push_body(fn_name string, body []ast.Stmt) ast.FlatAst {
+	return autofree_test_flat_with_free_function(fn_name, [
+		autofree_test_mut_param_at('items', '[]string', autofree_test_slots_param_pos),
+		autofree_test_param_at('left', 'string', autofree_test_source_param_pos),
+		autofree_test_param_at('right', 'string', autofree_test_other_rhs_pos),
+	], body)
+}
+
+fn autofree_test_flat_with_fresh_string_clone_push_global_destination_body(fn_name string, body []ast.Stmt) ast.FlatAst {
+	return autofree_test_flat_with_free_function(fn_name, [
+		autofree_test_param_at('left', 'string', autofree_test_source_param_pos),
+		autofree_test_param_at('right', 'string', autofree_test_other_rhs_pos),
+	], body)
+}
+
+fn autofree_test_fresh_string_clone_push_body(final_rhs ast.Expr) []ast.Stmt {
+	return [
+		autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+		autofree_test_fresh_string_clone_push_final_stmt(final_rhs),
+		autofree_test_fresh_string_clone_push_return_stmt(),
+	]
+}
+
+fn autofree_test_fresh_string_clone_push_lowered_body(clone_rhs ast.Expr, final_stmt ast.Stmt) []ast.Stmt {
+	return [
+		autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+		autofree_test_fresh_string_clone_push_clone_temp_stmt('_sp', clone_rhs),
+		final_stmt,
+		autofree_test_fresh_string_clone_push_return_stmt(),
+	]
+}
+
+fn autofree_test_fresh_string_clone_push_real_lowered_body() []ast.Stmt {
+	return [
+		autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+		autofree_test_fresh_string_clone_push_lowered_clone_final_stmt(),
+		autofree_test_fresh_string_clone_push_return_stmt(),
+	]
+}
+
+fn autofree_test_fresh_string_clone_push_real_lowered_pointer_body() []ast.Stmt {
+	return [
+		autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+		autofree_test_fresh_string_clone_push_lowered_pointer_clone_final_stmt(),
+		autofree_test_fresh_string_clone_push_return_stmt(),
+	]
+}
+
+fn autofree_test_fresh_string_clone_push_fresh_stmt(rhs ast.Expr) ast.Stmt {
+	return autofree_test_assign_stmt_with_op(autofree_test_ident_expr('text', autofree_test_lhs_pos),
+		rhs, .decl_assign, 200)
+}
+
+fn autofree_test_string_plus_call_expr() ast.Expr {
+	return autofree_test_lowered_call_expr('string__plus', [
+		autofree_test_ident_expr('left', autofree_test_source_param_pos),
+		autofree_test_ident_expr('right', autofree_test_other_rhs_pos),
+	], autofree_test_rhs_pos)
+}
+
+fn autofree_test_fresh_string_clone_push_final_stmt(rhs ast.Expr) ast.Stmt {
+	return autofree_test_array_push_operator_stmt_with_pos(autofree_test_ident_expr('items',
+		autofree_test_slots_root_pos), rhs, .left_shift, 202)
+}
+
+fn autofree_test_lowered_string_clone_call_expr(receiver_name string, pos_id int) ast.Expr {
+	return autofree_test_lowered_call_expr('string__clone', [
+		autofree_test_ident_expr(receiver_name, pos_id),
+	], pos_id)
+}
+
+fn autofree_test_lowered_string_clone_call_expr_with_call_pos(receiver_name string, receiver_pos_id int, call_pos_id int) ast.Expr {
+	return ast.Expr(ast.CallExpr{
+		lhs:  autofree_test_ident_expr('string__clone', call_pos_id)
+		args: [
+			autofree_test_ident_expr(receiver_name, receiver_pos_id),
+		]
+		pos:  autofree_test_pos(call_pos_id)
+	})
+}
+
+fn autofree_test_fresh_string_clone_push_clone_temp_stmt(temp_name string, rhs ast.Expr) ast.Stmt {
+	return autofree_test_assign_stmt_with_op(autofree_test_ident_expr(temp_name,
+		autofree_test_second_method_lhs_pos), rhs, .decl_assign, 203)
+}
+
+fn autofree_test_fresh_string_clone_push_lowered_final_stmt(temp_name string) ast.Stmt {
+	return autofree_test_fresh_string_clone_push_lowered_final_stmt_with_values([
+		autofree_test_ident_expr(temp_name, autofree_test_second_method_final_lhs_pos),
+	])
+}
+
+fn autofree_test_fresh_string_clone_push_lowered_clone_final_stmt() ast.Stmt {
+	return autofree_test_fresh_string_clone_push_lowered_clone_final_stmt_for('text',
+		autofree_test_post_rhs_pos, 0)
+}
+
+fn autofree_test_fresh_string_clone_push_lowered_clone_final_stmt_for(receiver_name string, receiver_pos_id int, call_pos_id int) ast.Stmt {
+	return autofree_test_fresh_string_clone_push_lowered_final_stmt_with_values([
+		autofree_test_lowered_string_clone_call_expr_with_call_pos(receiver_name, receiver_pos_id,
+			call_pos_id),
+	])
+}
+
+fn autofree_test_fresh_string_clone_push_lowered_pointer_clone_final_stmt() ast.Stmt {
+	return autofree_test_fresh_string_clone_push_lowered_pointer_clone_final_stmt_with_target(autofree_test_ident_expr('items',
+		autofree_test_slots_root_pos))
+}
+
+fn autofree_test_fresh_string_clone_push_lowered_pointer_clone_final_stmt_with_target(target ast.Expr) ast.Stmt {
+	arr_ptr := ast.Expr(ast.CastExpr{
+		typ:  autofree_test_ident_expr('array*', 0)
+		expr: target
+	})
+	wrapper := ast.Expr(ast.ArrayInitExpr{
+		typ:   autofree_test_array_type_expr('string')
+		exprs: [
+			autofree_test_lowered_string_clone_call_expr_with_call_pos('text',
+				autofree_test_post_rhs_pos, 0),
+		]
+		pos:   autofree_test_pos(autofree_test_second_method_final_rhs_pos)
+	})
+	return ast.Stmt(ast.ExprStmt{
+		expr: autofree_test_lowered_call_expr('builtin__array_push_noscan', [arr_ptr, wrapper],
+			autofree_test_loop_local_clone_push_lowered_push_pos)
+	})
+}
+
+fn autofree_test_fresh_string_clone_push_lowered_final_stmt_with_values(values []ast.Expr) ast.Stmt {
+	arr_ptr := ast.Expr(ast.CastExpr{
+		typ:  autofree_test_ident_expr('array*', 0)
+		expr: autofree_test_prefix_expr(.amp, autofree_test_ident_expr('items',
+			autofree_test_slots_root_pos), autofree_test_loop_local_clone_push_lowered_push_pos)
+	})
+	wrapper := ast.Expr(ast.ArrayInitExpr{
+		typ:   autofree_test_array_type_expr('string')
+		exprs: values
+		pos:   autofree_test_pos(autofree_test_second_method_final_rhs_pos)
+	})
+	return ast.Stmt(ast.ExprStmt{
+		expr: autofree_test_lowered_call_expr('builtin__array_push_noscan', [arr_ptr, wrapper],
+			autofree_test_loop_local_clone_push_lowered_push_pos)
+	})
+}
+
+fn autofree_test_fresh_string_clone_push_return_stmt() ast.Stmt {
+	return autofree_test_return_stmt(autofree_test_len_selector_expr('items',
+		autofree_test_slots_root_pos, autofree_test_field_pos, autofree_test_post_rhs_pos))
+}
+
 fn autofree_test_receiver_field_slice_clone_then_if_stmt(stmts []ast.Stmt) ast.Stmt {
 	return autofree_test_receiver_field_slice_clone_then_if_stmt_with_else(stmts, ast.empty_expr)
 }
@@ -26866,6 +27552,112 @@ fn autofree_test_prepare_loop_local_clone_push_env(mut env Environment, fn_name 
 	env.set_expr_type(autofree_test_second_method_final_rhs_pos, array_type)
 }
 
+fn autofree_test_prepare_fresh_string_clone_push_env(mut env Environment, fn_name string) {
+	string_type := Type(string_)
+	string_array_type := Type(Array{
+		elem_type: string_type
+	})
+	autofree_test_add_scope_with_var_types(mut env, fn_name, {
+		'items':  string_array_type
+		'left':   string_type
+		'right':  string_type
+		'text':   string_type
+		'_sp':    string_type
+		'other':  string_type
+		'holder': autofree_test_named_field_holder_type('name', string_type)
+		'names':  string_array_type
+		'cache':  autofree_test_int_key_map_type(string_type)
+	})
+	env.set_expr_type(autofree_test_slots_param_pos, string_array_type)
+	env.set_expr_type(autofree_test_slots_root_pos, string_array_type)
+	env.set_expr_type(autofree_test_source_param_pos, string_type)
+	env.set_expr_type(autofree_test_other_rhs_pos, string_type)
+	env.set_expr_type(autofree_test_lhs_pos, string_type)
+	env.set_expr_type(autofree_test_rhs_pos, string_type)
+	env.set_expr_type(autofree_test_post_rhs_pos, string_type)
+	env.set_expr_type(autofree_test_second_method_lhs_pos, string_type)
+	env.set_expr_type(autofree_test_second_method_final_lhs_pos, string_type)
+	env.set_expr_type(autofree_test_second_method_final_rhs_pos, string_type)
+	env.set_expr_type(autofree_test_third_lhs_pos, string_type)
+	env.set_expr_type(autofree_test_third_rhs_pos, string_type)
+	env.set_expr_type(autofree_test_holder_root_pos, autofree_test_named_field_holder_type('name',
+		string_type))
+	env.set_expr_type(autofree_test_field_pos, string_type)
+	env.set_expr_type(autofree_test_index_pos, Type(int_))
+	env.set_expr_type(autofree_test_key_pos, Type(int_))
+	env.set_expr_type(autofree_test_nested_index_pos, string_type)
+	env.set_expr_type(autofree_test_cache_root_pos, autofree_test_int_key_map_type(string_type))
+}
+
+fn autofree_test_prepare_fresh_string_clone_push_pointer_destination_env(mut env Environment, fn_name string, target_type Type) {
+	string_type := Type(string_)
+	autofree_test_add_scope_with_var_types(mut env, fn_name, {
+		'items':  target_type
+		'left':   string_type
+		'right':  string_type
+		'text':   string_type
+		'_sp':    string_type
+		'other':  string_type
+		'holder': autofree_test_named_field_holder_type('items', target_type)
+	})
+	autofree_test_set_fresh_string_clone_push_pointer_destination_expr_types(mut env, target_type,
+		string_type)
+}
+
+fn autofree_test_prepare_fresh_string_clone_push_global_pointer_destination_env(mut env Environment, fn_name string, target_type Type) {
+	string_type := Type(string_)
+	autofree_test_add_scope_with_global_and_vars(mut env, fn_name, 'items', target_type, {
+		'left':   string_type
+		'right':  string_type
+		'text':   string_type
+		'_sp':    string_type
+		'other':  string_type
+		'holder': autofree_test_named_field_holder_type('items', target_type)
+	})
+	autofree_test_set_fresh_string_clone_push_pointer_destination_expr_types(mut env, target_type,
+		string_type)
+}
+
+fn autofree_test_set_fresh_string_clone_push_pointer_destination_expr_types(mut env Environment, target_type Type, string_type Type) {
+	env.set_expr_type(autofree_test_slots_param_pos, target_type)
+	env.set_expr_type(autofree_test_slots_root_pos, target_type)
+	env.set_expr_type(autofree_test_source_param_pos, string_type)
+	env.set_expr_type(autofree_test_other_rhs_pos, string_type)
+	env.set_expr_type(autofree_test_lhs_pos, string_type)
+	env.set_expr_type(autofree_test_rhs_pos, string_type)
+	env.set_expr_type(autofree_test_post_rhs_pos, string_type)
+	env.set_expr_type(autofree_test_second_method_lhs_pos, string_type)
+	env.set_expr_type(autofree_test_second_method_final_lhs_pos, string_type)
+	env.set_expr_type(autofree_test_second_method_final_rhs_pos, string_type)
+	env.set_expr_type(autofree_test_third_lhs_pos, string_type)
+	env.set_expr_type(autofree_test_third_rhs_pos, string_type)
+	env.set_expr_type(autofree_test_holder_root_pos, autofree_test_named_field_holder_type('items',
+		target_type))
+	env.set_expr_type(autofree_test_field_pos, target_type)
+	env.set_expr_type(autofree_test_index_pos, Type(int_))
+	env.set_expr_type(autofree_test_key_pos, Type(int_))
+	env.set_expr_type(autofree_test_nested_index_pos, target_type)
+}
+
+fn autofree_test_prepare_fresh_string_clone_push_env_with_global(mut env Environment, fn_name string) {
+	autofree_test_prepare_fresh_string_clone_push_env(mut env, fn_name)
+	string_type := Type(string_)
+	string_array_type := Type(Array{
+		elem_type: string_type
+	})
+	autofree_test_add_scope_with_global_and_vars(mut env, fn_name, 'global_name', string_type, {
+		'items':  string_array_type
+		'left':   string_type
+		'right':  string_type
+		'text':   string_type
+		'_sp':    string_type
+		'other':  string_type
+		'holder': autofree_test_named_field_holder_type('name', string_type)
+		'names':  string_array_type
+		'cache':  autofree_test_int_key_map_type(string_type)
+	})
+}
+
 fn autofree_test_prepare_fresh_array_final_clone_cleanup_env(mut env Environment, fn_name string, dst_type Type, array_type Type) {
 	autofree_test_add_scope_with_var_types(mut env, fn_name, {
 		'dst': dst_type
@@ -29454,6 +30246,147 @@ fn autofree_test_assert_no_loop_local_clone_push_cleanup_or_releases(env Environ
 		for insertion_point in env.autofree_release_insertion_points_by_fn_key[fn_key] {
 			assert insertion_point.move_kind != .loop_local_clone_push_binding
 			assert insertion_point.name != 'row'
+		}
+	}
+	assert env.autofree_releases_by_fn_key.len == 0
+	assert env.autofree_helper_roots.len == 0
+}
+
+fn autofree_test_assert_fresh_string_clone_push_cleanup(env Environment, flat ast.FlatAst, fn_key string, push_kind ast.FlatNodeKind, push_pos_id int) {
+	move_kind := AutofreeMoveProofKind.fresh_local_string_clone_push_binding
+	text_id := autofree_test_node_id_by_kind_name_pos(flat, .expr_ident, 'text',
+		autofree_test_lhs_pos)
+	source_id := autofree_test_node_id_by_kind_pos(flat, .expr_call, autofree_test_rhs_pos)
+	push_expr_id := autofree_test_node_id_by_kind_pos(flat, push_kind, push_pos_id)
+	push_stmt_id := autofree_test_stmt_expr_id_with_single_child(flat, push_expr_id)
+	assert fn_key in env.autofree_fresh_locals_by_fn_key
+	fresh_locals := env.autofree_fresh_locals_by_fn_key[fn_key]
+	assert fresh_locals.len == 1
+	fresh := fresh_locals[0]
+	assert fresh.name == 'text'
+	assert fresh.reason == 'owned string plus call result'
+	assert fresh.state == .owned_unique
+	assert fresh.resource == .string_value
+	assert fresh.shape.kind == .string_
+	assert fresh.shape.needs_autofree()
+	assert fresh.type_name == Type(string_).name()
+	assert same_type_name(fresh.typ, Type(string_))
+	assert fresh.node_id == text_id
+	assert fresh.pos_id == autofree_test_lhs_pos
+	assert fresh.stmt_pos_id == 200
+	assert fresh.source_endpoint.storage == .call_result
+	assert fresh.source_endpoint.root_storage == .call_result
+	assert fresh.source_endpoint.root_node_id == source_id
+	assert fresh.source_endpoint.root_pos_id == autofree_test_rhs_pos
+	assert fresh.source_endpoint.node_id == source_id
+	assert fresh.source_endpoint.pos_id == autofree_test_rhs_pos
+	assert fresh.source_endpoint.reason == 'owned string plus call result'
+	assert fresh.endpoint.storage == .local
+	assert fresh.endpoint.root_storage == .local
+	assert fresh.endpoint.name == 'text'
+	assert fn_key in env.autofree_move_proofs_by_fn_key
+	proofs := env.autofree_move_proofs_by_fn_key[fn_key]
+	assert proofs.len == 1
+	proof := proofs[0]
+	assert proof.kind == move_kind
+	assert proof.kind != .fresh_local_binding
+	assert proof.name == 'text'
+	assert proof.reason == 'fresh local string clone push cleanup'
+	assert proof.state == .owned_unique
+	assert proof.resource == .string_value
+	assert proof.shape.kind == .string_
+	assert proof.type_name == Type(string_).name()
+	assert same_type_name(proof.typ, Type(string_))
+	assert proof.node_id == text_id
+	assert proof.pos_id == autofree_test_lhs_pos
+	assert proof.stmt_node_id == push_stmt_id
+	assert proof.stmt_pos_id == push_pos_id
+	assert proof.source_endpoint.storage == .call_result
+	assert proof.source_endpoint.root_storage == .call_result
+	assert proof.target_endpoint.storage == .local
+	assert proof.target_endpoint.root_storage == .local
+	assert proof.target_endpoint.name == 'text'
+	assert fn_key in env.autofree_natural_release_candidates_by_fn_key
+	candidates := env.autofree_natural_release_candidates_by_fn_key[fn_key]
+	assert candidates.len == 1
+	candidate := candidates[0]
+	assert candidate.move_kind == move_kind
+	assert candidate.move_kind != .fresh_local_binding
+	assert candidate.resource == .string_value
+	assert candidate.name == 'text'
+	assert candidate.release_after_node_id == push_stmt_id
+	assert candidate.release_after_pos_id == push_pos_id
+	assert fn_key in env.autofree_release_plans_by_fn_key
+	plans := env.autofree_release_plans_by_fn_key[fn_key]
+	assert plans.len == 1
+	plan := plans[0]
+	assert plan.move_kind == move_kind
+	assert plan.plan_kind == .natural_exit
+	assert plan.plan_action == .string_value_cleanup
+	assert plan.helper_requirement == .none
+	assert plan.resource == .string_value
+	assert plan.release_after_node_id == push_stmt_id
+	assert plan.release_after_pos_id == push_pos_id
+	assert fn_key in env.autofree_release_preflights_by_fn_key
+	preflights := env.autofree_release_preflights_by_fn_key[fn_key]
+	assert preflights.len == 1
+	preflight := preflights[0]
+	assert preflight.move_kind == move_kind
+	assert preflight.plan_action == .string_value_cleanup
+	assert preflight.preflight_status == .inert
+	assert preflight.resource == .string_value
+	assert preflight.release_after_node_id == push_stmt_id
+	assert preflight.release_after_pos_id == push_pos_id
+	assert fn_key in env.autofree_release_insertion_points_by_fn_key
+	insertion_points := env.autofree_release_insertion_points_by_fn_key[fn_key]
+	assert insertion_points.len == 1
+	insertion_point := insertion_points[0]
+	assert insertion_point.move_kind == move_kind
+	assert insertion_point.plan_action == .string_value_cleanup
+	assert insertion_point.insertion_kind == .after_statement
+	assert insertion_point.insertion_status == .inert
+	assert insertion_point.resource == .string_value
+	assert insertion_point.endpoint.name == 'text'
+	assert insertion_point.endpoint.storage == .local
+	assert insertion_point.endpoint.root_storage == .local
+	assert insertion_point.source_endpoint.storage == .call_result
+	assert insertion_point.source_endpoint.root_storage == .call_result
+	assert insertion_point.insert_after_node_id == push_stmt_id
+	assert insertion_point.insert_after_pos_id == push_pos_id
+	assert env.autofree_transfers_by_fn_key.len == 0
+	assert env.autofree_release_eligibility_by_fn_key.len == 0
+	assert env.autofree_releases_by_fn_key.len == 0
+	assert env.autofree_helper_roots.len == 0
+}
+
+fn autofree_test_assert_no_fresh_string_clone_push_cleanup_or_releases(env Environment, fn_key string) {
+	assert fn_key.len > 0
+	if fn_key in env.autofree_move_proofs_by_fn_key {
+		for proof in env.autofree_move_proofs_by_fn_key[fn_key] {
+			assert proof.kind != .fresh_local_string_clone_push_binding
+			assert proof.reason != 'fresh local string clone push cleanup'
+		}
+	}
+	if fn_key in env.autofree_natural_release_candidates_by_fn_key {
+		for candidate in env.autofree_natural_release_candidates_by_fn_key[fn_key] {
+			assert candidate.move_kind != .fresh_local_string_clone_push_binding
+		}
+	}
+	if fn_key in env.autofree_release_plans_by_fn_key {
+		for plan in env.autofree_release_plans_by_fn_key[fn_key] {
+			assert plan.move_kind != .fresh_local_string_clone_push_binding
+			assert plan.plan_action != .string_value_cleanup
+		}
+	}
+	if fn_key in env.autofree_release_preflights_by_fn_key {
+		for preflight in env.autofree_release_preflights_by_fn_key[fn_key] {
+			assert preflight.move_kind != .fresh_local_string_clone_push_binding
+		}
+	}
+	if fn_key in env.autofree_release_insertion_points_by_fn_key {
+		for insertion_point in env.autofree_release_insertion_points_by_fn_key[fn_key] {
+			assert insertion_point.move_kind != .fresh_local_string_clone_push_binding
+			assert insertion_point.name != 'text'
 		}
 	}
 	assert env.autofree_releases_by_fn_key.len == 0
