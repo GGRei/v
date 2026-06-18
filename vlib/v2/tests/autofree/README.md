@@ -6,6 +6,8 @@ They are intended to be compiled explicitly.
 Compile/run them with an explicit path to a self-hosted V2 binary produced for
 the current source tree. Do not rely on compiler aliases or implicit tool
 selection for these fixtures.
+Run these fixtures in serial mode with `--no-parallel`; the V2 parallel path is
+not part of this fixture contract.
 
 See `MANIFEST.md` for the exact V2-only invocation shape.
 

@@ -11,14 +11,14 @@ V2_BIN=/path/to/v2-self-hosted
 OUT_DIR=/tmp/v2-autofree-fixtures
 mkdir -p "$OUT_DIR"
 
-"$V2_BIN" -autofree -o "$OUT_DIR/struct_field_array_push" vlib/v2/tests/autofree/struct_field_array_push.v
-"$V2_BIN" -autofree -o "$OUT_DIR/borrowed_parent_pointer_walk" vlib/v2/tests/autofree/borrowed_parent_pointer_walk.v
-"$V2_BIN" -autofree -o "$OUT_DIR/sumtype_payload_shared_copy" vlib/v2/tests/autofree/sumtype_payload_shared_copy.v
-"$V2_BIN" -autofree -o "$OUT_DIR/borrowed_pointer_struct_fields" vlib/v2/tests/autofree/borrowed_pointer_struct_fields.v
-"$V2_BIN" -autofree -o "$OUT_DIR/array_escape_global_field_map_return" vlib/v2/tests/autofree/array_escape_global_field_map_return.v
-"$V2_BIN" -autofree -o "$OUT_DIR/function_method_boundary_flow" vlib/v2/tests/autofree/function_method_boundary_flow.v
-"$V2_BIN" -autofree -o "$OUT_DIR/single_statement_array_cleanup" vlib/v2/tests/autofree/single_statement_array_cleanup.v
-"$V2_BIN" -autofree -o "$OUT_DIR/single_statement_string_array_cleanup" vlib/v2/tests/autofree/single_statement_string_array_cleanup.v
+"$V2_BIN" --no-parallel -autofree -o "$OUT_DIR/struct_field_array_push" vlib/v2/tests/autofree/struct_field_array_push.v
+"$V2_BIN" --no-parallel -autofree -o "$OUT_DIR/borrowed_parent_pointer_walk" vlib/v2/tests/autofree/borrowed_parent_pointer_walk.v
+"$V2_BIN" --no-parallel -autofree -o "$OUT_DIR/sumtype_payload_shared_copy" vlib/v2/tests/autofree/sumtype_payload_shared_copy.v
+"$V2_BIN" --no-parallel -autofree -o "$OUT_DIR/borrowed_pointer_struct_fields" vlib/v2/tests/autofree/borrowed_pointer_struct_fields.v
+"$V2_BIN" --no-parallel -autofree -o "$OUT_DIR/array_escape_global_field_map_return" vlib/v2/tests/autofree/array_escape_global_field_map_return.v
+"$V2_BIN" --no-parallel -autofree -o "$OUT_DIR/function_method_boundary_flow" vlib/v2/tests/autofree/function_method_boundary_flow.v
+"$V2_BIN" --no-parallel -autofree -o "$OUT_DIR/single_statement_array_cleanup" vlib/v2/tests/autofree/single_statement_array_cleanup.v
+"$V2_BIN" --no-parallel -autofree -o "$OUT_DIR/single_statement_string_array_cleanup" vlib/v2/tests/autofree/single_statement_string_array_cleanup.v
 ```
 
 `function_method_boundary_flow.v` prints `14`.
@@ -42,15 +42,15 @@ OUT_DIR=/tmp/v2-autofree-generated-c
 HOST_OS=linux
 mkdir -p "$OUT_DIR"
 
-"$V2_BIN" -autofree -gc none -cc cc -backend cleanc -keepc -o "$OUT_DIR/single_statement_hosted" vlib/v2/tests/autofree/single_statement_array_cleanup.v
-"$V2_BIN" -autofree -gc none -cc cc -backend cleanc -keepc -os cross -o "$OUT_DIR/single_statement_cross" vlib/v2/tests/autofree/single_statement_array_cleanup.v
-"$V2_BIN" -autofree -gc none -cc cc -backend cleanc -keepc -freestanding -os "$HOST_OS" -o "$OUT_DIR/single_statement_freestanding" vlib/v2/tests/autofree/single_statement_array_cleanup.v
-"$V2_BIN" -autofree -gc none -cc cc -backend cleanc -keepc -freestanding -os none -o "$OUT_DIR/single_statement_none" vlib/v2/tests/autofree/single_statement_array_cleanup.v
-"$V2_BIN" -autofree -gc none -cc cc -backend cleanc -keepc -o "$OUT_DIR/string_array_hosted" vlib/v2/tests/autofree/single_statement_string_array_cleanup.v
-"$V2_BIN" -autofree -gc none -cc cc -backend cleanc -keepc -os cross -o "$OUT_DIR/string_array_cross" vlib/v2/tests/autofree/single_statement_string_array_cleanup.v
-"$V2_BIN" -gc none -cc cc -backend cleanc -keepc -o "$OUT_DIR/string_array_without_autofree" vlib/v2/tests/autofree/single_statement_string_array_cleanup.v
-"$V2_BIN" -autofree -gc none -cc cc -backend cleanc -keepc -freestanding -os "$HOST_OS" -o "$OUT_DIR/string_array_freestanding" vlib/v2/tests/autofree/single_statement_string_array_cleanup.v
-"$V2_BIN" -autofree -gc none -cc cc -backend cleanc -keepc -freestanding -os none -o "$OUT_DIR/string_array_none" vlib/v2/tests/autofree/single_statement_string_array_cleanup.v
+"$V2_BIN" --no-parallel -autofree -gc none -cc cc -backend cleanc -keepc -o "$OUT_DIR/single_statement_hosted" vlib/v2/tests/autofree/single_statement_array_cleanup.v
+"$V2_BIN" --no-parallel -autofree -gc none -cc cc -backend cleanc -keepc -os cross -o "$OUT_DIR/single_statement_cross" vlib/v2/tests/autofree/single_statement_array_cleanup.v
+"$V2_BIN" --no-parallel -autofree -gc none -cc cc -backend cleanc -keepc -freestanding -os "$HOST_OS" -o "$OUT_DIR/single_statement_freestanding" vlib/v2/tests/autofree/single_statement_array_cleanup.v
+"$V2_BIN" --no-parallel -autofree -gc none -cc cc -backend cleanc -keepc -freestanding -os none -o "$OUT_DIR/single_statement_none" vlib/v2/tests/autofree/single_statement_array_cleanup.v
+"$V2_BIN" --no-parallel -autofree -gc none -cc cc -backend cleanc -keepc -o "$OUT_DIR/string_array_hosted" vlib/v2/tests/autofree/single_statement_string_array_cleanup.v
+"$V2_BIN" --no-parallel -autofree -gc none -cc cc -backend cleanc -keepc -os cross -o "$OUT_DIR/string_array_cross" vlib/v2/tests/autofree/single_statement_string_array_cleanup.v
+"$V2_BIN" --no-parallel -gc none -cc cc -backend cleanc -keepc -o "$OUT_DIR/string_array_without_autofree" vlib/v2/tests/autofree/single_statement_string_array_cleanup.v
+"$V2_BIN" --no-parallel -autofree -gc none -cc cc -backend cleanc -keepc -freestanding -os "$HOST_OS" -o "$OUT_DIR/string_array_freestanding" vlib/v2/tests/autofree/single_statement_string_array_cleanup.v
+"$V2_BIN" --no-parallel -autofree -gc none -cc cc -backend cleanc -keepc -freestanding -os none -o "$OUT_DIR/string_array_none" vlib/v2/tests/autofree/single_statement_string_array_cleanup.v
 ```
 
 The hosted and cross generated C should contain `array__free(&items);`.
