@@ -184,6 +184,59 @@ fn (mut g Gen) gen_tuple_value_stmt_expr(tuple_type string, tuple_exprs []ast.Ex
 	g.sb.write_string('${tmp_name}; })')
 }
 
+fn (g &Gen) autofree_eprintln_string_interpolation_cleanup_enabled() bool {
+	return g.pref != unsafe { nil } && g.pref.autofree && !g.is_freestanding_target()
+}
+
+fn (mut g Gen) autofree_direct_eprintln_is_shadowed() bool {
+	if _ := g.get_local_var_c_type('eprintln') {
+		return true
+	}
+	if g.cur_module == 'builtin' {
+		return false
+	}
+	if _ := g.imported_symbol_c_type('eprintln') {
+		return true
+	}
+	if obj := g.lookup_module_scope_object('eprintln') {
+		return obj is types.Fn || obj is types.Const || obj is types.Global
+	}
+	return false
+}
+
+fn (mut g Gen) autofree_eprintln_string_interpolation_stmt_arg(expr ast.Expr) ?ast.StringInterLiteral {
+	if !g.autofree_eprintln_string_interpolation_cleanup_enabled()
+		|| g.autofree_direct_eprintln_is_shadowed() {
+		return none
+	}
+	if expr !is ast.CallExpr {
+		return none
+	}
+	call := expr as ast.CallExpr
+	if call.lhs !is ast.Ident || call.args.len != 1 {
+		return none
+	}
+	lhs := call.lhs as ast.Ident
+	if lhs.name != 'eprintln' || call.args[0] !is ast.StringInterLiteral {
+		return none
+	}
+	return call.args[0] as ast.StringInterLiteral
+}
+
+fn (mut g Gen) gen_autofree_eprintln_string_interpolation_stmt(node ast.StringInterLiteral) {
+	tmp_name := '_eprintln_inter_tmp_${g.tmp_counter}'
+	g.tmp_counter++
+	g.mark_called_fn_name('eprintln')
+	g.write_indent()
+	g.sb.write_string('string ${tmp_name} = ')
+	g.gen_string_inter_literal(node)
+	g.sb.writeln(';')
+	g.write_indent()
+	g.sb.writeln('eprintln(${tmp_name});')
+	g.write_indent()
+	g.sb.writeln('string__free(&${tmp_name});')
+}
+
 fn (mut g Gen) gen_stmt(node ast.Stmt) {
 	if !stmt_has_valid_data(node) {
 		return
@@ -227,6 +280,10 @@ fn (mut g Gen) gen_stmt(node ast.Stmt) {
 				}
 			}
 			if !expr_has_valid_data(node.expr) {
+				return
+			}
+			if inter := g.autofree_eprintln_string_interpolation_stmt_arg(node.expr) {
+				g.gen_autofree_eprintln_string_interpolation_stmt(inter)
 				return
 			}
 			g.write_indent()
