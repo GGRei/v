@@ -3529,6 +3529,9 @@ fn (t &Transformer) call_selector_module_name_can_transform_direct(c ast.Cursor)
 		return none
 	}
 	lhs := c.edge(0)
+	if t.call_selector_is_official_math_inline_cursor(c) {
+		return none
+	}
 	call_name := t.resolve_module_call_name_cursor(lhs) or { return none }
 	rhs_name := selector_rhs_name_cursor(lhs)
 	if rhs_name in t.elided_fns || call_name in t.elided_fns {
@@ -3549,6 +3552,26 @@ fn (t &Transformer) call_selector_module_name_can_transform_direct(c ast.Cursor)
 		}
 	}
 	return call_name
+}
+
+fn (t &Transformer) call_selector_is_official_math_inline_cursor(c ast.Cursor) bool {
+	if c.kind() != .expr_call || c.edge_count() == 0 {
+		return false
+	}
+	lhs := c.edge(0)
+	if lhs.kind() != .expr_selector {
+		return false
+	}
+	name := selector_rhs_name_cursor(lhs)
+	arg_count := c.edge_count() - 1
+	if !(((name == 'min' || name == 'max') && arg_count == 2) || (name == 'clip' && arg_count == 3)) {
+		return false
+	}
+	sel_expr := lhs.expr()
+	if sel_expr !is ast.SelectorExpr {
+		return false
+	}
+	return t.is_resolved_math_module_selector(sel_expr as ast.SelectorExpr)
 }
 
 fn (t &Transformer) call_selector_static_name_can_transform_direct(c ast.Cursor) ?string {
@@ -4823,6 +4846,13 @@ fn (mut t Transformer) transform_expr_cursor_to_flat(c ast.Cursor, mut out ast.F
 						return id
 					}
 				}
+			}
+			if op == .key_dump {
+				mut expr_ids := []ast.FlatNodeId{cap: c.edge_count()}
+				for i in 0 .. c.edge_count() {
+					expr_ids << t.transform_expr_cursor_to_flat(c.edge(i), mut out)
+				}
+				return out.emit_keyword_operator_by_ids(op, expr_ids, c.pos())
 			}
 			return out.copy_subtree_from(c.flat, c.id)
 		}
@@ -6472,15 +6502,16 @@ fn make_exit_one_stmt_to_flat(pos token.Pos, mut out ast.FlatBuilder) ast.FlatNo
 fn (mut t Transformer) transform_assign_stmt_cursor_to_flat(c ast.Cursor, mut out ast.FlatBuilder) ast.FlatNodeId {
 	t.remember_decl_assign_cursor_type(c)
 	lhs_len := c.extra_int()
+	op := unsafe { token.Token(int(c.aux())) }
 	mut lhs_ids := []ast.FlatNodeId{cap: lhs_len}
 	for i in 0 .. lhs_len {
 		lhs_ids << t.transform_assign_lhs_cursor_to_flat(c.edge(i), mut out)
 	}
 	mut rhs_ids := []ast.FlatNodeId{cap: c.edge_count() - lhs_len}
 	for i in lhs_len .. c.edge_count() {
-		rhs_ids << t.transform_expr_cursor_to_flat(c.edge(i), mut out)
+		lhs := if i - lhs_len < lhs_len { c.edge(i - lhs_len) } else { ast.Cursor{} }
+		rhs_ids << t.transform_assign_rhs_cursor_to_flat(lhs, c.edge(i), op, mut out)
 	}
-	op := unsafe { token.Token(int(c.aux())) }
 	return out.emit_assign_stmt_by_ids(op, lhs_ids, rhs_ids, c.pos())
 }
 
@@ -6489,6 +6520,21 @@ fn (mut t Transformer) transform_assign_lhs_cursor_to_flat(lhs ast.Cursor, mut o
 		return out.emit_ident_by_name(lhs.name(), lhs.pos())
 	}
 	return t.transform_expr_cursor_to_flat(lhs, mut out)
+}
+
+fn (mut t Transformer) transform_assign_rhs_cursor_to_flat(lhs ast.Cursor, rhs ast.Cursor, op token.Token, mut out ast.FlatBuilder) ast.FlatNodeId {
+	if lhs.is_valid() && rhs.is_valid() && rhs.kind() == .expr_array_init
+		&& rhs.edge(0).kind() == .expr_empty {
+		lhs_is_new_decl_ident := op == .decl_assign && lhs.kind() == .expr_ident
+		if !lhs_is_new_decl_ident {
+			if lhs_expected := t.get_expr_type_cursor(lhs) {
+				resolved := t.resolve_expr_with_expected_type(ast.Expr(array_init_expr_from_cursor(rhs)),
+					lhs_expected)
+				return t.transform_expr_to_flat(resolved, mut out)
+			}
+		}
+	}
+	return t.transform_expr_cursor_to_flat(rhs, mut out)
 }
 
 fn (mut t Transformer) remember_decl_assign_cursor_type(c ast.Cursor) {
@@ -12349,6 +12395,13 @@ pub fn (mut t Transformer) transform_expr_to_flat(expr ast.Expr, mut out ast.Fla
 					return out.emit_call_expr_by_ids(lhs_id, arg_ids, result.pos)
 				}
 				return out.emit_expr(result)
+			}
+			if expr.op == .key_dump {
+				mut expr_ids := []ast.FlatNodeId{cap: expr.exprs.len}
+				for item in expr.exprs {
+					expr_ids << t.transform_expr_to_flat(item, mut out)
+				}
+				return out.emit_keyword_operator_by_ids(expr.op, expr_ids, expr.pos)
 			}
 			return out.emit_expr(ast.Expr(expr))
 		}

@@ -61,6 +61,12 @@ fn (mut g Gen) restore_file_module_context(file_name string, module_name string,
 	g.resolved_module_names.clear()
 }
 
+fn (mut g Gen) gen_option_error_return(expr ast.Expr) {
+	g.sb.write_string('return (${g.cur_fn_ret_type}){ .state = 2, .err = ')
+	g.expr(expr)
+	g.sb.writeln(' };')
+}
+
 fn (mut g Gen) gen_stmts(stmts []ast.Stmt) {
 	saved_file_name := g.cur_file_name
 	saved_module := g.cur_module
@@ -365,16 +371,22 @@ fn (mut g Gen) gen_stmt(node ast.Stmt) {
 			}
 			if g.cur_fn_ret_type.starts_with('_option_') {
 				if node.exprs.len == 0 {
-					g.sb.writeln('return (${g.cur_fn_ret_type}){ .state = 2 };')
+					g.sb.write_string('return ')
+					g.gen_option_none_literal(g.cur_fn_ret_type)
+					g.sb.writeln(';')
 					return
 				}
 				expr := node.exprs[0]
 				if expr is ast.BasicLiteral && expr.value == '0' {
-					g.sb.writeln('return (${g.cur_fn_ret_type}){ .state = 2 };')
+					g.sb.write_string('return ')
+					g.gen_option_none_literal(g.cur_fn_ret_type)
+					g.sb.writeln(';')
 					return
 				}
 				if is_none_expr(expr) || expr is ast.Type {
-					g.sb.writeln('return (${g.cur_fn_ret_type}){ .state = 2 };')
+					g.sb.write_string('return ')
+					g.gen_option_none_literal(g.cur_fn_ret_type)
+					g.sb.writeln(';')
 					return
 				}
 				mut expr_type := g.get_expr_type(expr)
@@ -384,20 +396,18 @@ fn (mut g Gen) gen_stmt(node ast.Stmt) {
 				if (expr_type == '' || expr_type == 'int') && expr is ast.CallExpr {
 					expr_type = g.get_call_return_type(expr.lhs, expr.args) or { expr_type }
 				}
-				value_type := option_value_type(g.cur_fn_ret_type)
+				value_type := g.option_value_c_type(g.cur_fn_ret_type)
 				if expr is ast.Ident {
 					err_ident := expr as ast.Ident
 					if err_ident.name == 'err' {
 						err_type := g.get_local_var_c_type(err_ident.name) or { 'IError' }
 						if err_type in ['IError', 'builtin__IError'] {
-							g.sb.write_string('return (${g.cur_fn_ret_type}){ .is_error=true, .err=')
-							g.expr(expr)
-							g.sb.writeln(' };')
+							g.gen_option_error_return(expr)
 							return
 						}
 					}
 				}
-				if expr_type == 'IError' {
+				if is_ierror_c_type(expr_type) {
 					if value_type != '' && value_type != 'void' {
 						if expr is ast.CastExpr
 							&& g.expr_type_to_c(expr.typ) in ['IError', 'builtin__IError'] {
@@ -421,9 +431,7 @@ fn (mut g Gen) gen_stmt(node ast.Stmt) {
 							}
 						}
 					}
-					g.sb.write_string('return (${g.cur_fn_ret_type}){ .is_error=true, .err=')
-					g.expr(expr)
-					g.sb.writeln(' };')
+					g.gen_option_error_return(expr)
 					return
 				}
 				if expr_type == g.cur_fn_ret_type {
@@ -433,7 +441,9 @@ fn (mut g Gen) gen_stmt(node ast.Stmt) {
 					return
 				}
 				if value_type == '' || value_type == 'void' {
-					g.sb.writeln('return (${g.cur_fn_ret_type}){ .state = 2 };')
+					g.sb.write_string('return ')
+					g.gen_option_none_literal(g.cur_fn_ret_type)
+					g.sb.writeln(';')
 					return
 				}
 				if value_type in g.tuple_aliases {
@@ -616,8 +626,13 @@ fn (mut g Gen) gen_stmt(node ast.Stmt) {
 			}
 			g.sb.write_string('return')
 			if node.exprs.len > 0 {
-				g.sb.write_string(' ')
 				expr := node.exprs[0]
+				if g.cur_fn_ret_type == 'void' && is_none_like_expr(expr) {
+					// `or { return }` can leave a none marker in void functions.
+					g.sb.writeln(';')
+					return
+				}
+				g.sb.write_string(' ')
 				if g.gen_return_mut_param_value(expr) {
 				} else if g.cur_fn_ret_type in g.sum_type_variants {
 					g.gen_type_cast_expr(g.cur_fn_ret_type, expr)

@@ -416,9 +416,44 @@ fn (mut ctx Context) pace_frame() {
 	ctx.frame_timer.restart()
 }
 
-fn gg_event_fn(ce voidptr, user_data voidptr) {
-	// e := unsafe { &sapp.Event(ce) }
-	mut e := unsafe { &Event(ce) }
+fn gg_event_fn(const_event &sapp.Event, user_data voidptr) {
+	mouse_button := match const_event.mouse_button {
+		.left {
+			MouseButton.left
+		}
+		.right {
+			MouseButton.right
+		}
+		.middle {
+			MouseButton.middle
+		}
+		else {
+			MouseButton.invalid
+		}
+	}
+
+	mut event := Event{
+		frame_count:        const_event.frame_count
+		typ:                const_event.type
+		key_code:           KeyCode(const_event.key_code)
+		char_code:          const_event.char_code
+		key_repeat:         const_event.key_repeat
+		modifiers:          const_event.modifiers
+		mouse_button:       mouse_button
+		mouse_x:            const_event.mouse_x
+		mouse_y:            const_event.mouse_y
+		mouse_dx:           const_event.mouse_dx
+		mouse_dy:           const_event.mouse_dy
+		scroll_x:           const_event.scroll_x
+		scroll_y:           const_event.scroll_y
+		num_touches:        const_event.num_touches
+		touches:            const_event.touches
+		window_width:       const_event.window_width
+		window_height:      const_event.window_height
+		framebuffer_width:  const_event.framebuffer_width
+		framebuffer_height: const_event.framebuffer_height
+	}
+	mut e := &event
 	mut ctx := unsafe { &Context(user_data) }
 	if ctx.ui_mode {
 		ctx.refresh_ui()

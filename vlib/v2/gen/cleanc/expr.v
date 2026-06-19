@@ -1279,13 +1279,13 @@ fn (mut g Gen) gen_channel_receive_expr(node ast.PrefixExpr) bool {
 fn (mut g Gen) gen_unwrapped_value_expr(expr ast.Expr) bool {
 	expr_type := g.get_expr_type(expr)
 	if expr_type.starts_with('_result_') {
-		base := g.result_value_type(expr_type)
+		base := g.result_value_c_type(expr_type)
 		if g.gen_unwrapped_payload_expr(expr, expr_type, base) {
 			return true
 		}
 	}
 	if expr_type.starts_with('_option_') {
-		base := option_value_type(expr_type)
+		base := g.option_value_c_type(expr_type)
 		if g.gen_unwrapped_payload_expr(expr, expr_type, base) {
 			return true
 		}
@@ -1293,28 +1293,104 @@ fn (mut g Gen) gen_unwrapped_value_expr(expr ast.Expr) bool {
 	return false
 }
 
-fn (mut g Gen) gen_unwrapped_payload_expr(expr ast.Expr, wrapper_type string, payload_type string) bool {
-	if payload_type == '' || payload_type == 'void' {
-		return false
-	}
-	is_addressable := match expr {
-		ast.Ident, ast.SelectorExpr, ast.IndexExpr {
+fn option_result_payload_expr_is_addressable(expr ast.Expr) bool {
+	return match expr {
+		ast.Ident, ast.IndexExpr {
 			true
+		}
+		ast.SelectorExpr {
+			option_result_payload_expr_is_addressable(expr.lhs)
 		}
 		else {
 			false
 		}
 	}
+}
 
-	if is_addressable {
-		g.sb.write_string('(*(${payload_type}*)(((u8*)(&')
-		g.expr(expr)
-		g.sb.write_string('.err)) + sizeof(IError)))')
-	} else {
-		g.sb.write_string('({ ${wrapper_type} _tmp = ')
-		g.expr(expr)
-		g.sb.write_string('; (*(${payload_type}*)(((u8*)(&_tmp.err)) + sizeof(IError))); })')
+fn (mut g Gen) gen_unwrapped_payload_ptr_expr(expr ast.Expr, payload_type string) bool {
+	payload_c_type := g.option_result_payload_c_type(payload_type)
+	if payload_c_type == '' || payload_c_type == 'void' {
+		return false
 	}
+	if option_result_payload_expr_is_addressable(expr) {
+		g.sb.write_string('(${payload_c_type}*)(((u8*)(&')
+		g.expr(expr)
+		g.sb.write_string('.err)) + sizeof(IError))')
+		return true
+	}
+	return false
+}
+
+fn (mut g Gen) gen_unwrapped_payload_expr(expr ast.Expr, wrapper_type string, payload_type string) bool {
+	payload_c_type := g.option_result_payload_c_type(payload_type)
+	if payload_c_type == '' || payload_c_type == 'void' {
+		return false
+	}
+	if option_result_payload_expr_is_addressable(expr) {
+		g.sb.write_string('(*')
+		if !g.gen_unwrapped_payload_ptr_expr(expr, payload_c_type) {
+			return false
+		}
+		g.sb.write_string(')')
+		return true
+	}
+	if wrapper_type == '' {
+		return false
+	}
+	g.sb.write_string('({ ${wrapper_type} _tmp = ')
+	g.expr(expr)
+	g.sb.write_string('; (*(${payload_c_type}*)(((u8*)(&_tmp.err)) + sizeof(IError))); })')
+	return true
+}
+
+struct UnwrapPayloadPointer {
+	wrapper_type string
+	payload_type string
+	wrapper_expr ast.Expr
+}
+
+fn (mut g Gen) unwrap_cast_payload_pointer(expr ast.Expr) ?UnwrapPayloadPointer {
+	if expr !is ast.CastExpr {
+		return none
+	}
+	cast_expr := expr as ast.CastExpr
+
+	wrapper_type := g.get_expr_type(cast_expr.expr)
+	payload_type := g.option_result_wrapper_payload_c_type(wrapper_type)
+	if payload_type == '' || payload_type == 'void' {
+		return none
+	}
+	cast_type := g.expr_type_to_c(cast_expr.typ)
+	if cast_type != payload_type && g.option_result_payload_c_type(cast_type) != payload_type {
+		return none
+	}
+	return UnwrapPayloadPointer{
+		wrapper_type: wrapper_type
+		payload_type: payload_type
+		wrapper_expr: cast_expr.expr
+	}
+}
+
+fn (mut g Gen) gen_unwrap_cast_payload_ptr(expr ast.Expr) bool {
+	info := g.unwrap_cast_payload_pointer(expr) or { return false }
+	return g.gen_unwrapped_payload_ptr_expr(info.wrapper_expr, info.payload_type)
+}
+
+fn (mut g Gen) gen_unwrap_cast_selector_expr(sel ast.SelectorExpr) bool {
+	info := g.unwrap_cast_payload_pointer(sel.lhs) or { return false }
+	field_name := escape_c_keyword(sel.rhs.name)
+	selector := if info.payload_type.ends_with('*') { '->' } else { '.' }
+	if option_result_payload_expr_is_addressable(info.wrapper_expr) {
+		g.sb.write_string('(*')
+		if !g.gen_unwrap_cast_payload_ptr(sel.lhs) {
+			return false
+		}
+		g.sb.write_string(')${selector}${field_name}')
+		return true
+	}
+	g.sb.write_string('({ ${info.wrapper_type} _tmp = ')
+	g.expr(info.wrapper_expr)
+	g.sb.write_string('; (*(${info.payload_type}*)(((u8*)(&_tmp.err)) + sizeof(IError)))${selector}${field_name}; })')
 	return true
 }
 
@@ -2608,7 +2684,9 @@ fn (mut g Gen) expr(node ast.Expr) {
 							&& g.cur_fn_ret_type.starts_with('_option_') {
 							g.sb.write_string('({ if (')
 							g.expr(cast_expr.expr)
-							g.sb.write_string('.state != 0) { return (${g.cur_fn_ret_type}){ .state = 2 }; } &')
+							g.sb.write_string('.state != 0) { return ')
+							g.gen_option_none_literal(g.cur_fn_ret_type)
+							g.sb.write_string('; } &')
 							g.gen_unwrapped_value_expr(cast_expr.expr)
 							g.sb.write_string('; })')
 							return
@@ -3069,6 +3147,9 @@ fn (mut g Gen) expr(node ast.Expr) {
 					return
 				}
 			}
+			if g.gen_unwrap_cast_selector_expr(sel) {
+				return
+			}
 			if rhs_name == 'bytestr' {
 				if lhs_expr is ast.IndexExpr && lhs_expr.expr is ast.RangeExpr {
 					g.sb.write_string('Array_u8__bytestr(')
@@ -3286,7 +3367,7 @@ fn (mut g Gen) expr(node ast.Expr) {
 					return
 				}
 				if lhs_expr is ast.Ident && lhs_expr.name.starts_with('_or_t') {
-					payload_type := g.get_expr_type(sel_expr)
+					payload_type := g.option_result_payload_c_type(g.get_expr_type(sel_expr))
 					if payload_type != ''
 						&& payload_type !in ['int_literal', 'float_literal', 'void'] {
 						if g.gen_unwrapped_payload_expr(lhs_expr, '', payload_type) {
@@ -3984,7 +4065,7 @@ fn (mut g Gen) cast_target_type_to_c(typ ast.Expr) string {
 fn (mut g Gen) gen_type_cast_expr(type_name string, expr ast.Expr) {
 	expr_type := g.get_expr_type(expr)
 	if type_name.starts_with('_option_') && is_none_like_expr(expr) {
-		g.sb.write_string('(${type_name}){ .state = 2 }')
+		g.gen_option_none_literal(type_name)
 		return
 	}
 	if expr is ast.BasicLiteral && expr.kind == .number && expr.value == '0' {
@@ -6717,7 +6798,7 @@ fn (mut g Gen) gen_cast_expr(node ast.CastExpr) {
 		type_name = resolved_type
 	}
 	if type_name.starts_with('_option_') && is_none_like_expr(node.expr) {
-		g.sb.write_string('(${type_name}){ .state = 2 }')
+		g.gen_option_none_literal(type_name)
 		return
 	}
 	if node.expr is ast.BasicLiteral && node.expr.kind == .number && node.expr.value == '0' {
@@ -6739,7 +6820,7 @@ fn (mut g Gen) gen_cast_expr(node ast.CastExpr) {
 		}
 	}
 	if type_name.starts_with('_option_') {
-		value_type := option_value_type(type_name)
+		value_type := g.option_value_c_type(type_name)
 		if value_type != '' && value_type != 'void' {
 			g.sb.write_string('({ ${type_name} _opt = (${type_name}){ .state = 2 }; ${value_type} _val = ')
 			// For interface value types, wrap the expression in an interface cast
@@ -7195,26 +7276,18 @@ fn (mut g Gen) is_sum_data_ptr_deref(expr ast.Expr) bool {
 
 fn (mut g Gen) is_sum_data_payload_selector(expr ast.Expr) bool {
 	inner := g.unwrap_parens(expr)
-	sel := match inner {
-		ast.SelectorExpr {
-			inner
-		}
-		else {
-			return false
-		}
+	if inner !is ast.SelectorExpr {
+		return false
 	}
+	sel := inner as ast.SelectorExpr
 
 	if !sel.rhs.name.starts_with('_') {
 		return false
 	}
-	lhs_sel := match sel.lhs {
-		ast.SelectorExpr {
-			sel.lhs
-		}
-		else {
-			return false
-		}
+	if sel.lhs !is ast.SelectorExpr {
+		return false
 	}
+	lhs_sel := sel.lhs as ast.SelectorExpr
 
 	return lhs_sel.rhs.name == '_data'
 }
@@ -7227,26 +7300,18 @@ fn (mut g Gen) resolved_sum_data_cast_type(node ast.CastExpr) ?string {
 		type_name = type_name[..type_name.len - 1]
 	}
 	cast_inner := g.unwrap_parens(node.expr)
-	sel := match cast_inner {
-		ast.SelectorExpr {
-			cast_inner
-		}
-		else {
-			return none
-		}
+	if cast_inner !is ast.SelectorExpr {
+		return none
 	}
+	sel := cast_inner as ast.SelectorExpr
 
 	if !sel.rhs.name.starts_with('_') {
 		return none
 	}
-	lhs_sel := match sel.lhs {
-		ast.SelectorExpr {
-			sel.lhs
-		}
-		else {
-			return none
-		}
+	if sel.lhs !is ast.SelectorExpr {
+		return none
 	}
+	lhs_sel := sel.lhs as ast.SelectorExpr
 
 	if lhs_sel.rhs.name != '_data' {
 		return none

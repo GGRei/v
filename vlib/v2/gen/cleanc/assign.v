@@ -1668,11 +1668,11 @@ fn (mut g Gen) gen_assign_stmt(node ast.AssignStmt) {
 			is_or_tmp := lhs.lhs is ast.Ident && lhs.lhs.name.starts_with('_or_t')
 			if lhs_type.starts_with('_result_') || lhs_type.starts_with('_option_') || is_or_tmp {
 				base := if lhs_type.starts_with('_result_') {
-					g.result_value_type(lhs_type)
+					g.result_value_c_type(lhs_type)
 				} else if lhs_type.starts_with('_option_') {
-					option_value_type(lhs_type)
+					g.option_value_c_type(lhs_type)
 				} else {
-					g.get_expr_type(rhs)
+					g.option_result_payload_c_type(g.get_expr_type(rhs))
 				}
 				if base != '' && base != 'void' {
 					g.write_indent()
@@ -1691,6 +1691,9 @@ fn (mut g Gen) gen_assign_stmt(node ast.AssignStmt) {
 			}
 		}
 		if node.op == .assign && lhs is ast.SelectorExpr {
+			if g.gen_unwrap_cast_selector_assign(lhs, rhs) {
+				return
+			}
 			if g.gen_sum_common_field_assign(lhs, rhs) {
 				return
 			}
@@ -1782,6 +1785,10 @@ fn (mut g Gen) gen_assign_stmt(node ast.AssignStmt) {
 			g.sb.writeln(';')
 			return
 		}
+		if node.op == .assign && g.gen_fn_pointer_value_for_expected(assign_lhs_type, rhs) {
+			g.sb.writeln(';')
+			return
+		}
 		// When RHS is an array method (first/last/pop/pop_left), the call emission
 		// in fn.v already wraps with (*(elem_type*)call(...)). Skip the outer
 		// assign-level cast to avoid double dereference.
@@ -1826,9 +1833,9 @@ fn (mut g Gen) gen_assign_stmt(node ast.AssignStmt) {
 			rhs_casts_to_lhs := rhs is ast.CastExpr && g.expr_type_to_c(rhs.typ) == assign_lhs_type
 			// Auto-wrap raw value into Option/Result when LHS is Option/Result and RHS is not.
 			if assign_lhs_type.starts_with('_option_') && !rhs_casts_to_lhs
-				&& !rhs_type.starts_with('_option_') && rhs_type !in ['', 'int', 'void']
+				&& !rhs_type.starts_with('_option_') && rhs_type !in ['', 'void']
 				&& !is_none_like_expr(rhs) {
-				value_type := option_value_type(assign_lhs_type)
+				value_type := g.option_value_c_type(assign_lhs_type)
 				if value_type != '' && value_type != 'void' {
 					g.sb.write_string('({ ${assign_lhs_type} _opt = (${assign_lhs_type}){ .state = 2 }; ${value_type} _val = ')
 					g.expr(rhs)
@@ -1839,7 +1846,7 @@ fn (mut g Gen) gen_assign_stmt(node ast.AssignStmt) {
 			}
 			if assign_lhs_type.starts_with('_result_') && !rhs_casts_to_lhs
 				&& !rhs_type.starts_with('_result_') && rhs_type !in ['', 'int', 'void'] {
-				value_type := g.result_value_type(assign_lhs_type)
+				value_type := g.result_value_c_type(assign_lhs_type)
 				if value_type != '' && value_type != 'void' {
 					g.sb.write_string('({ ${assign_lhs_type} _res = (${assign_lhs_type}){0}; ${value_type} _val = ')
 					g.expr(rhs)
@@ -1878,6 +1885,25 @@ fn (mut g Gen) gen_assign_stmt(node ast.AssignStmt) {
 	}
 }
 
+fn (mut g Gen) gen_unwrap_cast_selector_assign(lhs ast.SelectorExpr, rhs ast.Expr) bool {
+	info := g.unwrap_cast_payload_pointer(lhs.lhs) or { return false }
+	if !option_result_payload_expr_is_addressable(info.wrapper_expr) {
+		return false
+	}
+	g.write_indent()
+	if !g.gen_unwrap_cast_selector_expr(lhs) {
+		return false
+	}
+	g.sb.write_string(' = ')
+	field_type := g.selector_field_type(lhs)
+	if field_type != '' && g.gen_enum_shorthand_for_type(rhs, field_type) {
+	} else {
+		g.expr(rhs)
+	}
+	g.sb.writeln(';')
+	return true
+}
+
 fn (mut g Gen) gen_plain_selector_assign(lhs ast.SelectorExpr, rhs ast.Expr, op token.Token) bool {
 	if op != .assign || lhs.rhs.name == 'data' {
 		return false
@@ -1896,7 +1922,9 @@ fn (mut g Gen) gen_plain_selector_assign(lhs ast.SelectorExpr, rhs ast.Expr, op 
 	g.write_indent()
 	g.gen_selector_lvalue(lhs, local_type, lhs_struct)
 	g.sb.write_string(' = ')
-	if !g.gen_enum_shorthand_for_type(rhs, field_type) {
+	if g.gen_enum_shorthand_for_type(rhs, field_type) {
+	} else if g.gen_fn_pointer_value_for_expected(field_type, rhs) {
+	} else {
 		g.expr(rhs)
 	}
 	g.sb.writeln(';')

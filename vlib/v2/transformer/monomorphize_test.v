@@ -683,6 +683,271 @@ fn test_register_generic_bindings_keeps_first_owner_for_duplicate_spec() {
 	assert owner == 0
 }
 
+fn mono_test_types_type_binding() types.Type {
+	return types.Type(types.SumType{
+		name:     'types__Type'
+		variants: [
+			types.Type(types.Struct{
+				name: 'types__Primitive'
+			}),
+			types.Type(types.Struct{
+				name: 'types__SumType'
+			}),
+		]
+	})
+}
+
+fn mono_test_struct_field_binding_key() string {
+	return struct_field_generic_decl_key('holder__Holder', 'value')
+}
+
+fn test_register_generic_bindings_stores_owned_f32_binding_and_deduplicates() {
+	mut t := mono_test_transformer()
+	t.env = types.Environment.new()
+	bindings := {
+		'T': types.Type(types.f32_)
+	}
+	t.register_generic_bindings('math__abs', bindings)
+	t.register_generic_bindings('math__abs', bindings)
+	stored := t.env.generic_types['math__abs'] or { panic('missing stored generic type') }
+	assert stored.len == 1
+	concrete := stored[0]['T'] or { panic('missing T binding') }
+	assert types.type_has_valid_payload(concrete)
+	assert concrete.name() == 'f32'
+	assert generic_bindings_signature(stored[0]) == 'T:f32'
+}
+
+fn test_register_generic_bindings_stores_owned_types_type_binding() {
+	mut t := mono_test_transformer()
+	t.env = types.Environment.new()
+	t.register_generic_bindings('holder__accepts', {
+		'T': mono_test_types_type_binding()
+	})
+	stored := t.env.generic_types['holder__accepts'] or { panic('missing stored generic type') }
+	assert stored.len == 1
+	concrete := stored[0]['T'] or { panic('missing T binding') }
+	assert types.type_has_valid_payload(concrete)
+	assert generic_bindings_signature(stored[0]) == 'T:types__Type'
+	assert concrete is types.SumType
+	sum_type := concrete as types.SumType
+	assert sum_type.name == 'types__Type'
+	assert sum_type.variants.len == 2
+	for variant in sum_type.variants {
+		assert types.type_has_valid_payload(variant)
+	}
+}
+
+fn test_register_generic_bindings_stores_multi_binding_signature() {
+	mut t := mono_test_transformer()
+	t.env = types.Environment.new()
+	t.register_generic_bindings('mixed__pair', {
+		'T': types.Type(types.f32_)
+		'U': mono_test_types_type_binding()
+	})
+	stored := t.env.generic_types['mixed__pair'] or { panic('missing stored generic type') }
+	assert stored.len == 1
+	assert generic_bindings_signature(stored[0]) == 'T:f32|U:types__Type'
+	t_binding := stored[0]['T'] or { panic('missing T binding') }
+	u_binding := stored[0]['U'] or { panic('missing U binding') }
+	assert types.type_has_valid_payload(t_binding)
+	assert types.type_has_valid_payload(u_binding)
+}
+
+fn test_register_generic_bindings_keeps_owned_copy_after_input_reuse() {
+	mut t := mono_test_transformer()
+	t.env = types.Environment.new()
+	mut input := {
+		'T': mono_test_types_type_binding()
+	}
+	t.register_generic_bindings('holder__accepts', input)
+	input['T'] = types.Type(types.f32_)
+	stored := t.env.generic_types['holder__accepts'] or { panic('missing stored generic type') }
+	concrete := stored[0]['T'] or { panic('missing T binding') }
+	assert concrete is types.SumType
+	sum_type := concrete as types.SumType
+	assert sum_type.name == 'types__Type'
+	assert sum_type.variants.len == 2
+	assert generic_bindings_signature(stored[0]) == 'T:types__Type'
+}
+
+fn test_struct_field_generic_decl_bindings_store_owned_copy_after_input_reuse() {
+	mut t := mono_test_transformer()
+	mut input := {
+		'T': mono_test_types_type_binding()
+	}
+	t.store_struct_field_generic_decl_binding('holder__Holder', 'value', input)
+	input['T'] = types.Type(types.f32_)
+	stored := (t.struct_field_generic_decl_bindings[mono_test_struct_field_binding_key()] or {
+		panic('missing struct field binding')
+	}).clone()
+	concrete := stored['T'] or { panic('missing T binding') }
+	assert concrete is types.SumType
+	sum_type := concrete as types.SumType
+	assert sum_type.name == 'types__Type'
+	assert generic_bindings_signature(stored) == 'T:types__Type'
+}
+
+fn test_generic_spec_owner_key_is_non_empty_and_stable_for_owned_bindings() {
+	owned := normalize_generic_bindings({
+		'T': types.Type(types.f32_)
+		'U': mono_test_types_type_binding()
+	}) or { panic('missing owned generic bindings') }
+	key := generic_spec_owner_key('mixed__pair', owned)
+	assert key == 'mixed__pair:T:f32|U:types__Type'
+	assert key != ''
+}
+
+fn test_register_generic_bindings_rejects_unowned_supported_fn_type_without_owner_key() {
+	mut t := mono_test_transformer()
+	t.env = types.Environment.new()
+	t.cur_generic_call_file_idx = 7
+	bindings := {
+		'T': types.Type(types.FnType{})
+	}
+	t.register_generic_bindings('callback__holder', bindings)
+	if _ := t.env.generic_types['callback__holder'] {
+		assert false, 'FnType binding should not be stored without owned support'
+	}
+	owner_key := generic_spec_owner_key('callback__holder', bindings)
+	if _ := t.generic_spec_owner_file[owner_key] {
+		assert false, 'rejected FnType binding should not write an owner key'
+	}
+}
+
+fn test_deferred_generic_bindings_preserve_owned_binding_when_registered() {
+	mut t := mono_test_transformer()
+	t.env = types.Environment.new()
+	t.defer_generic_bindings('math__abs', {
+		'T': types.Type(types.f32_)
+	})
+	assert t.deferred_generic_call_specs.len == 1
+	spec := t.deferred_generic_call_specs[0]
+	assert spec.base_name == 'math__abs'
+	assert generic_bindings_signature(spec.bindings) == 'T:f32'
+	concrete := spec.bindings['T'] or { panic('missing deferred T binding') }
+	assert types.type_has_valid_payload(concrete)
+	t.flush_deferred_generic_call_specs(t.deferred_generic_call_specs.clone())
+	stored := t.env.generic_types['math__abs'] or { panic('missing registered generic type') }
+	assert stored.len == 1
+	assert generic_bindings_signature(stored[0]) == 'T:f32'
+}
+
+fn test_register_monomorphized_fn_bindings_lookup_preserves_owned_binding() {
+	mut t := mono_test_transformer()
+	t.register_monomorphized_fn_bindings('math', 'abs_T_f32', {
+		'T': types.Type(types.f32_)
+	})
+	bindings := t.lookup_monomorphized_fn_bindings('math', 'abs_T_f32') or {
+		panic('missing monomorphized binding')
+	}
+	concrete := bindings['T'] or { panic('missing T binding') }
+	assert types.type_has_valid_payload(concrete)
+	assert generic_bindings_signature(bindings) == 'T:f32'
+}
+
+fn test_monomorphize_pass_substitutes_owned_f32_return_binding() {
+	mut t := mono_test_transformer()
+	t.env = types.Environment.new()
+	bindings := {
+		'T': types.Type(types.f32_)
+	}
+	t.register_generic_bindings('math__abs', bindings)
+	decl := ast.FnDecl{
+		name:  'abs'
+		typ:   ast.FnType{
+			generic_params: [
+				ast.Expr(ast.Ident{
+					name: 'T'
+				}),
+			]
+			params:         [
+				ast.Parameter{
+					name: 'a'
+					typ:  ast.Expr(ast.Ident{
+						name: 'T'
+					})
+				},
+			]
+			return_type:    ast.Expr(ast.Ident{
+				name: 'T'
+			})
+		}
+		stmts: [
+			ast.Stmt(ast.ReturnStmt{
+				exprs: [
+					ast.Expr(ast.Ident{
+						name: 'a'
+					}),
+				]
+			}),
+		]
+	}
+	out := t.monomorphize_pass([
+		ast.File{
+			mod:   'math'
+			stmts: [ast.Stmt(decl)]
+		},
+	])
+	assert out[0].stmts.len == 2
+	cloned := out[0].stmts[1] as ast.FnDecl
+	assert cloned.name == 'math__abs_T_f32'
+	param_type := cloned.typ.params[0].typ as ast.Ident
+	return_type := cloned.typ.return_type as ast.Ident
+	assert param_type.name == 'f32'
+	assert return_type.name == 'f32'
+}
+
+fn test_monomorphize_pass_substitutes_owned_types_type_return_binding() {
+	mut t := mono_test_transformer()
+	t.env = types.Environment.new()
+	t.register_generic_bindings('holder__identity', {
+		'T': mono_test_types_type_binding()
+	})
+	decl := ast.FnDecl{
+		name:  'identity'
+		typ:   ast.FnType{
+			generic_params: [
+				ast.Expr(ast.Ident{
+					name: 'T'
+				}),
+			]
+			params:         [
+				ast.Parameter{
+					name: 'a'
+					typ:  ast.Expr(ast.Ident{
+						name: 'T'
+					})
+				},
+			]
+			return_type:    ast.Expr(ast.Ident{
+				name: 'T'
+			})
+		}
+		stmts: [
+			ast.Stmt(ast.ReturnStmt{
+				exprs: [
+					ast.Expr(ast.Ident{
+						name: 'a'
+					}),
+				]
+			}),
+		]
+	}
+	out := t.monomorphize_pass([
+		ast.File{
+			mod:   'holder'
+			stmts: [ast.Stmt(decl)]
+		},
+	])
+	assert out[0].stmts.len == 2
+	cloned := out[0].stmts[1] as ast.FnDecl
+	assert cloned.name == 'holder__identity_T_types_Type'
+	param_type := cloned.typ.params[0].typ as ast.Ident
+	return_type := cloned.typ.return_type as ast.Ident
+	assert param_type.name == 'types__Type'
+	assert return_type.name == 'types__Type'
+}
+
 fn test_generic_call_concrete_return_type_prefers_substitution_over_stale_pos_type() {
 	mut env := types.Environment.new()
 	env.set_expr_type(77, types.Type(types.int_))

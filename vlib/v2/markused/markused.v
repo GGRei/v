@@ -1231,6 +1231,9 @@ fn (mut w Walker) seed_drop_method_roots() {
 
 fn (w &Walker) is_codegen_required_root(info FnInfo) bool {
 	decl := info.decl
+	if decl.attributes.has('export') {
+		return true
+	}
 	if !w.opts.minimal_runtime_roots && should_always_emit_for_markused(info.file) {
 		return true
 	}
@@ -1475,9 +1478,13 @@ fn is_method_decl(decl ast.FnDecl) bool {
 }
 
 fn is_module_init(info FnInfo) bool {
-	return !is_method_decl(info.decl) && (info.decl.name == 'init'
-		|| info.decl.name == 'deinit'
-		|| info.decl.name.starts_with('__v_init_consts_'))
+	if is_method_decl(info.decl) {
+		return false
+	}
+	if info.decl.name.starts_with('__v_init_consts_') {
+		return true
+	}
+	return info.decl.typ.params.len == 0 && (info.decl.name == 'init' || info.decl.name == 'deinit')
 }
 
 fn normalize_module_name(module_name string) string {

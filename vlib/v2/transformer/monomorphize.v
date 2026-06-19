@@ -397,8 +397,7 @@ fn (mut t Transformer) collect_struct_decl_generic_field_types(decl ast.StructDe
 		for parent_name in parent_names {
 			t.struct_field_generic_decl_types[struct_field_generic_decl_key(parent_name, field.name)] = field_type
 			if bindings := t.generic_bindings_from_type_expr(field.typ) {
-				t.struct_field_generic_decl_bindings[struct_field_generic_decl_key(parent_name,
-					field.name)] = bindings.clone()
+				t.store_struct_field_generic_decl_binding(parent_name, field.name, bindings)
 			}
 		}
 	}
@@ -417,8 +416,7 @@ fn (mut t Transformer) collect_struct_decl_generic_field_types(decl ast.StructDe
 		for parent_name in parent_names {
 			t.struct_field_generic_decl_types[struct_field_generic_decl_key(parent_name, field_name)] = field_type
 			if bindings := t.generic_bindings_from_type_expr(embedded) {
-				t.struct_field_generic_decl_bindings[struct_field_generic_decl_key(parent_name,
-					field_name)] = bindings.clone()
+				t.store_struct_field_generic_decl_binding(parent_name, field_name, bindings)
 			}
 		}
 	}
@@ -447,8 +445,7 @@ fn (mut t Transformer) collect_struct_decl_generic_field_types_cursor(decl ast.C
 		for parent_name in parent_names {
 			t.struct_field_generic_decl_types[struct_field_generic_decl_key(parent_name, field_name)] = field_type
 			if bindings := t.generic_bindings_from_type_expr_cursor(field_type_expr) {
-				t.struct_field_generic_decl_bindings[struct_field_generic_decl_key(parent_name,
-					field_name)] = bindings.clone()
+				t.store_struct_field_generic_decl_binding(parent_name, field_name, bindings)
 			}
 		}
 	}
@@ -469,11 +466,16 @@ fn (mut t Transformer) collect_struct_decl_generic_field_types_cursor(decl ast.C
 		for parent_name in parent_names {
 			t.struct_field_generic_decl_types[struct_field_generic_decl_key(parent_name, field_name)] = field_type
 			if bindings := t.generic_bindings_from_type_expr_cursor(embedded_expr) {
-				t.struct_field_generic_decl_bindings[struct_field_generic_decl_key(parent_name,
-					field_name)] = bindings.clone()
+				t.store_struct_field_generic_decl_binding(parent_name, field_name, bindings)
 			}
 		}
 	}
+}
+
+fn (mut t Transformer) store_struct_field_generic_decl_binding(parent_name string, field_name string, bindings map[string]types.Type) {
+	owned_bindings := normalize_generic_bindings(bindings) or { return }
+	t.struct_field_generic_decl_bindings[struct_field_generic_decl_key(parent_name, field_name)] =
+		owned_bindings.clone()
 }
 
 fn (mut t Transformer) collect_concrete_embedded_owner_names(files []ast.File) {
@@ -6115,14 +6117,15 @@ fn (mut t Transformer) defer_generic_bindings(base_name string, bindings map[str
 	if base_name == '' || base_name.contains('_T_') || bindings.len == 0 {
 		return
 	}
-	normalized_bindings := normalize_generic_bindings(bindings)
+	owned_base_name := owned_generic_storage_string(base_name) or { return }
+	normalized_bindings := normalize_generic_bindings(bindings) or { return }
 	for _, typ in normalized_bindings {
 		if clone_type_contains_generic_placeholder(typ) {
 			return
 		}
 	}
 	t.deferred_generic_call_specs << DeferredGenericCallSpec{
-		base_name: base_name
+		base_name: owned_base_name
 		bindings:  normalized_bindings
 		file_idx:  t.cur_generic_call_file_idx
 	}
@@ -6961,46 +6964,280 @@ fn (mut t Transformer) register_generic_bindings(base_name string, bindings map[
 	if base_name == '' || bindings.len == 0 {
 		return
 	}
-	normalized_bindings := normalize_generic_bindings(bindings)
+	owned_base_name := owned_generic_storage_string(base_name) or { return }
+	normalized_bindings := normalize_generic_bindings(bindings) or { return }
 	for _, typ in normalized_bindings {
 		if clone_type_contains_generic_placeholder(typ) {
 			return
 		}
 	}
 	signature := generic_bindings_signature(normalized_bindings)
-	mut existing := t.env.generic_types[base_name] or { []map[string]types.Type{} }
+	mut existing := t.env.generic_types[owned_base_name] or { []map[string]types.Type{} }
 	for item in existing {
 		if generic_bindings_signature(item) == signature {
 			return
 		}
 	}
 	if t.cur_generic_call_file_idx >= 0 {
-		t.generic_spec_owner_file[generic_spec_owner_key(base_name, normalized_bindings)] = t.cur_generic_call_file_idx
+		t.generic_spec_owner_file[generic_spec_owner_key(owned_base_name, normalized_bindings)] = t.cur_generic_call_file_idx
 	}
 	existing << normalized_bindings
-	t.env.generic_types[base_name] = existing
+	t.env.generic_types[owned_base_name] = existing
 }
 
-fn normalize_generic_bindings(bindings map[string]types.Type) map[string]types.Type {
-	mut out := map[string]types.Type{}
+fn normalize_generic_bindings(bindings map[string]types.Type) ?map[string]types.Type {
+	mut raw_owned := map[string]types.Type{}
 	for name, typ in bindings {
-		out[name] = normalize_generic_concrete_type(typ)
+		owned_name := owned_generic_storage_string(name) or { return none }
+		raw_owned[owned_name] = owned_generic_binding_type(typ) or { return none }
+	}
+	mut out := map[string]types.Type{}
+	for name, typ in raw_owned {
+		normalized := normalize_generic_concrete_type(typ)
+		owned_typ := owned_generic_binding_type(normalized) or { return none }
+		out[name] = owned_typ
+	}
+	return out
+}
+
+fn owned_generic_storage_string(name string) ?string {
+	if name == '' || !transformer_string_has_valid_data(name) {
+		return none
+	}
+	return name.clone()
+}
+
+fn owned_generic_optional_string(name string) ?string {
+	if name == '' {
+		return ''
+	}
+	return owned_generic_storage_string(name)
+}
+
+fn owned_generic_storage_strings(items []string) ?[]string {
+	mut out := []string{cap: items.len}
+	for item in items {
+		out << (owned_generic_storage_string(item) or { return none })
+	}
+	return out
+}
+
+fn owned_generic_binding_type(typ types.Type) ?types.Type {
+	mut seen := map[string]bool{}
+	return owned_generic_binding_type_with_seen(typ, mut seen)
+}
+
+fn owned_generic_binding_type_with_seen(typ types.Type, mut seen map[string]bool) ?types.Type {
+	if !types.type_has_valid_payload(typ) {
+		return none
+	}
+	match typ {
+		types.NamedType {
+			name := owned_generic_storage_string(string(typ)) or { return none }
+			return types.Type(types.NamedType(name))
+		}
+		types.Pointer {
+			return types.Type(types.Pointer{
+				lifetime:  owned_generic_optional_string(typ.lifetime) or { return none }
+				base_type: owned_generic_binding_type_with_seen(typ.base_type, mut seen) or {
+					return none
+				}
+			})
+		}
+		types.Array {
+			return types.Type(types.Array{
+				elem_type: owned_generic_binding_type_with_seen(typ.elem_type, mut seen) or {
+					return none
+				}
+			})
+		}
+		types.ArrayFixed {
+			return types.Type(types.ArrayFixed{
+				len:       typ.len
+				elem_type: owned_generic_binding_type_with_seen(typ.elem_type, mut seen) or {
+					return none
+				}
+			})
+		}
+		types.Map {
+			return types.Type(types.Map{
+				key_type:   owned_generic_binding_type_with_seen(typ.key_type, mut seen) or {
+					return none
+				}
+				value_type: owned_generic_binding_type_with_seen(typ.value_type, mut seen) or {
+					return none
+				}
+			})
+		}
+		types.OptionType {
+			return types.Type(types.OptionType{
+				base_type: owned_generic_binding_type_with_seen(typ.base_type, mut seen) or {
+					return none
+				}
+			})
+		}
+		types.ResultType {
+			return types.Type(types.ResultType{
+				base_type: owned_generic_binding_type_with_seen(typ.base_type, mut seen) or {
+					return none
+				}
+			})
+		}
+		types.Alias {
+			name := owned_generic_storage_string(typ.name) or { return none }
+			return types.Type(types.Alias{
+				name:      name
+				base_type: owned_generic_binding_type_with_seen(typ.base_type, mut seen) or {
+					return none
+				}
+			})
+		}
+		types.Channel {
+			if elem_type := typ.elem_type {
+				return types.Type(types.Channel{
+					elem_type: owned_generic_binding_type_with_seen(elem_type, mut seen) or {
+						return none
+					}
+				})
+			}
+			return types.Type(types.Channel{})
+		}
+		types.Enum {
+			mut fields := []types.Field{cap: typ.fields.len}
+			for field in typ.fields {
+				fields << (owned_generic_field(field, mut seen) or { return none })
+			}
+			return types.Type(types.Enum{
+				is_flag: typ.is_flag
+				name:    owned_generic_storage_string(typ.name) or { return none }
+				fields:  fields
+			})
+		}
+		types.Interface {
+			mut fields := []types.Field{cap: typ.fields.len}
+			for field in typ.fields {
+				fields << (owned_generic_field(field, mut seen) or { return none })
+			}
+			return types.Type(types.Interface{
+				name:   owned_generic_storage_string(typ.name) or { return none }
+				fields: fields
+			})
+		}
+		types.Struct {
+			name := owned_generic_storage_string(typ.name) or { return none }
+			if name in seen {
+				return types.Type(types.Struct{
+					name:           name
+					generic_params: owned_generic_storage_strings(typ.generic_params) or {
+						return none
+					}
+					implements:     owned_generic_storage_strings(typ.implements) or { return none }
+					is_soa:         typ.is_soa
+				})
+			}
+			seen[name] = true
+			mut fields := []types.Field{cap: typ.fields.len}
+			for field in typ.fields {
+				fields << (owned_generic_field(field, mut seen) or { return none })
+			}
+			mut embedded := []types.Struct{cap: typ.embedded.len}
+			for embedded_type in typ.embedded {
+				owned_embedded := owned_generic_binding_type_with_seen(types.Type(embedded_type), mut seen) or {
+					return none
+				}
+				if owned_embedded is types.Struct {
+					embedded << owned_embedded
+				} else {
+					return none
+				}
+			}
+			seen.delete(name)
+			return types.Type(types.Struct{
+				name:           name
+				generic_params: owned_generic_storage_strings(typ.generic_params) or { return none }
+				implements:     owned_generic_storage_strings(typ.implements) or { return none }
+				embedded:       embedded
+				fields:         fields
+				is_soa:         typ.is_soa
+			})
+		}
+		types.SumType {
+			name := owned_generic_storage_string(typ.name) or { return none }
+			if name in seen {
+				return types.Type(types.SumType{
+					name: name
+				})
+			}
+			seen[name] = true
+			mut variants := []types.Type{cap: typ.variants.len}
+			for variant in typ.variants {
+				variants << (owned_generic_binding_type_with_seen(variant, mut seen) or {
+					return none
+				})
+			}
+			seen.delete(name)
+			return types.Type(types.SumType{
+				name:     name
+				variants: variants
+			})
+		}
+		types.Primitive {
+			return types.Type(typ)
+		}
+		types.Char, types.ISize, types.Nil, types.None, types.Rune, types.String, types.USize,
+		types.Void {
+			return types.Type(typ)
+		}
+		types.FnType, types.Thread, types.Tuple {
+			return none
+		}
+	}
+}
+
+fn owned_generic_field(field types.Field, mut seen map[string]bool) ?types.Field {
+	return types.Field{
+		name:                owned_generic_storage_string(field.name) or { return none }
+		typ:                 owned_generic_binding_type_with_seen(field.typ, mut seen) or {
+			return none
+		}
+		default_expr:        field.default_expr
+		attributes:          owned_generic_attributes(field.attributes) or { return none }
+		is_public:           field.is_public
+		is_mut:              field.is_mut
+		is_module_mut:       field.is_module_mut
+		is_interface_method: field.is_interface_method
+		owner_module:        owned_generic_optional_string(field.owner_module) or { return none }
+	}
+}
+
+fn owned_generic_attributes(attributes []ast.Attribute) ?[]ast.Attribute {
+	mut out := []ast.Attribute{cap: attributes.len}
+	for attribute in attributes {
+		out << ast.Attribute{
+			name:          owned_generic_optional_string(attribute.name) or { return none }
+			value:         attribute.value
+			comptime_cond: attribute.comptime_cond
+			pos:           attribute.pos
+		}
 	}
 	return out
 }
 
 fn generic_spec_owner_key(base_name string, bindings map[string]types.Type) string {
-	return '${base_name}:${generic_bindings_signature(bindings)}'
+	return '${base_name}:${generic_bindings_signature(bindings)}'.clone()
 }
 
 fn (mut t Transformer) register_monomorphized_fn_bindings(module_name string, fn_name string, bindings map[string]types.Type) {
 	if fn_name == '' || bindings.len == 0 {
 		return
 	}
-	normalized_bindings := normalize_generic_bindings(bindings)
-	t.monomorphized_fn_bindings[fn_name] = normalized_bindings.clone()
+	owned_fn_name := owned_generic_storage_string(fn_name) or { return }
+	normalized_bindings := normalize_generic_bindings(bindings) or { return }
+	t.monomorphized_fn_bindings[owned_fn_name] = normalized_bindings.clone()
 	if module_name != '' {
-		t.monomorphized_fn_bindings['${module_name}__${fn_name}'] = normalized_bindings.clone()
+		owned_module_name := owned_generic_storage_string(module_name) or { return }
+		t.monomorphized_fn_bindings['${owned_module_name}__${owned_fn_name}'] =
+			normalized_bindings.clone()
 	}
 }
 

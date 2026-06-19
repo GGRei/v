@@ -1111,7 +1111,7 @@ fn test_init_expr_keeps_builtin_option_type_unqualified_in_module_function() {
 			},
 		]
 	})
-	assert gen.sb.str() == '((_option_u64){ .state = 2 })'
+	assert gen.sb.str() == '((_option_u64){ .state = 2, .err = none__ })'
 }
 
 fn test_init_expr_keeps_external_c_type_unqualified_in_module_function() {
@@ -1285,7 +1285,7 @@ fn test_enum_from_string_helper_emits_option_enum_result() {
 	assert csrc.contains('memcmp(s.str, "fast", 4) == 0')
 	assert csrc.contains('Mode _val = Mode__fast;')
 	assert csrc.contains('_option_ok(&_val, (_option*)&_opt, sizeof(_val));')
-	assert csrc.contains('return (_option_Mode){ .state = 2 };')
+	assert csrc.contains('return (_option_Mode){ .state = 2, .err = none__ };')
 }
 
 fn test_cached_builtin_init_calls_plain_builtin_const_init() {

@@ -81,6 +81,7 @@ pub enum AutofreeMoveProofKind {
 	receiver_field_slice_clone_binding
 	loop_local_clone_push_binding
 	fresh_local_string_clone_push_binding
+	fresh_local_string_borrowed_call_binding
 }
 
 pub enum AutofreeReleaseKind {

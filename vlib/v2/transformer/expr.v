@@ -352,6 +352,17 @@ fn (mut t Transformer) transform_expr(expr ast.Expr) ast.Expr {
 			if expr.op == .key_go && expr.exprs.len > 0 {
 				return t.lower_go_call(expr)
 			}
+			if expr.op == .key_dump {
+				mut transformed_exprs := []ast.Expr{cap: expr.exprs.len}
+				for item in expr.exprs {
+					transformed_exprs << t.transform_expr(item)
+				}
+				return ast.Expr(ast.KeywordOperator{
+					op:    expr.op
+					exprs: transformed_exprs
+					pos:   expr.pos
+				})
+			}
 			ast.Expr(expr)
 		}
 		else {
@@ -2019,7 +2030,7 @@ fn (mut t Transformer) transform_if_expr(expr ast.IfExpr) ast.Expr {
 				modified_if := ast.IfExpr{
 					cond:      success_cond
 					stmts:     t.transform_stmts(body_stmts)
-					else_expr: t.transform_expr(expr.else_expr)
+					else_expr: t.if_guard_else_expr_with_err(expr.else_expr, temp_ident)
 					pos:       if_pos
 				}
 				// Propagate the original IfExpr type to the synthesized node
@@ -2111,7 +2122,7 @@ fn (mut t Transformer) transform_if_expr(expr ast.IfExpr) ast.Expr {
 				modified_if := ast.IfExpr{
 					cond:      opt_success_cond
 					stmts:     t.transform_stmts(body_stmts)
-					else_expr: t.transform_expr(expr.else_expr)
+					else_expr: t.if_guard_else_expr_with_err(expr.else_expr, temp_ident)
 					pos:       if_pos
 				}
 				// Propagate the original IfExpr type to the synthesized node

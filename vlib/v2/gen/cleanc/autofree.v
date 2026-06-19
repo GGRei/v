@@ -163,17 +163,20 @@ fn autofree_bridge_move_kind_is_supported(kind types.AutofreeMoveProofKind) bool
 	return kind == .fresh_local_binding || kind == .local_array_clone_binding
 		|| kind == .receiver_field_slice_clone_binding || kind == .loop_local_clone_push_binding
 		|| kind == .fresh_local_string_clone_push_binding
+		|| kind == .fresh_local_string_borrowed_call_binding
 }
 
 fn autofree_bridge_plan_action_is_supported(kind types.AutofreeMoveProofKind, action types.AutofreeReleasePlanAction) bool {
-	if kind == .fresh_local_string_clone_push_binding {
+	if kind == .fresh_local_string_clone_push_binding
+		|| kind == .fresh_local_string_borrowed_call_binding {
 		return action == .string_value_cleanup
 	}
 	return autofree_bridge_move_kind_is_supported(kind) && action == .array_container_cleanup
 }
 
 fn autofree_bridge_resource_for_move_kind(kind types.AutofreeMoveProofKind) types.AutofreeResourceKind {
-	if kind == .fresh_local_string_clone_push_binding {
+	if kind == .fresh_local_string_clone_push_binding
+		|| kind == .fresh_local_string_borrowed_call_binding {
 		return .string_value
 	}
 	if autofree_bridge_move_kind_is_supported(kind) {
@@ -200,6 +203,10 @@ fn autofree_bridge_source_endpoint_is_allowed(kind types.AutofreeMoveProofKind, 
 		}
 		.fresh_local_string_clone_push_binding {
 			return autofree_bridge_fresh_local_string_clone_push_source_is_allowed(shape, source)
+		}
+		.fresh_local_string_borrowed_call_binding {
+			return autofree_bridge_fresh_local_string_borrowed_call_source_is_allowed(shape,
+				source)
 		}
 		else {
 			return false
@@ -313,6 +320,17 @@ fn autofree_bridge_fresh_local_string_clone_push_source_is_allowed(shape types.A
 		&& source.path.len == 0 && source.root_node_id == source.node_id
 		&& source.root_pos_id == source.pos_id && source.state == .owned_unique
 		&& source.reason == 'owned string plus call result'
+}
+
+fn autofree_bridge_fresh_local_string_borrowed_call_source_is_allowed(shape types.AutofreeResourceShape, source types.AutofreeTransferEndpoint) bool {
+	if shape.kind != .string_ || shape.fail_closed || !shape.needs_autofree()
+		|| shape.target_kind != .no_resource {
+		return false
+	}
+	return source.storage == .call_result && source.root_storage == .call_result
+		&& source.path.len == 0 && source.root_node_id == source.node_id
+		&& source.root_pos_id == source.pos_id && source.state == .owned_unique
+		&& source.root_name == source.name && source.name.len > 0 && source.reason.len > 0
 }
 
 fn autofree_bridge_shapes_match(a types.AutofreeResourceShape, b types.AutofreeResourceShape) bool {
@@ -916,6 +934,7 @@ fn autofree_statement_location_stmt_is_supported_slot_for_anchor(stmt ast.Cursor
 
 fn autofree_statement_move_kind_allows_expr_slot(kind types.AutofreeMoveProofKind) bool {
 	return kind == .loop_local_clone_push_binding || kind == .fresh_local_string_clone_push_binding
+		|| kind == .fresh_local_string_borrowed_call_binding
 }
 
 fn autofree_statement_location_nested_receiver_field_slice_clone_requires_for(anchor AutofreeCleanCStatementAnchorFact, block_path string) bool {
@@ -1416,7 +1435,10 @@ fn autofree_statement_preview_fact_from_location_in_body(body ast.Cursor, locati
 		stmt, location)
 	pre_return_string_push := autofree_statement_preview_location_is_top_level_pre_return_fresh_string_clone_push(body,
 		stmt, location)
-	if location.stmt_index != count - 1 && !pre_return_bridge && !pre_return_string_push {
+	borrowed_string_call := autofree_statement_preview_location_is_fresh_string_borrowed_call(stmt,
+		location)
+	if location.stmt_index != count - 1 && !pre_return_bridge && !pre_return_string_push
+		&& !borrowed_string_call {
 		return none
 	}
 	if !stmt.is_valid()
@@ -1431,7 +1453,7 @@ fn autofree_statement_preview_fact_from_location_in_body(body ast.Cursor, locati
 		|| !autofree_statement_location_stmt_matches_anchor(stmt, location.insert_after_node_id, location.insert_after_pos_id) {
 		return none
 	}
-	if !pre_return_bridge && !pre_return_string_push
+	if !pre_return_bridge && !pre_return_string_push && !borrowed_string_call
 		&& autofree_statement_preview_later_assigns_target(body, location.stmt_index, location.name) {
 		return none
 	}
@@ -1529,8 +1551,28 @@ fn autofree_statement_preview_location_is_top_level_pre_return_fresh_string_clon
 		&& !autofree_statement_cursor_contains_ident(return_stmt, location.name)
 }
 
+fn autofree_statement_preview_location_is_fresh_string_borrowed_call(stmt ast.Cursor, location AutofreeCleanCStatementLocationFact) bool {
+	if location.move_kind != .fresh_local_string_borrowed_call_binding
+		|| !autofree_statement_stmt_expr_is_call(stmt) {
+		return false
+	}
+	return autofree_statement_location_stmt_matches_anchor(stmt, location.stmt_node_id,
+		location.stmt_pos_id)
+		&& autofree_statement_location_stmt_matches_anchor(stmt, location.insert_after_node_id,
+			location.insert_after_pos_id)
+}
+
 fn autofree_statement_preview_nested_receiver_field_slice_clone_requires_for(location AutofreeCleanCStatementLocationFact) bool {
 	return location.block_path.len > 0 && location.move_kind == .receiver_field_slice_clone_binding
+}
+
+fn autofree_statement_stmt_expr_is_call(stmt ast.Cursor) bool {
+	if !stmt.is_valid() || stmt.kind() != .stmt_expr
+		|| !autofree_statement_location_cursor_edge_range_is_valid(stmt) || stmt.edge_count() != 1 {
+		return false
+	}
+	expr := autofree_statement_location_edge_cursor(stmt, 0) or { return false }
+	return expr.is_valid() && expr.kind() == .expr_call
 }
 
 fn autofree_statement_cursor_contains_ident(cursor ast.Cursor, name string) bool {
@@ -2093,7 +2135,8 @@ fn autofree_statement_cleanup_preview_fact_from_slot(slot AutofreeCleanCStatemen
 }
 
 fn autofree_statement_cleanup_symbol_for_move_kind(kind types.AutofreeMoveProofKind) ?string {
-	if kind == .fresh_local_string_clone_push_binding {
+	if kind == .fresh_local_string_clone_push_binding
+		|| kind == .fresh_local_string_borrowed_call_binding {
 		return 'string__free'
 	}
 	if kind == .fresh_local_binding || kind == .local_array_clone_binding
@@ -2104,7 +2147,8 @@ fn autofree_statement_cleanup_symbol_for_move_kind(kind types.AutofreeMoveProofK
 }
 
 fn autofree_statement_cleanup_preview_kind_for_move_kind(kind types.AutofreeMoveProofKind) ?AutofreeCleanCStatementCleanupPreviewKind {
-	if kind == .fresh_local_string_clone_push_binding {
+	if kind == .fresh_local_string_clone_push_binding
+		|| kind == .fresh_local_string_borrowed_call_binding {
 		return .string_after_statement
 	}
 	if kind == .fresh_local_binding || kind == .local_array_clone_binding
@@ -2235,13 +2279,16 @@ fn autofree_statement_cleanup_hook_preview_fact_from_body(fn_cursor ast.Cursor, 
 		stmt, preview, previews)
 	pre_return_string_push := autofree_statement_cleanup_hook_preview_is_top_level_pre_return_fresh_string_clone_push(block,
 		stmt, preview, previews)
-	if preview.stmt_index != count - 1 && !pre_return_bridge && !pre_return_string_push {
+	borrowed_string_call := autofree_statement_cleanup_hook_preview_is_fresh_string_borrowed_call(stmt,
+		preview, previews)
+	if preview.stmt_index != count - 1 && !pre_return_bridge && !pre_return_string_push
+		&& !borrowed_string_call {
 		return none
 	}
 	if !autofree_statement_cleanup_hook_preview_stmt_matches_preview(block, stmt, preview, previews) {
 		return none
 	}
-	hook_kind := if pre_return_bridge || pre_return_string_push {
+	hook_kind := if pre_return_bridge || pre_return_string_push || borrowed_string_call {
 		AutofreeCleanCStatementCleanupHookPreviewKind.after_statement
 	} else {
 		AutofreeCleanCStatementCleanupHookPreviewKind.after_body_before_scheduled_drops
@@ -2366,6 +2413,17 @@ fn autofree_statement_cleanup_hook_preview_is_top_level_pre_return_fresh_string_
 	return_stmt := autofree_statement_block_stmt(body, preview.stmt_index + 1) or { return false }
 	return return_stmt.is_valid() && return_stmt.kind() == .stmt_return
 		&& !autofree_statement_cursor_contains_ident(return_stmt, preview.name)
+}
+
+fn autofree_statement_cleanup_hook_preview_is_fresh_string_borrowed_call(stmt ast.Cursor, preview AutofreeCleanCStatementCleanupPreviewFact, previews []AutofreeCleanCStatementCleanupPreviewFact) bool {
+	if previews.len != 1 || preview.move_kind != .fresh_local_string_borrowed_call_binding
+		|| !autofree_statement_stmt_expr_is_call(stmt) {
+		return false
+	}
+	return autofree_statement_location_stmt_matches_anchor(stmt, preview.stmt_node_id,
+		preview.stmt_pos_id)
+		&& autofree_statement_location_stmt_matches_anchor(stmt, preview.insert_after_node_id,
+			preview.insert_after_pos_id)
 }
 
 fn autofree_statement_cleanup_hook_preview_is_valid(preview AutofreeCleanCStatementCleanupPreviewFact) bool {

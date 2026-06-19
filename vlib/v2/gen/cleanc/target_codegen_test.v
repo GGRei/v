@@ -245,6 +245,56 @@ fn generated_c_for_target_program(name string, source string) string {
 	return generated_c_for_target_program_with_options(name, source, 'linux', false, false)
 }
 
+struct DirectiveOrderTestSource {
+	path string
+	code string
+}
+
+fn generated_flat_c_for_directive_order_sources(name string, sources []string) string {
+	mut named_sources := []DirectiveOrderTestSource{cap: sources.len}
+	for i, source in sources {
+		named_sources << DirectiveOrderTestSource{
+			path: 'file_${i}.v'
+			code: source
+		}
+	}
+	return generated_flat_c_for_directive_order_source_files(name, named_sources)
+}
+
+fn generated_flat_c_for_directive_order_source_files(name string, sources []DirectiveOrderTestSource) string {
+	tmp_dir := os.join_path(os.temp_dir(), 'v2_cleanc_directive_order_${name}_${os.getpid()}')
+	os.rmdir_all(tmp_dir) or {}
+	os.mkdir_all(tmp_dir) or { panic('failed to create temp dir') }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+	mut paths := []string{cap: sources.len}
+	for source in sources {
+		tmp_file := os.join_path(tmp_dir, source.path)
+		os.mkdir_all(os.dir(tmp_file)) or { panic('failed to create temp source dir') }
+		os.write_file(tmp_file, source.code) or { panic('failed to write temp file') }
+		paths << tmp_file
+	}
+	prefs := &vpref.Preferences{
+		backend:               .cleanc
+		target_os:             'linux'
+		no_parallel:           true
+		no_parallel_transform: true
+	}
+	mut file_set := token.FileSet.new()
+	mut par := parser.Parser.new(prefs)
+	files := par.parse_files(paths, mut file_set)
+	mut env := types.Environment.new()
+	mut checker := types.Checker.new(prefs, file_set, env)
+	checker.check_files(files)
+	flat := ast.flatten_files(files)
+	mut trans := transformer.Transformer.new_with_pref(env, prefs)
+	trans.set_file_set(file_set)
+	transformed_flat := trans.transform_flat_to_flat_direct(&flat, []ast.File{})
+	mut gen := Gen.new_with_env_pref_and_flat(&transformed_flat, env, prefs)
+	return gen.gen()
+}
+
 fn generated_c_for_target_program_with_options(name string, source string, target_os string, freestanding bool, skip_builtin bool) string {
 	return generated_c_for_target_program_with_defines(name, source, target_os, [], freestanding,
 		skip_builtin)
@@ -536,6 +586,92 @@ fn test_c_directives_use_target_os_preference() {
 	assert c_directive_output_for_target('mac', 'macos', []).contains('#include <target_marker.h>')
 	assert c_directive_output_for_target('darwin', 'macos', []).contains('#include <target_marker.h>')
 	assert c_directive_output_for_target('bsd', 'freebsd', []).contains('#include <target_marker.h>')
+}
+
+fn test_flat_c_directives_follow_import_dependency_order() {
+	csrc := generated_flat_c_for_directive_order_sources('flat_import_order', [
+		'module main
+
+import dep as _
+
+#include "flat_consumer_order_canary.h"
+
+fn main() {}
+',
+		'module dep
+
+#include "flat_dep_order_canary.h"
+',
+	])
+	dep_pos := csrc.index('#include "flat_dep_order_canary.h"') or { -1 }
+	consumer_pos := csrc.index('#include "flat_consumer_order_canary.h"') or { -1 }
+	assert dep_pos >= 0, csrc
+	assert consumer_pos >= 0, csrc
+	assert dep_pos < consumer_pos, csrc
+}
+
+fn test_flat_c_directives_follow_qualified_import_path_dependency_order() {
+	csrc := generated_flat_c_for_directive_order_source_files('flat_qualified_import_order', [
+		DirectiveOrderTestSource{
+			path: 'sokol/f/file_0.v'
+			code: 'module f
+
+import sokol.c as _
+
+#include "qualified_consumer_order_canary.h"
+'
+		},
+		DirectiveOrderTestSource{
+			path: 'sokol/c/file_1.v'
+			code: 'module c
+
+#include "qualified_dep_order_canary.h"
+'
+		},
+	])
+	dep_pos := csrc.index('#include "qualified_dep_order_canary.h"') or { -1 }
+	consumer_pos := csrc.index('#include "qualified_consumer_order_canary.h"') or { -1 }
+	assert dep_pos >= 0, csrc
+	assert consumer_pos >= 0, csrc
+	assert dep_pos < consumer_pos, csrc
+}
+
+fn test_flat_c_directive_import_keys_keep_dots_distinct_from_underscores() {
+	csrc := generated_flat_c_for_directive_order_source_files('flat_import_key_collision', [
+		DirectiveOrderTestSource{
+			path: 'main_file.v'
+			code: 'module main
+
+import foo.bar as _
+
+#include "dot_consumer_order_canary.h"
+
+fn main() {}
+'
+		},
+		DirectiveOrderTestSource{
+			path: 'foo_bar/file_1.v'
+			code: 'module foo_bar
+
+#include "underscore_wrong_order_canary.h"
+'
+		},
+		DirectiveOrderTestSource{
+			path: 'foo/bar/file_2.v'
+			code: 'module bar
+
+#include "dot_dep_order_canary.h"
+'
+		},
+	])
+	dep_pos := csrc.index('#include "dot_dep_order_canary.h"') or { -1 }
+	consumer_pos := csrc.index('#include "dot_consumer_order_canary.h"') or { -1 }
+	wrong_pos := csrc.index('#include "underscore_wrong_order_canary.h"') or { -1 }
+	assert dep_pos >= 0, csrc
+	assert consumer_pos >= 0, csrc
+	assert wrong_pos >= 0, csrc
+	assert dep_pos < consumer_pos, csrc
+	assert consumer_pos < wrong_pos, csrc
 }
 
 fn test_c_directives_use_extended_target_os_preference() {
@@ -1190,6 +1326,7 @@ fn main() {
 }
 ')
 	assert src.contains('array__sort_with_compare(&items, compare_items);')
+		|| src.contains('array__sort_with_compare(&items, ((ItemCallback)compare_items));')
 	assert !src.contains('(FnSortCB)compare_items')
 }
 
@@ -1643,6 +1780,658 @@ fn main() {
 	assert !src.contains('array__sort_with_compare(&items, (FnSortCB)')
 }
 
+fn test_fn_pointer_alias_field_init_casts_direct_fn_value() {
+	src := generated_c_for_target_program('fnptr_alias_field_init_direct_fn_cast', '
+type Callback = fn (voidptr)
+
+struct Holder {
+	cb Callback
+}
+
+fn handle(data voidptr) {
+	_ = data
+}
+
+fn main() {
+	_ := Holder{
+		cb: handle
+	}
+}
+')
+	proto_pos := src.index('void handle(void* data);') or { -1 }
+	init_pos := src.index('.cb = ((Callback)handle)') or { -1 }
+	assert proto_pos >= 0
+	assert init_pos > proto_pos
+	assert !src.contains('.cb = handle')
+}
+
+fn test_fn_pointer_direct_field_init_casts_direct_fn_value() {
+	src := generated_c_for_target_program('fnptr_direct_field_init_direct_fn_cast', '
+struct Holder {
+	cb fn (voidptr)
+}
+
+fn handle(data voidptr) {
+	_ = data
+}
+
+fn main() {
+	_ := Holder{
+		cb: handle
+	}
+}
+')
+	assert src.contains('void (*cb)(void*)')
+	assert src.contains('.cb = ((void (*)(void*))handle)')
+	assert !src.contains('.cb = handle')
+}
+
+fn test_fn_pointer_field_init_casts_module_qualified_fn_value() {
+	other_file := os.join_path(os.temp_dir(),
+		'v2_cleanc_target_codegen_fnptr_field_other_${os.getpid()}.v')
+	os.write_file(other_file, '
+module other
+
+pub fn handle(data voidptr) {
+	_ = data
+}
+	') or {
+		panic(err)
+	}
+	defer {
+		os.rm(other_file) or {}
+	}
+	src := generated_c_for_target_program_with_extra_files('fnptr_field_module_qualified_fn_cast', '
+module main
+
+import other
+
+type Callback = fn (voidptr)
+
+struct Holder {
+	cb Callback
+}
+
+fn main() {
+	_ := Holder{
+		cb: other.handle
+	}
+}
+	',
+		'linux', [], false, false, [other_file])
+	assert src.contains('.cb = ((Callback)other__handle)')
+	assert !src.contains('.cb = other__handle')
+}
+
+fn test_fn_pointer_field_init_does_not_cast_nil_or_non_fn_values() {
+	other_file := os.join_path(os.temp_dir(),
+		'v2_cleanc_target_codegen_fnptr_field_non_fn_${os.getpid()}.v')
+	os.write_file(other_file, '
+module other
+
+pub __global callback int
+	') or { panic(err) }
+	defer {
+		os.rm(other_file) or {}
+	}
+	src := generated_c_for_target_program_with_extra_files('fnptr_field_non_fn_no_cast', '
+module main
+
+import other
+
+type Callback = fn (voidptr)
+
+struct Holder {
+	cb Callback
+}
+
+fn main() {
+	_ := Holder{
+		cb: unsafe { nil }
+	}
+	_ := Holder{
+		cb: other.callback
+	}
+}
+	',
+		'linux', [], false, false, [other_file])
+	assert src.contains('.cb = NULL')
+	assert src.contains('.cb = other__callback')
+	assert !src.contains('((Callback)NULL')
+	assert !src.contains('((Callback)other__callback')
+}
+
+fn test_fn_pointer_field_init_does_not_cast_incompatible_fn_signature() {
+	src := generated_c_for_target_program('fnptr_field_incompatible_fn_no_cast', '
+type Callback = fn (voidptr)
+
+struct Holder {
+	cb Callback
+}
+
+fn incompatible(value int) {
+	_ = value
+}
+
+fn main() {
+	_ := Holder{
+		cb: incompatible
+	}
+}
+')
+	assert src.contains('.cb = incompatible')
+	assert !src.contains('.cb = ((Callback)incompatible)')
+}
+
+fn test_fn_pointer_field_init_uses_adapter_for_typed_pointer_to_voidptr_callback() {
+	src := generated_c_for_target_program('fnptr_field_typed_pointer_to_voidptr_adapter', '
+struct Ctx {}
+
+type Callback = fn (voidptr)
+
+struct Holder {
+	cb Callback
+}
+
+fn handle(ctx &Ctx) {
+	_ = ctx
+}
+
+fn main() {
+	_ := Holder{
+		cb: handle
+	}
+}
+')
+	assert src.contains('static void __fnptr_adapter_')
+	assert src.contains('void* _arg0')
+	assert src.contains('handle((Ctx*)_arg0);')
+	assert src.contains('.cb = __fnptr_adapter_')
+	assert !src.contains('.cb = ((Callback)handle)')
+	assert !src.contains('.cb = handle')
+}
+
+fn test_fn_pointer_field_init_does_not_bypass_incompatible_selector_or_method_values() {
+	other_file := os.join_path(os.temp_dir(),
+		'v2_cleanc_target_codegen_fnptr_field_bad_selector_${os.getpid()}.v')
+	os.write_file(other_file, '
+module other
+
+pub fn incompatible(value int) {
+	_ = value
+}
+	') or {
+		panic(err)
+	}
+	defer {
+		os.rm(other_file) or {}
+	}
+	src := generated_c_for_target_program_with_extra_files('fnptr_field_incompatible_selector_no_cast', '
+module main
+
+import other
+
+type Callback = fn (voidptr)
+
+struct Holder {
+	cb Callback
+}
+
+struct Worker {}
+
+fn (worker Worker) incompatible(value int) {
+	_ = worker
+	_ = value
+}
+
+fn main() {
+	worker := Worker{}
+	_ := Holder{
+		cb: other.incompatible
+	}
+	_ := Holder{
+		cb: worker.incompatible
+	}
+}
+	',
+		'linux', [], false, false, [other_file])
+	assert src.contains('.cb = other__incompatible')
+	assert !src.contains('((Callback)other__incompatible')
+	assert !src.contains('__fnptr_adapter_other__incompatible')
+	assert !src.contains('_bound_method_')
+}
+
+fn test_fn_pointer_field_assignment_uses_const_char_signature_and_casts_fn_value() {
+	src := generated_c_for_target_program('fnptr_field_assignment_const_char_signature', '
+type LogCb = fn (const_tag &char, user_data voidptr)
+
+struct Sink {
+mut:
+	func LogCb
+}
+
+fn log(const_tag &char, user_data voidptr) {
+	_ = const_tag
+	_ = user_data
+}
+
+fn main() {
+	mut sink := Sink{}
+	sink.func = log
+}
+')
+	proto_pos := src.index('void log(const char* const_tag, void* user_data);') or { -1 }
+	assign_pos := src.index('sink.func = ((LogCb)log);') or { -1 }
+	assert src.contains('typedef void (*LogCb)(const char*, void*);')
+	assert proto_pos >= 0
+	assert assign_pos > proto_pos
+	assert !src.contains('typedef void (*LogCb)(char*, void*);')
+	assert !src.contains('void log(char* const_tag')
+	assert !src.contains('sink.func = log;')
+}
+
+fn test_fn_pointer_field_init_uses_generic_const_pointer_signature() {
+	src := generated_c_for_target_program('fnptr_field_generic_const_pointer_signature', '
+struct Item {
+	value int
+}
+
+type Callback = fn (const_item &Item, data voidptr)
+
+struct Sink {
+	cb     Callback
+	direct fn (const_item &Item, data voidptr)
+}
+
+fn handle(const_item &Item, data voidptr) {
+	_ = const_item
+	_ = data
+}
+
+fn main() {
+	_ := Sink{
+		cb: handle
+		direct: handle
+	}
+}
+')
+	assert src.contains('typedef void (*Callback)(const Item*, void*);')
+	assert src.contains('void (*direct)(const Item*, void*)')
+	assert src.contains('void handle(const Item* const_item, void* data);')
+	assert src.contains('.cb = ((Callback)handle)')
+	assert src.contains('.direct = ((void (*)(const Item*, void*))handle)')
+	assert !src.contains('__fnptr_adapter_handle')
+	assert !src.contains('void handle(Item* const_item')
+}
+
+fn test_fn_pointer_field_init_uses_const_pointer_for_c_typedef_alias() {
+	src := generated_c_for_target_program('fnptr_field_c_typedef_alias_const_pointer_signature', '
+@[typedef]
+struct C.native_event {
+	value int
+}
+
+type Event = C.native_event
+type Callback = fn (const_event &Event, user_data voidptr)
+
+struct Sink {
+	cb     Callback
+	direct fn (const_event &Event, user_data voidptr)
+}
+
+fn handle(const_event &Event, user_data voidptr) {
+	_ = const_event
+	_ = user_data
+}
+
+fn main() {
+	_ := Sink{
+		cb: handle
+		direct: handle
+	}
+}
+')
+	assert src.contains('typedef void (*Callback)(const native_event*, void*);')
+	assert src.contains('void (*direct)(const native_event*, void*)')
+	assert src.contains('void handle(const native_event* const_event, void* user_data);')
+	assert src.contains('.cb = ((Callback)handle)')
+	assert src.contains('.direct = ((void (*)(const native_event*, void*))handle)')
+	assert !src.contains('__fnptr_adapter_handle')
+	assert !src.contains('void handle(Event* const_event')
+	assert !src.contains('void handle(main__Event* const_event')
+	assert !src.contains('void handle(sapp__Event* const_event')
+	assert !src.contains('void handle(__Event* const_event')
+	assert !src.contains('void handle(native_event* const_event')
+	assert !src.contains('void (*direct)(Event*, void*)')
+	assert !src.contains('void (*direct)(main__Event*, void*)')
+	assert !src.contains('void (*direct)(sapp__Event*, void*)')
+	assert !src.contains('void (*direct)(__Event*, void*)')
+	assert !src.contains('void (*direct)(native_event*, void*)')
+}
+
+fn test_fn_pointer_field_init_does_not_adapter_const_pointer_from_voidptr() {
+	src := generated_c_for_target_program('fnptr_field_const_pointer_from_voidptr_no_adapter', '
+struct Item {
+	value int
+}
+
+type Callback = fn (const_item &Item, data voidptr)
+
+struct Sink {
+	cb Callback
+}
+
+fn erased(item voidptr, data voidptr) {
+	_ = item
+	_ = data
+}
+
+fn main() {
+	_ := Sink{
+		cb: erased
+	}
+}
+')
+	assert src.contains('typedef void (*Callback)(const Item*, void*);')
+	assert src.contains('void erased(void* item, void* data);')
+	assert src.contains('.cb = erased')
+	assert !src.contains('__fnptr_adapter_erased')
+	assert !src.contains('((Callback)erased')
+}
+
+fn test_fn_pointer_field_init_does_not_adapter_const_pointer_from_mut_pointer() {
+	src := generated_c_for_target_program('fnptr_field_const_pointer_from_mut_pointer_no_adapter', '
+struct Item {
+	value int
+}
+
+type Callback = fn (const_item &Item, data voidptr)
+
+struct Sink {
+	cb Callback
+}
+
+fn mutable(item &Item, data voidptr) {
+	_ = item
+	_ = data
+}
+
+fn main() {
+	_ := Sink{
+		cb: mutable
+	}
+}
+')
+	assert src.contains('typedef void (*Callback)(const Item*, void*);')
+	assert src.contains('void mutable(Item* item, void* data);')
+	assert src.contains('.cb = mutable')
+	assert !src.contains('__fnptr_adapter_mutable')
+	assert !src.contains('((Callback)mutable')
+}
+
+fn test_fn_pointer_callback_arg_casts_alias_and_direct_fn_type_values() {
+	src := generated_c_for_target_program('fnptr_arg_alias_and_direct_fn_type_cast', '
+type Callback = fn (voidptr)
+
+fn install_alias(cb Callback) {
+	_ = cb
+}
+
+fn install_direct(cb fn (voidptr)) {
+	_ = cb
+}
+
+fn handle(data voidptr) {
+	_ = data
+}
+
+fn main() {
+	install_alias(handle)
+	install_direct(handle)
+}
+')
+	assert src.contains('install_alias(((Callback)handle));')
+	assert src.contains('install_direct(((void (*)(void*))handle));')
+}
+
+fn test_fn_pointer_callback_arg_casts_module_qualified_fn_value_after_prototype() {
+	other_file := os.join_path(os.temp_dir(),
+		'v2_cleanc_target_codegen_fnptr_arg_other_${os.getpid()}.v')
+	os.write_file(other_file, '
+module other
+
+pub fn handle(data voidptr) {
+	_ = data
+}
+	') or {
+		panic(err)
+	}
+	defer {
+		os.rm(other_file) or {}
+	}
+	src := generated_c_for_target_program_with_extra_files('fnptr_arg_module_qualified_fn_cast', '
+module main
+
+import other
+
+type Callback = fn (voidptr)
+
+fn install(cb Callback) {
+	_ = cb
+}
+
+fn main() {
+	install(other.handle)
+}
+	',
+		'linux', [], false, false, [other_file])
+	proto_pos := src.index('void other__handle(void* data);') or { -1 }
+	call_pos := src.index('install(((Callback)other__handle));') or { -1 }
+	assert proto_pos >= 0
+	assert call_pos > proto_pos
+	assert !src.contains('install(other__handle);')
+}
+
+fn test_fn_pointer_callback_arg_uses_adapter_for_voidptr_and_typed_pointer_edges() {
+	src := generated_c_for_target_program('fnptr_arg_voidptr_typed_pointer_adapters', '
+struct Ctx {}
+
+type ErasedCallback = fn (voidptr)
+type TypedCallback = fn (&Ctx)
+
+fn install_erased(cb ErasedCallback) {
+	_ = cb
+}
+
+fn install_typed(cb TypedCallback) {
+	_ = cb
+}
+
+fn typed(ctx &Ctx) {
+	_ = ctx
+}
+
+fn erased(data voidptr) {
+	_ = data
+}
+
+fn main() {
+	install_erased(typed)
+	install_typed(erased)
+}
+')
+	assert src.contains('static void __fnptr_adapter_')
+	assert src.contains('typed((Ctx*)_arg0);')
+	assert src.contains('erased((void*)_arg0);')
+	assert src.contains('install_erased(__fnptr_adapter_')
+	assert src.contains('install_typed(__fnptr_adapter_')
+	assert !src.contains('install_erased((ErasedCallback)typed);')
+	assert !src.contains('install_typed((TypedCallback)erased);')
+}
+
+fn test_fn_pointer_callback_arg_does_not_adapter_local_fn_pointer_value() {
+	src := generated_c_for_target_program('fnptr_arg_local_fn_pointer_no_adapter', '
+struct Ctx {}
+
+type ErasedCallback = fn (voidptr)
+type TypedCallback = fn (&Ctx)
+
+fn install_erased(cb ErasedCallback) {
+	_ = cb
+}
+
+fn typed(ctx &Ctx) {
+	_ = ctx
+}
+
+fn main() {
+	cb := TypedCallback(typed)
+	install_erased(cb)
+}
+')
+	assert src.contains('install_erased(cb);')
+	assert !src.contains('install_erased(__fnptr_adapter_')
+	assert !src.contains('__fnptr_adapter_cb')
+	assert !src.contains('((ErasedCallback)cb)')
+}
+
+fn test_fn_pointer_callback_arg_does_not_bypass_incompatible_method_value() {
+	src := generated_c_for_target_program('fnptr_arg_incompatible_method_no_bound_fallback', '
+type Callback = fn (voidptr)
+
+struct Worker {}
+
+fn install(cb Callback) {
+	_ = cb
+}
+
+fn (worker Worker) incompatible(value int) {
+	_ = worker
+	_ = value
+}
+
+fn main() {
+	worker := Worker{}
+	install(worker.incompatible)
+}
+')
+	assert !src.contains('_bound_method_')
+	assert !src.contains('((Callback)')
+	assert !src.contains('__fnptr_adapter_')
+}
+
+fn test_fn_pointer_callback_arg_does_not_cast_nil_non_fn_or_incompatible_pointer_values() {
+	other_file := os.join_path(os.temp_dir(),
+		'v2_cleanc_target_codegen_fnptr_arg_non_fn_${os.getpid()}.v')
+	os.write_file(other_file, '
+module other
+
+pub __global callback int
+	') or { panic(err) }
+	defer {
+		os.rm(other_file) or {}
+	}
+	src := generated_c_for_target_program_with_extra_files('fnptr_arg_invalid_values_no_cast', '
+module main
+
+import other
+
+struct Ctx {}
+struct Other {}
+
+type Callback = fn (&Ctx)
+
+fn install(cb Callback) {
+	_ = cb
+}
+
+fn incompatible(other &Other) {
+	_ = other
+}
+
+fn main() {
+	install(unsafe { nil })
+	install(other.callback)
+	install(incompatible)
+}
+	',
+		'linux', [], false, false, [other_file])
+	assert src.contains('install(NULL);')
+	assert src.contains('install(other__callback);')
+	assert src.contains('install(incompatible);')
+	assert !src.contains('((Callback)other__callback')
+	assert !src.contains('((Callback)incompatible')
+	assert !src.contains('__fnptr_adapter_incompatible')
+}
+
+fn test_fn_pointer_callback_arg_does_not_adapter_const_pointer_to_voidptr() {
+	src := generated_c_for_target_program('fnptr_arg_const_pointer_voidptr_no_adapter', '
+type ConstCallback = fn (const_msg &char)
+
+fn install(cb ConstCallback) {
+	_ = cb
+}
+
+fn erased(data voidptr) {
+	_ = data
+}
+
+fn main() {
+	install(erased)
+}
+')
+	assert src.contains('typedef void (*ConstCallback)(const char*);')
+	assert src.contains('void erased(void* data);')
+	assert src.contains('install(erased);')
+	assert !src.contains('install(__fnptr_adapter_')
+	assert !src.contains('__fnptr_adapter_erased')
+	assert !src.contains('((ConstCallback)erased)')
+}
+
+fn test_fn_pointer_const_char_signature_requires_const_prefix() {
+	src := generated_c_for_target_program('fnptr_const_char_prefix_gate', '
+type PlainCb = fn (tag &char)
+
+fn install_plain(cb PlainCb) {
+	_ = cb
+}
+
+fn plain(tag &char) {
+	_ = tag
+}
+
+fn main() {
+	install_plain(plain)
+}
+')
+	assert src.contains('typedef void (*PlainCb)(char*);')
+	assert src.contains('void plain(char* tag);')
+	assert src.contains('install_plain(((PlainCb)plain));')
+	assert !src.contains('typedef void (*PlainCb)(const char*);')
+	assert !src.contains('void plain(const char* tag')
+}
+
+fn test_fn_pointer_direct_const_char_callback_arg_uses_const_signature() {
+	src := generated_c_for_target_program('fnptr_direct_const_char_arg_signature', '
+fn install(cb fn (const_tag &char)) {
+	_ = cb
+}
+
+fn log(const_tag &char) {
+	_ = const_tag
+}
+
+fn main() {
+	install(log)
+}
+')
+	assert src.contains('void install(void (*cb)(const char*));')
+	assert src.contains('void log(const char* const_tag);')
+	assert src.contains('install(((void (*)(const char*))log));')
+	assert !src.contains('void install(void (*cb)(char*));')
+	assert !src.contains('void log(char* const_tag')
+}
+
 fn test_non_sort_callback_arg_is_not_cast_to_fnsortcb() {
 	src := generated_c_for_target_program('non_sort_callback_no_fnsortcb_cast', '
 struct Item {
@@ -1664,6 +2453,7 @@ fn main() {
 }
 ')
 	assert src.contains('use_callback(compare_items);')
+		|| src.contains('use_callback(((ItemCallback)compare_items));')
 	assert !src.contains('(FnSortCB)compare_items')
 }
 

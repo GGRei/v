@@ -73,6 +73,36 @@ fn runtime_init_test_files_with_main_extra_stmts(extra_stmts []ast.Stmt) []ast.F
 	return files
 }
 
+fn runtime_init_test_files_with_parameterized_main_init() []ast.File {
+	mut files := runtime_init_test_files([
+		ast.ImportStmt{
+			name: 'os'
+		},
+	])
+	files[0] = ast.File{
+		mod:     files[0].mod
+		imports: files[0].imports
+		stmts:   [
+			ast.Stmt(ast.FnDecl{
+				name: 'init'
+				typ:  ast.FnType{
+					params: [
+						ast.Parameter{
+							name:   'app'
+							typ:    ast.Expr(ast.Ident{
+								name: 'App'
+							})
+							is_mut: true
+						},
+					]
+				}
+			}),
+			files[0].stmts[0],
+		]
+	}
+	return files
+}
+
 fn runtime_init_import_stmt(name string) ast.Stmt {
 	return ast.Stmt(ast.ImportStmt{
 		name: name
@@ -198,6 +228,20 @@ fn test_linux_minimal_runtime_keeps_comptime_else_imports_from_flat() {
 	flat_names := runtime_init_call_names_from_flat(mut t_flat, files)
 	assert legacy_names == ['os____v_init_consts_os', 'os__init', '__v_init_consts_main']
 	assert flat_names == legacy_names
+}
+
+fn test_runtime_init_ignores_parameterized_main_init_but_keeps_zero_arg_module_init() {
+	files := runtime_init_test_files_with_parameterized_main_init()
+	mut t_legacy := transformer_with_x64_target('linux')
+	seed_runtime_const_init_names(mut t_legacy)
+	mut t_flat := transformer_with_x64_target('linux')
+	seed_runtime_const_init_names(mut t_flat)
+
+	legacy_names := runtime_init_call_names(t_legacy.runtime_const_init_main_calls_parts(files))
+	flat_names := runtime_init_call_names_from_flat(mut t_flat, files)
+	assert legacy_names == ['os____v_init_consts_os', 'os__init', '__v_init_consts_main']
+	assert flat_names == legacy_names
+	assert 'init' !in legacy_names
 }
 
 fn test_macos_tiny_candidate_filters_unimported_runtime_init_calls_from_flat() {

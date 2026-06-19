@@ -180,6 +180,12 @@ struct AutofreeFreshStringClonePushRejectCase {
 	body []ast.Stmt
 }
 
+struct AutofreeFreshStringBorrowedCallRejectCase {
+	name        string
+	body        []ast.Stmt
+	callee_body []ast.Stmt
+}
+
 struct AutofreeFreshStringClonePushDestinationRejectCase {
 	name        string
 	target_type Type
@@ -1727,6 +1733,126 @@ fn test_collect_autofree_facts_rejects_fresh_string_clone_push_borrowed_string_t
 
 	fn_key := autofree_fn_key('main', fn_name, '')
 	autofree_test_assert_no_fresh_string_clone_push_cleanup_or_releases(env, fn_key)
+}
+
+fn test_collect_autofree_facts_collects_fresh_string_borrowed_call_cleanup() {
+	mut env := Environment.new()
+	fn_name := 'fresh_string_borrowed_call_cleanup'
+	flat := autofree_test_flat_with_fresh_string_borrowed_call_body(fn_name, autofree_test_fresh_string_borrowed_call_body(autofree_test_ident_expr('text',
+		autofree_test_post_rhs_pos)), autofree_test_borrow_text_read_only_body())
+	autofree_test_prepare_fresh_string_clone_push_env(mut env, fn_name)
+
+	env.collect_autofree_facts_from_flat(&flat)
+
+	fn_key := autofree_fn_key('main', fn_name, '')
+	autofree_test_assert_fresh_string_borrowed_call_cleanup(env, flat, fn_key)
+}
+
+fn test_collect_autofree_facts_rejects_fresh_string_borrowed_call_escaping_callees() {
+	cases := [
+		AutofreeFreshStringBorrowedCallRejectCase{
+			name:        'fresh_string_borrowed_call_store_global'
+			callee_body: [
+				autofree_test_assign_stmt_with_op(autofree_test_ident_expr('global_text',
+					autofree_test_third_lhs_pos), autofree_test_ident_expr('text',
+					autofree_test_third_rhs_pos), .assign, 201),
+			]
+			body:        autofree_test_fresh_string_borrowed_call_body(autofree_test_ident_expr('text',
+				autofree_test_post_rhs_pos))
+		},
+		AutofreeFreshStringBorrowedCallRejectCase{
+			name:        'fresh_string_borrowed_call_return_param'
+			callee_body: [
+				autofree_test_return_stmt(autofree_test_ident_expr('text',
+					autofree_test_third_rhs_pos)),
+			]
+			body:        autofree_test_fresh_string_borrowed_call_body(autofree_test_ident_expr('text',
+				autofree_test_post_rhs_pos))
+		},
+		AutofreeFreshStringBorrowedCallRejectCase{
+			name:        'fresh_string_borrowed_call_unknown_relay'
+			callee_body: [
+				autofree_test_call_stmt('relay', autofree_test_ident_expr('text',
+					autofree_test_third_rhs_pos), 201),
+			]
+			body:        autofree_test_fresh_string_borrowed_call_body(autofree_test_ident_expr('text',
+				autofree_test_post_rhs_pos))
+		},
+	]
+	for invalid_case in cases {
+		mut env := Environment.new()
+		flat := autofree_test_flat_with_fresh_string_borrowed_call_body(invalid_case.name,
+			invalid_case.body, invalid_case.callee_body)
+		autofree_test_prepare_fresh_string_clone_push_env(mut env, invalid_case.name)
+
+		env.collect_autofree_facts_from_flat(&flat)
+
+		fn_key := autofree_fn_key('main', invalid_case.name, '')
+		autofree_test_assert_no_fresh_string_borrowed_call_cleanup_or_releases(env, fn_key)
+	}
+}
+
+fn test_collect_autofree_facts_rejects_fresh_string_borrowed_call_bad_callers() {
+	cases := [
+		AutofreeFreshStringBorrowedCallRejectCase{
+			name:        'fresh_string_borrowed_call_use_after_call'
+			callee_body: autofree_test_borrow_text_read_only_body()
+			body:        [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_fresh_string_borrowed_call_stmt('borrow_text', [
+					autofree_test_ident_expr('text', autofree_test_post_rhs_pos),
+				], 202),
+				autofree_test_return_stmt(autofree_test_ident_expr('text',
+					autofree_test_third_rhs_pos)),
+			]
+		},
+		AutofreeFreshStringBorrowedCallRejectCase{
+			name:        'fresh_string_borrowed_call_arg_twice'
+			callee_body: autofree_test_borrow_text_read_only_body()
+			body:        autofree_test_fresh_string_borrowed_call_body_with_args([
+				autofree_test_ident_expr('text', autofree_test_post_rhs_pos),
+				autofree_test_ident_expr('text', autofree_test_third_rhs_pos),
+			])
+		},
+		AutofreeFreshStringBorrowedCallRejectCase{
+			name:        'fresh_string_borrowed_call_address_arg'
+			callee_body: autofree_test_borrow_text_read_only_body()
+			body:        autofree_test_fresh_string_borrowed_call_body(autofree_test_prefix_expr(.amp, autofree_test_ident_expr('text',
+				autofree_test_post_rhs_pos), autofree_test_post_rhs_pos))
+		},
+		AutofreeFreshStringBorrowedCallRejectCase{
+			name:        'fresh_string_borrowed_call_reassign_before_call'
+			callee_body: autofree_test_borrow_text_read_only_body()
+			body:        [
+				autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+				autofree_test_assign_stmt_with_op(autofree_test_ident_expr('text',
+					autofree_test_third_lhs_pos), autofree_test_string_plus_call_expr(), .assign, 201),
+				autofree_test_fresh_string_borrowed_call_stmt('borrow_text', [
+					autofree_test_ident_expr('text', autofree_test_post_rhs_pos),
+				], 202),
+			]
+		},
+		AutofreeFreshStringBorrowedCallRejectCase{
+			name:        'fresh_string_borrowed_call_inline_direct'
+			callee_body: autofree_test_borrow_text_read_only_body()
+			body:        [
+				autofree_test_fresh_string_borrowed_call_stmt('borrow_text', [
+					autofree_test_string_plus_call_expr(),
+				], 202),
+			]
+		},
+	]
+	for invalid_case in cases {
+		mut env := Environment.new()
+		flat := autofree_test_flat_with_fresh_string_borrowed_call_body(invalid_case.name,
+			invalid_case.body, invalid_case.callee_body)
+		autofree_test_prepare_fresh_string_clone_push_env(mut env, invalid_case.name)
+
+		env.collect_autofree_facts_from_flat(&flat)
+
+		fn_key := autofree_fn_key('main', invalid_case.name, '')
+		autofree_test_assert_no_fresh_string_borrowed_call_cleanup_or_releases(env, fn_key)
+	}
 }
 
 fn test_collect_autofree_return_transfers_collects_direct_empty_int_array_return() {
@@ -22697,6 +22823,48 @@ fn autofree_test_fresh_string_clone_push_body(final_rhs ast.Expr) []ast.Stmt {
 	]
 }
 
+fn autofree_test_flat_with_fresh_string_borrowed_call_body(fn_name string, body []ast.Stmt, callee_body []ast.Stmt) ast.FlatAst {
+	callee_decl := ast.FnDecl{
+		name:  'borrow_text'
+		typ:   ast.FnType{
+			params: [
+				autofree_test_param_at('text', 'string',
+					autofree_test_second_method_source_param_pos),
+			]
+		}
+		stmts: callee_body
+	}
+	caller_decl := ast.FnDecl{
+		name:  fn_name
+		typ:   ast.FnType{
+			params: [
+				autofree_test_param_at('left', 'string', autofree_test_source_param_pos),
+				autofree_test_param_at('right', 'string', autofree_test_other_rhs_pos),
+			]
+		}
+		stmts: body
+	}
+	return autofree_test_flat_with_stmts([ast.Stmt(callee_decl), ast.Stmt(caller_decl)])
+}
+
+fn autofree_test_fresh_string_borrowed_call_body(arg ast.Expr) []ast.Stmt {
+	return autofree_test_fresh_string_borrowed_call_body_with_args([arg])
+}
+
+fn autofree_test_fresh_string_borrowed_call_body_with_args(args []ast.Expr) []ast.Stmt {
+	return [
+		autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
+		autofree_test_fresh_string_borrowed_call_stmt('borrow_text', args, 202),
+	]
+}
+
+fn autofree_test_borrow_text_read_only_body() []ast.Stmt {
+	return [
+		autofree_test_assign_stmt_with_op(autofree_test_ident_expr('_', autofree_test_third_lhs_pos), autofree_test_ident_expr('text',
+			autofree_test_third_rhs_pos), .decl_assign, 201),
+	]
+}
+
 fn autofree_test_fresh_string_clone_push_lowered_body(clone_rhs ast.Expr, final_stmt ast.Stmt) []ast.Stmt {
 	return [
 		autofree_test_fresh_string_clone_push_fresh_stmt(autofree_test_string_plus_call_expr()),
@@ -27160,6 +27328,16 @@ fn autofree_test_call_expr(name string, arg ast.Expr, pos_id int) ast.Expr {
 	})
 }
 
+fn autofree_test_fresh_string_borrowed_call_stmt(name string, args []ast.Expr, pos_id int) ast.Stmt {
+	return ast.Stmt(ast.ExprStmt{
+		expr: ast.Expr(ast.CallExpr{
+			lhs:  autofree_test_ident_expr(name, pos_id)
+			args: args
+			pos:  autofree_test_pos(pos_id)
+		})
+	})
+}
+
 fn autofree_test_clone_call_expr(receiver_name string, pos_id int) ast.Expr {
 	return ast.Expr(ast.CallExpr{
 		lhs: autofree_test_selector_expr_with_root_pos(receiver_name, 'clone', pos_id, 0, pos_id)
@@ -30678,6 +30856,152 @@ fn autofree_test_assert_no_fresh_string_clone_push_cleanup_or_releases(env Envir
 	if fn_key in env.autofree_release_insertion_points_by_fn_key {
 		for insertion_point in env.autofree_release_insertion_points_by_fn_key[fn_key] {
 			assert insertion_point.move_kind != .fresh_local_string_clone_push_binding
+			assert insertion_point.name != 'text'
+		}
+	}
+	assert env.autofree_releases_by_fn_key.len == 0
+	assert env.autofree_helper_roots.len == 0
+}
+
+fn autofree_test_assert_fresh_string_borrowed_call_cleanup(env Environment, flat ast.FlatAst, fn_key string) {
+	move_kind := AutofreeMoveProofKind.fresh_local_string_borrowed_call_binding
+	text_id := autofree_test_node_id_by_kind_name_pos(flat, .expr_ident, 'text',
+		autofree_test_lhs_pos)
+	source_id := autofree_test_node_id_by_kind_pos(flat, .expr_call, autofree_test_rhs_pos)
+	call_expr_id := autofree_test_node_id_by_kind_pos(flat, .expr_call, 202)
+	call_stmt_id := autofree_test_stmt_expr_id_with_single_child(flat, call_expr_id)
+	assert text_id != ast.invalid_flat_node_id
+	assert source_id != ast.invalid_flat_node_id
+	assert call_expr_id != ast.invalid_flat_node_id
+	assert call_stmt_id != ast.invalid_flat_node_id
+	assert fn_key in env.autofree_fresh_locals_by_fn_key
+	fresh_locals := env.autofree_fresh_locals_by_fn_key[fn_key]
+	assert fresh_locals.len == 1
+	fresh := fresh_locals[0]
+	assert fresh.name == 'text'
+	assert fresh.reason == 'owned string plus call result'
+	assert fresh.state == .owned_unique
+	assert fresh.resource == .string_value
+	assert fresh.shape.kind == .string_
+	assert fresh.shape.needs_autofree()
+	assert fresh.type_name == Type(string_).name()
+	assert same_type_name(fresh.typ, Type(string_))
+	assert fresh.node_id == text_id
+	assert fresh.pos_id == autofree_test_lhs_pos
+	assert fresh.stmt_pos_id == 200
+	assert fresh.source_endpoint.storage == .call_result
+	assert fresh.source_endpoint.root_storage == .call_result
+	assert fresh.source_endpoint.root_node_id == source_id
+	assert fresh.source_endpoint.root_pos_id == autofree_test_rhs_pos
+	assert fresh.source_endpoint.node_id == source_id
+	assert fresh.source_endpoint.pos_id == autofree_test_rhs_pos
+	assert fresh.source_endpoint.reason == 'owned string plus call result'
+	assert fresh.endpoint.storage == .local
+	assert fresh.endpoint.root_storage == .local
+	assert fresh.endpoint.name == 'text'
+	assert fn_key in env.autofree_move_proofs_by_fn_key
+	proofs := env.autofree_move_proofs_by_fn_key[fn_key]
+	assert proofs.len == 1
+	proof := proofs[0]
+	assert proof.kind == move_kind
+	assert proof.kind != .fresh_local_binding
+	assert proof.kind != .fresh_local_string_clone_push_binding
+	assert proof.name == 'text'
+	assert proof.reason == 'fresh local string borrowed call cleanup'
+	assert proof.state == .owned_unique
+	assert proof.resource == .string_value
+	assert proof.shape.kind == .string_
+	assert proof.type_name == Type(string_).name()
+	assert same_type_name(proof.typ, Type(string_))
+	assert proof.node_id == text_id
+	assert proof.pos_id == autofree_test_lhs_pos
+	assert proof.stmt_node_id == call_stmt_id
+	assert proof.stmt_pos_id == 202
+	assert proof.source_endpoint.storage == .call_result
+	assert proof.source_endpoint.root_storage == .call_result
+	assert proof.target_endpoint.storage == .local
+	assert proof.target_endpoint.root_storage == .local
+	assert proof.target_endpoint.name == 'text'
+	assert fn_key in env.autofree_natural_release_candidates_by_fn_key
+	candidates := env.autofree_natural_release_candidates_by_fn_key[fn_key]
+	assert candidates.len == 1
+	candidate := candidates[0]
+	assert candidate.move_kind == move_kind
+	assert candidate.move_kind != .fresh_local_binding
+	assert candidate.resource == .string_value
+	assert candidate.name == 'text'
+	assert candidate.release_after_node_id == call_stmt_id
+	assert candidate.release_after_pos_id == 202
+	assert fn_key in env.autofree_release_plans_by_fn_key
+	plans := env.autofree_release_plans_by_fn_key[fn_key]
+	assert plans.len == 1
+	plan := plans[0]
+	assert plan.move_kind == move_kind
+	assert plan.plan_kind == .natural_exit
+	assert plan.plan_action == .string_value_cleanup
+	assert plan.helper_requirement == .none
+	assert plan.resource == .string_value
+	assert plan.release_after_node_id == call_stmt_id
+	assert plan.release_after_pos_id == 202
+	assert fn_key in env.autofree_release_preflights_by_fn_key
+	preflights := env.autofree_release_preflights_by_fn_key[fn_key]
+	assert preflights.len == 1
+	preflight := preflights[0]
+	assert preflight.move_kind == move_kind
+	assert preflight.plan_action == .string_value_cleanup
+	assert preflight.preflight_status == .inert
+	assert preflight.resource == .string_value
+	assert preflight.release_after_node_id == call_stmt_id
+	assert preflight.release_after_pos_id == 202
+	assert fn_key in env.autofree_release_insertion_points_by_fn_key
+	insertion_points := env.autofree_release_insertion_points_by_fn_key[fn_key]
+	assert insertion_points.len == 1
+	insertion_point := insertion_points[0]
+	assert insertion_point.move_kind == move_kind
+	assert insertion_point.plan_action == .string_value_cleanup
+	assert insertion_point.insertion_kind == .after_statement
+	assert insertion_point.insertion_status == .inert
+	assert insertion_point.resource == .string_value
+	assert insertion_point.endpoint.name == 'text'
+	assert insertion_point.endpoint.storage == .local
+	assert insertion_point.endpoint.root_storage == .local
+	assert insertion_point.source_endpoint.storage == .call_result
+	assert insertion_point.source_endpoint.root_storage == .call_result
+	assert insertion_point.insert_after_node_id == call_stmt_id
+	assert insertion_point.insert_after_pos_id == 202
+	assert env.autofree_transfers_by_fn_key.len == 0
+	assert env.autofree_release_eligibility_by_fn_key.len == 0
+	assert env.autofree_releases_by_fn_key.len == 0
+	assert env.autofree_helper_roots.len == 0
+}
+
+fn autofree_test_assert_no_fresh_string_borrowed_call_cleanup_or_releases(env Environment, fn_key string) {
+	assert fn_key.len > 0
+	if fn_key in env.autofree_move_proofs_by_fn_key {
+		for proof in env.autofree_move_proofs_by_fn_key[fn_key] {
+			assert proof.kind != .fresh_local_string_borrowed_call_binding
+			assert proof.reason != 'fresh local string borrowed call cleanup'
+		}
+	}
+	if fn_key in env.autofree_natural_release_candidates_by_fn_key {
+		for candidate in env.autofree_natural_release_candidates_by_fn_key[fn_key] {
+			assert candidate.move_kind != .fresh_local_string_borrowed_call_binding
+		}
+	}
+	if fn_key in env.autofree_release_plans_by_fn_key {
+		for plan in env.autofree_release_plans_by_fn_key[fn_key] {
+			assert plan.move_kind != .fresh_local_string_borrowed_call_binding
+			assert plan.plan_action != .string_value_cleanup
+		}
+	}
+	if fn_key in env.autofree_release_preflights_by_fn_key {
+		for preflight in env.autofree_release_preflights_by_fn_key[fn_key] {
+			assert preflight.move_kind != .fresh_local_string_borrowed_call_binding
+		}
+	}
+	if fn_key in env.autofree_release_insertion_points_by_fn_key {
+		for insertion_point in env.autofree_release_insertion_points_by_fn_key[fn_key] {
+			assert insertion_point.move_kind != .fresh_local_string_borrowed_call_binding
 			assert insertion_point.name != 'text'
 		}
 	}

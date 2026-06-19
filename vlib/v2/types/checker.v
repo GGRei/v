@@ -628,11 +628,12 @@ struct Checker {
 	// TODO: mod
 	mod &Module = new_module('main', '')
 mut:
-	env           &Environment = &Environment{}
-	file_set      &token.FileSet
-	scope         &Scope = new_scope(unsafe { nil })
-	c_scope       &Scope = new_scope(unsafe { nil })
-	expected_type ?Type
+	env                 &Environment = &Environment{}
+	file_set            &token.FileSet
+	scope               &Scope = new_scope(unsafe { nil })
+	c_scope             &Scope = new_scope(unsafe { nil })
+	expected_type       ?Type
+	current_return_type ?Type
 	// Current file's module name (for saving function scopes)
 	cur_file_module string
 	// Function root scope - used to flatten local variable types for transformer lookup
@@ -2945,6 +2946,52 @@ fn (mut c Checker) check_types(exp_type Type, got_type Type) bool {
 	return false
 }
 
+fn (mut c Checker) assoc_base_type_for_check(typ Type) Type {
+	mut out := typ
+	if out is Alias {
+		alias_type := out as Alias
+		mut base_type := alias_type.base_type
+		if base_type.name() == '' && alias_type.name != '' {
+			base_type = c.resolve_stale_alias(alias_type.name)
+		}
+		if base_type.name() != '' {
+			out = base_type
+		}
+	}
+	out = resolve_alias(out)
+	if out is Pointer {
+		ptr := out as Pointer
+		if !type_data_ptr_is_nil(ptr) {
+			mut base_type := ptr.base_type
+			if base_type is Alias {
+				alias_type := base_type as Alias
+				if alias_type.base_type.name() == '' && alias_type.name != '' {
+					base_type = c.resolve_stale_alias(alias_type.name)
+				}
+			}
+			return resolve_alias(base_type)
+		}
+	}
+	return out
+}
+
+fn (mut c Checker) assoc_base_matches_target(target Type, base Type) bool {
+	target_check := c.assoc_base_type_for_check(target)
+	base_check := c.assoc_base_type_for_check(base)
+	if target_check is Pointer {
+		if base_check !is Pointer {
+			return false
+		}
+	} else if base_check is Pointer {
+		return false
+	}
+	if c.check_types(target_check, base_check) {
+		return true
+	}
+	target_name := target_check.name()
+	return target_name != '' && target_name == base_check.name()
+}
+
 fn (mut c Checker) type_satisfies_interface(got_type Type, iface Interface) bool {
 	mut actual_type := resolve_alias(got_type)
 	if actual_type is Pointer {
@@ -4049,26 +4096,28 @@ fn (mut c Checker) expr_impl(expr ast.Expr) Type {
 			typ := c.expr(expr.typ)
 
 			expected_type_prev := c.expected_type
-			c.expected_type = to_optional_type(typ)
+			c.expected_type = none
 			base_type := c.expr(expr.expr)
 			c.expected_type = expected_type_prev
 
 			// Base expression should match the assoc target type (allow pointers and sum types).
-			mut base_check := resolve_alias(base_type)
-			if base_check is Pointer {
-				if !type_data_ptr_is_nil(base_check) {
-					base_check = resolve_alias((base_check as Pointer).base_type)
-				}
-			}
+			base_check := c.assoc_base_type_for_check(base_type)
 			// Smart-casting does not apply to mutable variables. Use an immutable copy.
 			final_base := base_check
 			if final_base is SumType {
 				sum_t := final_base as SumType
-				if typ !in sum_t.variants {
+				mut found_variant := false
+				for variant in sum_t.variants {
+					if c.assoc_base_matches_target(typ, variant) {
+						found_variant = true
+						break
+					}
+				}
+				if !found_variant {
 					c.error_with_pos('expected base of type: ${typ.name()}, got ${base_type.name()}',
 						expr.pos)
 				}
-			} else if !c.check_types(typ, final_base) {
+			} else if !c.assoc_base_matches_target(typ, base_type) {
 				c.error_with_pos('expected base of type: ${typ.name()}, got ${base_type.name()}',
 					expr.pos)
 			}
@@ -4887,10 +4936,15 @@ fn (mut c Checker) stmt(stmt ast.Stmt) {
 		ast.ReturnStmt {
 			c.log('ReturnStmt:')
 			prev_inside_return_stmt := c.inside_return_stmt
+			prev_expected_type := c.expected_type
 			c.inside_return_stmt = true
+			if return_type := c.current_return_type {
+				c.expected_type = to_optional_type(return_type)
+			}
 			for expr in stmt.exprs {
 				c.expr(expr)
 			}
+			c.expected_type = prev_expected_type
 			c.inside_return_stmt = prev_inside_return_stmt
 			$if ownership ? {
 				c.ownership_check_return(stmt)
@@ -5148,9 +5202,10 @@ fn (mut c Checker) process_pending_struct_decls() {
 		}
 		mut fields := []Field{}
 		for field_idx in 0 .. pending.decl.fields.len {
+			field_name := escaped_field_lookup_name(pending.decl.fields[field_idx].name)
 			field_typ := c.decl_field_type(pending.decl.fields[field_idx].typ)
 			fields << Field{
-				name:                pending.decl.fields[field_idx].name
+				name:                field_name
 				typ:                 field_typ
 				default_expr:        pending.decl.fields[field_idx].value
 				attributes:          pending.decl.fields[field_idx].attributes
@@ -5338,6 +5393,7 @@ fn (mut c Checker) check_pending_fn_body(pending PendingFnBody) bool {
 		prev_fn_root_scope := c.fn_root_scope
 		mut prev_fallback_vars := c.fallback_vars.move()
 		prev_generic_params := c.generic_params
+		prev_return_type := c.current_return_type
 		c.scope = pending.scope
 		c.cur_file_module = pending.module_name
 		c.fn_root_scope = pending.scope
@@ -5362,8 +5418,7 @@ fn (mut c Checker) check_pending_fn_body(pending PendingFnBody) bool {
 				c.scope.insert(gp_name, Type(NamedType(gp_name)))
 			}
 		}
-		expected_type := c.expected_type
-		c.expected_type = pending.typ.return_type
+		c.current_return_type = pending.typ.return_type
 		// Ownership: save/restore per-function state
 		mut prev_ownership_fn := ''
 		mut prev_owned := map[string]token.Pos{}
@@ -5386,7 +5441,7 @@ fn (mut c Checker) check_pending_fn_body(pending PendingFnBody) bool {
 			c.ownership_leave_fn(prev_ownership_fn, prev_owned, prev_owned_types, prev_moved,
 				prev_borrowed)
 		}
-		c.expected_type = expected_type
+		c.current_return_type = prev_return_type
 		c.generic_params = prev_generic_params
 		c.fallback_vars = prev_fallback_vars.move()
 		c.fn_root_scope = prev_fn_root_scope
@@ -6390,6 +6445,10 @@ fn (mut c Checker) if_expr(expr ast.IfExpr) Type {
 fn (mut c Checker) match_expr(expr ast.MatchExpr, used_as_expr bool) Type {
 	expr_type := c.expr(expr.expr)
 	expected_type := c.expected_type
+	mut has_expected_type := false
+	if _ := expected_type {
+		has_expected_type = true
+	}
 	if expr_type is Enum {
 		c.expected_type = to_optional_type(Type(expr_type))
 	} else {
@@ -6411,6 +6470,8 @@ fn (mut c Checker) match_expr(expr ast.MatchExpr, used_as_expr bool) Type {
 		ownership_before_borrowed = c.borrowed_vars.clone()
 	}
 	mut last_stmt_type := Type(void_)
+	mut inferred_match_type := Type(void_)
+	mut can_infer_match_type := used_as_expr
 	for _, branch in expr.branches {
 		$if ownership ? {
 			c.ownership_restore_state(ownership_before_owned, ownership_before_moved,
@@ -6432,7 +6493,9 @@ fn (mut c Checker) match_expr(expr ast.MatchExpr, used_as_expr bool) Type {
 		// mut is_noreturn := false
 		if used_as_expr {
 			last_expr_idx := trailing_expr_stmt_index(branch.stmts)
-			if last_expr_idx >= 0 {
+			if last_expr_idx < 0 {
+				can_infer_match_type = false
+			} else {
 				last_stmt := branch.stmts[last_expr_idx] as ast.ExprStmt
 				t := c.expr(last_stmt.expr)
 				// TODO: non else branch can only return void if its a noreturn
@@ -6446,10 +6509,18 @@ fn (mut c Checker) match_expr(expr ast.MatchExpr, used_as_expr bool) Type {
 				// }
 				// TODO: fix last branch / void expr
 				// actually make sure its an else branch
-				if _ := expected_type {
+				if has_expected_type {
 					// TODO: re-enable type checking for match branches when v2 handles sum types better
 					// Currently disabled because v2 checker doesn't understand sum type compatibility
 					last_stmt_type = t
+				} else if can_infer_match_type {
+					if t is Void {
+						can_infer_match_type = false
+					} else if inferred_match_type is Void {
+						inferred_match_type = t
+					} else if !c.check_types(inferred_match_type, t) {
+						can_infer_match_type = false
+					}
 				}
 			}
 		}
@@ -6468,6 +6539,9 @@ fn (mut c Checker) match_expr(expr ast.MatchExpr, used_as_expr bool) Type {
 			ownership_before_borrowed, ownership_arms)
 	}
 	c.expected_type = expected_type
+	if used_as_expr && !has_expected_type && can_infer_match_type {
+		return inferred_match_type
+	}
 	return last_stmt_type
 }
 
@@ -8336,9 +8410,15 @@ fn (c &Checker) struct_implements_name(st Struct, target string) bool {
 	return false
 }
 
+fn escaped_field_lookup_name(raw_name string) string {
+	if raw_name.len > 0 && raw_name[0] == `@` {
+		return raw_name[1..]
+	}
+	return raw_name
+}
+
 fn (mut c Checker) find_field_or_method(t Type, raw_name string) !Type {
-	// Strip @ prefix used to escape V keywords in field/method names (e.g., @type → type)
-	name := if raw_name.len > 0 && raw_name[0] == `@` { raw_name[1..] } else { raw_name }
+	name := escaped_field_lookup_name(raw_name)
 	$if dbg_sel ? {
 		if name == 'write_string' {
 			mut direct_ok := false

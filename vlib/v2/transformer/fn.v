@@ -6758,26 +6758,20 @@ fn (mut t Transformer) try_inline_generic_math_call(expr ast.CallExpr) ?ast.Expr
 			return t.make_inline_abs_expr(arg, pos)
 		}
 	}
-	// Handle min(a, b) and max(a, b) - bare ident calls within math module
-	if expr.lhs is ast.Ident && expr.args.len == 2 {
-		name := (expr.lhs as ast.Ident).name
-		if name == 'min' || name == 'max' {
-			a := t.transform_expr(expr.args[0])
-			b := t.transform_expr(expr.args[1])
-			op := if name == 'min' { token.Token.lt } else { token.Token.gt }
-			return t.make_inline_if_expr(a, b, op)
-		}
-	}
-	// Handle math.min(a, b) and math.max(a, b) - module-qualified calls
-	if expr.lhs is ast.SelectorExpr && expr.args.len == 2 {
+	if expr.lhs is ast.SelectorExpr && (expr.args.len == 2 || expr.args.len == 3) {
 		sel := expr.lhs as ast.SelectorExpr
-		if sel.lhs is ast.Ident && (sel.lhs as ast.Ident).name == 'math' {
+		if t.is_resolved_math_module_selector(sel) {
 			name := sel.rhs.name
-			if name == 'min' || name == 'max' {
-				a := t.transform_expr(expr.args[0])
-				b := t.transform_expr(expr.args[1])
+			if (name == 'min' || name == 'max') && expr.args.len == 2 {
+				a := t.capture_math_inline_arg(expr.args[0])
+				b := t.capture_math_inline_arg(expr.args[1])
 				op := if name == 'min' { token.Token.lt } else { token.Token.gt }
 				return t.make_inline_if_expr(a, b, op)
+			} else if name == 'clip' && expr.args.len == 3 {
+				x := t.capture_math_inline_arg(expr.args[0])
+				min_value := t.capture_math_inline_arg(expr.args[1])
+				max_value := t.capture_math_inline_arg(expr.args[2])
+				return t.make_inline_clip_expr(x, min_value, max_value)
 			}
 		}
 	}
@@ -6797,6 +6791,41 @@ fn (mut t Transformer) try_inline_generic_math_call(expr ast.CallExpr) ?ast.Expr
 		}
 	}
 	return none
+}
+
+fn (t &Transformer) is_resolved_math_module_selector(sel ast.SelectorExpr) bool {
+	if sel.lhs !is ast.Ident {
+		return false
+	}
+	lhs := sel.lhs as ast.Ident
+	resolved := t.resolve_module_name(lhs.name) or { return false }
+	if resolved != 'math' || t.pref == unsafe { nil } || t.cur_file_name == '' {
+		return false
+	}
+	resolved_path := t.pref.get_module_path('math', t.cur_file_name).replace('\\', '/')
+	vlib_path := t.pref.get_vlib_module_path('math').replace('\\', '/')
+	return resolved_path == vlib_path
+}
+
+fn (mut t Transformer) capture_math_inline_arg(arg ast.Expr) ast.Expr {
+	transformed := t.transform_expr(arg)
+	t.temp_counter++
+	tmp_name := '_math_t${t.temp_counter}'
+	mut tmp_ident := ast.Ident{
+		name: tmp_name
+	}
+	if typ := t.get_expr_type(arg) {
+		tmp_ident = t.typed_temp_ident(tmp_name, typ)
+	} else if typ := t.get_expr_type(transformed) {
+		tmp_ident = t.typed_temp_ident(tmp_name, typ)
+	}
+	t.pending_stmts << ast.Stmt(ast.AssignStmt{
+		op:  .decl_assign
+		lhs: [ast.Expr(tmp_ident)]
+		rhs: [transformed]
+		pos: arg.pos()
+	})
+	return ast.Expr(tmp_ident)
 }
 
 // try_inline_generic_math_coce handles CallOrCastExpr (single-arg calls):
@@ -6872,6 +6901,32 @@ fn (mut t Transformer) make_inline_if_expr(a ast.Expr, b ast.Expr, op token.Toke
 				}),
 			]
 		}
+	}
+}
+
+fn (mut t Transformer) make_inline_clip_expr(x ast.Expr, min_value ast.Expr, max_value ast.Expr) ast.Expr {
+	return ast.IfExpr{
+		cond:      t.make_infix_expr(.gt, x, max_value)
+		stmts:     [
+			ast.Stmt(ast.ExprStmt{
+				expr: max_value
+			}),
+		]
+		else_expr: ast.Expr(ast.IfExpr{
+			cond:      t.make_infix_expr(.lt, x, min_value)
+			stmts:     [
+				ast.Stmt(ast.ExprStmt{
+					expr: min_value
+				}),
+			]
+			else_expr: ast.Expr(ast.IfExpr{
+				stmts: [
+					ast.Stmt(ast.ExprStmt{
+						expr: x
+					}),
+				]
+			})
+		})
 	}
 }
 

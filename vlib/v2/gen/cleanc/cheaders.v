@@ -812,6 +812,158 @@ fn normalize_c_directive_value(name string, raw string, file_name string, vroot 
 	return value
 }
 
+fn c_directive_module_key(name string) string {
+	return name.trim_space()
+}
+
+fn c_directive_add_module_key(mut keys []string, key string) {
+	normalized := c_directive_module_key(key)
+	if normalized == '' || normalized in keys {
+		return
+	}
+	keys << normalized
+}
+
+fn c_directive_file_module_keys(module_name string, file_name string, imported_keys map[string]bool) []string {
+	mut keys := []string{}
+	name := if module_name == '' { 'main' } else { module_name }
+	c_directive_add_module_key(mut keys, name)
+	if name == 'main' || file_name == '' {
+		return keys
+	}
+	leaf := name.all_after_last('.')
+	if leaf == '' {
+		return keys
+	}
+	dir := os.dir(file_name)
+	if dir == '' || dir == '.' {
+		return keys
+	}
+	parts := dir.replace('\\', '/').split('/')
+	mut end := parts.len - 1
+	for end >= 0 && parts[end] == '' {
+		end--
+	}
+	if end < 0 || parts[end] != leaf {
+		return keys
+	}
+	mut suffix := []string{cap: end + 1}
+	for i := end; i >= 0; i-- {
+		part := parts[i]
+		if part == '' || part == '.' {
+			break
+		}
+		suffix.prepend(part)
+		key := c_directive_module_key(suffix.join('.'))
+		if key in imported_keys {
+			c_directive_add_module_key(mut keys, key)
+		}
+	}
+	return keys
+}
+
+fn c_directive_visit_flat_file(flat &ast.FlatAst, file_idx int, module_files map[string][]int, mut state []int, mut order []int) {
+	if file_idx < 0 || file_idx >= flat.files.len {
+		return
+	}
+	if state[file_idx] == 2 {
+		return
+	}
+	if state[file_idx] == 1 {
+		return
+	}
+	state[file_idx] = 1
+	fc := flat.file_cursor(file_idx)
+	imports := fc.imports()
+	for i in 0 .. imports.len() {
+		imp := imports.at(i)
+		if imp.kind() != .stmt_import {
+			continue
+		}
+		import_name := imp.name()
+		dep_files := module_files[c_directive_module_key(import_name)] or { continue }
+		for dep_idx in dep_files {
+			if dep_idx == file_idx {
+				continue
+			}
+			c_directive_visit_flat_file(flat, dep_idx, module_files, mut state, mut order)
+		}
+	}
+	state[file_idx] = 2
+	order << file_idx
+}
+
+fn c_directive_flat_file_order(flat &ast.FlatAst) []int {
+	mut imported_keys := map[string]bool{}
+	for i in 0 .. flat.files.len {
+		imports := flat.file_cursor(i).imports()
+		for j in 0 .. imports.len() {
+			imp := imports.at(j)
+			if imp.kind() == .stmt_import {
+				imported_keys[c_directive_module_key(imp.name())] = true
+			}
+		}
+	}
+	mut module_files := map[string][]int{}
+	for i in 0 .. flat.files.len {
+		fc := flat.file_cursor(i)
+		for key in c_directive_file_module_keys(fc.mod(), fc.name(), imported_keys) {
+			module_files[key] << i
+		}
+	}
+	mut state := []int{len: flat.files.len}
+	mut order := []int{cap: flat.files.len}
+	for i in 0 .. flat.files.len {
+		c_directive_visit_flat_file(flat, i, module_files, mut state, mut order)
+	}
+	return order
+}
+
+fn c_directive_visit_file(files []ast.File, file_idx int, module_files map[string][]int, mut state []int, mut order []int) {
+	if file_idx < 0 || file_idx >= files.len {
+		return
+	}
+	if state[file_idx] == 2 {
+		return
+	}
+	if state[file_idx] == 1 {
+		return
+	}
+	state[file_idx] = 1
+	for imp in files[file_idx].imports {
+		dep_files := module_files[c_directive_module_key(imp.name)] or { continue }
+		for dep_idx in dep_files {
+			if dep_idx == file_idx {
+				continue
+			}
+			c_directive_visit_file(files, dep_idx, module_files, mut state, mut order)
+		}
+	}
+	state[file_idx] = 2
+	order << file_idx
+}
+
+fn c_directive_file_order(files []ast.File) []int {
+	mut imported_keys := map[string]bool{}
+	for file in files {
+		for imp in file.imports {
+			imported_keys[c_directive_module_key(imp.name)] = true
+		}
+	}
+	mut module_files := map[string][]int{}
+	for i, file in files {
+		for key in c_directive_file_module_keys(file.mod, file.name, imported_keys) {
+			module_files[key] << i
+		}
+	}
+	mut state := []int{len: files.len}
+	mut order := []int{cap: files.len}
+	for i in 0 .. files.len {
+		c_directive_visit_file(files, i, module_files, mut state, mut order)
+	}
+	return order
+}
+
 fn (mut g Gen) emit_collected_c_directives() {
 	mut seen := map[string]bool{}
 	mut cross_source_paths := map[string]bool{}
@@ -819,7 +971,7 @@ fn (mut g Gen) emit_collected_c_directives() {
 		cross_source_paths = g.collect_cross_directives_from_original_sources(mut seen)
 	}
 	if g.has_flat() {
-		for i in 0 .. g.flat.files.len {
+		for i in c_directive_flat_file_order(g.flat) {
 			fc := g.flat.file_cursor(i)
 			file_name := fc.name()
 			if file_name in cross_source_paths {
@@ -832,7 +984,8 @@ fn (mut g Gen) emit_collected_c_directives() {
 		}
 		return
 	}
-	for file in g.files {
+	for i in c_directive_file_order(g.files) {
+		file := g.files[i]
 		if file.name in cross_source_paths {
 			continue
 		}
@@ -851,7 +1004,7 @@ fn (mut g Gen) collect_cross_directives_from_original_sources(mut seen map[strin
 	mut file_set := token.FileSet.new()
 	mut par := parser.Parser.new(g.pref)
 	if g.has_flat() {
-		for i in 0 .. g.flat.files.len {
+		for i in c_directive_flat_file_order(g.flat) {
 			fc := g.flat.file_cursor(i)
 			source_path := fc.name()
 			if source_path == '' || source_path in parsed_paths || !os.exists(source_path) {
@@ -868,7 +1021,8 @@ fn (mut g Gen) collect_cross_directives_from_original_sources(mut seen map[strin
 		}
 		return parsed_paths
 	}
-	for file in g.files {
+	for i in c_directive_file_order(g.files) {
+		file := g.files[i]
 		source_path := file.name
 		if source_path == '' || source_path in parsed_paths || !os.exists(source_path) {
 			continue

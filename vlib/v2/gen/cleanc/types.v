@@ -54,6 +54,20 @@ fn (g &Gen) result_value_c_type(result_type string) string {
 	return g.option_result_payload_c_type(g.result_value_type(result_type))
 }
 
+fn (g &Gen) option_value_c_type(option_type string) string {
+	return g.option_result_payload_c_type(option_value_type(option_type))
+}
+
+fn (g &Gen) option_result_wrapper_payload_c_type(wrapper_type string) string {
+	if wrapper_type.starts_with('_option_') {
+		return g.option_value_c_type(wrapper_type)
+	}
+	if wrapper_type.starts_with('_result_') {
+		return g.result_value_c_type(wrapper_type)
+	}
+	return ''
+}
+
 fn (g &Gen) c_type_is_fn_pointer_alias(type_name string) bool {
 	name := type_name.trim_space()
 	if name == '' {
@@ -128,7 +142,19 @@ fn (g &Gen) option_result_payload_alias_component(base_type string) string {
 		}
 	}
 	if base.starts_with('struct ') {
-		return 'struct_' + mangle_alias_component(base['struct '.len..].trim_space())
+		struct_name := base['struct '.len..].trim_space()
+		if struct_name.ends_with('*') {
+			return 'struct_' + mangle_alias_component(struct_name[..struct_name.len -
+				1].trim_space()) + 'ptr'
+		}
+		return 'struct_' + mangle_alias_component(struct_name)
+	}
+	if base.ends_with('*') {
+		base_name := base[..base.len - 1].trim_space()
+		if !base_name.contains('__') && base_name in g.c_struct_types
+			&& base_name !in g.typedef_c_types {
+			return 'struct_' + mangle_alias_component(base_name) + 'ptr'
+		}
 	}
 	if !base.contains('__') && base in g.c_struct_types && base !in g.typedef_c_types {
 		return 'struct_' + mangle_alias_component(base)
@@ -1454,10 +1480,24 @@ fn (g &Gen) option_result_payload_is_unbound_generic_struct(val_type string) boo
 
 fn (g &Gen) option_result_payload_c_type(val_type string) string {
 	if val_type.starts_with('struct_') {
-		c_name := val_type['struct_'.len..]
-		if c_name in g.c_struct_types && c_name !in g.typedef_c_types {
-			return 'struct ${c_name}'
+		mut c_name := val_type['struct_'.len..]
+		mut suffix := ''
+		if c_name.ends_with('*') {
+			c_name = c_name[..c_name.len - 1].trim_space()
+			suffix = '*'
 		}
+		if c_name in g.c_struct_types && c_name !in g.typedef_c_types {
+			return 'struct ${c_name}${suffix}'
+		}
+	}
+	if val_type.ends_with('*') {
+		base := val_type[..val_type.len - 1].trim_space()
+		if base in g.c_struct_types && base !in g.typedef_c_types {
+			return 'struct ${base}*'
+		}
+	}
+	if val_type in g.c_struct_types && val_type !in g.typedef_c_types {
+		return 'struct ${val_type}'
 	}
 	return val_type
 }
@@ -2002,7 +2042,7 @@ fn (mut g Gen) fn_type_alias_param_c_type(node ast.TypeDecl, param ast.Parameter
 	if is_generic_param {
 		return 'void*'
 	}
-	param_type := g.expr_type_to_c(param.typ)
+	param_type := g.c_signature_param_type_with_name(g.expr_type_to_c(param.typ), param.name)
 	if param.is_mut {
 		return '${param_type}*'
 	}
@@ -4736,7 +4776,11 @@ fn (mut g Gen) generic_type_lhs_to_c(e ast.Expr) string {
 			return imported_name
 		}
 		if name.starts_with('C.') {
-			return name.all_after('C.')
+			c_name := name.all_after('C.')
+			if c_name in g.c_struct_types && c_name !in g.typedef_c_types {
+				return 'struct ${c_name}'
+			}
+			return c_name
 		}
 		if name.contains('.') {
 			return name.replace('.', '__')
@@ -4825,7 +4869,11 @@ fn (mut g Gen) expr_type_to_c(e ast.Expr) string {
 				return imported_name
 			}
 			if name.starts_with('C.') {
-				return name.all_after('C.')
+				c_name := name.all_after('C.')
+				if c_name in g.c_struct_types && c_name !in g.typedef_c_types {
+					return 'struct ${c_name}'
+				}
+				return c_name
 			}
 			if name.contains('.') {
 				return name.replace('.', '__')

@@ -747,7 +747,7 @@ fn make_empty() Holder {
 	return Holder{}
 }
 	')
-	assert csrc.contains('_option_int){ .state = 2 }')
+	assert csrc.contains('_option_int){ .state = 2, .err = none__ }')
 	assert !csrc.contains('return ((Holder){0})')
 }
 
@@ -775,7 +775,7 @@ fn make_empty() Holder {
 }
 	')
 	assert csrc.contains('struct _option_Item')
-	assert csrc.contains('_option_Item){ .state = 2 }')
+	assert csrc.contains('_option_Item){ .state = 2, .err = none__ }')
 	assert !csrc.contains('.item = ((_option_Item){.state = 2,.name =')
 }
 
@@ -803,7 +803,7 @@ fn make_config() Config {
 }
 	')
 	assert csrc.contains('struct _option_sample__Encoding')
-	assert csrc.contains('_option_sample__Encoding){ .state = 2 }')
+	assert csrc.contains('_option_sample__Encoding){ .state = 2, .err = none__ }')
 	assert !csrc.contains('.encoding = ((_option_sample__Encoding){.state = 2,.label =')
 }
 
@@ -2150,8 +2150,8 @@ fn find_path() !string {
 fn get_path() ?string {
 	return find_path() or { none }
 }
-')
-	assert csrc.contains('return (_option_string){ .state = 2 };')
+	')
+	assert csrc.contains('return (_option_string){ .state = 2, .err = none__ };')
 	assert !csrc.contains('/* [TODO] Type */ 0')
 }
 

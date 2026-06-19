@@ -234,16 +234,16 @@ pub type Swapchain = C.sapp_swapchain
 pub struct C.sapp_desc {
 pub mut:
 	// these are the user-provided callbacks without user data
-	init_cb    fn ()       = unsafe { nil }
-	frame_cb   fn ()       = unsafe { nil }
-	cleanup_cb fn ()       = unsafe { nil }
-	event_cb   fn (&Event) = unsafe { nil } // &sapp_event
+	init_cb    fn ()                   = unsafe { nil }
+	frame_cb   fn ()                   = unsafe { nil }
+	cleanup_cb fn ()                   = unsafe { nil }
+	event_cb   fn (const_event &Event) = unsafe { nil } // const sapp_event*
 
 	user_data           voidptr // these are the user-provided callbacks with user data
-	init_userdata_cb    fn (voidptr)         = unsafe { nil }
-	frame_userdata_cb   fn (voidptr)         = unsafe { nil }
-	cleanup_userdata_cb fn (voidptr)         = unsafe { nil }
-	event_userdata_cb   fn (&Event, voidptr) = unsafe { nil }
+	init_userdata_cb    fn (voidptr) = unsafe { nil }
+	frame_userdata_cb   fn (voidptr) = unsafe { nil }
+	cleanup_userdata_cb fn (voidptr) = unsafe { nil }
+	event_userdata_cb   fn (const_event &Event, user_data voidptr) = unsafe { nil }
 
 	width                        int       // the preferred width of the window / canvas
 	height                       int       // the preferred height of the window / canvas

@@ -1018,30 +1018,7 @@ fn (mut g Gen) record_generic_struct_bindings_from_specialized_name(raw_name str
 }
 
 fn (mut g Gen) generic_call_decl_from_lhs(lhs ast.Expr) ?ast.FnDecl {
-	mut call_name := match lhs {
-		ast.Ident {
-			lhs.name
-		}
-		ast.SelectorExpr {
-			lhs.rhs.name
-		}
-		ast.GenericArgOrIndexExpr {
-			return g.generic_call_decl_from_lhs(lhs.lhs)
-		}
-		ast.GenericArgs {
-			return g.generic_call_decl_from_lhs(lhs.lhs)
-		}
-		else {
-			''
-		}
-	}
-
-	if call_name.contains('_T_') {
-		call_name = call_name.all_before('_T_')
-	} else if call_name.ends_with('_T') {
-		call_name = call_name[..call_name.len - 2]
-	}
-
+	call_name := generic_call_short_name(lhs)
 	if call_name == '' {
 		return none
 	}
@@ -4976,7 +4953,7 @@ fn (mut g Gen) emit_ready_option_result_structs() bool {
 		if name in g.emitted_option_structs {
 			continue
 		}
-		val_type := option_value_type(name)
+		val_type := g.option_value_c_type(name)
 		if !g.option_result_payload_ready(val_type) {
 			continue
 		}
@@ -4995,7 +4972,7 @@ fn (mut g Gen) emit_ready_option_result_structs() bool {
 		if name in g.emitted_result_structs {
 			continue
 		}
-		val_type := g.result_value_type(name)
+		val_type := g.result_value_c_type(name)
 		if !g.option_result_payload_ready(val_type) {
 			continue
 		}
@@ -7357,7 +7334,7 @@ fn (mut g Gen) write_struct_field_default_value(field types.Field, owner_type_na
 	if field_type is types.OptionType {
 		option_type := g.known_unqualified_struct_literal_type(g.types_type_to_c(field.typ))
 		if option_type.starts_with('_option_') {
-			g.sb.write_string('(${option_type}){ .state = 2 }')
+			g.gen_option_none_literal(option_type)
 			return true
 		}
 	}
@@ -7369,13 +7346,21 @@ fn (mut g Gen) write_struct_field_default_value(field types.Field, owner_type_na
 	return false
 }
 
+fn (mut g Gen) gen_option_none_literal(type_name string) bool {
+	trimmed := type_name.trim_space()
+	if !trimmed.starts_with('_option_') {
+		return false
+	}
+	g.sb.write_string('(${trimmed}){ .state = 2, .err = none__ }')
+	return true
+}
+
 fn (mut g Gen) gen_none_literal_for_type(type_name string) bool {
 	trimmed := type_name.trim_space()
 	if trimmed == '' {
 		return false
 	}
-	if trimmed.starts_with('_option_') {
-		g.sb.write_string('(${trimmed}){ .state = 2 }')
+	if g.gen_option_none_literal(trimmed) {
 		return true
 	}
 	if is_ierror_interface_name(trimmed) {
@@ -7456,7 +7441,7 @@ fn (mut g Gen) gen_option_wrapped_value_expr(option_type string, value ast.Expr)
 	if is_none_like_expr(value) {
 		return g.gen_none_literal_for_type(expected_type)
 	}
-	value_type := option_value_type(expected_type)
+	value_type := g.option_value_c_type(expected_type)
 	if value_type == '' || value_type == 'void' {
 		return false
 	}
@@ -7467,6 +7452,10 @@ fn (mut g Gen) gen_option_wrapped_value_expr(option_type string, value ast.Expr)
 		return true
 	}
 	if rhs_type == expected_type && !contextual_payload {
+		g.expr(value)
+		return true
+	}
+	if value is ast.CastExpr && g.expr_type_to_c(value.typ) == expected_type {
 		g.expr(value)
 		return true
 	}
@@ -7611,14 +7600,14 @@ fn (mut g Gen) init_field_expected_type(type_name string, env_struct types.Struc
 	}
 	for field in env_struct.fields {
 		if field.name == field_name {
-			return g.types_type_to_c(field.typ)
+			return g.init_expected_type_from_env_type(type_name, field.typ)
 		}
 	}
 	for emb in env_struct.embedded {
 		resolved_emb := g.resolve_embedded_struct(emb)
 		emb_name := embedded_struct_field_name(resolved_emb)
 		if emb_name == field_name {
-			return g.types_type_to_c(types.Type(resolved_emb))
+			return g.init_expected_type_from_env_type(type_name, types.Type(resolved_emb))
 		}
 	}
 	if info := g.lookup_embedded_field_info(type_name, field_name) {
@@ -7627,6 +7616,19 @@ fn (mut g Gen) init_field_expected_type(type_name string, env_struct types.Struc
 		}
 	}
 	return ''
+}
+
+fn (mut g Gen) init_expected_type_from_env_type(type_name string, raw_type types.Type) string {
+	field_type := match raw_type {
+		types.FnType {
+			g.fn_pointer_c_type_from_raw(raw_type)
+		}
+		else {
+			g.types_type_to_c(raw_type)
+		}
+	}
+
+	return g.qualify_owner_local_field_type(type_name, field_type)
 }
 
 fn (mut g Gen) generic_instance_field_type_for_init(type_name string, field_name string) ?string {
@@ -7976,7 +7978,9 @@ fn (mut g Gen) gen_init_expr(node ast.InitExpr) {
 		return
 	}
 	if type_name.starts_with('_option_') && gen_init_expr_is_none_option(node) {
-		g.sb.write_string('((${type_name}){ .state = 2 })')
+		g.sb.write_string('(')
+		g.gen_option_none_literal(type_name)
+		g.sb.write_string(')')
 		return
 	}
 	mut env_struct := types.Struct{}
@@ -8097,23 +8101,8 @@ fn (mut g Gen) gen_init_expr(node ast.InitExpr) {
 			&& g.gen_option_wrapped_value_expr(expected_field_type, field.value) {
 			continue
 		}
-		if g.is_fn_pointer_alias_type(expected_field_type) {
-			if field.value is ast.SelectorExpr {
-				sel := field.value as ast.SelectorExpr
-				if g.gen_bound_method_value_expr(sel, expected_field_type) {
-					continue
-				}
-				if method_value_name := g.selector_method_value_name(sel) {
-					g.sb.write_string('((${expected_field_type})${method_value_name})')
-					continue
-				}
-			}
-			if field.value is ast.Ident {
-				g.sb.write_string('((${expected_field_type})')
-				g.expr(field.value)
-				g.sb.write_string(')')
-				continue
-			}
+		if g.gen_fn_pointer_value_for_expected(expected_field_type, field.value) {
+			continue
 		}
 		if expected_field_type in ['void*', 'voidptr'] && field.value is ast.SelectorExpr {
 			sel := field.value as ast.SelectorExpr
@@ -8299,12 +8288,12 @@ fn (mut g Gen) should_deref_init_field_value(struct_type string, field_name stri
 		if sel.rhs.name == 'data' {
 			lhs_type := g.get_expr_type(sel.lhs)
 			if lhs_type.starts_with('_result_') {
-				inner := g.result_value_type(lhs_type)
+				inner := g.result_value_c_type(lhs_type)
 				if is_type_name_pointer_like(inner) {
 					value_type = inner
 				}
 			} else if lhs_type.starts_with('_option_') {
-				inner := option_value_type(lhs_type)
+				inner := g.option_value_c_type(lhs_type)
 				if is_type_name_pointer_like(inner) {
 					value_type = inner
 				}

@@ -825,6 +825,11 @@ fn main() {
 '
 }
 
+fn e2e_example_source(path string) string {
+	source_path := os.join_path(e2e_repo_root(), path)
+	return os.read_file(source_path) or { panic('failed to read ${path}: ${err}') }
+}
+
 fn generated_c_function_body(c_source string, fn_name string) ?string {
 	for signature in ['void ${fn_name}(', 'int ${fn_name}('] {
 		mut search_from := 0
@@ -4385,6 +4390,42 @@ fn test_cleanc_autofree_eprintln_string_interpolation_cleanup_respects_target_ru
 		'autofree_eprintln_interpolation_cleanup', source) {
 		assert_autofree_eprintln_string_interpolation_cleanup_absent_in_fn(res, 'log_ai')
 	}
+}
+
+fn test_cleanc_examples_rule110_generates_c_with_autofree_delta() {
+	tmp_dir := os.join_path(os.vtmp_dir(), 'v2_cleanc_rule110_example_${os.getpid()}')
+	os.rmdir_all(tmp_dir) or {}
+	os.mkdir_all(tmp_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(tmp_dir) or {}
+	}
+	v2_binary := build_v2_for_target_e2e(tmp_dir)
+	source := e2e_example_source('examples/rule110.v')
+	normal_res := run_v2_to_output(v2_binary, tmp_dir, 'rule110_normal',
+		cleanc_autofree_disabled_args(), source, os.join_path(tmp_dir, 'rule110_normal.c'))
+	autofree_res := run_v2_to_output(v2_binary, tmp_dir, 'rule110_autofree',
+		cleanc_autofree_hosted_args(), source, os.join_path(tmp_dir, 'rule110_autofree.c'))
+	assert_cli_success(normal_res)
+	assert_cli_success(autofree_res)
+
+	normal_body := generated_c_function_body_or_fail(normal_res, 'next_generation')
+	autofree_body := generated_c_function_body_or_fail(autofree_res, 'next_generation')
+	normal_free_count := generated_c_body_substring_count(normal_body, 'array__free(')
+	autofree_free_count := generated_c_body_substring_count(autofree_body, 'array__free(')
+	assert normal_free_count == 0, normal_res.c_source
+	assert autofree_free_count > normal_free_count, autofree_res.c_source
+	final_clone_idx := autofree_body.index_after('gen = array__clone', 0) or {
+		assert false, autofree_res.c_source
+		return
+	}
+	cleanup_idx := autofree_body.index_after('array__free(&arr);', 0) or {
+		assert false, autofree_res.c_source
+		return
+	}
+	assert final_clone_idx < cleanup_idx, autofree_res.c_source
+	assert !autofree_body[..final_clone_idx].contains('array__free(&arr);'), autofree_res.c_source
+	assert !autofree_body.contains('array__free(&gen);'), autofree_res.c_source
+	assert !autofree_body.contains('array__free(gen);'), autofree_res.c_source
 }
 
 fn test_cleanc_cli_does_not_auto_run_stale_test_binary_for_generation_only_target() {

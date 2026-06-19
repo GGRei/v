@@ -127,7 +127,8 @@ fn (g &Gen) should_emit_fn_decl(module_name string, decl ast.FnDecl) bool {
 	}
 	// Module init/deinit functions are called from the synthesized test main,
 	// which runs after markused, so they won't be in used_fn_keys.
-	if !decl.is_method && !decl.is_static && (decl.name == 'init' || decl.name == 'deinit') {
+	if !decl.is_method && !decl.is_static && decl.typ.params.len == 0
+		&& (decl.name == 'init' || decl.name == 'deinit') {
 		return true
 	}
 	if decl.name == 'str' {
@@ -7202,13 +7203,65 @@ fn c_fn_pointer_type_with_name(fn_type string, name string) string {
 	return fn_type.replace_once('(*)', '(*${name})')
 }
 
+fn c_signature_param_type_with_name(type_name string, param_name string) string {
+	if param_name.starts_with('const_') {
+		trimmed := type_name.trim_space()
+		if trimmed == 'charptr' {
+			return 'const char*'
+		}
+		if trimmed == 'voidptr' {
+			return 'const void*'
+		}
+		if trimmed.ends_with('*') {
+			base_type := trimmed[..trimmed.len - 1].trim_space()
+			if base_type != '' && !base_type.ends_with('*') && !base_type.starts_with('const ') {
+				return 'const ${base_type}*'
+			}
+		}
+	}
+	return type_name
+}
+
+fn (mut g Gen) c_signature_param_type_with_name(type_name string, param_name string) string {
+	if param_name.starts_with('const_') {
+		return c_signature_param_type_with_name(g.const_signature_param_type_alias_base(type_name),
+			param_name)
+	}
+	return c_signature_param_type_with_name(type_name, param_name)
+}
+
+fn (mut g Gen) const_signature_param_type_alias_base(type_name string) string {
+	trimmed := type_name.trim_space()
+	if !trimmed.ends_with('*') {
+		return trimmed
+	}
+	base_type := trimmed[..trimmed.len - 1].trim_space()
+	if base_type == '' || base_type.ends_with('*') {
+		return trimmed
+	}
+	if alias_base := g.alias_base_types[base_type] {
+		if alias_base != '' && alias_base != base_type {
+			return '${alias_base}*'
+		}
+	}
+	if raw_type := g.lookup_type_by_c_name_const(base_type) {
+		if raw_type is types.Alias {
+			alias_base := g.types_type_to_c(raw_type.base_type).trim_space()
+			if alias_base != '' && alias_base != base_type {
+				return '${alias_base}*'
+			}
+		}
+	}
+	return trimmed
+}
+
 fn (mut g Gen) fn_param_signature_c_type(param ast.Parameter) string {
 	if param.typ is ast.Type {
 		if param.typ is ast.FnType {
 			return g.fn_type_c_type(param.typ as ast.FnType)
 		}
 	}
-	return g.signature_expr_type_to_c(param.typ)
+	return g.c_signature_param_type_with_name(g.signature_expr_type_to_c(param.typ), param.name)
 }
 
 fn (mut g Gen) fn_type_c_type(fn_type ast.FnType) string {
@@ -7220,7 +7273,7 @@ fn (mut g Gen) fn_type_c_type(fn_type ast.FnType) string {
 	ret_type = g.c_callback_return_type_from_v(ret_type)
 	mut params := []string{cap: fn_type.params.len}
 	for param in fn_type.params {
-		mut param_type := normalize_signature_type_name(g.expr_type_to_c(param.typ), 'int')
+		mut param_type := normalize_signature_type_name(g.fn_param_signature_c_type(param), 'int')
 		if param.is_mut && !param_type.ends_with('*') {
 			param_type += '*'
 		}
@@ -8871,6 +8924,372 @@ fn (mut g Gen) selector_is_known_fn_value(sel ast.SelectorExpr) bool {
 	return g.selector_has_fn_pointer_value_type(sel)
 }
 
+struct FnPointerSignature {
+	ret_type    string
+	param_types []string
+}
+
+struct FnPointerValue {
+	c_name                 string
+	sig                    FnPointerSignature
+	needs_runtime_fn_value bool
+}
+
+fn c_fn_pointer_signature_from_type(fn_type string) ?FnPointerSignature {
+	trimmed := fn_type.trim_space()
+	if !trimmed.contains('(*)') {
+		return none
+	}
+	ret_type := trimmed.all_before('(*)').trim_space()
+	params_part := trimmed.all_after('(*)(').trim_right(')').trim_space()
+	mut param_types := []string{}
+	if params_part != '' && params_part != 'void' {
+		param_types = split_c_fn_pointer_params(params_part)
+	}
+	return FnPointerSignature{
+		ret_type:    ret_type
+		param_types: param_types
+	}
+}
+
+fn c_fn_pointer_type_is_void_pointer(type_name string) bool {
+	trimmed := type_name.trim_space()
+	return trimmed in ['void*', 'voidptr']
+}
+
+fn c_fn_pointer_type_is_pointer(type_name string) bool {
+	trimmed := type_name.trim_space()
+	return trimmed.ends_with('*') || trimmed in ['voidptr', 'void*']
+}
+
+fn c_fn_pointer_type_is_const_pointer(type_name string) bool {
+	trimmed := c_fn_pointer_signature_type_name(type_name)
+	return trimmed.starts_with('const ') && c_fn_pointer_type_is_pointer(trimmed)
+}
+
+fn c_fn_pointer_signature_type_name(type_name string) string {
+	trimmed := type_name.trim_space()
+	if trimmed == 'voidptr' {
+		return 'void*'
+	}
+	if trimmed == 'charptr' {
+		return 'char*'
+	}
+	return trimmed
+}
+
+fn c_fn_pointer_signature_type_exact(expected string, actual string) bool {
+	return c_fn_pointer_signature_type_name(expected) == c_fn_pointer_signature_type_name(actual)
+}
+
+fn c_fn_pointer_signature_param_adaptable(expected string, actual string) bool {
+	expected_trimmed := c_fn_pointer_signature_type_name(expected)
+	actual_trimmed := c_fn_pointer_signature_type_name(actual)
+	if expected_trimmed == actual_trimmed {
+		return true
+	}
+	if c_fn_pointer_type_is_const_pointer(expected_trimmed)
+		|| c_fn_pointer_type_is_const_pointer(actual_trimmed) {
+		return false
+	}
+	if c_fn_pointer_type_is_pointer(expected_trimmed)
+		&& c_fn_pointer_type_is_pointer(actual_trimmed) {
+		return c_fn_pointer_type_is_void_pointer(expected_trimmed)
+			|| c_fn_pointer_type_is_void_pointer(actual_trimmed)
+	}
+	return false
+}
+
+fn c_fn_pointer_signatures_exact(expected FnPointerSignature, actual FnPointerSignature) bool {
+	if !c_fn_pointer_signature_type_exact(expected.ret_type, actual.ret_type) {
+		return false
+	}
+	if expected.param_types.len != actual.param_types.len {
+		return false
+	}
+	for i, expected_param in expected.param_types {
+		if !c_fn_pointer_signature_type_exact(expected_param, actual.param_types[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+fn c_fn_pointer_signatures_need_adapter(expected FnPointerSignature, actual FnPointerSignature) bool {
+	if !c_fn_pointer_signature_type_exact(expected.ret_type, actual.ret_type) {
+		return false
+	}
+	if expected.param_types.len != actual.param_types.len {
+		return false
+	}
+	mut needs_adapter := false
+	for i, expected_param in expected.param_types {
+		actual_param := actual.param_types[i]
+		if c_fn_pointer_signature_type_exact(expected_param, actual_param) {
+			continue
+		}
+		if !c_fn_pointer_signature_param_adaptable(expected_param, actual_param) {
+			return false
+		}
+		needs_adapter = true
+	}
+	return needs_adapter
+}
+
+fn (mut g Gen) fn_pointer_signature_from_raw(raw_type types.Type) ?FnPointerSignature {
+	fn_type := extract_fn_type(raw_type) or { return none }
+	mut ret_type := if rt := fn_type.get_return_type() {
+		g.fn_return_type_to_c(rt)
+	} else {
+		'void'
+	}
+	ret_type = normalize_signature_type_name(ret_type, 'void')
+	param_types := fn_type.get_param_types()
+	param_names := fn_type.get_param_names()
+	mut params := []string{cap: param_types.len}
+	for i, param_type in param_types {
+		mut param_name := ''
+		if i < param_names.len {
+			param_name = param_names[i]
+		}
+		params << g.c_signature_param_type_with_name(g.types_type_to_c(param_type), param_name)
+	}
+	return FnPointerSignature{
+		ret_type:    ret_type
+		param_types: params
+	}
+}
+
+fn (mut g Gen) fn_pointer_signature_from_expected_type(expected_type string) ?FnPointerSignature {
+	expected := expected_type.trim_space()
+	if expected == '' {
+		return none
+	}
+	if expected.contains('(*)') {
+		return c_fn_pointer_signature_from_type(expected)
+	}
+	if raw_type := g.lookup_type_by_c_name(expected) {
+		return g.fn_pointer_signature_from_raw(raw_type)
+	}
+	if raw_type := g.lookup_type_by_c_name_const(expected) {
+		return g.fn_pointer_signature_from_raw(raw_type)
+	}
+	return none
+}
+
+fn (mut g Gen) fn_value_signature_from_c_name(name string) ?FnPointerSignature {
+	if name == '' {
+		return none
+	}
+	ret_type := g.fn_return_types[name] or { return none }
+	param_types := g.fn_param_types[name] or { []string{} }
+	return FnPointerSignature{
+		ret_type:    ret_type
+		param_types: param_types.clone()
+	}
+}
+
+fn (mut g Gen) fn_value_signature_from_env(module_name string, fn_name string) ?FnPointerSignature {
+	if g.env == unsafe { nil } || fn_name == '' {
+		return none
+	}
+	if mut scope := g.env_scope(module_name) {
+		if obj := scope.lookup_parent(fn_name, 0) {
+			if obj is types.Fn {
+				fn_obj := obj as types.Fn
+				fn_typ := fn_obj.get_typ()
+				if fn_typ is types.FnType {
+					return g.fn_pointer_signature_from_raw(types.Type(fn_typ))
+				}
+			}
+		}
+	}
+	return none
+}
+
+fn (mut g Gen) fn_pointer_value_info(expr ast.Expr) ?FnPointerValue {
+	match expr {
+		ast.Ident {
+			if expr.name == '' || expr.name == 'nil' {
+				return none
+			}
+			name := g.resolve_call_name(expr, 0)
+			if sig := g.fn_value_signature_from_c_name(name) {
+				return FnPointerValue{
+					c_name: name
+					sig:    sig
+				}
+			}
+			if sig := g.fn_value_signature_from_env(g.cur_module, expr.name) {
+				return FnPointerValue{
+					c_name: name
+					sig:    sig
+				}
+			}
+			if raw_type := g.local_fn_pointer_raw_type(expr.name) {
+				if sig := g.fn_pointer_signature_from_raw(raw_type) {
+					return FnPointerValue{
+						c_name:                 expr.name
+						sig:                    sig
+						needs_runtime_fn_value: true
+					}
+				}
+			}
+			sanitized := sanitize_fn_ident(expr.name)
+			if sig := g.fn_value_signature_from_c_name(sanitized) {
+				return FnPointerValue{
+					c_name: sanitized
+					sig:    sig
+				}
+			}
+		}
+		ast.SelectorExpr {
+			if expr.lhs !is ast.Ident || expr.rhs.name == '' {
+				return none
+			}
+			mod_name := (expr.lhs as ast.Ident).name
+			name := g.resolve_call_name(expr, 0)
+			if sig := g.fn_value_signature_from_c_name(name) {
+				return FnPointerValue{
+					c_name: name
+					sig:    sig
+				}
+			}
+			if g.is_module_ident(mod_name) {
+				real_mod := g.resolve_module_name(mod_name)
+				if sig := g.fn_value_signature_from_env(real_mod, expr.rhs.name) {
+					return FnPointerValue{
+						c_name: name
+						sig:    sig
+					}
+				}
+			}
+			if !g.selector_is_known_fn_value(expr) {
+				return none
+			}
+			if raw_type := g.selector_fn_pointer_raw_type(expr) {
+				if sig := g.fn_pointer_signature_from_raw(raw_type) {
+					return FnPointerValue{
+						c_name:                 name
+						sig:                    sig
+						needs_runtime_fn_value: true
+					}
+				}
+			}
+		}
+		else {}
+	}
+
+	return none
+}
+
+fn (mut g Gen) bound_method_value_signature(value ast.SelectorExpr) ?FnPointerSignature {
+	method_name := g.selector_method_value_name(value) or { return none }
+	method_params := g.fn_param_types[method_name] or { return none }
+	if method_params.len == 0 {
+		return none
+	}
+	ret_type := g.fn_return_types[method_name] or { 'void' }
+	return FnPointerSignature{
+		ret_type:    ret_type
+		param_types: method_params[1..].clone()
+	}
+}
+
+fn c_fn_pointer_adapter_component(value string) string {
+	mut component := mangle_alias_component(value)
+	component = component.replace('(', '_')
+	component = component.replace(')', '_')
+	component = component.replace(',', '_')
+	component = component.replace('[', '_')
+	component = component.replace(']', '_')
+	return component
+}
+
+fn c_fn_pointer_adapter_arg(expected string, actual string, idx int) string {
+	expected_type := c_fn_pointer_signature_type_name(expected)
+	actual_type := c_fn_pointer_signature_type_name(actual)
+	if expected_type == actual_type {
+		return '_arg${idx}'
+	}
+	return '(${actual_type})_arg${idx}'
+}
+
+fn (mut g Gen) gen_fn_pointer_adapter(expected FnPointerSignature, actual FnPointerValue) string {
+	name_parts := [
+		actual.c_name,
+		expected.ret_type,
+		expected.param_types.join('_'),
+		actual.sig.param_types.join('_'),
+	]
+	adapter_name := '__fnptr_adapter_' + c_fn_pointer_adapter_component(name_parts.join('_'))
+	if adapter_name !in g.emitted_trampolines {
+		g.emitted_trampolines[adapter_name] = true
+		mut def := strings.new_builder(256)
+		def.write_string('static ${expected.ret_type} ${adapter_name}(')
+		if expected.param_types.len == 0 {
+			def.write_string('void')
+		} else {
+			for i, param_type in expected.param_types {
+				if i > 0 {
+					def.write_string(', ')
+				}
+				def.write_string('${param_type} _arg${i}')
+			}
+		}
+		def.writeln(') {')
+		def.write_string('\t')
+		if expected.ret_type != 'void' {
+			def.write_string('return ')
+		}
+		def.write_string('${actual.c_name}(')
+		for i, expected_param in expected.param_types {
+			if i > 0 {
+				def.write_string(', ')
+			}
+			def.write_string(c_fn_pointer_adapter_arg(expected_param, actual.sig.param_types[i], i))
+		}
+		def.writeln(');')
+		def.writeln('}')
+		def.writeln('')
+		g.trampoline_defs << def.str()
+	}
+	return adapter_name
+}
+
+fn (mut g Gen) gen_fn_pointer_value_for_expected(expected_type string, value ast.Expr) bool {
+	expected := expected_type.trim_space()
+	if expected == '' || !(expected.contains('(*)') || g.is_fn_pointer_alias_type(expected)) {
+		return false
+	}
+	expected_sig := g.fn_pointer_signature_from_expected_type(expected) or { return false }
+	if value is ast.SelectorExpr {
+		if !g.selector_is_known_fn_value(value) {
+			actual_sig := g.bound_method_value_signature(value) or { return false }
+			if !c_fn_pointer_signatures_exact(expected_sig, actual_sig) {
+				return false
+			}
+			return g.gen_bound_method_value_expr(value, expected)
+		}
+	}
+	actual := g.fn_pointer_value_info(value) or { return false }
+	if c_fn_pointer_signatures_exact(expected_sig, actual.sig) {
+		g.sb.write_string('((${expected})')
+		g.expr(value)
+		g.sb.write_string(')')
+		return true
+	}
+	if c_fn_pointer_signatures_need_adapter(expected_sig, actual.sig) {
+		if actual.needs_runtime_fn_value {
+			return false
+		}
+		adapter_name := g.gen_fn_pointer_adapter(expected_sig, actual)
+		g.sb.write_string(adapter_name)
+		return true
+	}
+	return false
+}
+
 fn (mut g Gen) gen_sort_fnsortcb_arg(fn_name string, idx int, base_arg ast.Expr, expected_param_type string) bool {
 	if idx != 1 || fn_name !in ['array__sort_with_compare', 'array__sorted_with_compare'] {
 		return false
@@ -9019,6 +9438,10 @@ fn (mut g Gen) gen_call_arg(fn_name string, idx int, arg ast.Expr) {
 		}
 	}
 	if g.gen_sort_fnsortcb_arg(fn_name, idx, base_arg, expected_param_type) {
+		return
+	}
+	if expected_param_type != ''
+		&& g.gen_fn_pointer_value_for_expected(expected_param_type, base_arg) {
 		return
 	}
 	if expected_param_type != '' && g.gen_auto_deref_value_param_arg(expected_param_type, base_arg) {
@@ -9544,70 +9967,6 @@ fn (mut g Gen) gen_call_arg(fn_name string, idx int, arg ast.Expr) {
 				g.sb.write_string('((array){ .data = &(string[1]){')
 				g.expr(base_arg)
 				g.sb.write_string('}, .offset = 0, .len = 1, .cap = 1, .flags = 0, .element_size = sizeof(string) })')
-				return
-			}
-		}
-	}
-	// Detect bound method references: b.method_name passed as a fn pointer arg.
-	// Generate a static trampoline function + __thread capture variable.
-	// Only applies when the expected parameter is a function pointer type.
-	if base_arg is ast.SelectorExpr {
-		receiver_type := g.get_expr_type(base_arg.lhs).trim_right('*')
-		if receiver_type != '' && base_arg.rhs.name != '' {
-			// Check if the expected parameter type is a function pointer.
-			// If not, this is a struct field access (e.g., s.str, w.id), not a method value.
-			mut param_is_fn_ptr := false
-			if param_types := g.fn_param_types[fn_name] {
-				if idx < param_types.len {
-					pt := param_types[idx]
-					param_is_fn_ptr = pt.contains('(*)') || g.is_fn_pointer_alias_type(pt)
-				}
-			}
-			method_c_name := '${receiver_type}__${base_arg.rhs.name}'
-			if param_is_fn_ptr
-				&& (method_c_name in g.fn_param_is_ptr || method_c_name in g.fn_return_types) {
-				tramp_name := '__bound_method_${receiver_type}__${base_arg.rhs.name}'
-				if tramp_name !in g.emitted_trampolines {
-					g.emitted_trampolines[tramp_name] = true
-					// Build trampoline function as a string and add to deferred defs
-					ret_type := g.fn_return_types[method_c_name] or { 'void' }
-					param_is_ptr := g.fn_param_is_ptr[method_c_name] or { []bool{} }
-					param_types := g.fn_param_types[method_c_name] or { []string{} }
-					recv_is_ptr := if param_is_ptr.len > 0 { param_is_ptr[0] } else { false }
-					recv_var := '__bound_recv_${receiver_type}__${base_arg.rhs.name}'
-					mut def := 'static __thread ${receiver_type}* ${recv_var};\n'
-					def += 'static ${ret_type} ${tramp_name}('
-					for pi in 1 .. param_types.len {
-						if pi > 1 {
-							def += ', '
-						}
-						def += '${param_types[pi]} _p${pi}'
-					}
-					def += ') {\n\t'
-					if ret_type != 'void' {
-						def += 'return '
-					}
-					if recv_is_ptr {
-						def += '${method_c_name}(${recv_var}'
-					} else {
-						def += '${method_c_name}(*${recv_var}'
-					}
-					for pi in 1 .. param_types.len {
-						def += ', _p${pi}'
-					}
-					def += ');\n}\n'
-					g.trampoline_defs << def
-				}
-				// Set capture variable and pass trampoline
-				recv_var := '__bound_recv_${receiver_type}__${base_arg.rhs.name}'
-				g.sb.write_string('(${recv_var} = ')
-				if g.expr_is_pointer(base_arg.lhs) {
-					g.expr(base_arg.lhs)
-				} else {
-					g.sb.write_string('&')
-					g.expr(base_arg.lhs)
-				}
-				g.sb.write_string(', ${tramp_name})')
 				return
 			}
 		}
@@ -12891,15 +13250,21 @@ struct FnLiteralCaptureInfo {
 
 fn (mut g Gen) fn_pointer_c_type_from_raw(raw_type types.Type) string {
 	fn_type := extract_fn_type(raw_type) or { return '' }
-	ret_type := if rt := fn_type.get_return_type() {
+	mut ret_type := if rt := fn_type.get_return_type() {
 		g.fn_return_type_to_c(rt)
 	} else {
 		'void'
 	}
+	ret_type = normalize_signature_type_name(ret_type, 'void')
 	param_types := fn_type.get_param_types()
+	param_names := fn_type.get_param_names()
 	mut params := []string{cap: param_types.len}
-	for param_type in param_types {
-		params << g.types_type_to_c(param_type)
+	for i, param_type in param_types {
+		mut param_name := ''
+		if i < param_names.len {
+			param_name = param_names[i]
+		}
+		params << g.c_signature_param_type_with_name(g.types_type_to_c(param_type), param_name)
 	}
 	if params.len == 0 {
 		params << 'void'

@@ -128,6 +128,81 @@ fn test_minimal_runtime_roots_keep_local_calls_flat() {
 	assert_local_call_minimal_used(used, files, env, 'flat')
 }
 
+fn exported_minimal_files() []ast.File {
+	export_attr := ast.Attribute{
+		name:  'export'
+		value: ast.StringLiteral{
+			value: 'external_symbol'
+			pos:   minimal_pos(109)
+		}
+		pos:   minimal_pos(109)
+	}
+	return [
+		ast.File{
+			mod:   'main'
+			name:  'exported.v'
+			stmts: [
+				ast.Stmt(ast.FnDecl{
+					name: 'main'
+					typ:  ast.FnType{}
+					pos:  minimal_pos(110)
+				}),
+				ast.Stmt(ast.FnDecl{
+					attributes: [export_attr]
+					name:       'exported'
+					typ:        ast.FnType{}
+					pos:        minimal_pos(111)
+					stmts:      [
+						ast.Stmt(ast.ExprStmt{
+							expr: ast.CallExpr{
+								lhs: ast.Expr(minimal_ident('helper', 112))
+								pos: minimal_pos(112)
+							}
+						}),
+					]
+				}),
+				ast.Stmt(ast.FnDecl{
+					name: 'helper'
+					typ:  ast.FnType{}
+					pos:  minimal_pos(113)
+				}),
+				ast.Stmt(ast.FnDecl{
+					name: 'unused'
+					typ:  ast.FnType{}
+					pos:  minimal_pos(114)
+				}),
+			]
+		},
+	]
+}
+
+fn assert_exported_minimal_used(used map[string]bool, files []ast.File, env &types.Environment, label string) {
+	main_key := decl_key('main', files[0].stmts[0] as ast.FnDecl, env)
+	exported_key := decl_key('main', files[0].stmts[1] as ast.FnDecl, env)
+	helper_key := decl_key('main', files[0].stmts[2] as ast.FnDecl, env)
+	unused_key := decl_key('main', files[0].stmts[3] as ast.FnDecl, env)
+
+	assert used[main_key], '${label}: main root was not kept'
+	assert used[exported_key], '${label}: exported function was not kept'
+	assert used[helper_key], '${label}: exported dependency was not marked'
+	assert !used[unused_key], '${label}: unused function should stay pruned'
+}
+
+fn test_mark_used_keeps_exported_function_dependencies_legacy() {
+	mut env := types.Environment.new()
+	files := exported_minimal_files()
+	used := mark_used(files, env)
+	assert_exported_minimal_used(used, files, env, 'legacy')
+}
+
+fn test_mark_used_keeps_exported_function_dependencies_flat() {
+	mut env := types.Environment.new()
+	files := exported_minimal_files()
+	flat := ast.flatten_files(files)
+	used := mark_used_flat(&flat, env)
+	assert_exported_minimal_used(used, files, env, 'flat')
+}
+
 fn selective_import_minimal_files() []ast.File {
 	return [
 		ast.File{
@@ -586,6 +661,137 @@ fn test_minimal_runtime_roots_keep_explicit_calls_only() {
 	assert !used[builtin_keep_key]
 	assert !used[time_str_key]
 	assert !used[dep_init_key]
+}
+
+fn lifecycle_param(name string, id int, is_mut bool) ast.Parameter {
+	return ast.Parameter{
+		name:   name
+		typ:    ast.Expr(ast.Ident{
+			name: 'App'
+			pos:  minimal_pos(id)
+		})
+		is_mut: is_mut
+		pos:    minimal_pos(id)
+	}
+}
+
+fn lifecycle_fn_decl(name string, id int, params []ast.Parameter, call_name string) ast.FnDecl {
+	mut stmts := []ast.Stmt{}
+	if call_name != '' {
+		stmts << ast.Stmt(ast.ExprStmt{
+			expr: ast.CallExpr{
+				lhs: ast.Expr(minimal_ident(call_name, id + 1))
+				pos: minimal_pos(id + 1)
+			}
+		})
+	}
+	return ast.FnDecl{
+		name:  name
+		typ:   ast.FnType{
+			params: params
+		}
+		pos:   minimal_pos(id)
+		stmts: stmts
+	}
+}
+
+fn lifecycle_root_files() []ast.File {
+	return [
+		ast.File{
+			mod:   'main'
+			name:  'main.v'
+			stmts: [
+				ast.Stmt(lifecycle_fn_decl('main', 150, [], '')),
+			]
+		},
+		ast.File{
+			mod:   'initmod'
+			name:  'initmod.v'
+			stmts: [
+				ast.Stmt(lifecycle_fn_decl('init', 151, [], 'init_helper')),
+				ast.Stmt(lifecycle_fn_decl('init_helper', 153, [], '')),
+			]
+		},
+		ast.File{
+			mod:   'deinitmod'
+			name:  'deinitmod.v'
+			stmts: [
+				ast.Stmt(lifecycle_fn_decl('deinit', 154, [], 'deinit_helper')),
+				ast.Stmt(lifecycle_fn_decl('deinit_helper', 156, [], '')),
+			]
+		},
+		ast.File{
+			mod:   'constmod'
+			name:  'constmod.v'
+			stmts: [
+				ast.Stmt(lifecycle_fn_decl('__v_init_consts_constmod', 157, [
+					lifecycle_param('unused', 158, false),
+				], 'const_helper')),
+				ast.Stmt(lifecycle_fn_decl('const_helper', 160, [], '')),
+			]
+		},
+		ast.File{
+			mod:   'paraminit'
+			name:  'paraminit.v'
+			stmts: [
+				ast.Stmt(lifecycle_fn_decl('init', 161, [
+					lifecycle_param('app', 162, true),
+				], 'param_init_helper')),
+				ast.Stmt(lifecycle_fn_decl('param_init_helper', 164, [], '')),
+			]
+		},
+		ast.File{
+			mod:   'paramdeinit'
+			name:  'paramdeinit.v'
+			stmts: [
+				ast.Stmt(lifecycle_fn_decl('deinit', 165, [
+					lifecycle_param('app', 166, false),
+				], 'param_deinit_helper')),
+				ast.Stmt(lifecycle_fn_decl('param_deinit_helper', 168, [], '')),
+			]
+		},
+	]
+}
+
+fn assert_lifecycle_roots_require_zero_args(used map[string]bool, files []ast.File, env &types.Environment, label string) {
+	main_key := decl_key('main', files[0].stmts[0] as ast.FnDecl, env)
+	init_key := decl_key('initmod', files[1].stmts[0] as ast.FnDecl, env)
+	init_helper_key := decl_key('initmod', files[1].stmts[1] as ast.FnDecl, env)
+	deinit_key := decl_key('deinitmod', files[2].stmts[0] as ast.FnDecl, env)
+	deinit_helper_key := decl_key('deinitmod', files[2].stmts[1] as ast.FnDecl, env)
+	const_key := decl_key('constmod', files[3].stmts[0] as ast.FnDecl, env)
+	const_helper_key := decl_key('constmod', files[3].stmts[1] as ast.FnDecl, env)
+	param_init_key := decl_key('paraminit', files[4].stmts[0] as ast.FnDecl, env)
+	param_init_helper_key := decl_key('paraminit', files[4].stmts[1] as ast.FnDecl, env)
+	param_deinit_key := decl_key('paramdeinit', files[5].stmts[0] as ast.FnDecl, env)
+	param_deinit_helper_key := decl_key('paramdeinit', files[5].stmts[1] as ast.FnDecl, env)
+
+	assert used[main_key], '${label}: main root was not kept'
+	assert used[init_key], '${label}: zero-arg init was not kept'
+	assert used[init_helper_key], '${label}: zero-arg init dependency was not marked'
+	assert used[deinit_key], '${label}: zero-arg deinit was not kept'
+	assert used[deinit_helper_key], '${label}: zero-arg deinit dependency was not marked'
+	assert used[const_key], '${label}: runtime const init root was not kept'
+	assert used[const_helper_key], '${label}: runtime const init dependency was not marked'
+	assert !used[param_init_key], '${label}: parameterized init should not be a lifecycle root'
+	assert !used[param_init_helper_key], '${label}: parameterized init dependency should stay pruned'
+	assert !used[param_deinit_key], '${label}: parameterized deinit should not be a lifecycle root'
+	assert !used[param_deinit_helper_key], '${label}: parameterized deinit dependency should stay pruned'
+}
+
+fn test_mark_used_lifecycle_roots_require_zero_args_legacy() {
+	mut env := types.Environment.new()
+	files := lifecycle_root_files()
+	used := mark_used(files, env)
+	assert_lifecycle_roots_require_zero_args(used, files, env, 'legacy')
+}
+
+fn test_mark_used_lifecycle_roots_require_zero_args_flat() {
+	mut env := types.Environment.new()
+	files := lifecycle_root_files()
+	flat := ast.flatten_files(files)
+	used := mark_used_flat(&flat, env)
+	assert_lifecycle_roots_require_zero_args(used, files, env, 'flat')
 }
 
 fn test_minimal_runtime_roots_keep_functions_used_as_values() {

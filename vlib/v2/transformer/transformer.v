@@ -3430,6 +3430,17 @@ fn module_init_call_name(mod string) string {
 	return 'init'
 }
 
+fn is_zero_arg_module_init_decl(stmt ast.FnDecl) bool {
+	return !stmt.is_method && stmt.name == 'init' && stmt.typ.params.len == 0
+}
+
+fn is_zero_arg_module_init_cursor(c ast.Cursor) bool {
+	if c.kind() != .stmt_fn_decl || c.flag(ast.flag_is_method) || c.name() != 'init' {
+		return false
+	}
+	return c.edge(1).list_at(1).len() == 0
+}
+
 fn (t &Transformer) uses_minimal_windows_x64_runtime() bool {
 	return t.pref != unsafe { nil } && t.pref.backend == .x64 && t.pref.get_effective_arch() == .x64
 		&& t.pref.target_os_or_host().to_lower() == 'windows'
@@ -4181,6 +4192,94 @@ fn (t &Transformer) const_initializer_emits_storage_cursor(expr ast.Cursor, is_n
 	return false
 }
 
+fn array_init_is_dynamic_const_literal(expr ast.ArrayInitExpr) bool {
+	if array_init_has_fixed_len_marker(expr) {
+		return false
+	}
+	return !(expr.typ is ast.Type && expr.typ is ast.ArrayFixedType)
+}
+
+fn const_expr_contains_dynamic_array_literal(expr ast.Expr) bool {
+	match expr {
+		ast.ArrayInitExpr {
+			if array_init_is_dynamic_const_literal(expr) {
+				return true
+			}
+			return array_const_literal_has_dynamic_array_element(expr)
+		}
+		ast.CastExpr {
+			return const_expr_contains_dynamic_array_literal(expr.expr)
+		}
+		ast.ParenExpr {
+			return const_expr_contains_dynamic_array_literal(expr.expr)
+		}
+		ast.PrefixExpr {
+			return const_expr_contains_dynamic_array_literal(expr.expr)
+		}
+		ast.PostfixExpr {
+			return const_expr_contains_dynamic_array_literal(expr.expr)
+		}
+		ast.ModifierExpr {
+			return const_expr_contains_dynamic_array_literal(expr.expr)
+		}
+		ast.ComptimeExpr {
+			return const_expr_contains_dynamic_array_literal(expr.expr)
+		}
+		else {
+			return false
+		}
+	}
+}
+
+fn array_const_literal_has_dynamic_array_element(expr ast.ArrayInitExpr) bool {
+	for elem in expr.exprs {
+		if const_expr_contains_dynamic_array_literal(elem) {
+			return true
+		}
+	}
+	return expr.init !is ast.EmptyExpr && const_expr_contains_dynamic_array_literal(expr.init)
+}
+
+fn array_init_cursor_is_dynamic_const_literal(expr ast.Cursor) bool {
+	if array_init_cursor_has_fixed_len_marker(expr) {
+		return false
+	}
+	return expr.edge(0).kind() != .typ_array_fixed
+}
+
+fn const_expr_cursor_contains_dynamic_array_literal(expr ast.Cursor) bool {
+	if !expr.is_valid() {
+		return false
+	}
+	match expr.kind() {
+		.expr_array_init {
+			if array_init_cursor_is_dynamic_const_literal(expr) {
+				return true
+			}
+			return array_const_literal_cursor_has_dynamic_array_element(expr)
+		}
+		.expr_cast {
+			return const_expr_cursor_contains_dynamic_array_literal(expr.edge(1))
+		}
+		.expr_comptime, .expr_modifier, .expr_paren, .expr_postfix, .expr_prefix {
+			return const_expr_cursor_contains_dynamic_array_literal(expr.edge(0))
+		}
+		else {
+			return false
+		}
+	}
+}
+
+fn array_const_literal_cursor_has_dynamic_array_element(expr ast.Cursor) bool {
+	for i in 5 .. expr.edge_count() {
+		if const_expr_cursor_contains_dynamic_array_literal(expr.edge(i)) {
+			return true
+		}
+	}
+	return !expr_cursor_is_empty(expr.edge(1))
+		&& const_expr_cursor_contains_dynamic_array_literal(expr.edge(1))
+}
+
 fn (t &Transformer) contains_runtime_const_literal(expr ast.Expr, is_native bool) bool {
 	match expr {
 		ast.MapInitExpr {
@@ -4188,6 +4287,9 @@ fn (t &Transformer) contains_runtime_const_literal(expr ast.Expr, is_native bool
 		}
 		ast.ArrayInitExpr {
 			if is_native {
+				return true
+			}
+			if array_const_literal_has_dynamic_array_element(expr) {
 				return true
 			}
 			for e in expr.exprs {
@@ -4279,6 +4381,9 @@ fn (t &Transformer) contains_runtime_const_literal_cursor(expr ast.Cursor, is_na
 		}
 		.expr_array_init {
 			if is_native {
+				return true
+			}
+			if array_const_literal_cursor_has_dynamic_array_element(expr) {
 				return true
 			}
 			for i in 5 .. expr.edge_count() {
@@ -5298,7 +5403,7 @@ pub fn (mut t Transformer) runtime_const_init_main_calls_parts(files []ast.File)
 			continue
 		}
 		for stmt in file.stmts {
-			if stmt is ast.FnDecl && !stmt.is_method && stmt.name == 'init' {
+			if stmt is ast.FnDecl && is_zero_arg_module_init_decl(stmt) {
 				seen_init_mods[file.mod] = true
 				init_calls << ast.ExprStmt{
 					expr: ast.CallExpr{
@@ -5442,7 +5547,7 @@ pub fn (mut t Transformer) runtime_const_init_main_calls_parts_from_flat(flat &a
 		stmts := fc.stmts()
 		for j in 0 .. stmts.len() {
 			c := stmts.at(j)
-			if c.kind() == .stmt_fn_decl && !c.flag(ast.flag_is_method) && c.name() == 'init' {
+			if is_zero_arg_module_init_cursor(c) {
 				seen_init_mods[mod] = true
 				init_calls << ast.ExprStmt{
 					expr: ast.CallExpr{
@@ -13896,7 +14001,8 @@ fn (mut t Transformer) build_single_match_cond(match_expr ast.Expr, cond ast.Exp
 fn (t &Transformer) is_supported_struct_default_expr(expr ast.Expr) bool {
 	match expr {
 		ast.BasicLiteral, ast.StringLiteral, ast.SelectorExpr, ast.CallExpr, ast.CallOrCastExpr,
-		ast.PrefixExpr, ast.CastExpr, ast.ArrayInitExpr, ast.MapInitExpr, ast.InitExpr {
+		ast.PrefixExpr, ast.CastExpr, ast.IndexExpr, ast.ArrayInitExpr, ast.MapInitExpr,
+		ast.InitExpr {
 			return true
 		}
 		ast.Ident {
