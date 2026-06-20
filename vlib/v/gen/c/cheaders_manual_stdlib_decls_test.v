@@ -47,7 +47,16 @@ fn test_default_c_prelude_uses_manual_stdio_stdlib_string_and_stdarg_decls() {
 	assert generated_c.contains('V_CRT_LINKAGE void V_CRT_CALL _aligned_free(void *memory);'), generated_c
 	assert generated_c.contains('V_CRT_LINKAGE unsigned short * V_CRT_CALL _wgetenv(const unsigned short *varname);'), generated_c
 	assert generated_c.contains('V_CRT_LINKAGE int V_CRT_CALL _wputenv(const unsigned short *envstring);'), generated_c
-	assert generated_c.contains('#elif (defined(__MINGW32__) || defined(__MINGW64__)) && !defined(__clang__)\n// mingw-w64 exposes stdio functions like fprintf as static inline overrides\n// in some configurations, so use the system declarations instead of V\'s\n// manual formatted-stdio prototypes.\n#include <stdarg.h>\n#include <stdio.h>'), generated_c
+	mingw_gcc_branch_start := generated_c.index('#elif (defined(__MINGW32__) || defined(__MINGW64__)) && !defined(__clang__)') or {
+		-1
+	}
+	assert mingw_gcc_branch_start >= 0, generated_c
+	mingw_gcc_branch_end := generated_c.index_after('#elif defined(__MINGW32__) || defined(__MINGW64__) || (defined(__clang__) && (defined(_WIN32) || defined(_WIN64)))',
+		mingw_gcc_branch_start) or { -1 }
+	assert mingw_gcc_branch_end > mingw_gcc_branch_start, generated_c
+	mingw_gcc_branch := generated_c[mingw_gcc_branch_start..mingw_gcc_branch_end]
+	assert mingw_gcc_branch.contains('#include <stdarg.h>'), mingw_gcc_branch
+	assert mingw_gcc_branch.contains('#include <stdio.h>'), mingw_gcc_branch
 	assert generated_c.contains('#elif defined(__MINGW32__) || defined(__MINGW64__) || (defined(__clang__) && (defined(_WIN32) || defined(_WIN64)))\ntypedef struct _iobuf FILE;\nFILE* __cdecl __acrt_iob_func(unsigned index);\n#define stdin  (__acrt_iob_func(0))\n#define stdout (__acrt_iob_func(1))\n#define stderr (__acrt_iob_func(2))'), generated_c
 	assert generated_c.contains('#elif defined(__TINYC__) && (defined(_WIN32) || defined(_WIN64))'), generated_c
 	assert generated_c.contains('#ifndef _FILE_DEFINED\nstruct _iobuf {\n\tchar *_ptr;\n\tint _cnt;\n\tchar *_base;\n\tint _flag;\n\tint _file;\n\tint _charbuf;\n\tint _bufsiz;\n\tchar *_tmpfname;\n};\ntypedef struct _iobuf FILE;\n#define _FILE_DEFINED'), generated_c

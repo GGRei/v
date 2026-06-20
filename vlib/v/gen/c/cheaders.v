@@ -431,8 +431,8 @@ extern struct __sFstub __stderr[];
 #endif
 #elif (defined(__MINGW32__) || defined(__MINGW64__)) && !defined(__clang__)
 // mingw-w64 exposes stdio functions like fprintf as static inline overrides
-// in some configurations, so use the system declarations instead of V's
-// manual formatted-stdio prototypes.
+// in some configurations, so use the system declarations instead of V manual
+// formatted-stdio prototypes.
 #include <stdarg.h>
 #include <stdio.h>
 #elif defined(__MINGW32__) || defined(__MINGW64__) || (defined(__clang__) && (defined(_WIN32) || defined(_WIN64)))
