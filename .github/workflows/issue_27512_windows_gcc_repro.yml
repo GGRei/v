@@ -10,7 +10,11 @@ concurrency:
 
 jobs:
   windows-gcc-repro:
-    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
       VFLAGS: -cc gcc
@@ -19,6 +23,20 @@ jobs:
 
       - name: Show GCC version
         run: gcc --version
+
+      - name: Check GCC implicit-declaration behavior
+        shell: pwsh
+        run: |
+          @'
+          void f(void) {
+              fprintf(0, "%p", (void*)0);
+          }
+          '@ | Set-Content -Path implicit_fprintf_probe.c -NoNewline
+
+          $gcc_log = & gcc -std=c99 -Werror=implicit-function-declaration -c implicit_fprintf_probe.c 2>&1
+          $gcc_exit = $LASTEXITCODE
+          $gcc_log | ForEach-Object { Write-Host $_ }
+          Write-Host "GCC implicit-declaration probe exit code: $gcc_exit"
 
       - name: Build V with GCC
         run: |
@@ -36,4 +54,17 @@ jobs:
           }
           '@ | Set-Content -Path issue_27512_repro\main.v -NoNewline
 
-          .\v.exe -cc gcc -showcc -show-c-output -keepc run issue_27512_repro\main.v
+          Push-Location issue_27512_repro
+          $v_log = & ..\v.exe -cc gcc -no-relaxed-gcc14 -showcc -show-c-output -keepc run .\main.v 2>&1
+          $v_exit = $LASTEXITCODE
+          Pop-Location
+
+          $v_log | ForEach-Object { Write-Host $_ }
+
+          if ($v_log -match "implicit declaration of function 'fprintf'" -or $v_log -match "include '<stdio.h>'") {
+            throw "Issue 27512 reproduced: generated Windows GCC C uses fprintf without a visible stdio declaration."
+          }
+
+          if ($v_exit -ne 0) {
+            exit $v_exit
+          }
