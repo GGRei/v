@@ -1,0 +1,39 @@
+name: Issue 27512 Windows GCC Repro
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: issue-27512-windows-gcc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-gcc-repro:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      VFLAGS: -cc gcc
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Show GCC version
+        run: gcc --version
+
+      - name: Build V with GCC
+        run: |
+          .\makev.bat -gcc
+          .\v.exe version
+          .\v.exe doctor
+
+      - name: Reproduce issue 27512
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path issue_27512_repro | Out-Null
+          @'
+          fn main() {
+              print("HERE")
+          }
+          '@ | Set-Content -Path issue_27512_repro\main.v -NoNewline
+
+          .\v.exe -cc gcc -showcc -show-c-output -keepc run issue_27512_repro\main.v
