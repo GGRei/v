@@ -53,7 +53,7 @@ jobs:
           '@ | Set-Content -Path issue_27512_repro\main.v -NoNewline
 
           Push-Location issue_27512_repro
-          $v_log = & ..\v.exe -cc gcc -no-relaxed-gcc14 -showcc -show-c-output -keepc run .\main.v 2>&1
+          $v_log = & ..\v.exe -cc gcc -showcc -show-c-output -keepc run .\main.v 2>&1
           $v_exit = $LASTEXITCODE
           Pop-Location
 

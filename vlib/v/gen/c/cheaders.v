@@ -429,6 +429,12 @@ extern struct __sFstub __stderr[];
 #define stdout ((struct __sFILE *)__stdout)
 #define stderr ((struct __sFILE *)__stderr)
 #endif
+#elif (defined(__MINGW32__) || defined(__MINGW64__)) && !defined(__clang__)
+// mingw-w64 exposes stdio functions like fprintf as static inline overrides
+// in some configurations, so use the system declarations instead of V's
+// manual formatted-stdio prototypes.
+#include <stdarg.h>
+#include <stdio.h>
 #elif defined(__MINGW32__) || defined(__MINGW64__) || (defined(__clang__) && (defined(_WIN32) || defined(_WIN64)))
 typedef struct _iobuf FILE;
 FILE* __cdecl __acrt_iob_func(unsigned index);
