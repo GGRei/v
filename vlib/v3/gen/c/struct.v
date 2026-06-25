@@ -17,6 +17,22 @@ fn c_field_name(name string) string {
 	return c_name(name)
 }
 
+fn (mut g FlatGen) gen_struct_field_expr(value_id flat.NodeId, expected types.Type) {
+	if g.gen_callback_fn_value_for_expected_type(value_id, expected) {
+		return
+	}
+	g.gen_expr_with_expected_type(value_id, expected)
+}
+
+fn (mut g FlatGen) gen_struct_field_expr_for_field(value_id flat.NodeId, struct_name string, field_name string, expected types.Type) {
+	if c_abi_fn := g.struct_field_c_abi_fn_ptr_type(struct_name, field_name) {
+		if g.gen_callback_fn_value_for_field_c_abi(value_id, expected, c_abi_fn) {
+			return
+		}
+	}
+	g.gen_struct_field_expr(value_id, expected)
+}
+
 // gen_struct_init emits struct init output for c.
 fn (mut g FlatGen) gen_struct_init(node flat.Node) {
 	init_module := g.tc.cur_module
@@ -70,7 +86,7 @@ fn (mut g FlatGen) gen_struct_init(node flat.Node) {
 					g.gen_expr(value_id)
 					g.write(', sizeof(${inner_ct}))')
 				} else {
-					g.gen_expr_with_expected_type(value_id, sf.typ)
+					g.gen_struct_field_expr_for_field(value_id, node.value, sf.name, sf.typ)
 				}
 				set_fields[sf.name] = true
 			} else {
@@ -90,7 +106,7 @@ fn (mut g FlatGen) gen_struct_init(node flat.Node) {
 					if g.struct_field_value_is_plainly_incompatible(value_id, ftyp) {
 						g.gen_default_value_for_type(ftyp)
 					} else {
-						g.gen_expr_with_expected_type(value_id, ftyp)
+						g.gen_struct_field_expr_for_field(value_id, node.value, field.value, ftyp)
 					}
 				} else {
 					g.gen_expr(value_id)
@@ -102,8 +118,7 @@ fn (mut g FlatGen) gen_struct_init(node flat.Node) {
 	}
 	after_fields_module := g.tc.cur_module
 	g.tc.cur_module = init_module
-	qname := g.tc.qualify_name(node.value)
-	sname := if qname in g.tc.structs { qname } else { node.value }
+	sname := g.struct_init_resolved_decl_name(node.value)
 	g.tc.cur_module = after_fields_module
 	has_field = g.gen_struct_default_fields(sname, mut set_fields, has_field)
 	if sname in g.tc.structs {
@@ -189,7 +204,7 @@ fn (mut g FlatGen) gen_struct_init_with_fixed_array_fields(node flat.Node, name 
 					g.write(', ')
 				}
 				g.write('.${c_field_name(sf.name)} = ')
-				g.gen_expr_with_expected_type(value_id, sf.typ)
+				g.gen_struct_field_expr_for_field(value_id, node.value, sf.name, sf.typ)
 				set_fields[sf.name] = true
 				has_field = true
 			} else {
@@ -222,7 +237,7 @@ fn (mut g FlatGen) gen_struct_init_with_fixed_array_fields(node flat.Node, name 
 				if g.struct_field_value_is_plainly_incompatible(value_id, ftyp) {
 					g.gen_default_value_for_type(ftyp)
 				} else {
-					g.gen_expr_with_expected_type(value_id, ftyp)
+					g.gen_struct_field_expr_for_field(value_id, node.value, field.value, ftyp)
 				}
 			} else {
 				g.gen_expr(value_id)
@@ -233,8 +248,7 @@ fn (mut g FlatGen) gen_struct_init_with_fixed_array_fields(node flat.Node, name 
 	}
 	after_fields_module := g.tc.cur_module
 	g.tc.cur_module = init_module
-	qname := g.tc.qualify_name(node.value)
-	sname := if qname in g.tc.structs { qname } else { node.value }
+	sname := g.struct_init_resolved_decl_name(node.value)
 	g.tc.cur_module = after_fields_module
 	has_field = g.gen_struct_default_fields(sname, mut set_fields, has_field)
 	if sname in g.tc.structs {
@@ -406,7 +420,7 @@ fn (mut g FlatGen) gen_heap_struct_init(node flat.Node) {
 				if g.struct_field_value_is_plainly_incompatible(value_id, ftyp) {
 					g.gen_default_value_for_type(ftyp)
 				} else {
-					g.gen_expr_with_expected_type(value_id, ftyp)
+					g.gen_struct_field_expr_for_field(value_id, node.value, field.value, ftyp)
 				}
 			} else {
 				g.gen_expr(value_id)
@@ -417,8 +431,7 @@ fn (mut g FlatGen) gen_heap_struct_init(node flat.Node) {
 	}
 	after_fields_module := g.tc.cur_module
 	g.tc.cur_module = init_module
-	qname := g.tc.qualify_name(node.value)
-	sname := if qname in g.tc.structs { qname } else { node.value }
+	sname := g.struct_init_resolved_decl_name(node.value)
 	g.tc.cur_module = after_fields_module
 	has_field = g.gen_struct_default_fields(sname, mut set_fields, has_field)
 	if sname in g.tc.structs {
@@ -489,7 +502,8 @@ fn (mut g FlatGen) gen_struct_default_fields(type_name string, mut set_fields ma
 			g.write(', ')
 		}
 		g.write('.${c_name(field.value)} = ')
-		g.gen_expr_with_expected_type(g.a.child(field, 0), g.tc.parse_type(field.typ))
+		g.gen_struct_field_expr_for_field(g.a.child(field, 0), info.full_name, field.value,
+			g.tc.parse_type(field.typ))
 		set_fields[field.value] = true
 		has = true
 	}
@@ -644,7 +658,7 @@ fn (mut g FlatGen) gen_params_struct_arg(typ types.Type, node flat.Node, field_s
 			}
 			g.write('.${c_name(field.value)} = ')
 			if ftyp := g.struct_field_type(typ.name, field.value) {
-				g.gen_expr_with_expected_type(g.a.child(field, 0), ftyp)
+				g.gen_struct_field_expr_for_field(g.a.child(field, 0), typ.name, field.value, ftyp)
 			} else {
 				g.gen_expr(g.a.child(field, 0))
 			}
@@ -816,6 +830,21 @@ fn (mut g FlatGen) struct_init_c_type_name(type_name string) string {
 
 // find_struct_decl resolves find struct decl information for c.
 fn (g &FlatGen) find_struct_decl(type_name string) ?StructDeclInfo {
+	if info := g.find_struct_decl_preferred(type_name) {
+		return info
+	}
+	if alias_target := g.struct_type_alias_target(type_name) {
+		if info := g.find_struct_decl_preferred(alias_target) {
+			return info
+		}
+		if info := g.find_struct_decl_fallback(alias_target) {
+			return info
+		}
+	}
+	return g.find_struct_decl_fallback(type_name)
+}
+
+fn (g &FlatGen) find_struct_decl_preferred(type_name string) ?StructDeclInfo {
 	short_name := if type_name.contains('.') { type_name.all_after_last('.') } else { type_name }
 	preferred_name := if !type_name.contains('.') && g.tc.cur_module.len > 0
 		&& g.tc.cur_module != 'main' && g.tc.cur_module != 'builtin' {
@@ -832,37 +861,64 @@ fn (g &FlatGen) find_struct_decl(type_name string) ?StructDeclInfo {
 		if info := g.struct_decl_infos[type_name] {
 			return info
 		}
-	} else {
-		if info := g.struct_decl_short_infos[type_name] {
-			return info
+	}
+	return none
+}
+
+fn (g &FlatGen) find_struct_decl_fallback(type_name string) ?StructDeclInfo {
+	if type_name.contains('.') {
+		return none
+	}
+	if info := g.struct_decl_short_infos[type_name] {
+		return info
+	}
+	return none
+}
+
+fn (g &FlatGen) struct_type_alias_target(type_name string) ?string {
+	qname := g.tc.qualify_name(type_name)
+	if target := g.tc.type_aliases[qname] {
+		return target
+	}
+	if target := g.tc.type_aliases[type_name] {
+		return target
+	}
+	return none
+}
+
+fn (g &FlatGen) struct_init_resolved_decl_name(type_name string) string {
+	if info := g.find_struct_decl(type_name) {
+		return info.full_name
+	}
+	qname := g.tc.qualify_name(type_name)
+	return if qname in g.tc.structs { qname } else { type_name }
+}
+
+// struct_field_type supports struct field type handling for FlatGen.
+fn (g &FlatGen) struct_field_type(type_name string, field_name string) ?types.Type {
+	fields := g.struct_fields_for_type(type_name) or { return none }
+	for f in fields {
+		if f.name == field_name {
+			return f.typ
 		}
 	}
 	return none
 }
 
-// struct_field_type supports struct field type handling for FlatGen.
-fn (g &FlatGen) struct_field_type(type_name string, field_name string) ?types.Type {
-	if fields := g.tc.structs[type_name] {
-		for f in fields {
-			if f.name == field_name {
-				return f.typ
-			}
-		}
-	}
-	qname := g.tc.qualify_name(type_name)
-	if fields := g.tc.structs[qname] {
-		for f in fields {
-			if f.name == field_name {
-				return f.typ
-			}
-		}
-	}
+fn (g &FlatGen) struct_field_c_abi_fn_ptr_type(type_name string, field_name string) ?string {
 	if info := g.find_struct_decl(type_name) {
-		if fields := g.tc.structs[info.full_name] {
-			for f in fields {
-				if f.name == field_name {
-					return f.typ
-				}
+		if typ := g.tc.struct_field_c_abi_fn_ptr_type(info.full_name, field_name) {
+			return typ
+		}
+	}
+	if typ := g.tc.struct_field_c_abi_fn_ptr_type(type_name, field_name) {
+		return typ
+	}
+	if !type_name.contains('.') {
+		qname := g.tc.qualify_name(type_name)
+		if qname != type_name {
+			if typ := g.tc.struct_field_c_abi_fn_ptr_type(qname, field_name) {
+				return typ
 			}
 		}
 	}
@@ -911,17 +967,25 @@ fn (g &FlatGen) struct_embedded_fields(type_name string) []types.StructField {
 }
 
 fn (g &FlatGen) struct_fields_for_type(type_name string) ?[]types.StructField {
-	if fields := g.tc.structs[type_name] {
-		return fields
-	}
-	qname := g.tc.qualify_name(type_name)
-	if fields := g.tc.structs[qname] {
-		return fields
-	}
 	if info := g.find_struct_decl(type_name) {
 		if fields := g.tc.structs[info.full_name] {
 			return fields
 		}
+	}
+	if type_name.contains('.') {
+		if fields := g.tc.structs[type_name] {
+			return fields
+		}
+	} else {
+		qname := g.tc.qualify_name(type_name)
+		if qname != type_name {
+			if fields := g.tc.structs[qname] {
+				return fields
+			}
+		}
+	}
+	if fields := g.tc.structs[type_name] {
+		return fields
 	}
 	if type_name.contains('.') {
 		short_name := type_name.all_after_last('.')
@@ -1042,23 +1106,9 @@ fn (g &FlatGen) struct_field_at(type_name string, index int) ?types.StructField 
 	if index < 0 {
 		return none
 	}
-	if fields := g.tc.structs[type_name] {
-		if index < fields.len {
-			return fields[index]
-		}
-	}
-	qname := g.tc.qualify_name(type_name)
-	if fields := g.tc.structs[qname] {
-		if index < fields.len {
-			return fields[index]
-		}
-	}
-	if info := g.find_struct_decl(type_name) {
-		if fields := g.tc.structs[info.full_name] {
-			if index < fields.len {
-				return fields[index]
-			}
-		}
+	fields := g.struct_fields_for_type(type_name) or { return none }
+	if index < fields.len {
+		return fields[index]
 	}
 	return none
 }
@@ -1088,7 +1138,8 @@ fn (mut g FlatGen) gen_assoc_return_tmp(node flat.Node, tmp string) {
 		if field.kind == .field_init && field.children_count > 0 {
 			g.write('${tmp}.${c_name(field.value)} = ')
 			if ftyp := g.struct_field_type(node.value, field.value) {
-				g.gen_expr_with_expected_type(g.a.child(field, 0), ftyp)
+				g.gen_struct_field_expr_for_field(g.a.child(field, 0), node.value, field.value,
+					ftyp)
 			} else {
 				g.gen_expr(g.a.child(field, 0))
 			}
@@ -1109,7 +1160,8 @@ fn (mut g FlatGen) gen_assoc_expr(node flat.Node) {
 		if field.kind == .field_init && field.children_count > 0 {
 			g.write(' ${tmp}.${c_name(field.value)} = ')
 			if ftyp := g.struct_field_type(node.value, field.value) {
-				g.gen_expr_with_expected_type(g.a.child(field, 0), ftyp)
+				g.gen_struct_field_expr_for_field(g.a.child(field, 0), node.value, field.value,
+					ftyp)
 			} else {
 				g.gen_expr(g.a.child(field, 0))
 			}
@@ -1131,7 +1183,8 @@ fn (mut g FlatGen) gen_heap_assoc_expr(node flat.Node) {
 		if field.kind == .field_init && field.children_count > 0 {
 			g.write(' ${tmp}.${c_name(field.value)} = ')
 			if ftyp := g.struct_field_type(node.value, field.value) {
-				g.gen_expr_with_expected_type(g.a.child(field, 0), ftyp)
+				g.gen_struct_field_expr_for_field(g.a.child(field, 0), node.value, field.value,
+					ftyp)
 			} else {
 				g.gen_expr(g.a.child(field, 0))
 			}
@@ -1496,7 +1549,10 @@ fn (mut g FlatGen) write_struct_field(_struct_name string, f types.StructField) 
 	}
 	raw_field_type := field_type
 	if field_type is types.FnType {
-		ct := g.resolve_fn_ptr_type(g.tc.c_type(raw_field_type))
+		c_abi_fn := g.struct_field_c_abi_fn_ptr_type(_struct_name, f.name) or {
+			g.tc.c_type(raw_field_type)
+		}
+		ct := g.resolve_fn_ptr_type(c_abi_fn)
 		g.writeln('\t${ct} ${c_name(f.name)};')
 	} else if f.typ is types.ArrayFixed {
 		c_elem, dims := g.fixed_array_decl_parts(f.typ)
@@ -1519,8 +1575,12 @@ fn (mut g FlatGen) write_struct_field(_struct_name string, f types.StructField) 
 
 // preseed_struct_fn_ptr_types supports preseed struct fn ptr types handling for FlatGen.
 fn (mut g FlatGen) preseed_struct_fn_ptr_types() {
-	for _, fields in g.tc.structs {
+	for struct_name, fields in g.tc.structs {
 		for f in fields {
+			if c_abi_fn := g.struct_field_c_abi_fn_ptr_type(struct_name, f.name) {
+				g.resolve_fn_ptr_type(c_abi_fn)
+				continue
+			}
 			g.preseed_fn_ptr_type(f.typ)
 		}
 	}

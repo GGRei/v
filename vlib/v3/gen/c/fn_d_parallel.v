@@ -56,6 +56,7 @@ $if !windows {
 fn (mut g FlatGen) gen_fns_dispatch(no_parallel bool) {
 	if no_parallel {
 		g.gen_fns()
+		g.gen_synthetic_main_after_fns()
 		return
 	}
 	items := g.collect_fn_gen_items()
@@ -63,10 +64,12 @@ fn (mut g FlatGen) gen_fns_dispatch(no_parallel bool) {
 	n_jobs := flat_cgen_job_count(runtime.nr_jobs(), n_items)
 	$if windows {
 		g.gen_fn_items(items)
+		g.gen_synthetic_main_after_fns()
 		return
 	} $else {
 		if n_items < min_flat_cgen_parallel_items || n_jobs <= 1 {
 			g.gen_fn_items(items)
+			g.gen_synthetic_main_after_fns()
 			return
 		}
 		g.parallel_used = true
@@ -118,6 +121,7 @@ fn (mut g FlatGen) gen_fns_dispatch(no_parallel bool) {
 			w := unsafe { &FlatGen(workers[ci]) }
 			g.merge_parallel_worker(w)
 		}
+		g.gen_synthetic_main_after_fns()
 	}
 }
 
@@ -399,6 +403,8 @@ fn (g &FlatGen) new_parallel_worker(worker_id int) &FlatGen {
 		param_types_cache:       g.param_types_cache.clone()
 		embedded_fields_by_type: g.embedded_fields_by_type
 		param_types_by_short:    g.param_types_by_short
+		callback_wrapper_names:  g.callback_wrapper_names.clone()
+		callback_wrapper_defs:   g.callback_wrapper_defs.clone()
 	}
 }
 
@@ -424,9 +430,12 @@ fn (g &FlatGen) clone_parallel_type_checker() &types.TypeChecker {
 		fn_ret_types:                  g.tc.fn_ret_types
 		fn_param_types:                g.tc.fn_param_types
 		fn_variadic:                   g.tc.fn_variadic
+		c_variadic_fns:                g.tc.c_variadic_fns
 		structs:                       g.tc.structs
+		struct_field_c_abi_fns:        g.tc.struct_field_c_abi_fns
 		unions:                        g.tc.unions
 		type_aliases:                  g.tc.type_aliases
+		type_alias_c_abi_fns:          g.tc.type_alias_c_abi_fns
 		sum_types:                     g.tc.sum_types
 		enum_names:                    g.tc.enum_names
 		enum_fields:                   g.tc.enum_fields
@@ -442,6 +451,7 @@ fn (g &FlatGen) clone_parallel_type_checker() &types.TypeChecker {
 		const_suffixes:                g.tc.const_suffixes
 		imports:                       g.tc.imports
 		file_imports:                  g.tc.file_imports
+		file_selective_imports:        g.tc.file_selective_imports
 		file_modules:                  g.tc.file_modules
 		file_scope:                    fs
 		cur_scope:                     fs
@@ -452,6 +462,8 @@ fn (g &FlatGen) clone_parallel_type_checker() &types.TypeChecker {
 		errors:                        g.tc.errors.clone()
 		resolved_call_names:           g.tc.resolved_call_names
 		resolved_call_set:             g.tc.resolved_call_set
+		resolved_fn_value_names:       g.tc.resolved_fn_value_names
+		resolved_fn_value_set:         g.tc.resolved_fn_value_set
 		expr_type_values:              g.tc.expr_type_values
 		expr_type_set:                 g.tc.expr_type_set
 		checking_nodes:                g.tc.checking_nodes
@@ -476,6 +488,16 @@ fn (mut g FlatGen) merge_parallel_worker(w &FlatGen) {
 	for encoded, name in w.fn_ptr_types {
 		if encoded !in g.fn_ptr_types {
 			g.fn_ptr_types[encoded] = name
+		}
+	}
+	for key, name in w.callback_wrapper_names {
+		if key !in g.callback_wrapper_names {
+			g.callback_wrapper_names[key] = name
+		}
+	}
+	for def in w.callback_wrapper_defs {
+		if def !in g.callback_wrapper_defs {
+			g.callback_wrapper_defs << def
 		}
 	}
 }
