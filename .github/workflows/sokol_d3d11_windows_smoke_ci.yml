@@ -1,0 +1,191 @@
+name: Sokol D3D11 Windows Smoke CI
+
+on:
+  push:
+    branches:
+      - sokol-d3d11-windows-smoke
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sokol-d3d11-windows-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile-link:
+    name: ${{ matrix.compiler }} compile/link
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: msvc
+            runner: windows-2022
+            make_arg: -msvc
+          - compiler: gcc
+            runner: windows-2025
+            make_arg: -gcc
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout V
+        uses: actions/checkout@v7
+
+      - name: Setup MSVC tools
+        if: matrix.compiler == 'msvc'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Show tool versions
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $log_dir = "$env:RUNNER_TEMP\sokol-smoke-logs-${{ matrix.compiler }}"
+          New-Item -ItemType Directory -Force -Path $log_dir | Out-Null
+          $log = Join-Path $log_dir 'tool_versions.log'
+          if ('${{ matrix.compiler }}' -eq 'msvc') {
+            '### where.exe cl.exe' | Tee-Object -FilePath $log
+            & where.exe cl.exe 2>&1 | Tee-Object -FilePath $log -Append
+            if ($LASTEXITCODE -ne 0) { throw 'cl.exe was not found' }
+            '### where.exe link.exe' | Tee-Object -FilePath $log -Append
+            & where.exe link.exe 2>&1 | Tee-Object -FilePath $log -Append
+            if ($LASTEXITCODE -ne 0) { throw 'link.exe was not found' }
+          } else {
+            '### gcc --version' | Tee-Object -FilePath $log
+            & gcc --version 2>&1 | Tee-Object -FilePath $log -Append
+            if ($LASTEXITCODE -ne 0) { throw 'gcc --version failed' }
+            '### where.exe gcc.exe' | Tee-Object -FilePath $log -Append
+            & where.exe gcc.exe 2>&1 | Tee-Object -FilePath $log -Append
+            if ($LASTEXITCODE -ne 0) { throw 'gcc.exe was not found' }
+          }
+
+      - name: Build V
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $log_dir = "$env:RUNNER_TEMP\sokol-smoke-logs-${{ matrix.compiler }}"
+          New-Item -ItemType Directory -Force -Path $log_dir | Out-Null
+          $log = Join-Path $log_dir 'build_v.log'
+          '### .\makev.bat ${{ matrix.make_arg }}' | Tee-Object -FilePath $log
+          & .\makev.bat ${{ matrix.make_arg }} 2>&1 | Tee-Object -FilePath $log -Append
+          if ($LASTEXITCODE -ne 0) { throw 'makev.bat failed' }
+          '### .\v.exe version' | Tee-Object -FilePath $log -Append
+          & .\v.exe version 2>&1 | Tee-Object -FilePath $log -Append
+          if ($LASTEXITCODE -ne 0) { throw 'v.exe version failed' }
+          '### .\v.exe doctor' | Tee-Object -FilePath $log -Append
+          & .\v.exe doctor 2>&1 | Tee-Object -FilePath $log -Append
+          if ($LASTEXITCODE -ne 0) { throw 'v.exe doctor failed' }
+
+      - name: Compile/link sokol GL and D3D11 sentinels
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          $compiler = '${{ matrix.compiler }}'
+          $out_dir = Join-Path $env:RUNNER_TEMP "sokol-smoke-out-$compiler"
+          $log_dir = Join-Path $env:RUNNER_TEMP "sokol-smoke-logs-$compiler"
+          $vtmp_dir = Join-Path $env:RUNNER_TEMP "sokol-smoke-vtmp-$compiler"
+          New-Item -ItemType Directory -Force -Path $out_dir, $log_dir, $vtmp_dir | Out-Null
+          $env:VTMP = $vtmp_dir
+          $screenshot_probe = Join-Path $out_dir 'sapp_screenshot_probe.v'
+          $screenshot_probe_source = @(
+            'import sokol.sapp'
+            ''
+            'fn main() {'
+            '  mut ss := sapp.screenshot_window()'
+            '  unsafe { ss.destroy() }'
+            "  sapp.screenshot_png('d3d11_probe.png') or { panic(err) }"
+            "  sapp.screenshot_ppm('d3d11_probe.ppm') or { panic(err) }"
+            "  sapp.screenshot('d3d11_probe_path.png') or { panic(err) }"
+            '}'
+          ) -join "`n"
+          Set-Content -LiteralPath $screenshot_probe -Value $screenshot_probe_source -NoNewline
+
+          $results = [System.Collections.Generic.List[string]]::new()
+          $results.Add('| backend | source | compiler | output |')
+          $results.Add('| --- | --- | --- | --- |')
+
+          function Assert-LogContains([string] $path, [string] $needle, [string] $label) {
+            $text = Get-Content -LiteralPath $path -Raw
+            if (-not $text.Contains($needle)) {
+              throw "$label log did not contain '$needle'. See $path"
+            }
+          }
+
+          function Assert-LogNotContains([string] $path, [string] $needle, [string] $label) {
+            $text = Get-Content -LiteralPath $path -Raw
+            if ($text.Contains($needle)) {
+              throw "$label log unexpectedly contained '$needle'. See $path"
+            }
+          }
+
+          function Invoke-VCompile(
+            [string] $backend,
+            [string] $source,
+            [string] $name,
+            [string[]] $extra_args
+          ) {
+            $exe = Join-Path $out_dir "$name.exe"
+            $log = Join-Path $log_dir "$name.log"
+            $args = @(
+              '-cc', $compiler,
+              '-no-retry-compilation',
+              '-showcc',
+              '-keepc',
+              '-o', $exe
+            ) + $extra_args + @($source)
+
+            "### .\v.exe $($args -join ' ')" | Tee-Object -FilePath $log
+            "### VTMP=$env:VTMP" | Tee-Object -FilePath $log -Append
+            & .\v.exe @args 2>&1 | Tee-Object -FilePath $log -Append
+            $exit_code = $LASTEXITCODE
+            if ($exit_code -ne 0) {
+              throw "$backend compile/link failed for $source with exit code $exit_code. See $log"
+            }
+            if (-not (Test-Path -LiteralPath $exe)) {
+              throw "$backend compile/link did not produce expected exe: $exe"
+            }
+
+            if ($backend -eq 'gl') {
+              Assert-LogContains $log 'SOKOL_GLCORE' "$name"
+              Assert-LogNotContains $log 'SOKOL_D3D11' "$name"
+            } elseif ($backend -eq 'd3d11') {
+              Assert-LogContains $log 'SOKOL_D3D11' "$name"
+              Assert-LogNotContains $log 'SOKOL_GLCORE' "$name"
+              if ($compiler -eq 'gcc') {
+                Assert-LogContains $log '-ld3d11' "$name"
+                Assert-LogContains $log '-ldxgi' "$name"
+              }
+            } else {
+              throw "Unknown backend '$backend'"
+            }
+
+            $results.Add("| $backend | $source | $compiler | $exe |")
+          }
+
+          Invoke-VCompile 'gl' 'examples/gg/minimal.v' "gg_minimal_gl_$compiler" @()
+          Invoke-VCompile 'gl' 'examples/2048/2048.v' "2048_gl_$compiler" @()
+          Invoke-VCompile 'd3d11' 'examples/gg/minimal.v' "gg_minimal_d3d11_$compiler" @('-d', 'sokol_d3d11')
+          Invoke-VCompile 'd3d11' 'examples/2048/2048.v' "2048_d3d11_$compiler" @('-d', 'sokol_d3d11')
+          Invoke-VCompile 'd3d11' 'examples/tetris/tetris.v' "tetris_d3d11_$compiler" @('-d', 'sokol_d3d11')
+          Invoke-VCompile 'd3d11' $screenshot_probe "sapp_screenshot_probe_d3d11_$compiler" @('-d', 'sokol_d3d11')
+
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Sokol D3D11 Windows smoke ($compiler)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ''
+          foreach ($line in $results) {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $line
+          }
+
+      - name: Upload smoke logs and generated files
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sokol-d3d11-windows-smoke-${{ matrix.compiler }}
+          path: |
+            ${{ runner.temp }}\sokol-smoke-logs-${{ matrix.compiler }}
+            ${{ runner.temp }}\sokol-smoke-out-${{ matrix.compiler }}
+            ${{ runner.temp }}\sokol-smoke-vtmp-${{ matrix.compiler }}
+          if-no-files-found: warn
+          retention-days: 14
