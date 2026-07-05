@@ -1,0 +1,168 @@
+name: D3D11 Sharedlive Smoke
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: d3d11-sharedlive-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: windows-${{ matrix.cc }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cc: msvc
+            runner: windows-2022
+          - cc: gcc
+            runner: windows-2025
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure MSVC
+        if: matrix.cc == 'msvc'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure MSYS2 MinGW
+        if: matrix.cc == 'gcc'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-gcc
+
+      - name: Add MinGW to PowerShell PATH
+        if: matrix.cc == 'gcc'
+        shell: pwsh
+        run: |
+          "C:\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\msys64\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Show toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ('${{ matrix.cc }}' -eq 'msvc') {
+            where.exe cl.exe
+            where.exe link.exe
+          } else {
+            where.exe gcc.exe
+            gcc --version
+          }
+          Write-Host "PATH=$env:PATH"
+
+      - name: Build V from source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ('${{ matrix.cc }}' -eq 'msvc') {
+            .\makev.bat -msvc
+          } else {
+            .\makev.bat -gcc
+          }
+          .\v.exe version
+
+      - name: Run targeted regression tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\v.exe -cc ${{ matrix.cc }} test `
+            vlib\sokol\gfx\windows_backend_flags_test.v `
+            vlib\v\live\live_macos_objc_duplication_test.v
+
+      - name: Write screenshot probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $probe = @'
+          import sokol.gfx
+          import sokol.sapp
+
+          @[live]
+          fn capture() {
+              mut ss := sapp.screenshot_window()
+              unsafe { ss.destroy() }
+              sapp.screenshot_png('d3d11_probe.png') or {}
+              sapp.screenshot_ppm('d3d11_probe.ppm') or {}
+              sapp.screenshot('d3d11_probe_auto.png') or {}
+          }
+
+          fn frame(mut action gfx.PassAction) {
+              gfx.begin_pass(sapp.create_default_pass(action))
+              capture()
+              gfx.end_pass()
+              gfx.commit()
+          }
+
+          fn main() {
+              mut action := gfx.create_clear_pass_action(0.2, 0.3, 0.4, 1.0)
+              sapp.run(
+                  window_title:      c'D3D11 screenshot smoke'
+                  width:             64
+                  height:            64
+                  init_cb:           || gfx.setup(sapp.create_desc())
+                  cleanup_cb:        || gfx.shutdown()
+                  frame_userdata_cb: frame
+                  user_data:         &action
+              )
+          }
+          '@
+          Set-Content -Path "$env:RUNNER_TEMP\sapp_screenshot_probe.v" -Value $probe -Encoding UTF8
+
+      - name: Compile/link default Windows OpenGL smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\v.exe -cc ${{ matrix.cc }} -o "$env:RUNNER_TEMP\gg_minimal_gl_${{ matrix.cc }}.exe" examples\gg\minimal.v
+
+      - name: Compile/link D3D11 examples and screenshot probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\v.exe -cc ${{ matrix.cc }} -d sokol_d3d11 -o "$env:RUNNER_TEMP\gg_minimal_d3d11_${{ matrix.cc }}.exe" examples\gg\minimal.v
+          .\v.exe -cc ${{ matrix.cc }} -d sokol_d3d11 -o "$env:RUNNER_TEMP\2048_d3d11_${{ matrix.cc }}.exe" examples\2048\2048.v
+          .\v.exe -cc ${{ matrix.cc }} -d sokol_d3d11 -o "$env:RUNNER_TEMP\tetris_d3d11_${{ matrix.cc }}.exe" examples\tetris\tetris.v
+          .\v.exe -cc ${{ matrix.cc }} -d sokol_d3d11 -o "$env:RUNNER_TEMP\sapp_screenshot_d3d11_${{ matrix.cc }}.exe" "$env:RUNNER_TEMP\sapp_screenshot_probe.v"
+
+      - name: MSVC sharedlive D3D11 screenshot compile/link
+        if: matrix.cc == 'msvc'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $hostExe = "$env:RUNNER_TEMP\sapp_screenshot_live_host.exe"
+          $hostLib = "$env:RUNNER_TEMP\sapp_screenshot_live_host.lib"
+          $dll = "$env:RUNNER_TEMP\sapp_screenshot_live_shared.dll"
+          .\v.exe -cc msvc -live -d sokol_d3d11 -o $hostExe "$env:RUNNER_TEMP\sapp_screenshot_probe.v"
+          if (!(Test-Path $hostLib)) {
+            throw "expected MSVC live host import library was not created: $hostLib"
+          }
+          .\v.exe -cc msvc -sharedlive -shared -d sokol_d3d11 -ldflags "$hostLib" -o $dll "$env:RUNNER_TEMP\sapp_screenshot_probe.v"
+          if (!(Test-Path $dll)) {
+            throw "expected sharedlive DLL was not created: $dll"
+          }
+
+      - name: GCC sharedlive D3D11 screenshot compile/link
+        if: matrix.cc == 'gcc'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $hostExe = "$env:RUNNER_TEMP\sapp_screenshot_live_host_gcc.exe"
+          $dll = "$env:RUNNER_TEMP\sapp_screenshot_live_shared_gcc.dll"
+          .\v.exe -cc gcc -showcc -live -d sokol_d3d11 -o $hostExe "$env:RUNNER_TEMP\sapp_screenshot_probe.v"
+          if (!(Test-Path $hostExe)) {
+            throw "expected GCC live host executable was not created: $hostExe"
+          }
+          .\v.exe -cc gcc -showcc -sharedlive -shared -d sokol_d3d11 -o $dll "$env:RUNNER_TEMP\sapp_screenshot_probe.v"
+          if (!(Test-Path $dll)) {
+            throw "expected GCC sharedlive DLL was not created: $dll"
+          }
