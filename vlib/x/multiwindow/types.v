@@ -32,6 +32,40 @@ pub enum EventKind {
 	window_resized
 }
 
+// InputEventKind mirrors the input/event classes exposed by sokol/gg while
+// remaining independent from gg and sokol imports.
+pub enum InputEventKind {
+	invalid
+	key_down
+	key_up
+	char
+	mouse_down
+	mouse_up
+	mouse_scroll
+	mouse_move
+	mouse_enter
+	mouse_leave
+	touches_began
+	touches_moved
+	touches_ended
+	touches_cancelled
+	resized
+	iconified
+	restored
+	focused
+	unfocused
+	suspended
+	resumed
+	quit_requested
+	clipboard_pasted
+	files_dropped
+}
+
+pub enum QueuedEventKind {
+	lifecycle
+	input
+}
+
 // WindowId is an opaque generation-checked handle to a window.
 pub struct WindowId {
 	slot       int
@@ -107,6 +141,13 @@ pub:
 	wayland            bool
 	win32              bool
 	gl                 bool
+	input_events       bool
+	mouse_events       bool
+	keyboard_events    bool
+	text_events        bool
+	focus_events       bool
+	drop_events        bool
+	touch_events       bool
 }
 
 // Event is always routed to a specific WindowId.
@@ -116,6 +157,67 @@ pub:
 	window_id WindowId
 	width     int
 	height    int
+}
+
+// InputTouchPoint is the backend-neutral representation of one touch point.
+pub struct InputTouchPoint {
+pub:
+	identifier       u64
+	pos_x            f32
+	pos_y            f32
+	android_tooltype int
+	changed          bool
+}
+
+// InputEvent is always routed to a specific WindowId. It carries the full
+// backend-neutral payload needed to rebuild gg.Event in the gg facade.
+pub struct InputEvent {
+pub:
+	kind               InputEventKind
+	window_id          WindowId
+	frame_count        u64
+	key_code           int
+	char_code          u32
+	key_repeat         bool
+	modifiers          u32
+	mouse_button       int
+	mouse_x            f32
+	mouse_y            f32
+	mouse_dx           f32
+	mouse_dy           f32
+	scroll_x           f32
+	scroll_y           f32
+	num_touches        int
+	touches            [8]InputTouchPoint
+	window_width       int
+	window_height      int
+	framebuffer_width  int
+	framebuffer_height int
+	dropped_files      []string
+}
+
+// QueuedEvent preserves backend ordering between lifecycle and input events.
+pub struct QueuedEvent {
+pub:
+	kind      QueuedEventKind
+	lifecycle Event
+	input     InputEvent
+}
+
+@[markused]
+fn queued_lifecycle_event(event Event) QueuedEvent {
+	return QueuedEvent{
+		kind:      .lifecycle
+		lifecycle: event
+	}
+}
+
+@[markused]
+fn queued_input_event(event InputEvent) QueuedEvent {
+	return QueuedEvent{
+		kind:  .input
+		input: event
+	}
 }
 
 // AppJobFn is executed later by the owner queue while App is being pumped.

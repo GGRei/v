@@ -18,6 +18,26 @@ $if linux && sokol_wayland ? {
 }
 
 const wayland_poll_in = i16(0x001)
+const wayland_pointer_axis_vertical_scroll = u32(0)
+const wayland_pointer_axis_horizontal_scroll = u32(1)
+const wayland_pointer_button_state_released = u32(0)
+const wayland_pointer_button_state_pressed = u32(1)
+const wayland_keyboard_key_state_released = u32(0)
+const wayland_keyboard_key_state_pressed = u32(1)
+const wayland_seat_capability_pointer = u32(1)
+const wayland_seat_capability_keyboard = u32(2)
+const wayland_btn_left = u32(0x110)
+const wayland_btn_right = u32(0x111)
+const wayland_btn_middle = u32(0x112)
+const wayland_invalid_mouse_button = 256
+const wayland_scroll_scale = 10.0
+const wayland_modifier_shift = u32(1)
+const wayland_modifier_ctrl = u32(2)
+const wayland_modifier_alt = u32(4)
+const wayland_modifier_super = u32(8)
+const wayland_modifier_lmb = u32(0x100)
+const wayland_modifier_rmb = u32(0x200)
+const wayland_modifier_mmb = u32(0x400)
 const err_wayland_egl_config_failed = 'multiwindow: wayland egl config failed'
 const err_wayland_egl_context_failed = 'multiwindow: wayland egl context failed'
 const err_wayland_egl_display_failed = 'multiwindow: wayland egl display failed'
@@ -41,10 +61,19 @@ mut:
 	pending_toplevel_height int
 	configured              bool
 	pending_egl_resize      bool
-	resize_event_pending    bool
-	close_requested         bool
+	pending_events          []WaylandNativeQueuedEvent
+	mouse_x                 f32
+	mouse_y                 f32
+	mouse_dx                f32
+	mouse_dy                f32
+	mouse_pos_valid         bool
 	wl_egl_window           voidptr
 	egl_surface             voidptr
+}
+
+struct WaylandNativeQueuedEvent {
+	sequence u64
+	event    QueuedEvent
 }
 
 struct WaylandBackend {
@@ -52,12 +81,25 @@ mut:
 	display            voidptr
 	registry           voidptr
 	compositor         voidptr
+	compositor_name    u32
 	compositor_version u32
+	seat               voidptr
+	seat_name          u32
+	pointer            voidptr
+	keyboard           voidptr
 	wm_base            voidptr
+	wm_base_name       u32
 	egl_display        voidptr
 	egl_config         voidptr
 	egl_context        voidptr
 	started            bool
+	pointer_focus      WindowId
+	pointer_focused    bool
+	keyboard_focus     WindowId
+	keyboard_focused   bool
+	pointer_buttons    u32
+	modifiers          u32
+	keys_down          [512]bool
 	windows            []&WaylandWindowRecord
 }
 
@@ -85,6 +127,12 @@ $if linux && sokol_wayland ? {
 
 	struct C.wl_compositor {}
 
+	struct C.wl_seat {}
+
+	struct C.wl_pointer {}
+
+	struct C.wl_keyboard {}
+
 	struct C.wl_surface {}
 
 	struct C.wl_output {}
@@ -106,10 +154,20 @@ $if linux && sokol_wayland ? {
 	fn C.v_multiwindow_wayland_compositor_bind_version(version u32) u32
 	fn C.v_multiwindow_wayland_bind_compositor(registry &C.wl_registry, name u32, version u32) voidptr
 	fn C.v_multiwindow_wayland_bind_xdg_wm_base(registry &C.wl_registry, name u32) voidptr
+	fn C.v_multiwindow_wayland_bind_seat(registry &C.wl_registry, name u32, version u32) voidptr
+	fn C.v_multiwindow_wayland_next_event_sequence() u64
 	fn C.v_multiwindow_wayland_add_registry_listener(registry &C.wl_registry, data voidptr) int
 	fn C.v_multiwindow_wayland_add_xdg_wm_base_listener(wm_base &C.xdg_wm_base, data voidptr) int
 	fn C.v_multiwindow_wayland_add_xdg_surface_listener(xdg_surface &C.xdg_surface, data voidptr) int
 	fn C.v_multiwindow_wayland_add_xdg_toplevel_listener(toplevel &C.xdg_toplevel, data voidptr) int
+	fn C.v_multiwindow_wayland_add_seat_listener(seat &C.wl_seat, data voidptr) int
+	fn C.v_multiwindow_wayland_seat_get_pointer(seat &C.wl_seat) voidptr
+	fn C.v_multiwindow_wayland_seat_get_keyboard(seat &C.wl_seat) voidptr
+	fn C.v_multiwindow_wayland_add_pointer_listener(pointer &C.wl_pointer, data voidptr) int
+	fn C.v_multiwindow_wayland_add_keyboard_listener(keyboard &C.wl_keyboard, data voidptr) int
+	fn C.v_multiwindow_wayland_pointer_destroy(pointer &C.wl_pointer)
+	fn C.v_multiwindow_wayland_keyboard_destroy(keyboard &C.wl_keyboard)
+	fn C.v_multiwindow_wayland_seat_destroy(seat &C.wl_seat)
 	fn C.wl_display_connect(name &char) &C.wl_display
 	fn C.wl_display_disconnect(display &C.wl_display)
 	fn C.wl_display_get_fd(display &C.wl_display) int
@@ -162,18 +220,47 @@ $if linux && sokol_wayland ? {
 		mut backend := unsafe { &WaylandBackend(data) }
 		if C.strcmp(iface, c'wl_compositor') == 0 {
 			backend.compositor = C.v_multiwindow_wayland_bind_compositor(registry, name, version)
+			backend.compositor_name = name
 			backend.compositor_version = C.v_multiwindow_wayland_compositor_bind_version(version)
 		} else if C.strcmp(iface, c'xdg_wm_base') == 0 {
 			backend.wm_base = C.v_multiwindow_wayland_bind_xdg_wm_base(registry, name)
+			backend.wm_base_name = name
+		} else if C.strcmp(iface, c'wl_seat') == 0 && backend.seat == unsafe { nil } {
+			backend.seat = C.v_multiwindow_wayland_bind_seat(registry, name, version)
+			backend.seat_name = name
 		}
 	}
 
 	@[export: 'v_multiwindow_wayland_registry_handle_global_remove']
 	@[markused]
 	fn wayland_registry_handle_global_remove(data voidptr, registry &C.wl_registry, name u32) {
-		_ = data
 		_ = registry
-		_ = name
+		if data == unsafe { nil } {
+			return
+		}
+		mut backend := unsafe { &WaylandBackend(data) }
+		if name == backend.seat_name {
+			backend.seat_name = 0
+			backend.destroy_seat_devices()
+			if backend.seat != unsafe { nil } {
+				C.v_multiwindow_wayland_seat_destroy(unsafe { &C.wl_seat(backend.seat) })
+				backend.seat = unsafe { nil }
+			}
+		} else if name == backend.wm_base_name {
+			backend.wm_base_name = 0
+			if backend.destroy_removed_wm_base_if_unused() {
+				return
+			}
+		} else if name == backend.compositor_name {
+			backend.compositor_name = 0
+			if backend.compositor != unsafe { nil } {
+				if backend.compositor_version >= u32(4) {
+					C.wl_compositor_destroy(unsafe { &C.wl_compositor(backend.compositor) })
+				}
+				backend.compositor = unsafe { nil }
+				backend.compositor_version = 0
+			}
+		}
 	}
 
 	@[export: 'v_multiwindow_wayland_xdg_wm_base_ping']
@@ -206,15 +293,17 @@ $if linux && sokol_wayland ? {
 		}
 		width = window_extent_for_minimum(width, record.min_width)
 		height = window_extent_for_minimum(height, record.min_height)
-		if record.configured && (record.width != width || record.height != height) {
-			record.resize_event_pending = true
-			record.pending_egl_resize = true
-		}
+		should_queue_resize := record.configured
+			&& (record.width != width || record.height != height)
 		record.width = width
 		record.height = height
 		record.pending_toplevel_width = 0
 		record.pending_toplevel_height = 0
 		record.configured = true
+		if should_queue_resize {
+			record.pending_egl_resize = true
+			record.enqueue_resize_events(C.v_multiwindow_wayland_next_event_sequence())
+		}
 		C.v_multiwindow_wayland_xdg_surface_ack_configure(unsafe {
 			&C.xdg_surface(xdg_surface)
 		}, serial)
@@ -249,7 +338,266 @@ $if linux && sokol_wayland ? {
 			return
 		}
 		mut record := unsafe { &WaylandWindowRecord(data) }
-		record.close_requested = true
+		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(), queued_lifecycle_event(Event{
+			kind:      .window_close_requested
+			window_id: record.id
+		}))
+	}
+
+	@[export: 'v_multiwindow_wayland_seat_capabilities']
+	@[markused]
+	fn wayland_seat_capabilities(data voidptr, seat voidptr, caps u32) {
+		if data == unsafe { nil } || seat == unsafe { nil } {
+			return
+		}
+		mut backend := unsafe { &WaylandBackend(data) }
+		if (caps & wayland_seat_capability_pointer) != 0 {
+			if backend.pointer == unsafe { nil } {
+				pointer := C.v_multiwindow_wayland_seat_get_pointer(unsafe { &C.wl_seat(seat) })
+				if pointer != unsafe { nil }
+					&& C.v_multiwindow_wayland_add_pointer_listener(unsafe { &C.wl_pointer(pointer) }, data) == 0 {
+					backend.pointer = pointer
+				} else if pointer != unsafe { nil } {
+					C.v_multiwindow_wayland_pointer_destroy(unsafe { &C.wl_pointer(pointer) })
+				}
+			}
+		} else if backend.pointer != unsafe { nil } {
+			C.v_multiwindow_wayland_pointer_destroy(unsafe { &C.wl_pointer(backend.pointer) })
+			backend.pointer = unsafe { nil }
+			backend.pointer_focused = false
+			backend.pointer_buttons = 0
+		}
+		if (caps & wayland_seat_capability_keyboard) != 0 {
+			if backend.keyboard == unsafe { nil } {
+				keyboard := C.v_multiwindow_wayland_seat_get_keyboard(unsafe { &C.wl_seat(seat) })
+				if keyboard != unsafe { nil }
+					&& C.v_multiwindow_wayland_add_keyboard_listener(unsafe { &C.wl_keyboard(keyboard) }, data) == 0 {
+					backend.keyboard = keyboard
+				} else if keyboard != unsafe { nil } {
+					C.v_multiwindow_wayland_keyboard_destroy(unsafe { &C.wl_keyboard(keyboard) })
+				}
+			}
+		} else if backend.keyboard != unsafe { nil } {
+			C.v_multiwindow_wayland_keyboard_destroy(unsafe { &C.wl_keyboard(backend.keyboard) })
+			backend.keyboard = unsafe { nil }
+			backend.keyboard_focused = false
+			backend.modifiers = 0
+			backend.clear_keys_down()
+		}
+	}
+
+	@[export: 'v_multiwindow_wayland_seat_name']
+	@[markused]
+	fn wayland_seat_name(data voidptr, seat voidptr, name &char) {
+		_ = data
+		_ = seat
+		_ = name
+	}
+
+	@[export: 'v_multiwindow_wayland_pointer_enter']
+	@[markused]
+	fn wayland_pointer_enter(data voidptr, pointer voidptr, serial u32, surface voidptr, x f64, y f64) {
+		_ = pointer
+		_ = serial
+		if data == unsafe { nil } || surface == unsafe { nil } {
+			return
+		}
+		mut backend := unsafe { &WaylandBackend(data) }
+		index := backend.window_record_index_for_surface(surface) or { return }
+		mut record := backend.windows[index]
+		backend.pointer_focus = record.id
+		backend.pointer_focused = true
+		record.update_mouse_position(f32(x), f32(y), true)
+		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(), queued_input_event(record.input_event(.mouse_enter,
+			backend.event_modifiers())))
+	}
+
+	@[export: 'v_multiwindow_wayland_pointer_leave']
+	@[markused]
+	fn wayland_pointer_leave(data voidptr, pointer voidptr, serial u32, surface voidptr) {
+		_ = pointer
+		_ = serial
+		if data == unsafe { nil } || surface == unsafe { nil } {
+			return
+		}
+		mut backend := unsafe { &WaylandBackend(data) }
+		index := backend.window_record_index_for_surface(surface) or { return }
+		mut record := backend.windows[index]
+		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(), queued_input_event(record.input_event(.mouse_leave,
+			backend.event_modifiers())))
+		if backend.pointer_focused && backend.pointer_focus == record.id {
+			backend.pointer_focused = false
+		}
+	}
+
+	@[export: 'v_multiwindow_wayland_pointer_motion']
+	@[markused]
+	fn wayland_pointer_motion(data voidptr, pointer voidptr, time u32, x f64, y f64) {
+		_ = pointer
+		_ = time
+		if data == unsafe { nil } {
+			return
+		}
+		mut backend := unsafe { &WaylandBackend(data) }
+		index := backend.pointer_focus_record_index() or { return }
+		mut record := backend.windows[index]
+		record.update_mouse_position(f32(x), f32(y), false)
+		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(), queued_input_event(record.input_event(.mouse_move,
+			backend.event_modifiers())))
+	}
+
+	@[export: 'v_multiwindow_wayland_pointer_button']
+	@[markused]
+	fn wayland_pointer_button(data voidptr, pointer voidptr, serial u32, time u32, button u32, state u32) {
+		_ = pointer
+		_ = serial
+		_ = time
+		if data == unsafe { nil } {
+			return
+		}
+		mouse_button := wayland_mouse_button(button)
+		if mouse_button == wayland_invalid_mouse_button {
+			return
+		}
+		mut backend := unsafe { &WaylandBackend(data) }
+		index := backend.pointer_focus_record_index() or { return }
+		modifier := wayland_mouse_modifier(button)
+		if state == wayland_pointer_button_state_pressed {
+			backend.pointer_buttons |= modifier
+		} else if state == wayland_pointer_button_state_released {
+			backend.pointer_buttons &= ~modifier
+		} else {
+			return
+		}
+		mut record := backend.windows[index]
+		input_kind := if state == wayland_pointer_button_state_pressed {
+			InputEventKind.mouse_down
+		} else {
+			InputEventKind.mouse_up
+		}
+		input := record.input_event_with_payload(input_kind, backend.event_modifiers(), 0, false,
+			mouse_button, 0, 0)
+		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
+			queued_input_event(input))
+	}
+
+	@[export: 'v_multiwindow_wayland_pointer_axis']
+	@[markused]
+	fn wayland_pointer_axis(data voidptr, pointer voidptr, time u32, axis u32, value f64) {
+		_ = pointer
+		_ = time
+		if data == unsafe { nil } {
+			return
+		}
+		mut backend := unsafe { &WaylandBackend(data) }
+		index := backend.pointer_focus_record_index() or { return }
+		mut record := backend.windows[index]
+		mut scroll_x := f32(0)
+		mut scroll_y := f32(0)
+		if axis == wayland_pointer_axis_vertical_scroll {
+			scroll_y = -f32(value) / f32(wayland_scroll_scale)
+		} else if axis == wayland_pointer_axis_horizontal_scroll {
+			scroll_x = f32(value) / f32(wayland_scroll_scale)
+		} else {
+			return
+		}
+		input := record.input_event_with_payload(.mouse_scroll, backend.event_modifiers(), 0,
+			false, wayland_invalid_mouse_button, scroll_x, scroll_y)
+		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
+			queued_input_event(input))
+	}
+
+	@[export: 'v_multiwindow_wayland_keyboard_enter']
+	@[markused]
+	fn wayland_keyboard_enter(data voidptr, keyboard voidptr, serial u32, surface voidptr) {
+		_ = keyboard
+		_ = serial
+		if data == unsafe { nil } || surface == unsafe { nil } {
+			return
+		}
+		mut backend := unsafe { &WaylandBackend(data) }
+		index := backend.window_record_index_for_surface(surface) or { return }
+		mut record := backend.windows[index]
+		backend.keyboard_focus = record.id
+		backend.keyboard_focused = true
+		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(), queued_input_event(record.input_event(.focused,
+			backend.event_modifiers())))
+	}
+
+	@[export: 'v_multiwindow_wayland_keyboard_leave']
+	@[markused]
+	fn wayland_keyboard_leave(data voidptr, keyboard voidptr, serial u32, surface voidptr) {
+		_ = keyboard
+		_ = serial
+		if data == unsafe { nil } || surface == unsafe { nil } {
+			return
+		}
+		mut backend := unsafe { &WaylandBackend(data) }
+		index := backend.window_record_index_for_surface(surface) or { return }
+		mut record := backend.windows[index]
+		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(), queued_input_event(record.input_event(.unfocused,
+			backend.event_modifiers())))
+		if backend.keyboard_focused && backend.keyboard_focus == record.id {
+			backend.keyboard_focused = false
+		}
+		backend.modifiers = 0
+		backend.clear_keys_down()
+	}
+
+	@[export: 'v_multiwindow_wayland_keyboard_key']
+	@[markused]
+	fn wayland_keyboard_key(data voidptr, keyboard voidptr, serial u32, time u32, key u32, state u32) {
+		_ = keyboard
+		_ = serial
+		_ = time
+		if data == unsafe { nil } {
+			return
+		}
+		mut backend := unsafe { &WaylandBackend(data) }
+		key_code := wayland_key_code(key)
+		if key_code == 0 {
+			return
+		}
+		index := backend.keyboard_focus_record_index() or { return }
+		key_index := if key_code >= 0 && key_code < 512 { key_code } else { 0 }
+		key_repeat := state == wayland_keyboard_key_state_pressed && key_index > 0
+			&& backend.keys_down[key_index]
+		if state == wayland_keyboard_key_state_pressed {
+			if key_index > 0 {
+				backend.keys_down[key_index] = true
+			}
+			backend.update_modifier_for_key(key_code, true)
+		} else if state == wayland_keyboard_key_state_released {
+			if key_index > 0 {
+				backend.keys_down[key_index] = false
+			}
+			backend.update_modifier_for_key(key_code, false)
+		} else {
+			return
+		}
+		mut record := backend.windows[index]
+		input_kind := if state == wayland_keyboard_key_state_pressed {
+			InputEventKind.key_down
+		} else {
+			InputEventKind.key_up
+		}
+		input := record.input_event_with_payload(input_kind, backend.event_modifiers(), key_code,
+			key_repeat, wayland_invalid_mouse_button, 0, 0)
+		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
+			queued_input_event(input))
+	}
+
+	@[export: 'v_multiwindow_wayland_keyboard_modifiers']
+	@[markused]
+	fn wayland_keyboard_modifiers(data voidptr, keyboard voidptr, serial u32, mods_depressed u32, mods_latched u32, mods_locked u32, group u32) {
+		_ = data
+		_ = keyboard
+		_ = serial
+		// These masks are keymap-specific without xkb; modifiers stay physical key based.
+		_ = mods_depressed
+		_ = mods_latched
+		_ = mods_locked
+		_ = group
 	}
 }
 
@@ -275,6 +623,13 @@ fn (backend &WaylandBackend) capabilities() Capabilities {
 		explicit_swapchain: backend.renderer_ready()
 		wayland:            true
 		gl:                 backend.renderer_ready()
+		input_events:       true
+		mouse_events:       true
+		keyboard_events:    true
+		text_events:        false
+		focus_events:       true
+		drop_events:        false
+		touch_events:       false
 	}
 }
 
@@ -302,9 +657,8 @@ fn (mut backend WaylandBackend) start(require_renderer bool) ! {
 			backend.close_connection()
 			return error(err_wayland_dispatch_failed)
 		}
-		C.wl_registry_destroy(registry)
-		backend.registry = unsafe { nil }
-		if backend.compositor == unsafe { nil } || backend.wm_base == unsafe { nil } {
+		if backend.compositor == unsafe { nil } || backend.compositor_name == 0
+			|| backend.wm_base == unsafe { nil } || backend.wm_base_name == 0 {
 			backend.close_connection()
 			return error(err_wayland_required_globals_missing)
 		}
@@ -312,6 +666,17 @@ fn (mut backend WaylandBackend) start(require_renderer bool) ! {
 		if C.v_multiwindow_wayland_add_xdg_wm_base_listener(wm_base, unsafe { nil }) < 0 {
 			backend.close_connection()
 			return error(err_wayland_registry_failed)
+		}
+		if backend.seat != unsafe { nil } {
+			if C.v_multiwindow_wayland_add_seat_listener(unsafe { &C.wl_seat(backend.seat) },
+				backend.registry_listener_data()) < 0 {
+				backend.close_connection()
+				return error(err_wayland_registry_failed)
+			}
+			if C.wl_display_roundtrip(display) < 0 {
+				backend.close_connection()
+				return error(err_wayland_dispatch_failed)
+			}
 		}
 		if require_renderer {
 			backend.init_renderer() or {
@@ -392,7 +757,8 @@ fn (mut backend WaylandBackend) create_window(id WindowId, config WindowConfig) 
 		if !backend.started || backend.display == unsafe { nil } {
 			return error(err_wayland_connect_failed)
 		}
-		if backend.compositor == unsafe { nil } || backend.wm_base == unsafe { nil } {
+		if backend.compositor == unsafe { nil } || backend.compositor_name == 0
+			|| backend.wm_base == unsafe { nil } || backend.wm_base_name == 0 {
 			return error(err_wayland_required_globals_missing)
 		}
 		if !config.visible {
@@ -457,11 +823,13 @@ fn (mut backend WaylandBackend) create_window(id WindowId, config WindowConfig) 
 		if C.wl_display_flush(display) < 0 {
 			backend.remove_window_record(id)
 			backend.destroy_window_record(record)
+			_ = backend.destroy_removed_wm_base_if_unused()
 			return error(err_wayland_flush_failed)
 		}
 		if C.wl_display_roundtrip(display) < 0 {
 			backend.remove_window_record(id)
 			backend.destroy_window_record(record)
+			_ = backend.destroy_removed_wm_base_if_unused()
 			return error(err_wayland_dispatch_failed)
 		}
 		return WindowSize{
@@ -481,6 +849,7 @@ fn (mut backend WaylandBackend) destroy_window(id WindowId) ! {
 		mut record := backend.windows[index]
 		backend.destroy_window_record(record)
 		backend.windows.delete(index)
+		_ = backend.destroy_removed_wm_base_if_unused()
 		if backend.started && backend.display != unsafe { nil } {
 			display := unsafe { &C.wl_display(backend.display) }
 			if C.wl_display_flush(display) < 0 {
@@ -534,40 +903,283 @@ fn (mut backend WaylandBackend) resize_window(id WindowId, width int, height int
 }
 
 fn (mut backend WaylandBackend) poll_events() ![]Event {
-	mut events := []Event{}
-	$if linux && sokol_wayland ? {
-		if !backend.started || backend.display == unsafe { nil } {
-			return events
-		}
-		backend.dispatch_pending_nonblocking()!
-		mut resized_windows := []Event{}
-		mut close_requested_windows := []WindowId{}
-		for i, record in backend.windows {
-			if record.resize_event_pending {
-				backend.windows[i].resize_event_pending = false
-				resized_windows << Event{
-					kind:      .window_resized
-					window_id: record.id
-					width:     record.width
-					height:    record.height
-				}
-			}
-			if record.close_requested {
-				backend.windows[i].close_requested = false
-				close_requested_windows << record.id
-			}
-		}
-		for event in resized_windows {
-			events << event
-		}
-		for id in close_requested_windows {
-			events << Event{
-				kind:      .window_close_requested
-				window_id: id
-			}
+	queued_events := backend.poll_queued_events()!
+	mut events := []Event{cap: queued_events.len}
+	for event in queued_events {
+		if event.kind == .lifecycle {
+			events << event.lifecycle
 		}
 	}
 	return events
+}
+
+fn (mut backend WaylandBackend) poll_queued_events() ![]QueuedEvent {
+	mut native_events := []WaylandNativeQueuedEvent{}
+	$if linux && sokol_wayland ? {
+		if !backend.started || backend.display == unsafe { nil } {
+			return []QueuedEvent{}
+		}
+		backend.dispatch_pending_nonblocking()!
+		for _, mut record in backend.windows {
+			for native_event in record.pending_events {
+				native_events << native_event
+			}
+			record.pending_events.clear()
+		}
+	}
+	wayland_sort_native_events(mut native_events)
+	mut events := []QueuedEvent{cap: native_events.len}
+	for native_event in native_events {
+		events << native_event.event
+	}
+	return events
+}
+
+fn (mut record WaylandWindowRecord) enqueue_native_event(sequence u64, event QueuedEvent) {
+	record.pending_events << WaylandNativeQueuedEvent{
+		sequence: sequence
+		event:    event
+	}
+}
+
+fn (mut record WaylandWindowRecord) enqueue_resize_events(sequence u64) {
+	record.enqueue_native_event(sequence, queued_lifecycle_event(Event{
+		kind:      .window_resized
+		window_id: record.id
+		width:     record.width
+		height:    record.height
+	}))
+	record.enqueue_native_event(sequence, queued_input_event(record.input_event(.resized, 0)))
+}
+
+fn (record &WaylandWindowRecord) input_event(kind InputEventKind, modifiers u32) InputEvent {
+	return record.input_event_with_payload(kind, modifiers, 0, false, wayland_invalid_mouse_button,
+		0, 0)
+}
+
+fn (record &WaylandWindowRecord) input_event_with_payload(kind InputEventKind, modifiers u32, key_code int, key_repeat bool, mouse_button int, scroll_x f32, scroll_y f32) InputEvent {
+	return InputEvent{
+		kind:               kind
+		window_id:          record.id
+		key_code:           key_code
+		key_repeat:         key_repeat
+		modifiers:          modifiers
+		mouse_x:            record.mouse_x
+		mouse_y:            record.mouse_y
+		mouse_dx:           record.mouse_dx
+		mouse_dy:           record.mouse_dy
+		mouse_button:       mouse_button
+		scroll_x:           scroll_x
+		scroll_y:           scroll_y
+		window_width:       record.width
+		window_height:      record.height
+		framebuffer_width:  record.width
+		framebuffer_height: record.height
+	}
+}
+
+fn (mut record WaylandWindowRecord) update_mouse_position(x f32, y f32, clear_delta bool) {
+	if clear_delta || !record.mouse_pos_valid {
+		record.mouse_dx = 0
+		record.mouse_dy = 0
+	} else {
+		record.mouse_dx = x - record.mouse_x
+		record.mouse_dy = y - record.mouse_y
+	}
+	record.mouse_x = x
+	record.mouse_y = y
+	record.mouse_pos_valid = true
+}
+
+fn wayland_sort_native_events(mut events []WaylandNativeQueuedEvent) {
+	for i in 1 .. events.len {
+		mut j := i
+		for j > 0 && events[j - 1].sequence > events[j].sequence {
+			event := events[j]
+			events[j] = events[j - 1]
+			events[j - 1] = event
+			j--
+		}
+	}
+}
+
+fn (backend &WaylandBackend) window_record_index_for_surface(surface voidptr) ?int {
+	for i, record in backend.windows {
+		if record.surface == surface {
+			return i
+		}
+	}
+	return none
+}
+
+fn (backend &WaylandBackend) pointer_focus_record_index() ?int {
+	if !backend.pointer_focused {
+		return none
+	}
+	return backend.window_record_index(backend.pointer_focus)
+}
+
+fn (backend &WaylandBackend) keyboard_focus_record_index() ?int {
+	if !backend.keyboard_focused {
+		return none
+	}
+	return backend.window_record_index(backend.keyboard_focus)
+}
+
+fn (backend &WaylandBackend) event_modifiers() u32 {
+	return backend.modifiers | backend.pointer_buttons
+}
+
+fn (mut backend WaylandBackend) update_modifier_for_key(key_code int, down bool) {
+	modifier := match key_code {
+		340, 344 { wayland_modifier_shift }
+		341, 345 { wayland_modifier_ctrl }
+		342, 346 { wayland_modifier_alt }
+		343, 347 { wayland_modifier_super }
+		else { u32(0) }
+	}
+
+	if modifier == 0 {
+		return
+	}
+	if down {
+		backend.modifiers |= modifier
+	} else {
+		backend.modifiers &= ~modifier
+	}
+}
+
+fn (mut backend WaylandBackend) clear_keys_down() {
+	for i in 0 .. backend.keys_down.len {
+		backend.keys_down[i] = false
+	}
+}
+
+fn wayland_mouse_button(button u32) int {
+	return match button {
+		wayland_btn_left { 0 }
+		wayland_btn_right { 1 }
+		wayland_btn_middle { 2 }
+		else { wayland_invalid_mouse_button }
+	}
+}
+
+fn wayland_mouse_modifier(button u32) u32 {
+	return match button {
+		wayland_btn_left { wayland_modifier_lmb }
+		wayland_btn_right { wayland_modifier_rmb }
+		wayland_btn_middle { wayland_modifier_mmb }
+		else { u32(0) }
+	}
+}
+
+fn wayland_key_code(key u32) int {
+	return match key {
+		2 { 49 }
+		3 { 50 }
+		4 { 51 }
+		5 { 52 }
+		6 { 53 }
+		7 { 54 }
+		8 { 55 }
+		9 { 56 }
+		10 { 57 }
+		11 { 48 }
+		12 { 45 }
+		13 { 61 }
+		14 { 259 }
+		15 { 258 }
+		16 { 81 }
+		17 { 87 }
+		18 { 69 }
+		19 { 82 }
+		20 { 84 }
+		21 { 89 }
+		22 { 85 }
+		23 { 73 }
+		24 { 79 }
+		25 { 80 }
+		26 { 91 }
+		27 { 93 }
+		28 { 257 }
+		29 { 341 }
+		30 { 65 }
+		31 { 83 }
+		32 { 68 }
+		33 { 70 }
+		34 { 71 }
+		35 { 72 }
+		36 { 74 }
+		37 { 75 }
+		38 { 76 }
+		39 { 59 }
+		40 { 39 }
+		41 { 96 }
+		42 { 340 }
+		43 { 92 }
+		44 { 90 }
+		45 { 88 }
+		46 { 67 }
+		47 { 86 }
+		48 { 66 }
+		49 { 78 }
+		50 { 77 }
+		51 { 44 }
+		52 { 46 }
+		53 { 47 }
+		54 { 344 }
+		55 { 332 }
+		56 { 342 }
+		57 { 32 }
+		58 { 280 }
+		59 { 290 }
+		60 { 291 }
+		61 { 292 }
+		62 { 293 }
+		63 { 294 }
+		64 { 295 }
+		65 { 296 }
+		66 { 297 }
+		67 { 298 }
+		68 { 299 }
+		69 { 282 }
+		70 { 281 }
+		71 { 327 }
+		72 { 328 }
+		73 { 329 }
+		74 { 333 }
+		75 { 324 }
+		76 { 325 }
+		77 { 326 }
+		78 { 334 }
+		79 { 321 }
+		80 { 322 }
+		81 { 323 }
+		82 { 320 }
+		83 { 330 }
+		86 { 162 }
+		87 { 300 }
+		88 { 301 }
+		96 { 335 }
+		97 { 345 }
+		98 { 331 }
+		99 { 283 }
+		100 { 346 }
+		102 { 268 }
+		103 { 265 }
+		104 { 266 }
+		105 { 263 }
+		106 { 262 }
+		107 { 269 }
+		108 { 264 }
+		109 { 267 }
+		110 { 260 }
+		111 { 261 }
+		119 { 284 }
+		125 { 343 }
+		126 { 347 }
+		else { 0 }
+	}
 }
 
 fn (mut backend WaylandBackend) stop() ! {
@@ -834,9 +1446,14 @@ fn (mut backend WaylandBackend) close_connection() {
 			backend.destroy_window_record(record)
 			backend.windows.delete(0)
 		}
+		_ = backend.destroy_removed_wm_base_if_unused()
+		backend.destroy_seat_devices()
 		backend.shutdown_renderer()
 		if backend.wm_base != unsafe { nil } {
 			C.v_multiwindow_wayland_xdg_wm_base_destroy(unsafe { &C.xdg_wm_base(backend.wm_base) })
+		}
+		if backend.seat != unsafe { nil } {
+			C.v_multiwindow_wayland_seat_destroy(unsafe { &C.wl_seat(backend.seat) })
 		}
 		if backend.compositor != unsafe { nil } && backend.compositor_version >= u32(4) {
 			C.wl_compositor_destroy(unsafe { &C.wl_compositor(backend.compositor) })
@@ -852,14 +1469,56 @@ fn (mut backend WaylandBackend) close_connection() {
 		backend.display = unsafe { nil }
 		backend.registry = unsafe { nil }
 		backend.compositor = unsafe { nil }
+		backend.compositor_name = 0
 		backend.compositor_version = 0
+		backend.seat = unsafe { nil }
+		backend.seat_name = 0
 		backend.wm_base = unsafe { nil }
+		backend.wm_base_name = 0
 		backend.started = false
 	}
 }
 
-fn (backend &WaylandBackend) destroy_window_record(record &WaylandWindowRecord) {
+fn (mut backend WaylandBackend) destroy_removed_wm_base_if_unused() bool {
 	$if linux && sokol_wayland ? {
+		if backend.wm_base_name != 0 || backend.wm_base == unsafe { nil }
+			|| backend.windows.len != 0 {
+			return false
+		}
+		C.v_multiwindow_wayland_xdg_wm_base_destroy(unsafe { &C.xdg_wm_base(backend.wm_base) })
+		backend.wm_base = unsafe { nil }
+		return true
+	}
+	return false
+}
+
+fn (mut backend WaylandBackend) destroy_seat_devices() {
+	$if linux && sokol_wayland ? {
+		if backend.pointer != unsafe { nil } {
+			C.v_multiwindow_wayland_pointer_destroy(unsafe { &C.wl_pointer(backend.pointer) })
+		}
+		if backend.keyboard != unsafe { nil } {
+			C.v_multiwindow_wayland_keyboard_destroy(unsafe { &C.wl_keyboard(backend.keyboard) })
+		}
+		backend.pointer = unsafe { nil }
+		backend.keyboard = unsafe { nil }
+		backend.pointer_focused = false
+		backend.keyboard_focused = false
+		backend.pointer_buttons = 0
+		backend.modifiers = 0
+		backend.clear_keys_down()
+	}
+}
+
+fn (mut backend WaylandBackend) destroy_window_record(record &WaylandWindowRecord) {
+	$if linux && sokol_wayland ? {
+		if backend.pointer_focused && backend.pointer_focus == record.id {
+			backend.pointer_focused = false
+		}
+		if backend.keyboard_focused && backend.keyboard_focus == record.id {
+			backend.keyboard_focused = false
+			backend.clear_keys_down()
+		}
 		if backend.egl_display != unsafe { nil } && record.egl_surface != unsafe { nil } {
 			C.v_multiwindow_wayland_egl_clear_current(backend.egl_display)
 			C.v_multiwindow_wayland_egl_destroy_surface(backend.egl_display, record.egl_surface)

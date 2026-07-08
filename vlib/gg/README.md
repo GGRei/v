@@ -109,6 +109,41 @@ current. Linux X11 rendering, including under Xvfb, needs both flags:
 xvfb-run -a v -d gg_multiwindow -d x_multiwindow_x11 run examples/gg/multiwindow.v
 ```
 
+### Multi-Window Events
+
+`gg.App.run()` dispatches window lifecycle events through `event_fn` and input
+events through `input_fn`. Lifecycle events use `gg.WindowEvent` and cover
+created, resized, close-requested and destroyed windows. Input events use
+`gg.WindowInputEvent`, which adds the target `gg.WindowId` to the normal
+`gg.Event` payload so existing key, mouse, scroll and focus event fields keep
+the same gg-facing types.
+
+`input_fn` has the `gg.AppInputFn` shape:
+
+```v
+fn (event gg.WindowInputEvent, mut app gg.App) !
+```
+
+For manual owner loops, call `app.poll_events()` to collect backend events, then
+`app.drain_events()` for lifecycle events and `app.drain_input_events()` for
+window-scoped input events. `app.run()` dispatches lifecycle and input callbacks
+from the ordered backend queue; the separate drain functions are useful when the
+application wants to process the two streams independently.
+
+Input support is capability-driven. Check `app.capabilities()` before relying
+on a class of native events: `input_events`, `mouse_events`, `keyboard_events`,
+`text_events`, `focus_events`, `drop_events` and `touch_events` report what the
+selected backend can actually deliver. Backends must leave unsupported classes
+false instead of emulating partial support. Current native backends route
+window-scoped mouse, keyboard, focus and resize events where the platform
+implementation supports them; text, drop and touch events should be treated as
+available only when their corresponding capability is true.
+
+The multi-window event queue is separate from legacy `gg.Context` callbacks.
+Normal single-window applications keep using the existing `event_fn`,
+`keydown_fn`, `move_fn`, `scroll_fn` and related callbacks on `gg.Context`, and
+do not import or initialize `x.multiwindow`.
+
 `gg.App` manages native windows through `x.multiwindow`. The lower-level
 `x.multiwindow` layer owns native lifetimes and the owner queue; `gg.App` owns
 `sokol.gfx`/`sokol.sgl` renderer state only after rendering is initialized.

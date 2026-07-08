@@ -1,9 +1,62 @@
 #ifndef V_MULTIWINDOW_APPKIT_BACKEND_HELPERS_H
 #define V_MULTIWINDOW_APPKIT_BACKEND_HELPERS_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define V_MULTIWINDOW_APPKIT_EVENT_LIFECYCLE 1
+#define V_MULTIWINDOW_APPKIT_EVENT_INPUT 2
+
+#define V_MULTIWINDOW_APPKIT_LIFECYCLE_CLOSE_REQUESTED 1
+#define V_MULTIWINDOW_APPKIT_LIFECYCLE_DESTROYED 2
+#define V_MULTIWINDOW_APPKIT_LIFECYCLE_RESIZED 3
+
+#define V_MULTIWINDOW_APPKIT_INPUT_KEY_DOWN 1
+#define V_MULTIWINDOW_APPKIT_INPUT_KEY_UP 2
+#define V_MULTIWINDOW_APPKIT_INPUT_CHAR 3
+#define V_MULTIWINDOW_APPKIT_INPUT_MOUSE_DOWN 4
+#define V_MULTIWINDOW_APPKIT_INPUT_MOUSE_UP 5
+#define V_MULTIWINDOW_APPKIT_INPUT_MOUSE_SCROLL 6
+#define V_MULTIWINDOW_APPKIT_INPUT_MOUSE_MOVE 7
+#define V_MULTIWINDOW_APPKIT_INPUT_MOUSE_ENTER 8
+#define V_MULTIWINDOW_APPKIT_INPUT_MOUSE_LEAVE 9
+#define V_MULTIWINDOW_APPKIT_INPUT_FOCUSED 10
+#define V_MULTIWINDOW_APPKIT_INPUT_UNFOCUSED 11
+#define V_MULTIWINDOW_APPKIT_INPUT_RESIZED 12
+
+#define V_MULTIWINDOW_APPKIT_MOUSE_BUTTON_LEFT 0
+#define V_MULTIWINDOW_APPKIT_MOUSE_BUTTON_RIGHT 1
+#define V_MULTIWINDOW_APPKIT_MOUSE_BUTTON_MIDDLE 2
+#define V_MULTIWINDOW_APPKIT_MOUSE_BUTTON_INVALID 256
+
+#define V_MULTIWINDOW_APPKIT_MODIFIER_LMB 0x100
+#define V_MULTIWINDOW_APPKIT_MODIFIER_RMB 0x200
+#define V_MULTIWINDOW_APPKIT_MODIFIER_MMB 0x400
+
+typedef struct VMultiwindowAppKitQueuedEvent {
+	uint64_t sequence;
+	int event_kind;
+	int lifecycle_kind;
+	int input_kind;
+	int key_code;
+	uint32_t char_code;
+	int key_repeat;
+	uint32_t modifiers;
+	int mouse_button;
+	float mouse_x;
+	float mouse_y;
+	float mouse_dx;
+	float mouse_dy;
+	float scroll_x;
+	float scroll_y;
+	int window_width;
+	int window_height;
+	int framebuffer_width;
+	int framebuffer_height;
+} VMultiwindowAppKitQueuedEvent;
 
 int v_multiwindow_appkit_is_main_thread(void);
 int v_multiwindow_appkit_prepare_application(void);
@@ -15,9 +68,7 @@ void v_multiwindow_appkit_release_window(void *state_ptr);
 int v_multiwindow_appkit_set_window_title(void *state_ptr, const char *title);
 int v_multiwindow_appkit_resize_window(void *state_ptr, int width, int height, int *out_width, int *out_height, int *out_framebuffer_width, int *out_framebuffer_height);
 void v_multiwindow_appkit_poll_events(void);
-int v_multiwindow_appkit_take_close_requested(void *state_ptr);
-int v_multiwindow_appkit_take_resized(void *state_ptr, int *out_width, int *out_height, int *out_framebuffer_width, int *out_framebuffer_height);
-int v_multiwindow_appkit_take_destroyed(void *state_ptr);
+int v_multiwindow_appkit_take_queued_event(void *state_ptr, VMultiwindowAppKitQueuedEvent *out_event);
 int v_multiwindow_appkit_begin_frame(void *state_ptr, void *device_ptr, void **out_drawable, void **out_depth_texture, int *out_framebuffer_width, int *out_framebuffer_height);
 void v_multiwindow_appkit_end_frame(void *state_ptr);
 void v_multiwindow_appkit_abort_frame(void *state_ptr);

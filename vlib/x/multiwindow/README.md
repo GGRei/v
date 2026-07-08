@@ -16,12 +16,13 @@ The module provides:
 - generation-checked `WindowId` handles;
 - backend capability reporting and backend selection;
 - lifecycle events routed to a specific window;
+- backend-neutral input events routed to a specific window;
 - an owner-thread job queue for cross-thread work;
 - explicit swapchain handoff for `sokol.gfx` rendering.
 
-It does not provide high-level input handling, layout, widgets, text rendering,
-or a default event loop. The `gg` facade supplies the higher-level loop and
-drawing API.
+It does not provide layout, widgets, text rendering, high-level input semantics,
+or a default event loop. The `gg` facade supplies the higher-level loop, `gg.Event`
+mapping, and drawing API.
 
 ## Creating an App
 
@@ -83,6 +84,9 @@ the display server, graphics device, or platform API is unavailable.
 - `explicit_swapchain`: render calls can return a `gfx.Swapchain`;
 - `mock`, `native`, `x11`, `wayland`, `win32`: selected platform flags;
 - `gl`, `metal`, `d3d11`: active renderer API flags;
+- `input_events`, `mouse_events`, `keyboard_events`, `text_events`,
+  `focus_events`, `drop_events`, `touch_events`: native input classes the
+  backend can actually deliver;
 - `readback`: reserved for backends that expose readback support.
 
 Backend notes:
@@ -141,13 +145,17 @@ The simple read helpers `status()`, `capabilities()`, `window_exists()`, and
 
 ## Events
 
-Events are explicit. Native events are not delivered to user code until the
-owner thread calls:
+Events are explicit. Native lifecycle and input events are not delivered to user
+code until the owner thread calls:
 
 - `poll_events()` to collect backend/native events into the App queue;
-- `drain_events()` to retrieve and clear queued events.
+- `drain_events()` to retrieve and clear queued lifecycle events;
+- `drain_input_events()` to retrieve and clear queued input events without
+  consuming lifecycle events;
+- `drain_queued_events()` to retrieve lifecycle and input events together in the
+  exact order accepted by `App`.
 
-Event kinds are:
+Lifecycle event kinds are:
 
 - `.window_created`: emitted by `create_window()` with the actual initial size;
 - `.window_destroyed`: emitted by `destroy_window()`, `stop()`, or accepted
@@ -157,6 +165,32 @@ Event kinds are:
   notifications with the actual size.
 
 Backend events for stale or already-destroyed window handles are filtered.
+
+`InputEvent` is the low-level backend-neutral payload used by the `gg` facade to
+rebuild `gg.Event` for a specific window. Input kinds include key down/up, char,
+mouse down/up/move/scroll/enter/leave, resize, focus/unfocus, clipboard paste,
+file drop, and touch families. Backends report which families are implemented
+through the capability booleans above; unsupported input classes must remain
+false rather than being partially emulated.
+
+Current native input support is intentionally capability-scoped:
+
+- Mock can synthesize every input family for deterministic tests.
+- Win32 routes mouse, keyboard, text/char, focus and resize input events.
+- AppKit routes mouse, keyboard, text/char, focus and resize input events.
+- X11 routes mouse, keyboard, focus and resize input events; text is false until
+  robust text/IME handling is implemented.
+- Wayland routes pointer, keyboard, focus and resize input events; text is false
+  until xkb/text handling is implemented.
+- Native drop, clipboard and touch input are false unless a backend explicitly
+  reports the corresponding capability.
+
+`QueuedEvent` is the ordered queue entry used when lifecycle and input events
+must be consumed as a single stream. Its `kind` field tells whether the entry
+contains a lifecycle `Event` or an `InputEvent`. Use `drain_queued_events()` when
+relative ordering matters, for example input -> close-request -> input; use the
+separate `drain_events()` and `drain_input_events()` helpers only when that
+cross-family ordering is not needed.
 
 ## Rendering
 
@@ -216,7 +250,7 @@ programmatic resize.
 - Native app creation can still fail even when plain capabilities report that a
   backend is supported, for example when a display cannot be opened.
 - The mock backend is not a renderer and cannot produce swapchains.
-- The module has no high-level input, layout, or drawing abstraction.
+- The module has no layout, widget, text rendering, or drawing abstraction.
 
 ## Validation
 

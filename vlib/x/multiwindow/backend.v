@@ -317,6 +317,34 @@ fn (mut backend Backend) poll_events() ![]Event {
 	}
 }
 
+fn (mut backend Backend) poll_queued_events() ![]QueuedEvent {
+	match backend.kind {
+		.mock {
+			return backend.mock.poll_queued_events()!
+		}
+		.x11 {
+			return backend.x11.poll_queued_events()!
+		}
+		.wayland {
+			return backend.wayland.poll_queued_events()!
+		}
+		.appkit {
+			return backend.appkit.poll_queued_events()!
+		}
+		.win32 {
+			return backend.win32.poll_queued_events()!
+		}
+		else {
+			events := backend.poll_events()!
+			mut queued_events := []QueuedEvent{cap: events.len}
+			for event in events {
+				queued_events << queued_lifecycle_event(event)
+			}
+			return queued_events
+		}
+	}
+}
+
 fn (mut backend Backend) stop() ! {
 	match backend.kind {
 		.auto { return error(err_backend_unsupported) }

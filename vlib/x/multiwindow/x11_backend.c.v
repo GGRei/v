@@ -16,6 +16,20 @@ $if linux && x_multiwindow_x11 ? {
 const x11_client_message = 33
 const x11_configure_notify = 22
 const x11_destroy_notify = 17
+const x11_key_press = 2
+const x11_key_release = 3
+const x11_button_press = 4
+const x11_button_release = 5
+const x11_motion_notify = 6
+const x11_enter_notify = 7
+const x11_leave_notify = 8
+const x11_focus_in = 9
+const x11_focus_out = 10
+const x11_scroll_up = 4
+const x11_scroll_down = 5
+const x11_scroll_right = 6
+const x11_scroll_left = 7
+const x11_invalid_mouse_button = 256
 
 $if x32 {
 	type X11NativeLong = int
@@ -89,6 +103,7 @@ $if linux && x_multiwindow_x11 ? {
 		xclient        C.XClientMessageEvent
 		xconfigure     C.XConfigureEvent
 		xdestroywindow C.XDestroyWindowEvent
+		pad            [24]X11NativeLong
 	}
 
 	fn C.XInitThreads() int
@@ -109,6 +124,21 @@ $if linux && x_multiwindow_x11 ? {
 	fn C.XSync(display &C.Display, discard int) int
 	fn C.XPending(display &C.Display) int
 	fn C.XNextEvent(display &C.Display, event &C.XEvent) int
+	fn C.v_multiwindow_x11_event_mask() X11NativeLong
+	fn C.v_multiwindow_x11_event_window(event &C.XEvent) X11NativeWindow
+	fn C.v_multiwindow_x11_event_x(event &C.XEvent) int
+	fn C.v_multiwindow_x11_event_y(event &C.XEvent) int
+	fn C.v_multiwindow_x11_event_state(event &C.XEvent) u32
+	fn C.v_multiwindow_x11_event_keycode(event &C.XEvent) u32
+	fn C.v_multiwindow_x11_event_button(event &C.XEvent) u32
+	fn C.v_multiwindow_x11_focus_mode(event &C.XEvent) int
+	fn C.v_multiwindow_x11_is_notify_grab_or_ungrab(mode int) int
+	fn C.v_multiwindow_x11_modifiers(state u32) int
+	fn C.v_multiwindow_x11_key_modifier_bit(key_code int) int
+	fn C.v_multiwindow_x11_mouse_button(button u32) int
+	fn C.v_multiwindow_x11_button_modifier_bit(mouse_button int) int
+	fn C.v_multiwindow_x11_init_keycodes(display &C.Display, keycodes &int, keycodes_len int)
+	fn C.v_multiwindow_x11_key_code(event &C.XEvent, keycodes &int, keycodes_len int) int
 	fn C.v_multiwindow_x11_apply_config_hints(display &C.Display, window X11NativeWindow, width int, height int, min_width int, min_height int, resizable int, borderless int, fullscreen int) int
 	fn C.v_multiwindow_x11_get_window_size(display &C.Display, window X11NativeWindow, out_width &int, out_height &int) int
 	fn C.v_multiwindow_x11_egl_get_display(display &C.Display) voidptr
@@ -132,9 +162,16 @@ struct X11WindowRecord {
 	colormap    X11NativeColormap
 	egl_surface voidptr
 mut:
-	config WindowConfig
-	width  int
-	height int
+	config          WindowConfig
+	width           int
+	height          int
+	mouse_x         f32
+	mouse_y         f32
+	mouse_dx        f32
+	mouse_dy        f32
+	mouse_pos_valid bool
+	mouse_buttons   u8
+	key_repeat      [256]bool
 }
 
 struct X11Backend {
@@ -150,6 +187,7 @@ mut:
 	native_visual_id int
 	started          bool
 	windows          []X11WindowRecord
+	keycodes         [256]int
 }
 
 fn new_x11_backend() X11Backend {
@@ -174,6 +212,13 @@ fn (backend &X11Backend) capabilities() Capabilities {
 		explicit_swapchain: backend.renderer_ready()
 		x11:                true
 		gl:                 backend.renderer_ready()
+		input_events:       true
+		mouse_events:       true
+		keyboard_events:    true
+		text_events:        false
+		focus_events:       true
+		drop_events:        false
+		touch_events:       false
 	}
 }
 
@@ -192,6 +237,7 @@ fn (mut backend X11Backend) start(require_renderer bool) ! {
 		backend.root = C.XDefaultRootWindow(display)
 		backend.wm_protocols = C.XInternAtom(display, c'WM_PROTOCOLS', 0)
 		backend.wm_delete_window = C.XInternAtom(display, c'WM_DELETE_WINDOW', 0)
+		C.v_multiwindow_x11_init_keycodes(display, &backend.keycodes[0], 256)
 		if require_renderer {
 			backend.init_renderer() or {
 				C.XCloseDisplay(display)
@@ -222,7 +268,7 @@ fn (mut backend X11Backend) create_window(id WindowId, config WindowConfig) !Win
 			created := C.XCreateSimpleWindow(backend.display, backend.root, 0, 0,
 				u32(actual_size.width), u32(actual_size.height), 0, 0, 0)
 			if created != X11NativeWindow(0) {
-				C.XSelectInput(backend.display, created, 1 << 17)
+				C.XSelectInput(backend.display, created, C.v_multiwindow_x11_event_mask())
 			}
 			created
 		}
@@ -398,7 +444,18 @@ fn (mut backend X11Backend) resize_window(id WindowId, width int, height int) !W
 }
 
 fn (mut backend X11Backend) poll_events() ![]Event {
-	mut events := []Event{}
+	queued_events := backend.poll_queued_events()!
+	mut events := []Event{cap: queued_events.len}
+	for event in queued_events {
+		if event.kind == .lifecycle {
+			events << event.lifecycle
+		}
+	}
+	return events
+}
+
+fn (mut backend X11Backend) poll_queued_events() ![]QueuedEvent {
+	mut events := []QueuedEvent{}
 	$if linux && x_multiwindow_x11 ? {
 		if !backend.started || backend.display == unsafe { nil } {
 			return events
@@ -416,10 +473,10 @@ fn (mut backend X11Backend) poll_events() ![]Event {
 						&& protocol == backend.wm_delete_window {
 						native_window := unsafe { event.xclient.window }
 						id := backend.window_id_for_native(native_window) or { continue }
-						events << Event{
+						events << queued_lifecycle_event(Event{
 							kind:      .window_close_requested
 							window_id: id
-						}
+						})
 					}
 				}
 				x11_configure_notify {
@@ -432,27 +489,233 @@ fn (mut backend X11Backend) poll_events() ![]Event {
 						id := backend.windows[index].id
 						backend.windows[index].width = width
 						backend.windows[index].height = height
-						events << Event{
+						record := backend.windows[index]
+						events << queued_lifecycle_event(Event{
 							kind:      .window_resized
 							window_id: id
 							width:     width
 							height:    height
-						}
+						})
+						events << queued_input_event(backend.input_event_from_record(record,
+							.resized))
 					}
 				}
 				x11_destroy_notify {
 					native_window := unsafe { event.xdestroywindow.window }
 					id := backend.remove_native_window(native_window) or { continue }
-					events << Event{
+					events << queued_lifecycle_event(Event{
 						kind:      .window_destroyed
 						window_id: id
+					})
+				}
+				x11_key_press {
+					index := backend.window_record_index_for_event(&event) or { continue }
+					events << backend.queued_key_press_event(index, &event)
+				}
+				x11_key_release {
+					index := backend.window_record_index_for_event(&event) or { continue }
+					events << backend.queued_key_release_event(index, &event)
+				}
+				x11_button_press {
+					index := backend.window_record_index_for_event(&event) or { continue }
+					events << backend.queued_button_press_event(index, &event)
+				}
+				x11_button_release {
+					index := backend.window_record_index_for_event(&event) or { continue }
+					events << backend.queued_button_release_event(index, &event)
+				}
+				x11_motion_notify {
+					index := backend.window_record_index_for_event(&event) or { continue }
+					events << backend.queued_mouse_position_event(index, &event, .mouse_move, false)
+				}
+				x11_enter_notify {
+					index := backend.window_record_index_for_event(&event) or { continue }
+					if backend.windows[index].mouse_buttons == 0 {
+						events << backend.queued_mouse_position_event(index, &event, .mouse_enter, true)
 					}
+				}
+				x11_leave_notify {
+					index := backend.window_record_index_for_event(&event) or { continue }
+					if backend.windows[index].mouse_buttons == 0 {
+						events << backend.queued_mouse_position_event(index, &event, .mouse_leave, true)
+					}
+				}
+				x11_focus_in {
+					if C.v_multiwindow_x11_is_notify_grab_or_ungrab(C.v_multiwindow_x11_focus_mode(&event)) != 0 {
+						continue
+					}
+					index := backend.window_record_index_for_event(&event) or { continue }
+					events << queued_input_event(backend.input_event_from_record(backend.windows[index],
+						.focused))
+				}
+				x11_focus_out {
+					if C.v_multiwindow_x11_is_notify_grab_or_ungrab(C.v_multiwindow_x11_focus_mode(&event)) != 0 {
+						continue
+					}
+					index := backend.window_record_index_for_event(&event) or { continue }
+					events << queued_input_event(backend.input_event_from_record(backend.windows[index],
+						.unfocused))
 				}
 				else {}
 			}
 		}
 	}
 	return events
+}
+
+fn (backend &X11Backend) input_event_from_record(record X11WindowRecord, kind InputEventKind) InputEvent {
+	return backend.input_event_with_payload(record, kind, 0, false, 0, x11_invalid_mouse_button, 0,
+		0)
+}
+
+fn (backend &X11Backend) input_event_with_payload(record X11WindowRecord, kind InputEventKind, key_code int, key_repeat bool, modifiers u32, mouse_button int, scroll_x f32, scroll_y f32) InputEvent {
+	return InputEvent{
+		kind:               kind
+		window_id:          record.id
+		key_code:           key_code
+		key_repeat:         key_repeat
+		modifiers:          modifiers
+		mouse_x:            record.mouse_x
+		mouse_y:            record.mouse_y
+		mouse_dx:           record.mouse_dx
+		mouse_dy:           record.mouse_dy
+		mouse_button:       mouse_button
+		scroll_x:           scroll_x
+		scroll_y:           scroll_y
+		window_width:       record.width
+		window_height:      record.height
+		framebuffer_width:  record.width
+		framebuffer_height: record.height
+	}
+}
+
+$if linux && x_multiwindow_x11 ? {
+	fn (mut backend X11Backend) queued_key_press_event(index int, event &C.XEvent) []QueuedEvent {
+		mut events := []QueuedEvent{}
+		key_code := C.v_multiwindow_x11_key_code(event, &backend.keycodes[0], 256)
+		if key_code == 0 {
+			return events
+		}
+		native_keycode := int(C.v_multiwindow_x11_event_keycode(event))
+		mut repeat := false
+		if native_keycode >= 0 && native_keycode < 256 {
+			repeat = backend.windows[index].key_repeat[native_keycode]
+			backend.windows[index].key_repeat[native_keycode] = true
+		}
+		input := backend.input_event_with_payload(backend.windows[index], .key_down, key_code,
+			repeat,
+			u32(C.v_multiwindow_x11_modifiers(C.v_multiwindow_x11_event_state(event)) | C.v_multiwindow_x11_key_modifier_bit(key_code)),
+			x11_invalid_mouse_button, 0, 0)
+		events << queued_input_event(input)
+		return events
+	}
+
+	fn (mut backend X11Backend) queued_key_release_event(index int, event &C.XEvent) []QueuedEvent {
+		mut events := []QueuedEvent{}
+		key_code := C.v_multiwindow_x11_key_code(event, &backend.keycodes[0], 256)
+		if key_code == 0 {
+			return events
+		}
+		native_keycode := int(C.v_multiwindow_x11_event_keycode(event))
+		if native_keycode >= 0 && native_keycode < 256 {
+			backend.windows[index].key_repeat[native_keycode] = false
+		}
+		mut modifiers := C.v_multiwindow_x11_modifiers(C.v_multiwindow_x11_event_state(event))
+		modifiers &= ~C.v_multiwindow_x11_key_modifier_bit(key_code)
+		input := backend.input_event_with_payload(backend.windows[index], .key_up, key_code, false,
+			u32(modifiers), x11_invalid_mouse_button, 0, 0)
+		events << queued_input_event(input)
+		return events
+	}
+
+	fn (mut backend X11Backend) queued_button_press_event(index int, event &C.XEvent) []QueuedEvent {
+		mut events := []QueuedEvent{}
+		x := C.v_multiwindow_x11_event_x(event)
+		y := C.v_multiwindow_x11_event_y(event)
+		backend.update_mouse_position(index, x, y, false)
+		button := C.v_multiwindow_x11_event_button(event)
+		mut modifiers := C.v_multiwindow_x11_modifiers(C.v_multiwindow_x11_event_state(event))
+		match button {
+			x11_scroll_up {
+				events << queued_input_event(backend.scroll_event(index, 0.0, 1.0, u32(modifiers)))
+			}
+			x11_scroll_down {
+				events << queued_input_event(backend.scroll_event(index, 0.0, -1.0, u32(modifiers)))
+			}
+			x11_scroll_right {
+				events << queued_input_event(backend.scroll_event(index, 1.0, 0.0, u32(modifiers)))
+			}
+			x11_scroll_left {
+				events << queued_input_event(backend.scroll_event(index, -1.0, 0.0, u32(modifiers)))
+			}
+			else {
+				mouse_button := C.v_multiwindow_x11_mouse_button(button)
+				if mouse_button != x11_invalid_mouse_button {
+					modifiers |= C.v_multiwindow_x11_button_modifier_bit(mouse_button)
+					backend.windows[index].mouse_buttons |= u8(1 << mouse_button)
+					input := backend.input_event_with_payload(backend.windows[index], .mouse_down,
+						0, false, u32(modifiers), mouse_button, 0, 0)
+					events << queued_input_event(input)
+				}
+			}
+		}
+
+		return events
+	}
+
+	fn (mut backend X11Backend) queued_button_release_event(index int, event &C.XEvent) []QueuedEvent {
+		mut events := []QueuedEvent{}
+		x := C.v_multiwindow_x11_event_x(event)
+		y := C.v_multiwindow_x11_event_y(event)
+		backend.update_mouse_position(index, x, y, false)
+		mouse_button := C.v_multiwindow_x11_mouse_button(C.v_multiwindow_x11_event_button(event))
+		if mouse_button == x11_invalid_mouse_button {
+			return events
+		}
+		mut modifiers := C.v_multiwindow_x11_modifiers(C.v_multiwindow_x11_event_state(event))
+		modifiers &= ~C.v_multiwindow_x11_button_modifier_bit(mouse_button)
+		backend.windows[index].mouse_buttons &= ~u8(1 << mouse_button)
+		input := backend.input_event_with_payload(backend.windows[index], .mouse_up, 0, false,
+			u32(modifiers), mouse_button, 0, 0)
+		events << queued_input_event(input)
+		return events
+	}
+
+	fn (mut backend X11Backend) queued_mouse_position_event(index int, event &C.XEvent, kind InputEventKind, clear_delta bool) QueuedEvent {
+		x := C.v_multiwindow_x11_event_x(event)
+		y := C.v_multiwindow_x11_event_y(event)
+		backend.update_mouse_position(index, x, y, clear_delta)
+		input := backend.input_event_with_payload(backend.windows[index], kind, 0, false,
+			u32(C.v_multiwindow_x11_modifiers(C.v_multiwindow_x11_event_state(event))),
+			x11_invalid_mouse_button, 0, 0)
+		return queued_input_event(input)
+	}
+
+	fn (mut backend X11Backend) update_mouse_position(index int, x int, y int, clear_delta bool) {
+		new_x := f32(x)
+		new_y := f32(y)
+		if clear_delta || !backend.windows[index].mouse_pos_valid {
+			backend.windows[index].mouse_x = new_x
+			backend.windows[index].mouse_y = new_y
+			backend.windows[index].mouse_dx = 0
+			backend.windows[index].mouse_dy = 0
+			backend.windows[index].mouse_pos_valid = true
+			return
+		}
+		backend.windows[index].mouse_dx = new_x - backend.windows[index].mouse_x
+		backend.windows[index].mouse_dy = new_y - backend.windows[index].mouse_y
+		backend.windows[index].mouse_x = new_x
+		backend.windows[index].mouse_y = new_y
+	}
+
+	fn (backend &X11Backend) scroll_event(index int, x f32, y f32, modifiers u32) InputEvent {
+		return backend.input_event_with_payload(backend.windows[index], .mouse_scroll, 0, false,
+			modifiers, x11_invalid_mouse_button, x, y)
+	}
+
+	fn (backend &X11Backend) window_record_index_for_event(event &C.XEvent) ?int {
+		return backend.window_record_index_for_native(C.v_multiwindow_x11_event_window(event))
+	}
 }
 
 fn (mut backend X11Backend) stop() ! {

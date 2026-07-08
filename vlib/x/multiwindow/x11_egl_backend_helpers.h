@@ -5,6 +5,8 @@
 #include <string.h>
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
+#include <X11/keysym.h>
+#include <X11/XKBlib.h>
 #include <X11/Xutil.h>
 #include <EGL/egl.h>
 
@@ -32,6 +34,584 @@ typedef struct {
 	long input_mode;
 	unsigned long status;
 } VMultiwindowMotifWmHints;
+
+typedef struct {
+	int key;
+	char name[XkbKeyNameLength];
+} VMultiwindowX11KeymapEntry;
+
+#define V_MULTIWINDOW_X11_KEYMAP_ENTRY(key, a, b, c, d) { key, { a, b, c, d } }
+
+static inline long v_multiwindow_x11_event_mask(void) {
+	return StructureNotifyMask |
+		KeyPressMask |
+		KeyReleaseMask |
+		PointerMotionMask |
+		ButtonPressMask |
+		ButtonReleaseMask |
+		FocusChangeMask |
+		EnterWindowMask |
+		LeaveWindowMask;
+}
+
+static inline unsigned long v_multiwindow_x11_event_window(XEvent *event) {
+	switch (event->type) {
+	case KeyPress:
+	case KeyRelease:
+		return (unsigned long)event->xkey.window;
+	case ButtonPress:
+	case ButtonRelease:
+		return (unsigned long)event->xbutton.window;
+	case MotionNotify:
+		return (unsigned long)event->xmotion.window;
+	case EnterNotify:
+	case LeaveNotify:
+		return (unsigned long)event->xcrossing.window;
+	case FocusIn:
+	case FocusOut:
+		return (unsigned long)event->xfocus.window;
+	case ClientMessage:
+		return (unsigned long)event->xclient.window;
+	case ConfigureNotify:
+		return (unsigned long)event->xconfigure.window;
+	case DestroyNotify:
+		return (unsigned long)event->xdestroywindow.window;
+	default:
+		return 0;
+	}
+}
+
+static inline int v_multiwindow_x11_event_x(XEvent *event) {
+	switch (event->type) {
+	case ButtonPress:
+	case ButtonRelease:
+		return event->xbutton.x;
+	case MotionNotify:
+		return event->xmotion.x;
+	case EnterNotify:
+	case LeaveNotify:
+		return event->xcrossing.x;
+	default:
+		return 0;
+	}
+}
+
+static inline int v_multiwindow_x11_event_y(XEvent *event) {
+	switch (event->type) {
+	case ButtonPress:
+	case ButtonRelease:
+		return event->xbutton.y;
+	case MotionNotify:
+		return event->xmotion.y;
+	case EnterNotify:
+	case LeaveNotify:
+		return event->xcrossing.y;
+	default:
+		return 0;
+	}
+}
+
+static inline unsigned int v_multiwindow_x11_event_state(XEvent *event) {
+	switch (event->type) {
+	case KeyPress:
+	case KeyRelease:
+		return event->xkey.state;
+	case ButtonPress:
+	case ButtonRelease:
+		return event->xbutton.state;
+	case MotionNotify:
+		return event->xmotion.state;
+	case EnterNotify:
+	case LeaveNotify:
+		return event->xcrossing.state;
+	default:
+		return 0;
+	}
+}
+
+static inline unsigned int v_multiwindow_x11_event_keycode(XEvent *event) {
+	return (event->type == KeyPress || event->type == KeyRelease) ? event->xkey.keycode : 0;
+}
+
+static inline unsigned int v_multiwindow_x11_event_button(XEvent *event) {
+	return (event->type == ButtonPress || event->type == ButtonRelease) ? event->xbutton.button : 0;
+}
+
+static inline int v_multiwindow_x11_focus_mode(XEvent *event) {
+	return (event->type == FocusIn || event->type == FocusOut) ? event->xfocus.mode : -1;
+}
+
+static inline int v_multiwindow_x11_is_notify_grab_or_ungrab(int mode) {
+	return mode == NotifyGrab || mode == NotifyUngrab;
+}
+
+static inline int v_multiwindow_x11_modifiers(unsigned int state) {
+	int modifiers = 0;
+	if (state & ShiftMask) {
+		modifiers |= 1;
+	}
+	if (state & ControlMask) {
+		modifiers |= 2;
+	}
+	if (state & Mod1Mask) {
+		modifiers |= 4;
+	}
+	if (state & Mod4Mask) {
+		modifiers |= 8;
+	}
+	if (state & Button1Mask) {
+		modifiers |= 0x100;
+	}
+	if (state & Button3Mask) {
+		modifiers |= 0x200;
+	}
+	if (state & Button2Mask) {
+		modifiers |= 0x400;
+	}
+	return modifiers;
+}
+
+static inline int v_multiwindow_x11_key_modifier_bit(int key_code) {
+	switch (key_code) {
+	case 340:
+	case 344:
+		return 1;
+	case 341:
+	case 345:
+		return 2;
+	case 342:
+	case 346:
+		return 4;
+	case 343:
+	case 347:
+		return 8;
+	default:
+		return 0;
+	}
+}
+
+static inline int v_multiwindow_x11_mouse_button(unsigned int button) {
+	switch (button) {
+	case Button1:
+		return 0;
+	case Button3:
+		return 1;
+	case Button2:
+		return 2;
+	default:
+		return 256;
+	}
+}
+
+static inline int v_multiwindow_x11_button_modifier_bit(int mouse_button) {
+	switch (mouse_button) {
+	case 0:
+		return 0x100;
+	case 1:
+		return 0x200;
+	case 2:
+		return 0x400;
+	default:
+		return 0;
+	}
+}
+
+static inline int v_multiwindow_x11_key_code_from_keysym(KeySym keysym) {
+	if (keysym >= XK_a && keysym <= XK_z) {
+		return (int)(keysym - XK_a + 65);
+	}
+	if (keysym >= XK_A && keysym <= XK_Z) {
+		return (int)(keysym - XK_A + 65);
+	}
+	if (keysym >= XK_0 && keysym <= XK_9) {
+		return (int)(keysym - XK_0 + 48);
+	}
+	if (keysym >= XK_F1 && keysym <= XK_F25) {
+		return (int)(keysym - XK_F1 + 290);
+	}
+	if (keysym >= XK_KP_0 && keysym <= XK_KP_9) {
+		return (int)(keysym - XK_KP_0 + 320);
+	}
+	switch (keysym) {
+	case XK_space:
+		return 32;
+	case XK_apostrophe:
+		return 39;
+	case XK_comma:
+		return 44;
+	case XK_minus:
+		return 45;
+	case XK_period:
+		return 46;
+	case XK_slash:
+		return 47;
+	case XK_semicolon:
+		return 59;
+	case XK_equal:
+		return 61;
+	case XK_bracketleft:
+		return 91;
+	case XK_backslash:
+		return 92;
+	case XK_bracketright:
+		return 93;
+	case XK_grave:
+		return 96;
+	case XK_less:
+		return 161;
+	case XK_Escape:
+		return 256;
+	case XK_Return:
+		return 257;
+	case XK_Tab:
+	case XK_ISO_Left_Tab:
+		return 258;
+	case XK_BackSpace:
+		return 259;
+	case XK_Insert:
+		return 260;
+	case XK_Delete:
+		return 261;
+	case XK_Right:
+		return 262;
+	case XK_Left:
+		return 263;
+	case XK_Down:
+		return 264;
+	case XK_Up:
+		return 265;
+	case XK_Page_Up:
+		return 266;
+	case XK_Page_Down:
+		return 267;
+	case XK_Home:
+		return 268;
+	case XK_End:
+		return 269;
+	case XK_Caps_Lock:
+		return 280;
+	case XK_Scroll_Lock:
+		return 281;
+	case XK_Num_Lock:
+		return 282;
+	case XK_Print:
+		return 283;
+	case XK_Pause:
+		return 284;
+	case XK_KP_Decimal:
+	case XK_KP_Separator:
+	case XK_KP_Delete:
+		return 330;
+	case XK_KP_Divide:
+		return 331;
+	case XK_KP_Multiply:
+		return 332;
+	case XK_KP_Subtract:
+		return 333;
+	case XK_KP_Add:
+		return 334;
+	case XK_KP_Enter:
+		return 335;
+	case XK_KP_Equal:
+		return 336;
+	case XK_KP_Insert:
+		return 320;
+	case XK_KP_End:
+		return 321;
+	case XK_KP_Down:
+		return 322;
+	case XK_KP_Page_Down:
+		return 323;
+	case XK_KP_Left:
+		return 324;
+	case XK_KP_Right:
+		return 326;
+	case XK_KP_Home:
+		return 327;
+	case XK_KP_Up:
+		return 328;
+	case XK_KP_Page_Up:
+		return 329;
+	case XK_Shift_L:
+		return 340;
+	case XK_Control_L:
+		return 341;
+	case XK_Alt_L:
+	case XK_Meta_L:
+		return 342;
+	case XK_Super_L:
+		return 343;
+	case XK_Shift_R:
+		return 344;
+	case XK_Control_R:
+		return 345;
+	case XK_Mode_switch:
+	case XK_ISO_Level3_Shift:
+	case XK_Alt_R:
+	case XK_Meta_R:
+		return 346;
+	case XK_Super_R:
+		return 347;
+	case XK_Menu:
+		return 348;
+	default:
+		return 0;
+	}
+}
+
+static inline int v_multiwindow_x11_key_code_from_keysyms(KeySym *keysyms, int width) {
+	if (keysyms == NULL || width <= 0) {
+		return 0;
+	}
+	if (width > 1) {
+		switch (keysyms[1]) {
+		case XK_KP_0:
+			return 320;
+		case XK_KP_1:
+			return 321;
+		case XK_KP_2:
+			return 322;
+		case XK_KP_3:
+			return 323;
+		case XK_KP_4:
+			return 324;
+		case XK_KP_5:
+			return 325;
+		case XK_KP_6:
+			return 326;
+		case XK_KP_7:
+			return 327;
+		case XK_KP_8:
+			return 328;
+		case XK_KP_9:
+			return 329;
+		case XK_KP_Separator:
+		case XK_KP_Decimal:
+			return 330;
+		case XK_KP_Equal:
+			return 336;
+		case XK_KP_Enter:
+			return 335;
+		default:
+			break;
+		}
+	}
+	return v_multiwindow_x11_key_code_from_keysym(keysyms[0]);
+}
+
+static inline void v_multiwindow_x11_init_keycodes(Display *display, int *keycodes, int keycodes_len) {
+	if (keycodes == NULL || keycodes_len <= 0) {
+		return;
+	}
+	for (int i = 0; i < keycodes_len; i++) {
+		keycodes[i] = 0;
+	}
+	if (display == NULL) {
+		return;
+	}
+
+	int scancode_min = 0;
+	int scancode_max = 0;
+	XDisplayKeycodes(display, &scancode_min, &scancode_max);
+
+	XkbDescPtr desc = XkbGetMap(display, 0, XkbUseCoreKbd);
+	if (desc != NULL) {
+		if (XkbGetNames(display, XkbKeyNamesMask | XkbKeyAliasesMask, desc) == Success && desc->names != NULL) {
+			scancode_min = (int)desc->min_key_code;
+			scancode_max = (int)desc->max_key_code;
+			static const VMultiwindowX11KeymapEntry keymap[] = {
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(96, 'T', 'L', 'D', 'E'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(49, 'A', 'E', '0', '1'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(50, 'A', 'E', '0', '2'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(51, 'A', 'E', '0', '3'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(52, 'A', 'E', '0', '4'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(53, 'A', 'E', '0', '5'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(54, 'A', 'E', '0', '6'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(55, 'A', 'E', '0', '7'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(56, 'A', 'E', '0', '8'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(57, 'A', 'E', '0', '9'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(48, 'A', 'E', '1', '0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(45, 'A', 'E', '1', '1'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(61, 'A', 'E', '1', '2'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(81, 'A', 'D', '0', '1'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(87, 'A', 'D', '0', '2'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(69, 'A', 'D', '0', '3'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(82, 'A', 'D', '0', '4'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(84, 'A', 'D', '0', '5'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(89, 'A', 'D', '0', '6'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(85, 'A', 'D', '0', '7'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(73, 'A', 'D', '0', '8'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(79, 'A', 'D', '0', '9'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(80, 'A', 'D', '1', '0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(91, 'A', 'D', '1', '1'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(93, 'A', 'D', '1', '2'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(65, 'A', 'C', '0', '1'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(83, 'A', 'C', '0', '2'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(68, 'A', 'C', '0', '3'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(70, 'A', 'C', '0', '4'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(71, 'A', 'C', '0', '5'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(72, 'A', 'C', '0', '6'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(74, 'A', 'C', '0', '7'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(75, 'A', 'C', '0', '8'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(76, 'A', 'C', '0', '9'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(59, 'A', 'C', '1', '0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(39, 'A', 'C', '1', '1'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(90, 'A', 'B', '0', '1'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(88, 'A', 'B', '0', '2'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(67, 'A', 'B', '0', '3'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(86, 'A', 'B', '0', '4'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(66, 'A', 'B', '0', '5'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(78, 'A', 'B', '0', '6'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(77, 'A', 'B', '0', '7'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(44, 'A', 'B', '0', '8'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(46, 'A', 'B', '0', '9'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(47, 'A', 'B', '1', '0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(92, 'B', 'K', 'S', 'L'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(161, 'L', 'S', 'G', 'T'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(32, 'S', 'P', 'C', 'E'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(256, 'E', 'S', 'C', '\0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(257, 'R', 'T', 'R', 'N'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(258, 'T', 'A', 'B', '\0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(259, 'B', 'K', 'S', 'P'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(260, 'I', 'N', 'S', '\0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(261, 'D', 'E', 'L', 'E'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(262, 'R', 'G', 'H', 'T'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(263, 'L', 'E', 'F', 'T'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(264, 'D', 'O', 'W', 'N'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(265, 'U', 'P', '\0', '\0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(266, 'P', 'G', 'U', 'P'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(267, 'P', 'G', 'D', 'N'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(268, 'H', 'O', 'M', 'E'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(269, 'E', 'N', 'D', '\0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(280, 'C', 'A', 'P', 'S'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(281, 'S', 'C', 'L', 'K'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(282, 'N', 'M', 'L', 'K'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(283, 'P', 'R', 'S', 'C'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(284, 'P', 'A', 'U', 'S'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(290, 'F', 'K', '0', '1'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(291, 'F', 'K', '0', '2'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(292, 'F', 'K', '0', '3'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(293, 'F', 'K', '0', '4'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(294, 'F', 'K', '0', '5'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(295, 'F', 'K', '0', '6'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(296, 'F', 'K', '0', '7'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(297, 'F', 'K', '0', '8'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(298, 'F', 'K', '0', '9'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(299, 'F', 'K', '1', '0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(300, 'F', 'K', '1', '1'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(301, 'F', 'K', '1', '2'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(302, 'F', 'K', '1', '3'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(303, 'F', 'K', '1', '4'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(304, 'F', 'K', '1', '5'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(305, 'F', 'K', '1', '6'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(306, 'F', 'K', '1', '7'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(307, 'F', 'K', '1', '8'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(308, 'F', 'K', '1', '9'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(309, 'F', 'K', '2', '0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(310, 'F', 'K', '2', '1'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(311, 'F', 'K', '2', '2'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(312, 'F', 'K', '2', '3'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(313, 'F', 'K', '2', '4'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(314, 'F', 'K', '2', '5'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(320, 'K', 'P', '0', '\0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(321, 'K', 'P', '1', '\0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(322, 'K', 'P', '2', '\0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(323, 'K', 'P', '3', '\0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(324, 'K', 'P', '4', '\0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(325, 'K', 'P', '5', '\0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(326, 'K', 'P', '6', '\0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(327, 'K', 'P', '7', '\0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(328, 'K', 'P', '8', '\0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(329, 'K', 'P', '9', '\0'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(330, 'K', 'P', 'D', 'L'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(331, 'K', 'P', 'D', 'V'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(332, 'K', 'P', 'M', 'U'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(333, 'K', 'P', 'S', 'U'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(334, 'K', 'P', 'A', 'D'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(335, 'K', 'P', 'E', 'N'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(336, 'K', 'P', 'E', 'Q'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(340, 'L', 'F', 'S', 'H'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(341, 'L', 'C', 'T', 'L'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(342, 'L', 'A', 'L', 'T'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(343, 'L', 'W', 'I', 'N'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(344, 'R', 'T', 'S', 'H'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(345, 'R', 'C', 'T', 'L'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(346, 'R', 'A', 'L', 'T'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(346, 'L', 'V', 'L', '3'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(346, 'M', 'D', 'S', 'W'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(347, 'R', 'W', 'I', 'N'),
+				V_MULTIWINDOW_X11_KEYMAP_ENTRY(348, 'M', 'E', 'N', 'U'),
+			};
+			const int keymap_len = (int)(sizeof(keymap) / sizeof(keymap[0]));
+			for (int scancode = scancode_min; scancode <= scancode_max && scancode < keycodes_len; scancode++) {
+				if (scancode < 0 || desc->names->keys == NULL) {
+					continue;
+				}
+				int key = 0;
+				for (int i = 0; i < keymap_len; i++) {
+					if (memcmp(desc->names->keys[scancode].name, keymap[i].name, XkbKeyNameLength) == 0) {
+						key = keymap[i].key;
+						break;
+					}
+				}
+				if (key == 0 && desc->names->key_aliases != NULL) {
+					for (int alias_index = 0; alias_index < desc->names->num_key_aliases; alias_index++) {
+						if (memcmp(desc->names->key_aliases[alias_index].real, desc->names->keys[scancode].name, XkbKeyNameLength) != 0) {
+							continue;
+						}
+						for (int i = 0; i < keymap_len; i++) {
+							if (memcmp(desc->names->key_aliases[alias_index].alias, keymap[i].name, XkbKeyNameLength) == 0) {
+								key = keymap[i].key;
+								break;
+							}
+						}
+						if (key != 0) {
+							break;
+						}
+					}
+				}
+				keycodes[scancode] = key;
+			}
+			XkbFreeNames(desc, XkbKeyNamesMask, True);
+		}
+		XkbFreeKeyboard(desc, 0, True);
+	}
+
+	if (scancode_min < 0) {
+		scancode_min = 0;
+	}
+	if (scancode_max >= keycodes_len) {
+		scancode_max = keycodes_len - 1;
+	}
+	if (scancode_min > scancode_max) {
+		return;
+	}
+	int syms_per_code = 0;
+	KeySym *keysyms = XGetKeyboardMapping(display, (KeyCode)scancode_min, scancode_max - scancode_min + 1, &syms_per_code);
+	if (keysyms == NULL) {
+		return;
+	}
+	for (int scancode = scancode_min; scancode <= scancode_max; scancode++) {
+		if (keycodes[scancode] == 0) {
+			int base = (scancode - scancode_min) * syms_per_code;
+			keycodes[scancode] = v_multiwindow_x11_key_code_from_keysyms(keysyms + base, syms_per_code);
+		}
+	}
+	XFree(keysyms);
+}
+
+static inline int v_multiwindow_x11_key_code(XEvent *event, int *keycodes, int keycodes_len) {
+	KeySym keysym = XLookupKeysym(&event->xkey, 0);
+	int keycode = v_multiwindow_x11_key_code_from_keysym(keysym);
+	unsigned int scancode = event->xkey.keycode;
+	if (keycode >= 256 && keycode <= 348) {
+		return keycode;
+	}
+	if (keycodes != NULL && scancode < (unsigned int)keycodes_len && keycodes[scancode] != 0) {
+		return keycodes[scancode];
+	}
+	return keycode;
+}
 
 static inline int v_multiwindow_x11_apply_config_hints(Display *display, unsigned long window, int width, int height, int min_width, int min_height, int resizable, int borderless, int fullscreen) {
 	XSizeHints size_hints;
@@ -162,7 +742,7 @@ static inline unsigned long v_multiwindow_x11_create_egl_window(Display *display
 	attrs.colormap = XCreateColormap(display, root, visual_info->visual, AllocNone);
 	attrs.border_pixel = 0;
 	attrs.background_pixel = 0;
-	attrs.event_mask = StructureNotifyMask;
+	attrs.event_mask = v_multiwindow_x11_event_mask();
 	window = XCreateWindow(display, root, 0, 0, (unsigned int)width, (unsigned int)height, 0,
 		visual_info->depth, InputOutput, visual_info->visual,
 		CWColormap | CWBorderPixel | CWBackPixel | CWEventMask, &attrs);

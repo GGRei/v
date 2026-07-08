@@ -11,9 +11,11 @@ module main
 import gg
 
 struct EventState {
-	mock bool
+	mock        bool
+	input_limit int = 12
 mut:
 	resized int
+	inputs  int
 }
 
 fn main() {
@@ -33,6 +35,8 @@ fn run_example() ! {
 	println('gg multi-window backend: ${caps.backend}')
 	if caps.mock {
 		println('mock backend selected; stopping after initial lifecycle events')
+	} else {
+		println('input logging enabled for key/mouse/focus/scroll events; first 12 events will be printed')
 	}
 
 	main_window := app.create_window(
@@ -85,7 +89,67 @@ fn run_example() ! {
 				}
 			}
 		}
+		input_fn: fn [mut state] (event gg.WindowInputEvent, mut app gg.App) ! {
+			_ = app
+			if state.inputs >= state.input_limit {
+				return
+			}
+			message := input_event_summary(event)
+			if message == '' {
+				return
+			}
+			state.inputs++
+			println('input ${state.inputs}/${state.input_limit}: ${message}')
+		}
 	)!
+}
+
+fn input_event_summary(event gg.WindowInputEvent) string {
+	input := event.event
+	match input.typ {
+		.key_down {
+			return '${event.window}: key down ${input.key_code} repeat=${input.key_repeat} modifiers=${input.modifiers}'
+		}
+		.key_up {
+			return '${event.window}: key up ${input.key_code} modifiers=${input.modifiers}'
+		}
+		.char {
+			return '${event.window}: char code ${input.char_code}'
+		}
+		.mouse_down {
+			return '${event.window}: mouse down ${input.mouse_button} at ${input.mouse_x},${input.mouse_y}'
+		}
+		.mouse_up {
+			return '${event.window}: mouse up ${input.mouse_button} at ${input.mouse_x},${input.mouse_y}'
+		}
+		.mouse_move {
+			return '${event.window}: mouse move ${input.mouse_x},${input.mouse_y} delta=${input.mouse_dx},${input.mouse_dy}'
+		}
+		.mouse_scroll {
+			return '${event.window}: scroll ${input.scroll_x},${input.scroll_y} at ${input.mouse_x},${input.mouse_y}'
+		}
+		.mouse_enter {
+			return '${event.window}: mouse enter'
+		}
+		.mouse_leave {
+			return '${event.window}: mouse leave'
+		}
+		.focused {
+			return '${event.window}: focused'
+		}
+		.unfocused {
+			return '${event.window}: unfocused'
+		}
+		.clipboard_pasted {
+			return '${event.window}: clipboard pasted'
+		}
+		.files_dropped {
+			return '${event.window}: ${event.dropped_files.len} file(s) dropped'
+		}
+		else {
+			return ''
+		}
+	}
 }
 
 fn resize_or_ignore_unsupported(mut app gg.App, window gg.WindowId, width int, height int) ! {

@@ -3,6 +3,7 @@ module gg
 
 import x.multiwindow
 import sokol.gfx
+import sokol.sapp
 import sokol.sgl
 import sync
 import time
@@ -101,6 +102,13 @@ pub:
 	wayland            bool
 	win32              bool
 	gl                 bool
+	input_events       bool
+	mouse_events       bool
+	keyboard_events    bool
+	text_events        bool
+	focus_events       bool
+	drop_events        bool
+	touch_events       bool
 }
 
 // WindowEvent is the multi-window event wrapper. The existing gg.Event remains
@@ -114,6 +122,14 @@ pub:
 	height int
 }
 
+// WindowInputEvent routes a normal gg.Event to a specific gg.App window.
+pub struct WindowInputEvent {
+pub:
+	window        WindowId
+	event         Event
+	dropped_files []string
+}
+
 // AppJobFn is executed later by app.drain_pending() on the owner side.
 pub type AppJobFn = fn (mut app App) !
 
@@ -123,6 +139,9 @@ pub type AppFrameFn = fn (mut app App) !
 
 // AppEventFn is called by App.run() for each drained multi-window event.
 pub type AppEventFn = fn (event WindowEvent, mut app App) !
+
+// AppInputFn is called by App.run() for each drained multi-window input event.
+pub type AppInputFn = fn (event WindowInputEvent, mut app App) !
 
 // WindowDrawFn records drawing commands for one WindowContext.
 pub type WindowDrawFn = fn (mut window WindowContext) !
@@ -134,6 +153,7 @@ pub struct RunConfig {
 pub:
 	frame_fn         AppFrameFn = unsafe { nil }
 	event_fn         AppEventFn = unsafe { nil }
+	input_fn         AppInputFn = unsafe { nil }
 	max_pending_jobs int        = 64
 }
 
@@ -286,7 +306,18 @@ pub fn (mut app App) drain_events() ![]WindowEvent {
 	return events
 }
 
-// poll_events lets the backend route native lifecycle events into the gg.App queue.
+// drain_input_events returns and clears pending window-scoped input events.
+pub fn (mut app App) drain_input_events() ![]WindowInputEvent {
+	app.ensure_initialized()!
+	core_events := app.core.drain_input_events()!
+	mut events := []WindowInputEvent{cap: core_events.len}
+	for event in core_events {
+		events << window_input_event_from_core(event)
+	}
+	return events
+}
+
+// poll_events lets the backend route native lifecycle/input events into the gg.App queue.
 pub fn (mut app App) poll_events() !int {
 	app.ensure_initialized()!
 	return app.core.poll_events()!
@@ -322,7 +353,8 @@ pub fn (mut app App) run(config RunConfig) ! {
 	app.ensure_initialized()!
 	has_frame_fn := config.frame_fn != unsafe { nil }
 	has_event_fn := config.event_fn != unsafe { nil }
-	if !has_frame_fn && !has_event_fn {
+	has_input_fn := config.input_fn != unsafe { nil }
+	if !has_frame_fn && !has_event_fn && !has_input_fn {
 		return error(err_multiwindow_nil_run_fn)
 	}
 	renderer_available := app.capabilities().explicit_swapchain
@@ -349,7 +381,7 @@ pub fn (mut app App) run(config RunConfig) ! {
 		if app.core.status() != .running {
 			break
 		}
-		dispatched_events := app.dispatch_run_events(config.event_fn)!
+		dispatched_events := app.dispatch_run_events(config.event_fn, config.input_fn)!
 		if app.core.status() != .running {
 			break
 		}
@@ -361,15 +393,27 @@ pub fn (mut app App) run(config RunConfig) ! {
 	}
 }
 
-fn (mut app App) dispatch_run_events(event_fn AppEventFn) !int {
-	events := app.drain_events()!
-	if event_fn == unsafe { nil } {
-		// Frame-only loops still need lifecycle side effects from drain_events().
-		return events.len
-	}
+fn (mut app App) dispatch_run_events(event_fn AppEventFn, input_fn AppInputFn) !int {
+	events := app.core.drain_queued_events()!
 	mut dispatched := 0
 	for event in events {
-		event_fn(event, mut app)!
+		match event.kind {
+			.lifecycle {
+				window_event := window_event_from_core(event.lifecycle)
+				if window_event.kind == .window_destroyed {
+					app.discard_window_sgl_context(window_event.window)
+				}
+				if event_fn != unsafe { nil } {
+					event_fn(window_event, mut app)!
+				}
+			}
+			.input {
+				if input_fn != unsafe { nil } {
+					input_fn(window_input_event_from_core(event.input), mut app)!
+				}
+			}
+		}
+
 		dispatched++
 		if app.core.status() != .running {
 			return dispatched
@@ -628,6 +672,13 @@ fn capabilities_from_core(caps multiwindow.Capabilities) Capabilities {
 		wayland:            caps.wayland
 		win32:              caps.win32
 		gl:                 caps.gl
+		input_events:       caps.input_events
+		mouse_events:       caps.mouse_events
+		keyboard_events:    caps.keyboard_events
+		text_events:        caps.text_events
+		focus_events:       caps.focus_events
+		drop_events:        caps.drop_events
+		touch_events:       caps.touch_events
 	}
 }
 
@@ -662,11 +713,181 @@ fn window_event_from_core(event multiwindow.Event) WindowEvent {
 	}
 }
 
+fn window_input_event_from_core(event multiwindow.InputEvent) WindowInputEvent {
+	return WindowInputEvent{
+		window:        window_id_from_core(event.window_id)
+		event:         gg_event_from_core_input(event)
+		dropped_files: event.dropped_files.clone()
+	}
+}
+
+fn gg_event_from_core_input(event multiwindow.InputEvent) Event {
+	mut touches := [8]TouchPoint{}
+	touch_count := input_touch_count(event.num_touches)
+	for i in 0 .. touch_count {
+		touch := event.touches[i]
+		touches[i] = TouchPoint{
+			identifier:       touch.identifier
+			pos_x:            touch.pos_x
+			pos_y:            touch.pos_y
+			android_tooltype: unsafe { sapp.TouchToolType(touch.android_tooltype) }
+			changed:          touch.changed
+		}
+	}
+	return Event{
+		frame_count:        event.frame_count
+		typ:                input_event_type_from_core(event.kind)
+		key_code:           unsafe { KeyCode(event.key_code) }
+		char_code:          event.char_code
+		key_repeat:         event.key_repeat
+		modifiers:          event.modifiers
+		mouse_button:       mouse_button_from_core(event.mouse_button)
+		mouse_x:            event.mouse_x
+		mouse_y:            event.mouse_y
+		mouse_dx:           event.mouse_dx
+		mouse_dy:           event.mouse_dy
+		scroll_x:           event.scroll_x
+		scroll_y:           event.scroll_y
+		num_touches:        touch_count
+		touches:            touches
+		window_width:       event.window_width
+		window_height:      event.window_height
+		framebuffer_width:  event.framebuffer_width
+		framebuffer_height: event.framebuffer_height
+	}
+}
+
 fn event_kind_from_core(kind multiwindow.EventKind) WindowEventKind {
 	return match kind {
 		.window_created { .window_created }
 		.window_destroyed { .window_destroyed }
 		.window_close_requested { .window_close_requested }
 		.window_resized { .window_resized }
+	}
+}
+
+fn input_event_type_from_core(kind multiwindow.InputEventKind) sapp.EventType {
+	return match kind {
+		.invalid { .invalid }
+		.key_down { .key_down }
+		.key_up { .key_up }
+		.char { .char }
+		.mouse_down { .mouse_down }
+		.mouse_up { .mouse_up }
+		.mouse_scroll { .mouse_scroll }
+		.mouse_move { .mouse_move }
+		.mouse_enter { .mouse_enter }
+		.mouse_leave { .mouse_leave }
+		.touches_began { .touches_began }
+		.touches_moved { .touches_moved }
+		.touches_ended { .touches_ended }
+		.touches_cancelled { .touches_cancelled }
+		.resized { .resized }
+		.iconified { .iconified }
+		.restored { .restored }
+		.focused { .focused }
+		.unfocused { .unfocused }
+		.suspended { .suspended }
+		.resumed { .resumed }
+		.quit_requested { .quit_requested }
+		.clipboard_pasted { .clipboard_pasted }
+		.files_dropped { .files_dropped }
+	}
+}
+
+fn mouse_button_from_core(button int) MouseButton {
+	return match button {
+		0 { .left }
+		1 { .right }
+		2 { .middle }
+		else { .invalid }
+	}
+}
+
+fn input_touch_count(count int) int {
+	if count < 0 {
+		return 0
+	}
+	if count > 8 {
+		return 8
+	}
+	return count
+}
+
+$if test {
+	fn input_event_to_core(event WindowInputEvent) multiwindow.InputEvent {
+		gg_event := event.event
+		mut touches := [8]multiwindow.InputTouchPoint{}
+		touch_count := input_touch_count(gg_event.num_touches)
+		for i in 0 .. touch_count {
+			touch := gg_event.touches[i]
+			touches[i] = multiwindow.InputTouchPoint{
+				identifier:       touch.identifier
+				pos_x:            touch.pos_x
+				pos_y:            touch.pos_y
+				android_tooltype: int(touch.android_tooltype)
+				changed:          touch.changed
+			}
+		}
+		return multiwindow.InputEvent{
+			kind:               input_event_type_to_core(gg_event.typ)
+			window_id:          event.window.core
+			frame_count:        gg_event.frame_count
+			key_code:           int(gg_event.key_code)
+			char_code:          gg_event.char_code
+			key_repeat:         gg_event.key_repeat
+			modifiers:          gg_event.modifiers
+			mouse_button:       int(gg_event.mouse_button)
+			mouse_x:            gg_event.mouse_x
+			mouse_y:            gg_event.mouse_y
+			mouse_dx:           gg_event.mouse_dx
+			mouse_dy:           gg_event.mouse_dy
+			scroll_x:           gg_event.scroll_x
+			scroll_y:           gg_event.scroll_y
+			num_touches:        touch_count
+			touches:            touches
+			window_width:       gg_event.window_width
+			window_height:      gg_event.window_height
+			framebuffer_width:  gg_event.framebuffer_width
+			framebuffer_height: gg_event.framebuffer_height
+			dropped_files:      event.dropped_files.clone()
+		}
+	}
+
+	fn input_event_type_to_core(typ sapp.EventType) multiwindow.InputEventKind {
+		return match typ {
+			.invalid { .invalid }
+			.key_down { .key_down }
+			.key_up { .key_up }
+			.char { .char }
+			.mouse_down { .mouse_down }
+			.mouse_up { .mouse_up }
+			.mouse_scroll { .mouse_scroll }
+			.mouse_move { .mouse_move }
+			.mouse_enter { .mouse_enter }
+			.mouse_leave { .mouse_leave }
+			.touches_began { .touches_began }
+			.touches_moved { .touches_moved }
+			.touches_ended { .touches_ended }
+			.touches_cancelled { .touches_cancelled }
+			.resized { .resized }
+			.iconified { .iconified }
+			.restored { .restored }
+			.focused { .focused }
+			.unfocused { .unfocused }
+			.suspended { .suspended }
+			.resumed { .resumed }
+			.quit_requested { .quit_requested }
+			.clipboard_pasted { .clipboard_pasted }
+			.files_dropped { .files_dropped }
+			else { .invalid }
+		}
+	}
+
+	// enqueue_mock_input_for_test injects a window-scoped input event into the
+	// mock backend without exposing x.multiwindow to user programs.
+	pub fn (mut app App) enqueue_mock_input_for_test(event WindowInputEvent) ! {
+		app.ensure_initialized()!
+		app.core.enqueue_mock_input_for_test(input_event_to_core(event))!
 	}
 }

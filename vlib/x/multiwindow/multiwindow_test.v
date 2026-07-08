@@ -233,6 +233,137 @@ fn test_mock_stale_backend_close_requested_is_filtered_by_app_poll_events() {
 	assert false, 'stale WindowId remained valid after slot reuse'
 }
 
+fn test_mock_input_events_are_routed_without_polluting_lifecycle_drain() {
+	mut app := new_app()!
+	win := app.create_window(title: 'Input route')!
+	assert app.drain_events()!.len == 1
+
+	app.enqueue_mock_input_for_test(InputEvent{
+		kind:      .mouse_move
+		window_id: win
+		mouse_x:   12.5
+		mouse_y:   34.5
+	})!
+
+	assert app.poll_events()! == 1
+	assert app.drain_events()!.len == 0
+	input_events := app.drain_input_events()!
+	assert input_events.len == 1
+	assert input_events[0].kind == .mouse_move
+	assert input_events[0].window_id == win
+	assert input_events[0].mouse_x == 12.5
+	assert input_events[0].mouse_y == 34.5
+	assert app.drain_input_events()!.len == 0
+	app.stop()!
+}
+
+fn test_drain_input_events_does_not_consume_lifecycle_events() {
+	mut app := new_app()!
+	win := app.create_window(title: 'Lifecycle remains')!
+
+	app.enqueue_mock_input_for_test(InputEvent{
+		kind:      .mouse_move
+		window_id: win
+		mouse_x:   48
+		mouse_y:   96
+	})!
+
+	assert app.poll_events()! == 1
+	input_events := app.drain_input_events()!
+	assert input_events.len == 1
+	assert input_events[0].kind == .mouse_move
+	assert input_events[0].window_id == win
+
+	lifecycle_events := app.drain_events()!
+	assert lifecycle_events.len == 1
+	assert lifecycle_events[0].kind == .window_created
+	assert lifecycle_events[0].window_id == win
+	assert app.drain_events()!.len == 0
+	assert app.drain_input_events()!.len == 0
+	app.stop()!
+}
+
+fn test_mock_input_and_lifecycle_events_preserve_backend_order() {
+	mut app := new_app()!
+	win := app.create_window(title: 'Ordered input')!
+	assert app.drain_events()!.len == 1
+
+	app.enqueue_mock_input_for_test(InputEvent{
+		kind:         .mouse_down
+		window_id:    win
+		mouse_button: 0
+	})!
+	app.enqueue_mock_close_requested_for_test(win)!
+	app.enqueue_mock_input_for_test(InputEvent{
+		kind:      .key_down
+		window_id: win
+		key_code:  65
+	})!
+
+	assert app.poll_events()! == 3
+	queued_events := app.drain_queued_events()!
+	assert queued_events.len == 3
+	assert queued_events[0].kind == .input
+	assert queued_events[0].input.kind == .mouse_down
+	assert queued_events[1].kind == .lifecycle
+	assert queued_events[1].lifecycle.kind == .window_close_requested
+	assert queued_events[2].kind == .input
+	assert queued_events[2].input.kind == .key_down
+	app.stop()!
+}
+
+fn test_mock_stale_backend_input_event_is_filtered_by_app_poll_events() {
+	mut app := new_app()!
+	first := app.create_window(title: 'First input target')!
+	assert app.drain_events()!.len == 1
+	app.destroy_window(first)!
+	assert app.drain_events()!.len == 1
+	second := app.create_window(title: 'Reused input target')!
+	assert second.slot == first.slot
+	assert second.generation != first.generation
+	assert app.drain_events()!.len == 1
+
+	app.enqueue_mock_input_unchecked_for_test(InputEvent{
+		kind:      .mouse_move
+		window_id: first
+		mouse_x:   99
+		mouse_y:   88
+	})!
+
+	assert app.poll_events()! == 0
+	assert app.drain_input_events()!.len == 0
+	assert app.window_exists(second)
+	app.stop()!
+}
+
+fn test_mock_resized_input_event_updates_window_state() {
+	mut app := new_app()!
+	win := app.create_window(title: 'Input resize', width: 320, height: 200)!
+	assert app.drain_events()!.len == 1
+
+	app.enqueue_mock_input_for_test(InputEvent{
+		kind:               .resized
+		window_id:          win
+		window_width:       640
+		window_height:      360
+		framebuffer_width:  1280
+		framebuffer_height: 720
+	})!
+
+	assert app.poll_events()! == 1
+	info := app.window_info(win)!
+	assert info.width == 640
+	assert info.height == 360
+	input_events := app.drain_input_events()!
+	assert input_events.len == 1
+	assert input_events[0].kind == .resized
+	assert input_events[0].window_width == 640
+	assert input_events[0].window_height == 360
+	assert input_events[0].framebuffer_width == 1280
+	assert input_events[0].framebuffer_height == 720
+	app.stop()!
+}
+
 fn test_owner_queue_runs_jobs_and_rejects_destroyed_window_work() {
 	mut app := new_app(queue_size: 4)!
 	win := app.create_window(title: 'Queued')!
@@ -392,6 +523,13 @@ fn test_backend_capabilities_are_stable() {
 	assert caps_before.multi_window == caps_after.multi_window
 	assert caps_before.owner_queue == caps_after.owner_queue
 	assert caps_before.explicit_swapchain == caps_after.explicit_swapchain
+	assert caps_before.input_events
+	assert caps_before.mouse_events
+	assert caps_before.keyboard_events
+	assert caps_before.text_events
+	assert caps_before.focus_events
+	assert caps_before.drop_events
+	assert caps_before.touch_events
 	app.stop()!
 }
 
@@ -527,6 +665,13 @@ fn test_capabilities_for_backend_uses_backend_seam_without_app() {
 	assert caps.multi_window
 	assert caps.owner_queue
 	assert !caps.explicit_swapchain
+	assert caps.input_events
+	assert caps.mouse_events
+	assert caps.keyboard_events
+	assert caps.text_events
+	assert caps.focus_events
+	assert caps.drop_events
+	assert caps.touch_events
 }
 
 fn test_mock_render_seam_reports_renderer_unsupported() {
@@ -658,6 +803,7 @@ fn test_capabilities_for_config_render_required_prefers_x11_over_wayland() {
 				assert caps.native
 				assert caps.explicit_swapchain
 				assert caps.d3d11
+				assert_win32_input_capabilities(caps)
 			} $else {
 				capabilities_for_config(backend: .auto, require_renderer: true) or {
 					assert err.msg() == err_renderer_unsupported
@@ -679,6 +825,7 @@ fn test_capabilities_for_config_render_required_prefers_x11_over_wayland() {
 					assert caps.native
 					assert caps.explicit_swapchain
 					assert caps.metal
+					assert_appkit_input_capabilities(caps)
 				}
 			} $else {
 				caps := capabilities_for_config(backend: .auto, require_renderer: true)!
@@ -712,6 +859,7 @@ fn assert_x11_render_capabilities(caps Capabilities) {
 	assert caps.native
 	assert caps.explicit_swapchain
 	assert caps.gl
+	assert_x11_input_capabilities(caps)
 }
 
 fn assert_x11_lifecycle_capabilities(caps Capabilities) {
@@ -722,6 +870,57 @@ fn assert_x11_lifecycle_capabilities(caps Capabilities) {
 	assert caps.multi_window
 	assert caps.owner_queue
 	assert !caps.explicit_swapchain
+	assert_x11_input_capabilities(caps)
+}
+
+fn assert_native_input_capabilities_not_claimed(caps Capabilities) {
+	assert !caps.input_events
+	assert !caps.mouse_events
+	assert !caps.keyboard_events
+	assert !caps.text_events
+	assert !caps.focus_events
+	assert !caps.drop_events
+	assert !caps.touch_events
+}
+
+fn assert_x11_input_capabilities(caps Capabilities) {
+	assert caps.input_events
+	assert caps.mouse_events
+	assert caps.keyboard_events
+	assert !caps.text_events
+	assert caps.focus_events
+	assert !caps.drop_events
+	assert !caps.touch_events
+}
+
+fn assert_wayland_input_capabilities(caps Capabilities) {
+	assert caps.input_events
+	assert caps.mouse_events
+	assert caps.keyboard_events
+	assert !caps.text_events
+	assert caps.focus_events
+	assert !caps.drop_events
+	assert !caps.touch_events
+}
+
+fn assert_win32_input_capabilities(caps Capabilities) {
+	assert caps.input_events
+	assert caps.mouse_events
+	assert caps.keyboard_events
+	assert caps.text_events
+	assert caps.focus_events
+	assert !caps.drop_events
+	assert !caps.touch_events
+}
+
+fn assert_appkit_input_capabilities(caps Capabilities) {
+	assert caps.input_events
+	assert caps.mouse_events
+	assert caps.keyboard_events
+	assert caps.text_events
+	assert caps.focus_events
+	assert !caps.drop_events
+	assert !caps.touch_events
 }
 
 fn test_fake_wayland_lifecycle_capabilities_do_not_claim_render_ready() {
@@ -741,6 +940,7 @@ fn test_fake_wayland_lifecycle_capabilities_do_not_claim_render_ready() {
 			assert caps.wayland
 			assert !caps.explicit_swapchain
 			assert !caps.gl
+			assert_wayland_input_capabilities(caps)
 
 			helper_caps := capabilities_for_backend(.wayland) or {
 				assert err.msg() == err_wayland_connect_failed
@@ -749,6 +949,7 @@ fn test_fake_wayland_lifecycle_capabilities_do_not_claim_render_ready() {
 			assert helper_caps.backend == .wayland
 			assert !helper_caps.explicit_swapchain
 			assert !helper_caps.gl
+			assert_wayland_input_capabilities(helper_caps)
 		} $else {
 			caps := capabilities_for_backend(.auto)!
 			assert caps.backend == .mock
@@ -936,6 +1137,7 @@ fn test_auto_capabilities_for_backend_reports_selected_backend() {
 				assert caps.native
 				assert caps.multi_window
 				assert caps.owner_queue
+				assert_wayland_input_capabilities(caps)
 				return
 			}
 		}
@@ -944,6 +1146,7 @@ fn test_auto_capabilities_for_backend_reports_selected_backend() {
 				assert caps.backend == .x11
 				assert caps.x11
 				assert caps.native
+				assert_x11_input_capabilities(caps)
 				return
 			}
 		}
@@ -955,10 +1158,12 @@ fn test_auto_capabilities_for_backend_reports_selected_backend() {
 			assert caps.backend == .win32
 			assert caps.win32
 			assert caps.native
+			assert_win32_input_capabilities(caps)
 		} $else {
 			$if darwin {
 				assert caps.backend == .appkit
 				assert caps.native
+				assert_appkit_input_capabilities(caps)
 			} $else {
 				assert caps.backend == .mock
 				assert caps.mock
@@ -983,6 +1188,7 @@ fn test_win32_capabilities_for_backend_do_not_require_d3d_on_windows() {
 		assert !caps.wayland
 		assert !caps.explicit_swapchain
 		assert !caps.d3d11
+		assert_win32_input_capabilities(caps)
 	} $else {
 		capabilities_for_backend(.win32) or {
 			assert err.msg() == err_backend_unsupported
@@ -1008,6 +1214,7 @@ fn test_win32_render_capabilities_probe_d3d_on_windows_only() {
 			assert caps.native
 			assert caps.explicit_swapchain
 			assert caps.d3d11
+			assert_win32_input_capabilities(caps)
 		} $else {
 			capabilities_for_backend_with_renderer(.win32, true) or {
 				assert err.msg() == err_renderer_unsupported
@@ -1050,6 +1257,92 @@ fn test_win32_min_size_plumbing_is_present() {
 	assert win32_helper_source.contains('v_multiwindow_win32_max_int(height, min_height)')
 }
 
+fn test_win32_input_events_are_queued_and_capability_scoped_source_guard() {
+	backend_source := multiwindow_source_file('backend.v')
+	win32_backend_source := multiwindow_source_file('win32_backend.c.v')
+	win32_helper_source := multiwindow_source_file('win32_backend_helpers.h')
+
+	assert backend_source.contains('.win32 {\n\t\t\treturn backend.win32.poll_queued_events()!')
+	assert win32_backend_source.contains('struct Win32NativeQueuedEvent')
+	assert win32_backend_source.contains('queued_events')
+	assert win32_backend_source.contains('[]Win32NativeQueuedEvent')
+	assert win32_backend_source.contains('fn (mut backend Win32Backend) poll_queued_events() ![]QueuedEvent')
+	assert win32_backend_source.contains('win32_sort_native_events(mut native_events)')
+	assert win32_backend_source.contains('record.enqueue_native_event(sequence, queued_input_event')
+	assert win32_backend_source.contains('record.enqueue_char_event(sequence, char_code, modifiers)')
+	assert win32_backend_source.contains('pending_high_surrogate')
+	assert win32_backend_source.contains('suppress_control_char')
+	assert !win32_backend_source.contains('win32_scroll_delta')
+	assert !win32_backend_source.contains('...input')
+	assert win32_backend_source.contains('scroll_x:           -f32(wheel_delta_x) / f32(30.0)')
+	assert win32_backend_source.contains('scroll_y:           f32(wheel_delta_y) / f32(30.0)')
+	assert win32_backend_source.contains('fn win32_control_char_for_key(key_code int) u32')
+	assert win32_backend_source.contains('257, 335 { u32(13) }')
+	assert win32_backend_source.contains('261 { u32(127) }')
+	assert win32_backend_source.contains('input_events:       true')
+	assert win32_backend_source.contains('mouse_events:       true')
+	assert win32_backend_source.contains('keyboard_events:    true')
+	assert win32_backend_source.contains('text_events:        true')
+	assert win32_backend_source.contains('focus_events:       true')
+	assert win32_backend_source.contains('drop_events:        false')
+	assert win32_backend_source.contains('touch_events:       false')
+
+	assert win32_helper_source.contains('GWLP_USERDATA')
+	assert win32_helper_source.contains('v_multiwindow_win32_next_event_sequence')
+	assert win32_helper_source.contains('WM_MOUSEMOVE')
+	assert win32_helper_source.contains('TrackMouseEvent')
+	assert win32_helper_source.contains('WM_MOUSELEAVE')
+	assert win32_helper_source.contains('WM_LBUTTONDOWN')
+	assert win32_helper_source.contains('WM_RBUTTONDOWN')
+	assert win32_helper_source.contains('WM_MBUTTONDOWN')
+	assert win32_helper_source.contains('WM_MOUSEWHEEL')
+	assert win32_helper_source.contains('WM_MOUSEHWHEEL')
+	assert win32_helper_source.contains('WM_KEYDOWN')
+	assert win32_helper_source.contains('WM_SYSKEYDOWN')
+	assert win32_helper_source.contains('WM_KEYUP')
+	assert win32_helper_source.contains('WM_SYSKEYUP')
+	assert win32_helper_source.contains('WM_CHAR')
+	assert win32_helper_source.contains('WM_SETFOCUS')
+	assert win32_helper_source.contains('WM_KILLFOCUS')
+	assert win32_helper_source.contains('v_multiwindow_win32_key_code')
+	assert win32_helper_source.contains('v_multiwindow_win32_modifiers')
+	assert win32_helper_source.contains('GetAsyncKeyState(VK_LBUTTON)')
+	assert win32_helper_source.contains('V_MULTIWINDOW_WIN32_MODIFIER_LMB 0x100')
+	assert win32_helper_source.contains('V_MULTIWINDOW_WIN32_MODIFIER_RMB 0x200')
+	assert win32_helper_source.contains('V_MULTIWINDOW_WIN32_MODIFIER_MMB 0x400')
+	assert win32_helper_source.contains('v_multiwindow_win32_is_char_code')
+	assert win32_helper_source.contains('c >= 32 || c == 8 || c == 9 || c == 13 || c == 127')
+	assert win32_helper_source.contains('return (lparam & 0x01000000) ? 335 : 257;')
+	assert !win32_backend_source.contains('win32_input_quit_requested')
+	assert !win32_backend_source.contains('.quit_requested')
+	assert !win32_helper_source.contains('V_MULTIWINDOW_WIN32_INPUT_QUIT_REQUESTED')
+	assert !win32_helper_source.contains('WM_SYSCHAR')
+	assert !win32_helper_source.contains('WM_DROPFILES')
+	assert !win32_helper_source.contains('DragAcceptFiles')
+	assert !win32_helper_source.contains('WM_TOUCH')
+	assert !win32_helper_source.contains('RegisterTouchWindow')
+	assert !win32_helper_source.contains('WM_IME')
+
+	syskey_down_start := win32_helper_source.index('case WM_SYSKEYDOWN:') or {
+		assert false, 'Win32 helper does not handle WM_SYSKEYDOWN'
+		0
+	}
+	syskey_up_start := win32_helper_source.index('case WM_SYSKEYUP:') or {
+		assert false, 'Win32 helper does not handle WM_SYSKEYUP'
+		0
+	}
+	key_up_start := win32_helper_source.index('case WM_KEYUP:') or {
+		assert false, 'Win32 helper does not handle WM_KEYUP'
+		0
+	}
+	char_start := win32_helper_source.index('case WM_CHAR:') or {
+		assert false, 'Win32 helper does not handle WM_CHAR'
+		0
+	}
+	assert !win32_helper_source[syskey_down_start..key_up_start].contains('return 0;')
+	assert !win32_helper_source[syskey_up_start..char_start].contains('return 0;')
+}
+
 fn test_win32_runtime_resize_clamps_to_min_size_when_available() {
 	$if windows {
 		mut app := new_app(backend: .win32)!
@@ -1088,6 +1381,7 @@ fn test_appkit_capabilities_for_backend_are_platform_scoped() {
 		assert caps.owner_queue
 		assert !caps.explicit_swapchain
 		assert caps.metal == false
+		assert_appkit_input_capabilities(caps)
 	} $else {
 		capabilities_for_backend(.appkit) or {
 			assert err.msg() == err_backend_unsupported
@@ -1189,6 +1483,121 @@ fn test_appkit_initial_content_rect_is_clamped_to_min_size_source_guard() {
 	assert_source_order(source,
 		'int content_width = v_multiwindow_appkit_max_int(width, min_width);',
 		'NSWindow *window = [[NSWindow alloc] initWithContentRect:rect')
+}
+
+fn test_appkit_input_events_are_queued_and_capability_scoped_source_guard() {
+	backend_source := multiwindow_source_file('backend.v')
+	appkit_backend_source := multiwindow_source_file('appkit_backend.c.v')
+	appkit_header_source := multiwindow_source_file('appkit_backend_helpers.h')
+	appkit_impl_source := multiwindow_source_file('appkit_backend.m')
+
+	assert backend_source.contains('.appkit {\n\t\t\treturn backend.appkit.poll_queued_events()!')
+	assert appkit_backend_source.contains('struct AppKitNativeQueuedEvent')
+	assert appkit_backend_source.contains('fn (mut backend AppKitBackend) poll_queued_events() ![]QueuedEvent')
+	assert appkit_backend_source.contains('appkit_sort_native_events(mut native_events)')
+	assert appkit_backend_source.contains('appkit_queued_event_from_native(record, native_event)')
+	assert appkit_backend_source.contains('@[heap; markused]\nstruct AppKitWindowRecord')
+	assert !appkit_backend_source.contains('const appkit_input_')
+	assert !appkit_backend_source.contains('const appkit_native_event_')
+	assert appkit_backend_source.contains('input_events:       true')
+	assert appkit_backend_source.contains('mouse_events:       true')
+	assert appkit_backend_source.contains('keyboard_events:    true')
+	assert appkit_backend_source.contains('text_events:        true')
+	assert appkit_backend_source.contains('focus_events:       true')
+	assert appkit_backend_source.contains('drop_events:        false')
+	assert appkit_backend_source.contains('touch_events:       false')
+
+	assert appkit_header_source.contains('typedef struct VMultiwindowAppKitQueuedEvent')
+	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_INPUT_MOUSE_MOVE')
+	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_INPUT_RESIZED')
+	assert appkit_header_source.contains('int v_multiwindow_appkit_take_queued_event')
+	assert !appkit_header_source.contains('v_multiwindow_appkit_take_close_requested')
+	assert !appkit_header_source.contains('v_multiwindow_appkit_take_resized')
+	assert !appkit_header_source.contains('v_multiwindow_appkit_take_destroyed')
+	assert !appkit_backend_source.contains('v_multiwindow_appkit_take_close_requested')
+	assert !appkit_backend_source.contains('v_multiwindow_appkit_take_resized')
+	assert !appkit_backend_source.contains('v_multiwindow_appkit_take_destroyed')
+	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_MODIFIER_LMB 0x100')
+	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_MODIFIER_RMB 0x200')
+	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_MODIFIER_MMB 0x400')
+
+	assert appkit_impl_source.contains('@interface VMultiwindowAppKitView : NSView')
+	assert appkit_impl_source.contains('- (BOOL)acceptsFirstResponder')
+	assert appkit_impl_source.contains('- (BOOL)acceptsFirstMouse:(NSEvent *)event')
+	assert appkit_impl_source.contains('NSTrackingMouseEnteredAndExited')
+	assert appkit_impl_source.contains('NSTrackingEnabledDuringMouseDrag')
+	assert appkit_impl_source.contains('windowDidBecomeKey')
+	assert appkit_impl_source.contains('windowDidResignKey')
+	assert appkit_impl_source.contains('clearKeyDownState')
+	assert appkit_impl_source.contains('windowShouldClose')
+	assert appkit_impl_source.contains('queueResizeEvents')
+	assert appkit_impl_source.contains('suppressResizeEvent')
+	assert !appkit_impl_source.contains('@property(assign) BOOL closeRequested')
+	assert !appkit_impl_source.contains('@property(assign) BOOL destroyed')
+	assert !appkit_impl_source.contains('@property(assign) BOOL resized')
+	assert !appkit_impl_source.contains('int v_multiwindow_appkit_take_close_requested')
+	assert !appkit_impl_source.contains('int v_multiwindow_appkit_take_resized')
+	assert !appkit_impl_source.contains('int v_multiwindow_appkit_take_destroyed')
+	assert !appkit_impl_source.contains('self.closeRequested')
+	assert !appkit_impl_source.contains('state.closeRequested')
+	assert !appkit_impl_source.contains('self.destroyed')
+	assert !appkit_impl_source.contains('state.destroyed')
+	assert !appkit_impl_source.contains('self.resized')
+	assert !appkit_impl_source.contains('state.resized')
+	assert appkit_impl_source.contains('makeFirstResponder:view')
+	assert appkit_impl_source.contains('mouseDown:')
+	assert appkit_impl_source.contains('rightMouseDown:')
+	assert appkit_impl_source.contains('otherMouseDown:')
+	assert appkit_impl_source.contains('scrollWheel:')
+	assert appkit_impl_source.contains('event.hasPreciseScrollingDeltas')
+	assert appkit_impl_source.contains('keyDown:')
+	assert appkit_impl_source.contains('keyUp:')
+	assert appkit_impl_source.contains('flagsChanged:')
+	assert appkit_impl_source.contains('#include <IOKit/hidsystem/IOLLEvent.h>')
+	assert appkit_impl_source.contains('v_multiwindow_appkit_modifier_flag_for_key_code')
+	assert appkit_impl_source.contains('v_multiwindow_appkit_modifier_key_is_pressed')
+	assert appkit_impl_source.contains('NX_DEVICELSHIFTKEYMASK')
+	assert appkit_impl_source.contains('NX_DEVICERSHIFTKEYMASK')
+	assert appkit_impl_source.contains('NX_DEVICELCTLKEYMASK')
+	assert appkit_impl_source.contains('NX_DEVICERCTLKEYMASK')
+	assert appkit_impl_source.contains('NX_DEVICELALTKEYMASK')
+	assert appkit_impl_source.contains('NX_DEVICERALTKEYMASK')
+	assert appkit_impl_source.contains('NX_DEVICELCMDKEYMASK')
+	assert appkit_impl_source.contains('NX_DEVICERCMDKEYMASK')
+	flags_changed_start := appkit_impl_source.index('- (void)flagsChanged:(NSEvent *)event') or {
+		assert false, 'AppKit view does not implement flagsChanged:'
+		0
+	}
+	flags_changed_body := appkit_impl_source[flags_changed_start..].all_before('@end')
+	assert flags_changed_body.contains('uint32_t oldFlags = state.flagsChangedStore;')
+	assert flags_changed_body.contains('uint32_t newFlags = (uint32_t)event.modifierFlags;')
+	assert flags_changed_body.contains('state.flagsChangedStore = newFlags;')
+	assert flags_changed_body.contains('v_multiwindow_appkit_modifier_key_is_pressed((NSEventModifierFlags)oldFlags')
+	assert flags_changed_body.contains('v_multiwindow_appkit_modifier_key_is_pressed((NSEventModifierFlags)newFlags')
+	assert flags_changed_body.contains('wasPressed == isPressed')
+	assert flags_changed_body.contains('[state setKeyDown:isPressed forKeyCode:keyCode]')
+	assert flags_changed_body.contains('isPressed ? V_MULTIWINDOW_APPKIT_INPUT_KEY_DOWN')
+	assert !flags_changed_body.contains('wasKeyDown')
+	assert !flags_changed_body.contains('isKeyDownForKeyCode')
+	assert !flags_changed_body.contains('v_multiwindow_appkit_key_code_is_sided_modifier')
+	assert appkit_impl_source.contains('event.isARepeat')
+	assert appkit_impl_source.contains('event.characters')
+	assert appkit_impl_source.contains('v_multiwindow_appkit_keycodes')
+	assert !appkit_impl_source.contains('nextKeyDownStateForKeyCode')
+	assert !appkit_impl_source.contains('NSDraggingDestination')
+	assert !appkit_impl_source.contains('registerForDraggedTypes')
+	assert !appkit_impl_source.contains('touchesBegan')
+}
+
+fn test_appkit_macos_cgen_emits_record_and_literal_input_mapping() {
+	c_source := multiwindow_emit_macos_multiwindow_test_c()
+	assert_source_order(c_source,
+		'typedef struct x__multiwindow__AppKitWindowRecord x__multiwindow__AppKitWindowRecord;',
+		'VV_LOC _option_x__multiwindow__QueuedEvent x__multiwindow__appkit_queued_event_from_native(')
+	assert_source_order(c_source, 'struct x__multiwindow__AppKitWindowRecord {',
+		'VV_LOC _option_x__multiwindow__QueuedEvent x__multiwindow__appkit_queued_event_from_native(')
+	forbidden_const_prefix := '_const_x__multiwindow__' + 'appkit_'
+	assert !c_source.contains(forbidden_const_prefix)
 }
 
 fn test_appkit_create_destroy_on_darwin() {
@@ -1312,6 +1721,7 @@ fn test_x11_capabilities_for_backend_do_not_require_display_on_linux() {
 		assert caps.owner_queue
 		assert caps.x11
 		assert !caps.explicit_swapchain
+		assert_x11_input_capabilities(caps)
 	} $else {
 		capabilities_for_backend(.x11) or {
 			assert err.msg() == err_backend_unsupported
@@ -1479,6 +1889,45 @@ fn test_x11_backend_native_deps_are_flag_gated_source_guard() {
 		'#include <X11/Xlib.h>')
 }
 
+fn test_x11_input_support_is_queued_without_claiming_text_source_guard() {
+	backend_source := multiwindow_source_file('backend.v')
+	x11_backend_source := multiwindow_source_file('x11_backend.c.v')
+	x11_helper_source := multiwindow_source_file('x11_egl_backend_helpers.h')
+
+	assert backend_source.contains('.x11 {\n\t\t\treturn backend.x11.poll_queued_events()!')
+	assert x11_backend_source.contains('input_events:       true')
+	assert x11_backend_source.contains('mouse_events:       true')
+	assert x11_backend_source.contains('keyboard_events:    true')
+	assert x11_backend_source.contains('text_events:        false')
+	assert x11_backend_source.contains('focus_events:       true')
+	assert x11_backend_source.contains('drop_events:        false')
+	assert x11_backend_source.contains('touch_events:       false')
+	assert x11_backend_source.contains('fn (mut backend X11Backend) poll_queued_events')
+	assert x11_backend_source.contains('queued_input_event')
+	assert x11_backend_source.contains('C.v_multiwindow_x11_is_notify_grab_or_ungrab')
+	assert x11_backend_source.contains('queued_key_press_event')
+	assert x11_backend_source.contains('queued_key_release_event')
+	assert x11_backend_source.contains('queued_button_press_event')
+	assert x11_backend_source.contains('queued_button_release_event')
+	assert x11_backend_source.contains('queued_mouse_position_event')
+	assert x11_backend_source.contains('mouse_buttons')
+
+	for required_mask in ['StructureNotifyMask', 'KeyPressMask', 'KeyReleaseMask',
+		'PointerMotionMask', 'ButtonPressMask', 'ButtonReleaseMask', 'FocusChangeMask',
+		'EnterWindowMask', 'LeaveWindowMask'] {
+		assert x11_helper_source.contains(required_mask)
+	}
+	assert !x11_helper_source.contains('PropertyChangeMask')
+	assert x11_helper_source.contains('v_multiwindow_x11_event_window')
+	assert x11_helper_source.contains('v_multiwindow_x11_modifiers')
+	assert x11_helper_source.contains('Button1Mask')
+	assert x11_helper_source.contains('Button2Mask')
+	assert x11_helper_source.contains('Button3Mask')
+	assert x11_helper_source.contains('v_multiwindow_x11_key_code')
+	assert x11_helper_source.contains('XLookupKeysym')
+	assert !x11_helper_source.contains('XLookupString')
+}
+
 fn test_x11_config_hints_are_applied_before_mapping() {
 	x11_backend_source := multiwindow_source_file('x11_backend.c.v')
 	x11_helper_source := multiwindow_source_file('x11_egl_backend_helpers.h')
@@ -1518,6 +1967,7 @@ fn test_wayland_capabilities_for_backend_do_not_require_display_on_linux() {
 			assert caps.wayland
 			assert !caps.x11
 			assert !caps.explicit_swapchain
+			assert_wayland_input_capabilities(caps)
 		} $else {
 			capabilities_for_backend(.wayland) or {
 				assert err.msg() == err_backend_unsupported
@@ -1567,6 +2017,171 @@ fn test_wayland_initial_size_is_clamped_before_mapping() {
 	assert_source_order_after_marker(wayland_source,
 		'fn (mut backend WaylandBackend) create_window', 'width:        actual_size.width',
 		'C.wl_surface_commit(surface)')
+}
+
+fn test_wayland_input_support_is_queued_without_claiming_text_drop_touch_source_guard() {
+	backend_source := multiwindow_source_file('backend.v')
+	wayland_source := multiwindow_source_file('wayland_backend.c.v')
+	wayland_helper_source := multiwindow_source_file('wayland_backend_helpers.h')
+
+	assert backend_source.contains('.wayland {\n\t\t\treturn backend.wayland.poll_queued_events()!')
+	assert wayland_source.contains('fn (mut backend WaylandBackend) poll_queued_events() ![]QueuedEvent')
+	assert wayland_source.contains('pending_events')
+	assert wayland_source.contains('[]QueuedEvent')
+	assert wayland_source.contains('queued_lifecycle_event')
+	assert wayland_source.contains('queued_input_event')
+	assert wayland_source.contains('events := backend.poll_queued_events()!')
+	assert !wayland_source.contains('resize_event_pending')
+	assert !wayland_source.contains('close_requested         bool')
+	assert !wayland_source.contains('mut close_requested_windows := []WindowId{}')
+
+	assert wayland_source.contains('input_events:       true')
+	assert wayland_source.contains('mouse_events:       true')
+	assert wayland_source.contains('keyboard_events:    true')
+	assert wayland_source.contains('text_events:        false')
+	assert wayland_source.contains('focus_events:       true')
+	assert wayland_source.contains('drop_events:        false')
+	assert wayland_source.contains('touch_events:       false')
+
+	has_surface_routing := wayland_source.contains('window_record_index_for_surface')
+		|| wayland_source.contains('window_record_index_for_native_surface')
+		|| wayland_source.contains('record_index_for_surface')
+	assert has_surface_routing
+	assert wayland_source.contains('pointer_focus      WindowId')
+	assert wayland_source.contains('keyboard_focus     WindowId')
+	assert !wayland_source.contains('pointer_surface')
+	assert !wayland_source.contains('keyboard_surface')
+
+	assert wayland_helper_source.contains('wl_seat_listener')
+	assert wayland_helper_source.contains('wl_pointer_listener')
+	assert wayland_helper_source.contains('wl_keyboard_listener')
+	assert wayland_helper_source.contains('wl_fixed_to_double')
+	assert wayland_helper_source.contains('wl_seat_get_pointer')
+	assert wayland_helper_source.contains('wl_seat_get_keyboard')
+	uses_protocol_release := wayland_helper_source.contains('wl_pointer_release')
+		|| wayland_helper_source.contains('WL_POINTER_RELEASE')
+	if uses_protocol_release {
+		assert wayland_helper_source.contains('wl_keyboard_release')
+			|| wayland_helper_source.contains('WL_KEYBOARD_RELEASE')
+		assert wayland_helper_source.contains('wl_seat_release')
+			|| wayland_helper_source.contains('WL_SEAT_RELEASE')
+	} else {
+		assert wayland_helper_source.contains('wl_pointer_destroy')
+		assert wayland_helper_source.contains('wl_keyboard_destroy')
+		assert wayland_helper_source.contains('wl_seat_destroy')
+	}
+
+	assert wayland_source.contains('mouse_scroll')
+	assert wayland_source.contains('const wayland_scroll_scale = 10.0')
+	assert wayland_source.contains('/ f32(wayland_scroll_scale)')
+	assert wayland_source.contains('340, 344 { wayland_modifier_shift }')
+	assert wayland_source.contains('341, 345 { wayland_modifier_ctrl }')
+	assert wayland_source.contains('342, 346 { wayland_modifier_alt }')
+	assert wayland_source.contains('343, 347 { wayland_modifier_super }')
+	assert wayland_source.contains('42 { 340 }')
+	assert wayland_source.contains('54 { 344 }')
+	assert wayland_source.contains('29 { 341 }')
+	assert wayland_source.contains('97 { 345 }')
+}
+
+fn test_wayland_registry_global_remove_and_optional_callbacks_are_guarded_source_guard() {
+	wayland_source := multiwindow_source_file('wayland_backend.c.v')
+	wayland_helper_source := multiwindow_source_file('wayland_backend_helpers.h')
+
+	has_compositor_name := wayland_source.contains('compositor_name')
+		|| wayland_source.contains('compositor_global_name')
+	has_wm_base_name := wayland_source.contains('wm_base_name')
+		|| wayland_source.contains('wm_base_global_name')
+		|| wayland_source.contains('xdg_wm_base_name')
+	has_seat_name := wayland_source.contains('seat_global_name')
+		|| wayland_source.contains('seat_registry_name')
+		|| wayland_source.contains('seat_name          u32')
+	assert has_compositor_name
+	assert has_wm_base_name
+	assert has_seat_name
+
+	global_remove_body :=
+		wayland_source.all_after('fn wayland_registry_handle_global_remove').all_before("@[export: 'v_multiwindow_wayland_xdg_wm_base_ping']")
+	assert global_remove_body.contains('mut backend := unsafe { &WaylandBackend(data) }')
+	assert global_remove_body.contains('name == backend.')
+	assert global_remove_body.contains('unsafe { nil }')
+	assert global_remove_body.contains('destroy_seat_devices')
+	assert !global_remove_body.contains('_ = data\n\t\t_ = registry\n\t\t_ = name')
+	wm_base_remove_body :=
+		global_remove_body.all_after('name == backend.wm_base_name').all_before('} else if name == backend.compositor_name')
+	assert wm_base_remove_body.contains('backend.wm_base_name = 0')
+	assert wm_base_remove_body.contains('backend.destroy_removed_wm_base_if_unused()')
+	assert !wm_base_remove_body.contains('C.v_multiwindow_wayland_xdg_wm_base_destroy')
+	if wm_base_remove_body.contains('backend.wm_base = unsafe { nil }') {
+		assert_source_order(wm_base_remove_body, 'backend.destroy_removed_wm_base_if_unused()',
+			'backend.wm_base = unsafe { nil }')
+	}
+	removed_wm_base_cleanup_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) destroy_removed_wm_base_if_unused()').all_before('fn (mut backend WaylandBackend) destroy_seat_devices')
+	assert removed_wm_base_cleanup_body.contains('backend.wm_base_name != 0')
+	assert removed_wm_base_cleanup_body.contains('backend.wm_base == unsafe { nil }')
+	assert removed_wm_base_cleanup_body.contains('backend.windows.len != 0')
+	assert removed_wm_base_cleanup_body.contains('C.v_multiwindow_wayland_xdg_wm_base_destroy')
+	assert removed_wm_base_cleanup_body.contains('backend.wm_base = unsafe { nil }')
+		|| removed_wm_base_cleanup_body.contains('return true')
+	assert_source_order(removed_wm_base_cleanup_body, 'backend.windows.len != 0',
+		'C.v_multiwindow_wayland_xdg_wm_base_destroy')
+	destroy_window_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) destroy_window').all_before('fn (mut backend WaylandBackend) set_window_title')
+	assert_source_order(destroy_window_body, 'backend.windows.delete(index)',
+		'backend.destroy_removed_wm_base_if_unused()')
+	close_connection_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) close_connection').all_before('fn (mut backend WaylandBackend) destroy_removed_wm_base_if_unused')
+	assert_source_order(close_connection_body, 'for backend.windows.len > 0',
+		'backend.destroy_removed_wm_base_if_unused()')
+	assert_source_order(close_connection_body, 'backend.destroy_removed_wm_base_if_unused()',
+		'if backend.wm_base != unsafe { nil }')
+	compositor_remove_body := global_remove_body.all_after('name == backend.compositor_name')
+	assert compositor_remove_body.contains('backend.compositor_name = 0')
+	assert compositor_remove_body.contains('backend.compositor = unsafe { nil }')
+	assert compositor_remove_body.contains('backend.compositor_version = 0')
+	assert !compositor_remove_body.contains('if backend.windows.len == 0 && backend.compositor != unsafe { nil }')
+
+	optional_pointer_callbacks := [
+		'axis_value120',
+		'axis_relative_direction',
+	]
+	for callback in optional_pointer_callbacks {
+		trampoline_name := 'v_multiwindow_wayland_pointer_${callback}_trampoline'
+		if wayland_helper_source.contains(trampoline_name) {
+			assert wayland_helper_source.contains('WL_POINTER_' + callback.to_upper())
+		}
+	}
+
+	assert wayland_helper_source.contains('v_multiwindow_wayland_keyboard_keymap_trampoline')
+	keymap_body :=
+		wayland_helper_source.all_after('v_multiwindow_wayland_keyboard_keymap_trampoline').all_before('static void v_multiwindow_wayland_keyboard_enter_trampoline')
+	assert keymap_body.contains('close(fd);')
+	assert !wayland_source.contains("@[export: 'v_multiwindow_wayland_keyboard_keymap']")
+}
+
+fn test_multiwindow_events_do_not_add_second_opt_in_source_guard() {
+	vlib_dir := os.dir(os.dir(@DIR))
+	sources := [
+		multiwindow_source_file('types.v'),
+		multiwindow_source_file('app.v'),
+		multiwindow_source_file('backend.v'),
+		multiwindow_source_file('mock_backend.v'),
+		multiwindow_source_file('wayland_backend.c.v'),
+		os.read_file(os.join_path(vlib_dir, 'gg', 'multiwindow_d_gg_multiwindow.v')) or {
+			panic(err)
+		},
+		os.read_file(os.join_path(vlib_dir, 'gg', 'multiwindow_notd_gg_multiwindow.v')) or {
+			panic(err)
+		},
+	]
+	for source in sources {
+		assert !source.contains('wayland_input')
+		assert !source.contains('x_multiwindow_input')
+		assert !source.contains('gg_multiwindow_events')
+		assert !source.contains('gg_multiwindow_input')
+		assert !source.contains('x_multiwindow_events')
+	}
 }
 
 fn test_default_gg_multiwindow_build_does_not_link_wayland_without_sokol_wayland() {
@@ -1622,7 +2237,7 @@ fn test_gg_import_only_windows_build_keeps_win32_callback_record_declaration() {
 	c_source := multiwindow_emit_windows_gg_import_c()
 	assert c_source.contains('struct x__multiwindow__Win32WindowRecord {')
 	assert_source_order(c_source, 'struct x__multiwindow__Win32WindowRecord {',
-		'VV_LOC void x__multiwindow__win32_window_close_requested(voidptr data)')
+		'VV_LOC void x__multiwindow__win32_window_close_requested(voidptr data, u64 sequence)')
 }
 
 fn test_wayland_render_smoke_when_display_is_available() {
@@ -1881,6 +2496,26 @@ fn main() {
 	cmd := '${os.quoted_path(@VEXE)} -os windows -d gg_multiwindow -d sokol_d3d11 -path "${vlib_dir}|@vlib|@vmodules" -o ${os.quoted_path(c_path)} ${os.quoted_path(source_path)}'
 	result := os.execute(cmd)
 	assert result.exit_code == 0, 'emit Windows gg import C failed
+command: ${cmd}
+exit_code: ${result.exit_code}
+output:
+${result.output}'
+
+	return os.read_file(c_path) or { panic(err) }
+}
+
+fn multiwindow_emit_macos_multiwindow_test_c() string {
+	vlib_dir := os.dir(os.dir(@DIR))
+	unique := 'x_multiwindow_appkit_cgen_${os.getpid()}_${time.now().unix_nano()}'
+	c_path := os.join_path(os.temp_dir(), '${unique}.c')
+	target_path := os.join_path(@DIR, 'multiwindow_test.v')
+	defer {
+		os.rm(c_path) or {}
+	}
+
+	cmd := '${os.quoted_path(@VEXE)} -os macos -d gg_multiwindow -d sokol_metal -path "${vlib_dir}|@vlib|@vmodules" -o ${os.quoted_path(c_path)} ${os.quoted_path(target_path)}'
+	result := os.execute(cmd)
+	assert result.exit_code == 0, 'emit macOS multiwindow C failed
 command: ${cmd}
 exit_code: ${result.exit_code}
 output:

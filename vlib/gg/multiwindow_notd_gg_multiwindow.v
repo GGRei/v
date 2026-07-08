@@ -87,6 +87,13 @@ pub:
 	wayland            bool
 	win32              bool
 	gl                 bool
+	input_events       bool
+	mouse_events       bool
+	keyboard_events    bool
+	text_events        bool
+	focus_events       bool
+	drop_events        bool
+	touch_events       bool
 }
 
 // WindowEvent is the multi-window event wrapper. The existing gg.Event remains
@@ -100,6 +107,14 @@ pub:
 	height int
 }
 
+// WindowInputEvent routes a normal gg.Event to a specific gg.App window.
+pub struct WindowInputEvent {
+pub:
+	window        WindowId
+	event         Event
+	dropped_files []string
+}
+
 // AppJobFn is executed later by app.drain_pending() on the owner side.
 pub type AppJobFn = fn (mut app App) !
 
@@ -109,6 +124,9 @@ pub type AppFrameFn = fn (mut app App) !
 
 // AppEventFn is called by App.run() for each drained multi-window event.
 pub type AppEventFn = fn (event WindowEvent, mut app App) !
+
+// AppInputFn is called by App.run() for each drained multi-window input event.
+pub type AppInputFn = fn (event WindowInputEvent, mut app App) !
 
 // WindowDrawFn records drawing commands for one WindowContext.
 pub type WindowDrawFn = fn (mut window WindowContext) !
@@ -120,6 +138,7 @@ pub struct RunConfig {
 pub:
 	frame_fn         AppFrameFn = unsafe { nil }
 	event_fn         AppEventFn = unsafe { nil }
+	input_fn         AppInputFn = unsafe { nil }
 	max_pending_jobs int        = 64
 }
 
@@ -231,7 +250,13 @@ pub fn (mut app App) drain_events() ![]WindowEvent {
 	return error(err_multiwindow_not_enabled)
 }
 
-// poll_events lets the backend route native lifecycle events into the gg.App queue.
+// drain_input_events returns and clears pending window-scoped input events.
+pub fn (mut app App) drain_input_events() ![]WindowInputEvent {
+	_ = app
+	return error(err_multiwindow_not_enabled)
+}
+
+// poll_events lets the backend route native lifecycle/input events into the gg.App queue.
 pub fn (mut app App) poll_events() !int {
 	_ = app
 	return error(err_multiwindow_not_enabled)

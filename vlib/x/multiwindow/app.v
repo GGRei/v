@@ -11,7 +11,7 @@ mut:
 	status          AppStatus = .running
 	backend         Backend
 	windows         []WindowSlot
-	events          []Event
+	events          []QueuedEvent
 	owner_thread_id u64
 	state_mutex     &sync.Mutex        = sync.new_mutex()
 	owner           &executor.Executor = unsafe { nil }
@@ -64,12 +64,12 @@ pub fn (mut app App) create_window(config WindowConfig) !WindowId {
 		config: window_config_with_size(config, actual_size.width, actual_size.height)
 		status: .alive
 	}
-	app.events << Event{
+	app.events << queued_lifecycle_event(Event{
 		kind:      .window_created
 		window_id: id
 		width:     actual_size.width
 		height:    actual_size.height
-	}
+	})
 	return id
 }
 
@@ -85,10 +85,10 @@ pub fn (mut app App) destroy_window(id WindowId) ! {
 	index := app.live_window_index(id)!
 	app.backend.destroy_window(id)!
 	app.windows[index].status = .destroyed
-	app.events << Event{
+	app.events << queued_lifecycle_event(Event{
 		kind:      .window_destroyed
 		window_id: id
-	}
+	})
 }
 
 // set_window_title updates the native title and then the authoritative App state.
@@ -117,12 +117,12 @@ pub fn (mut app App) resize_window(id WindowId, width int, height int) ! {
 	actual_size := app.backend.resize_window(id, width, height)!
 	app.windows[index].config = window_config_with_size(app.windows[index].config,
 		actual_size.width, actual_size.height)
-	app.events << Event{
+	app.events << queued_lifecycle_event(Event{
 		kind:      .window_resized
 		window_id: id
 		width:     actual_size.width
 		height:    actual_size.height
-	}
+	})
 }
 
 // window_info returns a snapshot of the authoritative App-side window state.
@@ -204,12 +204,34 @@ pub fn (mut app App) drain_events() ![]Event {
 	defer {
 		app.state_mutex.unlock()
 	}
+	return app.drain_lifecycle_events_locked()
+}
+
+// drain_input_events returns and clears pending input events without consuming
+// lifecycle events.
+pub fn (mut app App) drain_input_events() ![]InputEvent {
+	app.assert_owner_thread()!
+	app.state_mutex.lock()
+	defer {
+		app.state_mutex.unlock()
+	}
+	return app.drain_input_events_locked()
+}
+
+// drain_queued_events returns and clears pending lifecycle/input events in the
+// exact order accepted by App.
+pub fn (mut app App) drain_queued_events() ![]QueuedEvent {
+	app.assert_owner_thread()!
+	app.state_mutex.lock()
+	defer {
+		app.state_mutex.unlock()
+	}
 	events := app.events.clone()
 	app.events.clear()
 	return events
 }
 
-// poll_events lets the backend route native lifecycle events into App events.
+// poll_events lets the backend route native lifecycle and input events into App events.
 pub fn (mut app App) poll_events() !int {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
@@ -217,38 +239,104 @@ pub fn (mut app App) poll_events() !int {
 		app.state_mutex.unlock()
 	}
 	app.ensure_running_locked()!
-	events := app.backend.poll_events()!
+	events := app.backend.poll_queued_events()!
 	mut accepted := 0
 	for event in events {
 		match event.kind {
-			.window_close_requested {
-				app.live_window_index(event.window_id) or { continue }
-				app.events << event
-				accepted++
-			}
-			.window_destroyed {
-				if app.mark_destroyed_from_backend_locked(event.window_id) {
-					app.events << event
+			.lifecycle {
+				if app.accept_lifecycle_event_locked(event.lifecycle) {
 					accepted++
 				}
 			}
-			.window_resized {
-				if event.width <= 0 || event.height <= 0 {
-					continue
+			.input {
+				if app.accept_input_event_locked(event.input) {
+					accepted++
 				}
-				index := app.live_window_index(event.window_id) or { continue }
-				app.windows[index].config = window_config_with_size(app.windows[index].config,
-					event.width, event.height)
-				app.events << event
-				accepted++
-			}
-			else {
-				app.events << event
-				accepted++
 			}
 		}
 	}
 	return accepted
+}
+
+fn (mut app App) drain_lifecycle_events_locked() []Event {
+	mut lifecycle_events := []Event{cap: app.events.len}
+	mut remaining_events := []QueuedEvent{cap: app.events.len}
+	for event in app.events {
+		match event.kind {
+			.lifecycle {
+				lifecycle_events << event.lifecycle
+			}
+			.input {
+				remaining_events << event
+			}
+		}
+	}
+	app.events = remaining_events
+	return lifecycle_events
+}
+
+fn (mut app App) drain_input_events_locked() []InputEvent {
+	mut input_events := []InputEvent{cap: app.events.len}
+	mut remaining_events := []QueuedEvent{cap: app.events.len}
+	for event in app.events {
+		match event.kind {
+			.lifecycle {
+				remaining_events << event
+			}
+			.input {
+				input_events << event.input
+			}
+		}
+	}
+	app.events = remaining_events
+	return input_events
+}
+
+fn (mut app App) accept_lifecycle_event_locked(event Event) bool {
+	match event.kind {
+		.window_close_requested {
+			app.live_window_index(event.window_id) or { return false }
+			app.events << queued_lifecycle_event(event)
+			return true
+		}
+		.window_destroyed {
+			if app.mark_destroyed_from_backend_locked(event.window_id) {
+				app.events << queued_lifecycle_event(event)
+				return true
+			}
+			return false
+		}
+		.window_resized {
+			if event.width <= 0 || event.height <= 0 {
+				return false
+			}
+			index := app.live_window_index(event.window_id) or { return false }
+			app.windows[index].config = window_config_with_size(app.windows[index].config,
+				event.width, event.height)
+			app.events << queued_lifecycle_event(event)
+			return true
+		}
+		else {
+			app.events << queued_lifecycle_event(event)
+			return true
+		}
+	}
+}
+
+fn (mut app App) accept_input_event_locked(event InputEvent) bool {
+	if event.kind == .resized {
+		if event.window_width <= 0 || event.window_height <= 0 {
+			return false
+		}
+		index := app.live_window_index(event.window_id) or { return false }
+		app.windows[index].config = window_config_with_size(app.windows[index].config,
+			event.window_width, event.window_height)
+		app.events << queued_input_event(event)
+		return true
+	}
+	app.live_window_index(event.window_id) or { return false }
+	app.events << queued_input_event(event)
+	return true
 }
 
 $if test {
@@ -271,6 +359,22 @@ $if test {
 		})
 	}
 
+	// enqueue_mock_input_for_test injects a mock-native input event into the
+	// backend queue only in test builds.
+	pub fn (mut app App) enqueue_mock_input_for_test(event InputEvent) ! {
+		app.assert_owner_thread()!
+		app.state_mutex.lock()
+		defer {
+			app.state_mutex.unlock()
+		}
+		app.ensure_running_locked()!
+		app.live_window_index(event.window_id)!
+		if app.backend.kind != .mock {
+			return error(err_capability_unsupported)
+		}
+		app.backend.mock.enqueue_input_event(event)
+	}
+
 	// enqueue_mock_close_requested_unchecked_for_test intentionally bypasses
 	// WindowId liveness validation so App.poll_events() filtering can be tested.
 	fn (mut app App) enqueue_mock_close_requested_unchecked_for_test(id WindowId) ! {
@@ -287,6 +391,21 @@ $if test {
 			kind:      .window_close_requested
 			window_id: id
 		})
+	}
+
+	// enqueue_mock_input_unchecked_for_test intentionally bypasses WindowId
+	// liveness validation so App.poll_events() filtering can be tested.
+	fn (mut app App) enqueue_mock_input_unchecked_for_test(event InputEvent) ! {
+		app.assert_owner_thread()!
+		app.state_mutex.lock()
+		defer {
+			app.state_mutex.unlock()
+		}
+		app.ensure_running_locked()!
+		if app.backend.kind != .mock {
+			return error(err_capability_unsupported)
+		}
+		app.backend.mock.enqueue_input_event(event)
 	}
 }
 
@@ -351,10 +470,10 @@ pub fn (mut app App) stop() ! {
 		if slot.status == .alive {
 			app.backend.destroy_window(slot.id)!
 			app.windows[i].status = .destroyed
-			app.events << Event{
+			app.events << queued_lifecycle_event(Event{
 				kind:      .window_destroyed
 				window_id: slot.id
-			}
+			})
 		}
 	}
 	app.status = .stopped

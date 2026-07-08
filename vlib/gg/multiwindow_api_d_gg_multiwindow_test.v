@@ -4,6 +4,7 @@ module gg
 // Compile with `-d gg_multiwindow`; this test exercises the opt-in facade.
 import os
 import time
+import sokol.sapp
 import sokol.sgl
 import x.multiwindow
 
@@ -17,6 +18,13 @@ fn test_multiwindow_new_app_reports_core_capabilities() {
 	assert caps.multi_window
 	assert caps.owner_queue
 	assert !caps.explicit_swapchain
+	assert caps.input_events
+	assert caps.mouse_events
+	assert caps.keyboard_events
+	assert caps.text_events
+	assert caps.focus_events
+	assert caps.drop_events
+	assert caps.touch_events
 
 	app.stop()!
 }
@@ -56,6 +64,13 @@ fn test_multiwindow_capabilities_for_backend_delegates_to_core() {
 	assert caps.mock
 	assert caps.multi_window
 	assert caps.owner_queue
+	assert caps.input_events
+	assert caps.mouse_events
+	assert caps.keyboard_events
+	assert caps.text_events
+	assert caps.focus_events
+	assert caps.drop_events
+	assert caps.touch_events
 }
 
 fn test_multiwindow_plain_capabilities_use_core_probe_without_app_source_guard() {
@@ -392,6 +407,193 @@ fn test_multiwindow_create_destroy_window_lifecycle_and_events() {
 	app.stop()!
 }
 
+fn test_multiwindow_drain_input_events_routes_gg_event_without_lifecycle_pollution() {
+	mut app := new_app(backend: .mock)!
+	win := app.create_window(title: 'Input inspector', width: 320, height: 240)!
+	assert app.drain_events()!.len == 1
+
+	app.enqueue_mock_input_for_test(WindowInputEvent{
+		window:        win
+		event:         Event{
+			typ:      .mouse_scroll
+			mouse_x:  10
+			mouse_y:  20
+			scroll_y: -1.5
+		}
+		dropped_files: ['/tmp/input.txt']
+	})!
+
+	assert app.poll_events()! == 1
+	assert app.drain_events()!.len == 0
+	input_events := app.drain_input_events()!
+	assert input_events.len == 1
+	assert input_events[0].window == win
+	assert input_events[0].event.typ == .mouse_scroll
+	assert input_events[0].event.mouse_x == 10
+	assert input_events[0].event.mouse_y == 20
+	assert input_events[0].event.scroll_y == -1.5
+	assert input_events[0].dropped_files == ['/tmp/input.txt']
+	assert app.drain_input_events()!.len == 0
+	app.stop()!
+}
+
+fn test_multiwindow_window_input_event_roundtrip_covers_event_families() {
+	mut app := new_app(backend: .mock)!
+	win := app.create_window(title: 'Input roundtrip', width: 320, height: 240)!
+	assert app.drain_events()!.len == 1
+
+	mut touches := [8]TouchPoint{}
+	touches[0] = TouchPoint{
+		identifier:       7
+		pos_x:            11.5
+		pos_y:            12.5
+		android_tooltype: unsafe { sapp.TouchToolType(1) }
+		changed:          true
+	}
+	touches[1] = TouchPoint{
+		identifier:       8
+		pos_x:            21.5
+		pos_y:            22.5
+		android_tooltype: unsafe { sapp.TouchToolType(2) }
+		changed:          false
+	}
+
+	expected_events := [
+		WindowInputEvent{
+			window: win
+			event:  Event{
+				frame_count: 1
+				typ:         .char
+				char_code:   u32(0xe9)
+				key_repeat:  true
+				modifiers:   3
+			}
+		},
+		WindowInputEvent{
+			window: win
+			event:  Event{
+				frame_count: 2
+				typ:         .key_up
+				key_code:    .escape
+				key_repeat:  true
+				modifiers:   5
+			}
+		},
+		WindowInputEvent{
+			window: win
+			event:  Event{
+				frame_count:  3
+				typ:          .mouse_up
+				mouse_button: .right
+				mouse_x:      40.5
+				mouse_y:      41.5
+				mouse_dx:     -2.25
+				mouse_dy:     3.5
+				modifiers:    0x100
+			}
+		},
+		WindowInputEvent{
+			window: win
+			event:  Event{
+				frame_count: 4
+				typ:         .mouse_enter
+				mouse_x:     1.25
+				mouse_y:     2.5
+			}
+		},
+		WindowInputEvent{
+			window: win
+			event:  Event{
+				frame_count: 5
+				typ:         .mouse_leave
+				mouse_x:     3.25
+				mouse_y:     4.5
+			}
+		},
+		WindowInputEvent{
+			window: win
+			event:  Event{
+				frame_count: 6
+				typ:         .focused
+			}
+		},
+		WindowInputEvent{
+			window: win
+			event:  Event{
+				frame_count: 7
+				typ:         .unfocused
+			}
+		},
+		WindowInputEvent{
+			window: win
+			event:  Event{
+				frame_count: 8
+				typ:         .clipboard_pasted
+			}
+		},
+		WindowInputEvent{
+			window:        win
+			event:         Event{
+				frame_count: 9
+				typ:         .files_dropped
+			}
+			dropped_files: ['/tmp/a.txt', '/tmp/b.txt']
+		},
+		WindowInputEvent{
+			window: win
+			event:  Event{
+				frame_count: 10
+				typ:         .touches_began
+				num_touches: 2
+				touches:     touches
+			}
+		},
+	]
+	for event in expected_events {
+		app.enqueue_mock_input_for_test(event)!
+	}
+
+	assert app.poll_events()! == expected_events.len
+	actual_events := app.drain_input_events()!
+	assert actual_events.len == expected_events.len
+	for i, actual in actual_events {
+		assert_window_input_event_roundtrip(actual, expected_events[i])
+	}
+	assert app.drain_events()!.len == 0
+	assert app.drain_input_events()!.len == 0
+	app.stop()!
+}
+
+fn assert_window_input_event_roundtrip(actual WindowInputEvent, expected WindowInputEvent) {
+	assert actual.window == expected.window
+	assert actual.dropped_files == expected.dropped_files
+	assert actual.event.frame_count == expected.event.frame_count
+	assert actual.event.typ == expected.event.typ
+	assert actual.event.key_code == expected.event.key_code
+	assert actual.event.char_code == expected.event.char_code
+	assert actual.event.key_repeat == expected.event.key_repeat
+	assert actual.event.modifiers == expected.event.modifiers
+	assert actual.event.mouse_button == expected.event.mouse_button
+	assert actual.event.mouse_x == expected.event.mouse_x
+	assert actual.event.mouse_y == expected.event.mouse_y
+	assert actual.event.mouse_dx == expected.event.mouse_dx
+	assert actual.event.mouse_dy == expected.event.mouse_dy
+	assert actual.event.scroll_x == expected.event.scroll_x
+	assert actual.event.scroll_y == expected.event.scroll_y
+	assert actual.event.num_touches == expected.event.num_touches
+	for i in 0 .. actual.event.num_touches {
+		assert actual.event.touches[i].identifier == expected.event.touches[i].identifier
+		assert actual.event.touches[i].pos_x == expected.event.touches[i].pos_x
+		assert actual.event.touches[i].pos_y == expected.event.touches[i].pos_y
+		assert actual.event.touches[i].android_tooltype == expected.event.touches[i].android_tooltype
+		assert actual.event.touches[i].changed == expected.event.touches[i].changed
+	}
+	assert actual.event.window_width == expected.event.window_width
+	assert actual.event.window_height == expected.event.window_height
+	assert actual.event.framebuffer_width == expected.event.framebuffer_width
+	assert actual.event.framebuffer_height == expected.event.framebuffer_height
+}
+
 fn test_multiwindow_rejects_invalid_window_size_from_core() {
 	mut app := new_app(backend: .mock)!
 	app.create_window(width: 0, height: 240) or {
@@ -574,6 +776,11 @@ fn test_multiwindow_zero_value_app_methods_return_initialized_error() {
 		rejected += 1
 		[]WindowEvent{}
 	}
+	_ := app.drain_input_events() or {
+		assert err.msg() == err_multiwindow_app_not_initialized
+		rejected += 1
+		[]WindowInputEvent{}
+	}
 	_ := app.poll_events() or {
 		assert err.msg() == err_multiwindow_app_not_initialized
 		rejected += 1
@@ -616,7 +823,7 @@ fn test_multiwindow_zero_value_app_methods_return_initialized_error() {
 		rejected += 1
 	}
 
-	assert rejected == 16
+	assert rejected == 17
 	assert !app.window_exists(id)
 	assert !app.capabilities().multi_window
 }
@@ -672,6 +879,100 @@ fn test_multiwindow_run_event_callback_routes_mock_close_requested_from_core_pol
 	assert seen.close_requested
 }
 
+struct MockInputCallbackSeen {
+mut:
+	created bool
+	input   bool
+}
+
+fn test_multiwindow_run_input_callback_preserves_lifecycle_input_order() {
+	mut app := new_app(backend: .mock, queue_size: 2)!
+	win := app.create_window(title: 'Input callback target')!
+	app.enqueue_mock_input_for_test(WindowInputEvent{
+		window: win
+		event:  Event{
+			typ:      .key_down
+			key_code: .a
+		}
+	})!
+	mut seen := &MockInputCallbackSeen{}
+
+	app.run(
+		event_fn: fn [win, mut seen] (event WindowEvent, mut app App) ! {
+			if event.kind == .window_created {
+				assert event.window == win
+				assert !seen.input
+				seen.created = true
+			}
+			_ = app
+		}
+		input_fn: fn [win, mut seen] (event WindowInputEvent, mut app App) ! {
+			assert event.window == win
+			assert event.event.typ == .key_down
+			assert event.event.key_code == .a
+			assert seen.created
+			seen.input = true
+			app.stop()!
+		}
+	)!
+
+	assert seen.created
+	assert seen.input
+}
+
+struct MockInputLifecycleInputCallbackSeen {
+mut:
+	order []string
+}
+
+fn test_multiwindow_run_input_callback_preserves_input_lifecycle_input_order() {
+	mut app := new_app(backend: .mock, queue_size: 2)!
+	win := app.create_window(title: 'Input lifecycle input callback target')!
+	assert app.drain_events()!.len == 1
+	app.enqueue_mock_input_for_test(WindowInputEvent{
+		window: win
+		event:  Event{
+			typ: .mouse_enter
+		}
+	})!
+	app.core.enqueue_mock_close_requested_for_test(win.core)!
+	app.enqueue_mock_input_for_test(WindowInputEvent{
+		window: win
+		event:  Event{
+			typ:       .char
+			char_code: u32(120)
+		}
+	})!
+	mut seen := &MockInputLifecycleInputCallbackSeen{}
+
+	app.run(
+		event_fn: fn [win, mut seen] (event WindowEvent, mut app App) ! {
+			assert event.window == win
+			assert event.kind == .window_close_requested
+			seen.order << 'lifecycle-close'
+			_ = app
+		}
+		input_fn: fn [win, mut seen] (event WindowInputEvent, mut app App) ! {
+			assert event.window == win
+			match event.event.typ {
+				.mouse_enter {
+					seen.order << 'input-enter'
+				}
+				.char {
+					assert event.event.char_code == u32(120)
+					seen.order << 'input-char'
+					app.stop()!
+				}
+				else {
+					assert false, 'unexpected input event ${event.event.typ}'
+				}
+			}
+		}
+	)!
+
+	assert seen.order == ['input-enter', 'lifecycle-close', 'input-char']
+}
+
 fn test_multiwindow_event_only_run_idles_when_idle_source_guard() {
 	source := multiwindow_facade_source()
 	run_source :=
@@ -682,9 +983,11 @@ fn test_multiwindow_event_only_run_idles_when_idle_source_guard() {
 	assert source.contains('const multiwindow_event_idle_sleep = 8 * time.millisecond')
 	assert run_source.contains('polled_events := app.poll_events()!')
 	assert run_source.contains('drained_jobs = app.core.drain_pending(config.max_pending_jobs) or {')
-	assert run_source.contains('dispatched_events := app.dispatch_run_events(config.event_fn)!')
+	assert run_source.contains('dispatched_events := app.dispatch_run_events(config.event_fn, config.input_fn)!')
 	assert run_source.contains('} else if polled_events == 0 && drained_jobs == 0 && dispatched_events == 0 {\n\t\t\ttime.sleep(multiwindow_event_idle_sleep)\n\t\t}')
-	assert dispatch_source.all_before('if event_fn == unsafe { nil }').contains('events := app.drain_events()!')
+	assert dispatch_source.contains('events := app.core.drain_queued_events()!')
+	assert dispatch_source.contains('if event_fn != unsafe { nil }')
+	assert dispatch_source.contains('if input_fn != unsafe { nil }')
 	assert !source.contains('event_idle_sleeps')
 	assert !source.contains('stop_after_idle_sleeps')
 }
@@ -693,13 +996,13 @@ fn test_multiwindow_dispatch_without_event_callback_still_drains_lifecycle_event
 	mut app := new_app(backend: .mock)!
 	win := app.create_window(title: 'Frame-only lifecycle drain')!
 
-	drained_created := app.dispatch_run_events(unsafe { nil })!
+	drained_created := app.dispatch_run_events(unsafe { nil }, unsafe { nil })!
 	assert drained_created == 1
 
 	app.sgl_contexts[win.str()] = sgl.Context{}
 	app.core.destroy_window(win.core)!
 
-	drained_destroyed := app.dispatch_run_events(unsafe { nil })!
+	drained_destroyed := app.dispatch_run_events(unsafe { nil }, unsafe { nil })!
 	assert drained_destroyed == 1
 	assert win.str() !in app.sgl_contexts
 
@@ -917,6 +1220,9 @@ fn main() {
 	assert app.capabilities().mock
 	win := app.create_window(title: 'Main')!
 	assert app.window_exists(win)
+	mut no_input := []gg.WindowInputEvent{}
+	no_input = app.drain_input_events()!
+	assert no_input.len == 0
 	app.try_post(fn (mut app gg.App) ! {
 		_ = app.create_window(title: 'Queued')!
 	})!
@@ -938,6 +1244,41 @@ fn main() {
 	run_cmd := os.quoted_path(bin_path)
 	run := os.execute(run_cmd)
 	multiwindow_assert_command_ok('run child gg import smoke', run_cmd, run)
+}
+
+fn test_multiwindow_user_program_input_fn_compile_imports_only_gg() {
+	vlib_dir := os.dir(@DIR)
+	source_path, out_path_base := multiwindow_temp_paths('gg_multiwindow_input_fn_compile')
+	c_path := '${out_path_base}.c'
+	source := 'import gg
+
+fn on_input(event gg.WindowInputEvent, mut app gg.App) ! {
+	_ = event.window
+	_ = event.event.typ
+	_ = event.dropped_files
+	_ = app.capabilities()
+}
+
+fn main() {
+	mut app := gg.new_app(backend: .mock)!
+	empty := gg.WindowInputEvent{}
+	_ = empty.event.typ
+	app.run(input_fn: on_input) or {}
+	app.stop() or {}
+}
+'
+	assert source.contains('import gg')
+	assert !source.contains('x.multiwindow')
+	os.write_file(source_path, source) or { panic(err) }
+	defer {
+		os.rm(source_path) or {}
+		os.rm(c_path) or {}
+		os.rm(out_path_base) or {}
+	}
+
+	cmd := '${os.quoted_path(@VEXE)}${multiwindow_child_v_flags()} -b c -path "${vlib_dir}|@vlib|@vmodules" -o ${os.quoted_path(c_path)} ${os.quoted_path(source_path)}'
+	compile := os.execute(cmd)
+	multiwindow_assert_command_ok('compile child input_fn API smoke', cmd, compile)
 }
 
 fn test_multiwindow_user_program_window_info_title_and_resize_imports_only_gg() {
@@ -1348,6 +1689,9 @@ fn test_multiwindow_checked_in_example_wraps_resize_unsupported_source_guard() {
 
 	assert source.contains('resize_or_ignore_unsupported')
 	assert source.contains("err.msg() == 'multiwindow: backend capability is unsupported'")
+	assert source.contains('input_fn: fn [mut state] (event gg.WindowInputEvent, mut app gg.App) !')
+	assert source.contains('input_event_summary(event)')
+	assert source.contains('input logging enabled for key/mouse/focus/scroll events')
 	assert !multiwindow_source_has_unwrapped_resize_window(source)
 }
 

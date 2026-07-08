@@ -2,6 +2,7 @@
 #define V_MULTIWINDOW_WAYLAND_BACKEND_HELPERS_H
 
 #include <stdint.h>
+#include <unistd.h>
 #include <EGL/egl.h>
 #include <wayland-client.h>
 #include <wayland-egl.h>
@@ -25,6 +26,17 @@ void v_multiwindow_wayland_xdg_wm_base_ping(void *data, void *wm_base, uint32_t 
 void v_multiwindow_wayland_xdg_surface_configure(void *data, void *xdg_surface, uint32_t serial);
 void v_multiwindow_wayland_xdg_toplevel_configure(void *data, void *toplevel, int width, int height, struct wl_array *states);
 void v_multiwindow_wayland_xdg_toplevel_close(void *data, void *toplevel);
+void v_multiwindow_wayland_seat_capabilities(void *data, void *seat, uint32_t caps);
+void v_multiwindow_wayland_seat_name(void *data, void *seat, char *name);
+void v_multiwindow_wayland_pointer_enter(void *data, void *pointer, uint32_t serial, void *surface, double x, double y);
+void v_multiwindow_wayland_pointer_leave(void *data, void *pointer, uint32_t serial, void *surface);
+void v_multiwindow_wayland_pointer_motion(void *data, void *pointer, uint32_t time, double x, double y);
+void v_multiwindow_wayland_pointer_button(void *data, void *pointer, uint32_t serial, uint32_t time, uint32_t button, uint32_t state);
+void v_multiwindow_wayland_pointer_axis(void *data, void *pointer, uint32_t time, uint32_t axis, double value);
+void v_multiwindow_wayland_keyboard_enter(void *data, void *keyboard, uint32_t serial, void *surface);
+void v_multiwindow_wayland_keyboard_leave(void *data, void *keyboard, uint32_t serial, void *surface);
+void v_multiwindow_wayland_keyboard_key(void *data, void *keyboard, uint32_t serial, uint32_t time, uint32_t key, uint32_t state);
+void v_multiwindow_wayland_keyboard_modifiers(void *data, void *keyboard, uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched, uint32_t mods_locked, uint32_t group);
 
 #if !defined(XDG_SHELL_CLIENT_PROTOCOL_H)
 struct xdg_wm_base;
@@ -81,7 +93,6 @@ struct xdg_toplevel_listener {
 #ifndef XDG_TOPLEVEL_SET_FULLSCREEN
 #define XDG_TOPLEVEL_SET_FULLSCREEN 11
 #endif
-
 extern const struct wl_interface v_multiwindow_xdg_wm_base_interface;
 extern const struct wl_interface v_multiwindow_xdg_surface_interface;
 extern const struct wl_interface v_multiwindow_xdg_toplevel_interface;
@@ -110,6 +121,93 @@ static void v_multiwindow_wayland_xdg_toplevel_close_trampoline(void *data, stru
 	v_multiwindow_wayland_xdg_toplevel_close(data, (void *)toplevel);
 }
 
+static void v_multiwindow_wayland_seat_capabilities_trampoline(void *data, struct wl_seat *seat, uint32_t caps) {
+	v_multiwindow_wayland_seat_capabilities(data, (void *)seat, caps);
+}
+
+static void v_multiwindow_wayland_seat_name_trampoline(void *data, struct wl_seat *seat, const char *name) {
+	v_multiwindow_wayland_seat_name(data, (void *)seat, (char *)name);
+}
+
+static void v_multiwindow_wayland_pointer_enter_trampoline(void *data, struct wl_pointer *pointer, uint32_t serial, struct wl_surface *surface, wl_fixed_t sx, wl_fixed_t sy) {
+	v_multiwindow_wayland_pointer_enter(data, (void *)pointer, serial, (void *)surface, wl_fixed_to_double(sx), wl_fixed_to_double(sy));
+}
+
+static void v_multiwindow_wayland_pointer_leave_trampoline(void *data, struct wl_pointer *pointer, uint32_t serial, struct wl_surface *surface) {
+	v_multiwindow_wayland_pointer_leave(data, (void *)pointer, serial, (void *)surface);
+}
+
+static void v_multiwindow_wayland_pointer_motion_trampoline(void *data, struct wl_pointer *pointer, uint32_t time, wl_fixed_t sx, wl_fixed_t sy) {
+	v_multiwindow_wayland_pointer_motion(data, (void *)pointer, time, wl_fixed_to_double(sx), wl_fixed_to_double(sy));
+}
+
+static void v_multiwindow_wayland_pointer_button_trampoline(void *data, struct wl_pointer *pointer, uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
+	v_multiwindow_wayland_pointer_button(data, (void *)pointer, serial, time, button, state);
+}
+
+static void v_multiwindow_wayland_pointer_axis_trampoline(void *data, struct wl_pointer *pointer, uint32_t time, uint32_t axis, wl_fixed_t value) {
+	v_multiwindow_wayland_pointer_axis(data, (void *)pointer, time, axis, wl_fixed_to_double(value));
+}
+
+static void v_multiwindow_wayland_pointer_frame_trampoline(void *data, struct wl_pointer *pointer) {
+	(void)data;
+	(void)pointer;
+}
+
+static void v_multiwindow_wayland_pointer_axis_source_trampoline(void *data, struct wl_pointer *pointer, uint32_t axis_source) {
+	(void)data;
+	(void)pointer;
+	(void)axis_source;
+}
+
+static void v_multiwindow_wayland_pointer_axis_stop_trampoline(void *data, struct wl_pointer *pointer, uint32_t time, uint32_t axis) {
+	(void)data;
+	(void)pointer;
+	(void)time;
+	(void)axis;
+}
+
+static void v_multiwindow_wayland_pointer_axis_discrete_trampoline(void *data, struct wl_pointer *pointer, uint32_t axis, int32_t discrete) {
+	(void)data;
+	(void)pointer;
+	(void)axis;
+	(void)discrete;
+}
+
+static void v_multiwindow_wayland_keyboard_keymap_trampoline(void *data, struct wl_keyboard *keyboard, uint32_t format, int fd, uint32_t size) {
+	(void)data;
+	(void)keyboard;
+	(void)format;
+	(void)size;
+	if (fd >= 0) {
+		close(fd);
+	}
+}
+
+static void v_multiwindow_wayland_keyboard_enter_trampoline(void *data, struct wl_keyboard *keyboard, uint32_t serial, struct wl_surface *surface, struct wl_array *keys) {
+	(void)keys;
+	v_multiwindow_wayland_keyboard_enter(data, (void *)keyboard, serial, (void *)surface);
+}
+
+static void v_multiwindow_wayland_keyboard_leave_trampoline(void *data, struct wl_keyboard *keyboard, uint32_t serial, struct wl_surface *surface) {
+	v_multiwindow_wayland_keyboard_leave(data, (void *)keyboard, serial, (void *)surface);
+}
+
+static void v_multiwindow_wayland_keyboard_key_trampoline(void *data, struct wl_keyboard *keyboard, uint32_t serial, uint32_t time, uint32_t key, uint32_t state) {
+	v_multiwindow_wayland_keyboard_key(data, (void *)keyboard, serial, time, key, state);
+}
+
+static void v_multiwindow_wayland_keyboard_modifiers_trampoline(void *data, struct wl_keyboard *keyboard, uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched, uint32_t mods_locked, uint32_t group) {
+	v_multiwindow_wayland_keyboard_modifiers(data, (void *)keyboard, serial, mods_depressed, mods_latched, mods_locked, group);
+}
+
+static void v_multiwindow_wayland_keyboard_repeat_info_trampoline(void *data, struct wl_keyboard *keyboard, int32_t rate, int32_t delay) {
+	(void)data;
+	(void)keyboard;
+	(void)rate;
+	(void)delay;
+}
+
 static const struct wl_registry_listener v_multiwindow_wayland_registry_listener = {
 	v_multiwindow_wayland_registry_handle_global_trampoline,
 	v_multiwindow_wayland_registry_handle_global_remove_trampoline,
@@ -128,8 +226,43 @@ static const struct xdg_toplevel_listener v_multiwindow_wayland_xdg_toplevel_lis
 	v_multiwindow_wayland_xdg_toplevel_close_trampoline,
 };
 
+static const struct wl_seat_listener v_multiwindow_wayland_seat_listener = {
+	v_multiwindow_wayland_seat_capabilities_trampoline,
+	v_multiwindow_wayland_seat_name_trampoline,
+};
+
+static const struct wl_pointer_listener v_multiwindow_wayland_pointer_listener = {
+	v_multiwindow_wayland_pointer_enter_trampoline,
+	v_multiwindow_wayland_pointer_leave_trampoline,
+	v_multiwindow_wayland_pointer_motion_trampoline,
+	v_multiwindow_wayland_pointer_button_trampoline,
+	v_multiwindow_wayland_pointer_axis_trampoline,
+	v_multiwindow_wayland_pointer_frame_trampoline,
+	v_multiwindow_wayland_pointer_axis_source_trampoline,
+	v_multiwindow_wayland_pointer_axis_stop_trampoline,
+	v_multiwindow_wayland_pointer_axis_discrete_trampoline,
+};
+
+static const struct wl_keyboard_listener v_multiwindow_wayland_keyboard_listener = {
+	v_multiwindow_wayland_keyboard_keymap_trampoline,
+	v_multiwindow_wayland_keyboard_enter_trampoline,
+	v_multiwindow_wayland_keyboard_leave_trampoline,
+	v_multiwindow_wayland_keyboard_key_trampoline,
+	v_multiwindow_wayland_keyboard_modifiers_trampoline,
+	v_multiwindow_wayland_keyboard_repeat_info_trampoline,
+};
+
 static inline uint32_t v_multiwindow_wayland_compositor_bind_version(uint32_t version) {
 	return version < 4 ? version : 4;
+}
+
+static inline uint32_t v_multiwindow_wayland_seat_bind_version(uint32_t version) {
+	return version < 5 ? version : 5;
+}
+
+static inline uint64_t v_multiwindow_wayland_next_event_sequence(void) {
+	static uint64_t sequence = 1;
+	return sequence++;
 }
 
 static inline void *v_multiwindow_wayland_bind_compositor(struct wl_registry *registry, uint32_t name, uint32_t version) {
@@ -138,6 +271,10 @@ static inline void *v_multiwindow_wayland_bind_compositor(struct wl_registry *re
 
 static inline void *v_multiwindow_wayland_bind_xdg_wm_base(struct wl_registry *registry, uint32_t name) {
 	return wl_registry_bind(registry, name, &v_multiwindow_xdg_wm_base_interface, 1);
+}
+
+static inline void *v_multiwindow_wayland_bind_seat(struct wl_registry *registry, uint32_t name, uint32_t version) {
+	return wl_registry_bind(registry, name, &wl_seat_interface, v_multiwindow_wayland_seat_bind_version(version));
 }
 
 static inline int v_multiwindow_wayland_add_registry_listener(struct wl_registry *registry, void *data) {
@@ -154,6 +291,71 @@ static inline int v_multiwindow_wayland_add_xdg_surface_listener(struct xdg_surf
 
 static inline int v_multiwindow_wayland_add_xdg_toplevel_listener(struct xdg_toplevel *toplevel, void *data) {
 	return wl_proxy_add_listener((struct wl_proxy *)toplevel, (void (**)(void))&v_multiwindow_wayland_xdg_toplevel_listener, data);
+}
+
+static inline int v_multiwindow_wayland_add_seat_listener(struct wl_seat *seat, void *data) {
+	return wl_seat_add_listener(seat, &v_multiwindow_wayland_seat_listener, data);
+}
+
+static inline void *v_multiwindow_wayland_seat_get_pointer(struct wl_seat *seat) {
+	return (void *)wl_seat_get_pointer(seat);
+}
+
+static inline void *v_multiwindow_wayland_seat_get_keyboard(struct wl_seat *seat) {
+	return (void *)wl_seat_get_keyboard(seat);
+}
+
+static inline int v_multiwindow_wayland_add_pointer_listener(struct wl_pointer *pointer, void *data) {
+	return wl_pointer_add_listener(pointer, &v_multiwindow_wayland_pointer_listener, data);
+}
+
+static inline int v_multiwindow_wayland_add_keyboard_listener(struct wl_keyboard *keyboard, void *data) {
+	return wl_keyboard_add_listener(keyboard, &v_multiwindow_wayland_keyboard_listener, data);
+}
+
+static inline void v_multiwindow_wayland_pointer_destroy(struct wl_pointer *pointer) {
+	if (pointer != NULL) {
+#ifdef WL_POINTER_RELEASE
+		uint32_t version = wl_proxy_get_version((struct wl_proxy *)pointer);
+		if (version >= 3) {
+			wl_proxy_marshal_flags((struct wl_proxy *)pointer, WL_POINTER_RELEASE, NULL, version, WL_MARSHAL_FLAG_DESTROY);
+		} else {
+			wl_pointer_destroy(pointer);
+		}
+#else
+		wl_pointer_destroy(pointer);
+#endif
+	}
+}
+
+static inline void v_multiwindow_wayland_keyboard_destroy(struct wl_keyboard *keyboard) {
+	if (keyboard != NULL) {
+#ifdef WL_KEYBOARD_RELEASE
+		uint32_t version = wl_proxy_get_version((struct wl_proxy *)keyboard);
+		if (version >= 3) {
+			wl_proxy_marshal_flags((struct wl_proxy *)keyboard, WL_KEYBOARD_RELEASE, NULL, version, WL_MARSHAL_FLAG_DESTROY);
+		} else {
+			wl_keyboard_destroy(keyboard);
+		}
+#else
+		wl_keyboard_destroy(keyboard);
+#endif
+	}
+}
+
+static inline void v_multiwindow_wayland_seat_destroy(struct wl_seat *seat) {
+	if (seat != NULL) {
+#ifdef WL_SEAT_RELEASE
+		uint32_t version = wl_proxy_get_version((struct wl_proxy *)seat);
+		if (version >= 5) {
+			wl_proxy_marshal_flags((struct wl_proxy *)seat, WL_SEAT_RELEASE, NULL, version, WL_MARSHAL_FLAG_DESTROY);
+		} else {
+			wl_seat_destroy(seat);
+		}
+#else
+		wl_seat_destroy(seat);
+#endif
+	}
 }
 
 static inline struct xdg_surface *v_multiwindow_wayland_xdg_wm_base_get_xdg_surface(struct xdg_wm_base *wm_base, struct wl_surface *surface) {
