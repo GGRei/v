@@ -1,0 +1,423 @@
+name: Multiwindow Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - smoke
+      - 'smoke/**'
+    paths:
+      - 'vlib/x/multiwindow/**'
+      - 'vlib/gg/*multiwindow*.v'
+      - 'vlib/gg/gg.c.v'
+      - 'vlib/gg/frame_pacing_test.v'
+      - 'vlib/gg/draw_fns_api_test.v'
+      - 'vlib/gg/README.md'
+      - 'examples/gg/multiwindow.v'
+      - '.github/workflows/multiwindow_smoke.yml'
+      - '.github/workflows/gg_regressions_ci.yml.disabled'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: multiwindow-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout V
+        uses: actions/checkout@v7
+
+      - name: Install minimal graphics dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            git \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libgl1-mesa-dev \
+            libgl1-mesa-dri \
+            libegl1-mesa-dev \
+            libwayland-dev \
+            wayland-protocols \
+            xvfb
+
+      - name: Build local V
+        run: make -j2
+
+      - name: Restore gg regressions workflow fixture
+        run: cp .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
+
+      - name: Test legacy gg import multiwindow isolation
+        run: env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ./v test vlib/gg/legacy_import_multiwindow_isolation_test.v
+
+      - name: Test default/mock policy
+        run: env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ./v -d gg_multiwindow test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+
+      - name: Test Wayland compile path
+        run: env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ./v -d gg_multiwindow -d sokol_wayland test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+
+      - name: Test X11/EGL under Xvfb
+        run: |
+          xvfb-run -a -s "-screen 0 1280x1024x24" env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true ./v -d gg_multiwindow -d x_multiwindow_x11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+
+      - name: Compile gg multiwindow examples
+        run: |
+          ./v -d gg_multiwindow -o /tmp/gg_multiwindow_default examples/gg/multiwindow.v
+          ./v -d gg_multiwindow -d x_multiwindow_x11 -o /tmp/gg_multiwindow_x11 examples/gg/multiwindow.v
+          ./v -d gg_multiwindow -d sokol_wayland -o /tmp/gg_multiwindow_wayland examples/gg/multiwindow.v
+
+      - name: Run gg multiwindow example headless mock
+        run: |
+          set -euo pipefail
+          stdout="$(mktemp)"
+          stderr="$(mktemp)"
+          set +e
+          env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE \
+            timeout 20s stdbuf -oL -eL /tmp/gg_multiwindow_default >"$stdout" 2>"$stderr"
+          status=$?
+          set -e
+          echo "::group::gg multiwindow headless stdout"
+          cat "$stdout"
+          echo "::endgroup::"
+          echo "::group::gg multiwindow headless stderr"
+          cat "$stderr"
+          echo "::endgroup::"
+          grep -Fq "gg multi-window backend:" "$stdout"
+          grep -Fq "mock backend selected; stopping after initial lifecycle events" "$stdout"
+          grep -Fq "live windows:" "$stdout"
+          grep -Fq "window created:" "$stdout"
+          if [ "$status" -ne 0 ]; then
+            echo "Headless/mock example failed with status $status."
+            exit "$status"
+          fi
+
+      - name: Run gg multiwindow Wayland build headless mock
+        run: |
+          set -euo pipefail
+          stdout="$(mktemp)"
+          stderr="$(mktemp)"
+          set +e
+          env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE \
+            timeout 20s stdbuf -oL -eL /tmp/gg_multiwindow_wayland >"$stdout" 2>"$stderr"
+          status=$?
+          set -e
+          echo "::group::gg multiwindow Wayland-build headless stdout"
+          cat "$stdout"
+          echo "::endgroup::"
+          echo "::group::gg multiwindow Wayland-build headless stderr"
+          cat "$stderr"
+          echo "::endgroup::"
+          grep -Fq "gg multi-window backend:" "$stdout"
+          grep -Fq "mock backend selected; stopping after initial lifecycle events" "$stdout"
+          grep -Fq "live windows:" "$stdout"
+          grep -Fq "window created:" "$stdout"
+          if [ "$status" -ne 0 ]; then
+            echo "Wayland-build headless/mock example failed with status $status."
+            exit "$status"
+          fi
+
+      - name: Run gg multiwindow example under Xvfb/X11
+        run: |
+          set -euo pipefail
+          stdout="$(mktemp)"
+          stderr="$(mktemp)"
+          set +e
+          xvfb-run -a -s "-screen 0 1280x1024x24" \
+            env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true \
+            timeout 12s stdbuf -oL -eL /tmp/gg_multiwindow_x11 >"$stdout" 2>"$stderr"
+          status=$?
+          set -e
+          echo "::group::gg multiwindow Xvfb stdout"
+          cat "$stdout"
+          echo "::endgroup::"
+          echo "::group::gg multiwindow Xvfb stderr"
+          cat "$stderr"
+          echo "::endgroup::"
+          grep -Fq "gg multi-window backend:" "$stdout"
+          grep -Fq "live windows:" "$stdout"
+          grep -Fq "window created:" "$stdout"
+          if [ "$status" -eq 124 ]; then
+            echo "X11 example reached the controlled timeout after producing expected launch logs."
+            exit 0
+          fi
+          exit "$status"
+
+  windows:
+    name: windows (${{ matrix.ccompiler }})
+    runs-on: windows-2025
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        ccompiler:
+          - msvc
+          - gcc
+          - tcc
+    steps:
+      - name: Checkout V
+        uses: actions/checkout@v7
+
+      - name: Setup MSVC x64
+        if: ${{ matrix.ccompiler == 'msvc' }}
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Verify MSVC and Windows SDK
+        if: ${{ matrix.ccompiler == 'msvc' }}
+        shell: pwsh
+        run: |
+          where.exe cl.exe
+          where.exe link.exe
+          $headers = @($env:INCLUDE -split ';' | Where-Object { $_ -and $_.Trim().Length -gt 0 } | ForEach-Object { Join-Path $_ 'd3d11.h' } | Where-Object { Test-Path $_ })
+          if ($headers.Count -eq 0) {
+            throw 'd3d11.h not found in INCLUDE; Windows SDK is not visible to the D3D11 smoke lane'
+          }
+          Write-Host "Found d3d11.h at $($headers[0])"
+
+      - name: Setup MinGW-w64 GCC
+        if: ${{ matrix.ccompiler == 'gcc' }}
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-gcc
+
+      - name: Verify MinGW-w64 D3D11 headers and import libraries
+        if: ${{ matrix.ccompiler == 'gcc' }}
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          which gcc
+          gcc --version
+          d3d11_header=""
+          dxgi_header=""
+          for include_dir in /ucrt64/include /ucrt64/x86_64-w64-mingw32/include; do
+            if [ -f "$include_dir/d3d11.h" ] && [ -z "$d3d11_header" ]; then
+              d3d11_header="$include_dir/d3d11.h"
+            fi
+            if [ -f "$include_dir/dxgi.h" ] && [ -z "$dxgi_header" ]; then
+              dxgi_header="$include_dir/dxgi.h"
+            fi
+          done
+          if [ -z "$d3d11_header" ]; then
+            echo "d3d11.h not found in /ucrt64/include or /ucrt64/x86_64-w64-mingw32/include" >&2
+            exit 1
+          fi
+          if [ -z "$dxgi_header" ]; then
+            echo "dxgi.h not found in /ucrt64/include or /ucrt64/x86_64-w64-mingw32/include" >&2
+            exit 1
+          fi
+          test -f /ucrt64/lib/libd3d11.a
+          test -f /ucrt64/lib/libdxgi.a
+          echo "Found $d3d11_header"
+          echo "Found $dxgi_header"
+          echo "Found /ucrt64/lib/libd3d11.a"
+          echo "Found /ucrt64/lib/libdxgi.a"
+          printf '#include <d3d11.h>\n#include <dxgi.h>\nint main(void) { return 0; }\n' > /tmp/d3d11_probe.c
+          gcc /tmp/d3d11_probe.c -ld3d11 -ldxgi -o /tmp/d3d11_probe.exe
+
+      - name: Build local V with MSVC
+        if: ${{ matrix.ccompiler == 'msvc' }}
+        run: .\makev.bat -msvc
+
+      - name: Build local V with GCC
+        if: ${{ matrix.ccompiler == 'gcc' }}
+        shell: msys2 {0}
+        run: |
+          cmd.exe //c 'makev.bat -gcc'
+          test -f ./v.exe
+
+      - name: Build local V with TCC
+        if: ${{ matrix.ccompiler == 'tcc' }}
+        run: .\makev.bat -tcc
+
+      - name: Restore gg regressions workflow fixture
+        if: ${{ matrix.ccompiler == 'msvc' || matrix.ccompiler == 'gcc' }}
+        run: Copy-Item -Force .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
+
+      - name: Diagnose legacy gg import multiwindow isolation functions with MSVC
+        if: ${{ matrix.ccompiler == 'msvc' }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $tests = @(
+            'test_multiwindow_enabled_and_disabled_renderer_capability_signatures_match',
+            'test_multiwindow_plain_capability_probe_does_not_start_native_app_source_guard',
+            'test_legacy_import_gg_does_not_pull_multiwindow_core',
+            'test_missing_gg_multiwindow_flag_reports_clear_error_without_native_deps',
+            'test_multiwindow_api_without_define_reports_opt_in_error'
+          )
+          $failed = @()
+          foreach ($test in $tests) {
+            Write-Host "::group::MSVC -run-only $test"
+            .\v.exe -cc msvc test -run-only $test vlib/gg/legacy_import_multiwindow_isolation_test.v
+            $status = $LASTEXITCODE
+            Write-Host "::endgroup::"
+            if ($status -ne 0) {
+              $failed += "$test exited with $status"
+            }
+          }
+          if ($failed.Count -gt 0) {
+            $failed | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
+
+      - name: Diagnose legacy gg import multiwindow isolation functions with GCC
+        if: ${{ matrix.ccompiler == 'gcc' }}
+        continue-on-error: true
+        shell: msys2 {0}
+        run: |
+          set +e
+          tests=(
+            test_multiwindow_enabled_and_disabled_renderer_capability_signatures_match
+            test_multiwindow_plain_capability_probe_does_not_start_native_app_source_guard
+            test_legacy_import_gg_does_not_pull_multiwindow_core
+            test_missing_gg_multiwindow_flag_reports_clear_error_without_native_deps
+            test_multiwindow_api_without_define_reports_opt_in_error
+          )
+          failures=()
+          for test in "${tests[@]}"; do
+            echo "::group::GCC -run-only ${test}"
+            ./v.exe -cc gcc test -run-only "${test}" vlib/gg/legacy_import_multiwindow_isolation_test.v
+            status=$?
+            echo "::endgroup::"
+            if [ "$status" -ne 0 ]; then
+              failures+=("${test} exited with ${status}")
+            fi
+          done
+          if [ "${#failures[@]}" -ne 0 ]; then
+            printf '%s\n' "${failures[@]}" >&2
+            exit 1
+          fi
+
+      - name: Diagnose legacy gg import multiwindow isolation functions with TCC
+        if: ${{ matrix.ccompiler == 'tcc' }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $tests = @(
+            'test_multiwindow_enabled_and_disabled_renderer_capability_signatures_match',
+            'test_multiwindow_plain_capability_probe_does_not_start_native_app_source_guard',
+            'test_legacy_import_gg_does_not_pull_multiwindow_core',
+            'test_missing_gg_multiwindow_flag_reports_clear_error_without_native_deps',
+            'test_multiwindow_api_without_define_reports_opt_in_error'
+          )
+          $failed = @()
+          foreach ($test in $tests) {
+            Write-Host "::group::TCC -run-only $test"
+            .\v.exe test -run-only $test vlib/gg/legacy_import_multiwindow_isolation_test.v
+            $status = $LASTEXITCODE
+            Write-Host "::endgroup::"
+            if ($status -ne 0) {
+              $failed += "$test exited with $status"
+            }
+          }
+          if ($failed.Count -gt 0) {
+            $failed | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
+
+      - name: Test legacy gg import multiwindow isolation with MSVC
+        if: ${{ matrix.ccompiler == 'msvc' }}
+        run: .\v.exe -cc msvc test vlib/gg/legacy_import_multiwindow_isolation_test.v
+
+      - name: Test legacy gg import multiwindow isolation with GCC
+        if: ${{ matrix.ccompiler == 'gcc' }}
+        shell: msys2 {0}
+        run: ./v.exe -cc gcc test vlib/gg/legacy_import_multiwindow_isolation_test.v
+
+      - name: Test legacy gg import multiwindow isolation with TCC
+        if: ${{ matrix.ccompiler == 'tcc' }}
+        run: .\v.exe test vlib/gg/legacy_import_multiwindow_isolation_test.v
+
+      - name: Test multiwindow D3D11 path with MSVC
+        if: ${{ matrix.ccompiler == 'msvc' }}
+        run: .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+
+      - name: Test multiwindow D3D11 path with GCC
+        if: ${{ matrix.ccompiler == 'gcc' }}
+        shell: msys2 {0}
+        run: ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+
+      - name: Compile gg multiwindow example with MSVC
+        if: ${{ matrix.ccompiler == 'msvc' }}
+        run: .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 -o "$env:TEMP\gg_multiwindow.exe" examples/gg/multiwindow.v
+
+      - name: Compile gg multiwindow example with GCC
+        if: ${{ matrix.ccompiler == 'gcc' }}
+        shell: msys2 {0}
+        run: ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 -o gg_multiwindow_gcc.exe examples/gg/multiwindow.v
+
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - name: Checkout V
+        uses: actions/checkout@v7
+
+      - name: Build local V
+        run: make -j3
+
+      - name: Restore gg regressions workflow fixture
+        run: cp .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
+
+      - name: Test legacy gg import multiwindow isolation
+        run: ./v test vlib/gg/legacy_import_multiwindow_isolation_test.v
+
+      - name: Test multiwindow Metal path
+        run: ./v -d gg_multiwindow -d sokol_metal test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+
+      - name: Test AppKit GLCore rejection guard
+        run: ./v -d gg_multiwindow -d darwin_sokol_glcore33 test vlib/x/multiwindow/multiwindow_test.v
+
+      - name: Compile gg multiwindow example
+        run: ./v -d gg_multiwindow -d sokol_metal -o /tmp/gg_multiwindow_metal examples/gg/multiwindow.v
+
+      - name: Run gg multiwindow Metal example
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          import sys
+
+          proc = subprocess.Popen(['/tmp/gg_multiwindow_metal'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+          timed_out = False
+          try:
+              stdout, stderr = proc.communicate(timeout=12)
+          except subprocess.TimeoutExpired:
+              timed_out = True
+              proc.kill()
+              stdout, stderr = proc.communicate()
+
+          print('::group::gg multiwindow Metal stdout')
+          print(stdout, end='')
+          print('::endgroup::')
+          print('::group::gg multiwindow Metal stderr')
+          print(stderr, end='')
+          print('::endgroup::')
+
+          for marker in ['gg multi-window backend:', 'live windows:', 'window created:']:
+              if marker not in stdout:
+                  print(f'Missing expected output marker: {marker}', file=sys.stderr)
+                  sys.exit(1)
+
+          if timed_out:
+              print('Metal example reached the controlled timeout after producing expected launch logs.')
+              sys.exit(0)
+
+          if proc.returncode != 0:
+              print(f'Metal example exited with {proc.returncode}.', file=sys.stderr)
+              sys.exit(proc.returncode)
+          PY
