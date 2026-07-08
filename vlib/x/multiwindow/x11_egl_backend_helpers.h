@@ -2,6 +2,7 @@
 #define V_MULTIWINDOW_X11_EGL_BACKEND_HELPERS_H
 
 #include <stdint.h>
+#include <locale.h>
 #include <string.h>
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
@@ -44,6 +45,7 @@ typedef struct {
 
 static inline long v_multiwindow_x11_event_mask(void) {
 	return StructureNotifyMask |
+		PropertyChangeMask |
 		KeyPressMask |
 		KeyReleaseMask |
 		PointerMotionMask |
@@ -76,9 +78,19 @@ static inline unsigned long v_multiwindow_x11_event_window(XEvent *event) {
 		return (unsigned long)event->xconfigure.window;
 	case DestroyNotify:
 		return (unsigned long)event->xdestroywindow.window;
+	case PropertyNotify:
+		return (unsigned long)event->xproperty.window;
 	default:
 		return 0;
 	}
+}
+
+static inline unsigned long v_multiwindow_x11_property_atom(XEvent *event) {
+	return event->type == PropertyNotify ? (unsigned long)event->xproperty.atom : 0;
+}
+
+static inline int v_multiwindow_x11_property_state(XEvent *event) {
+	return event->type == PropertyNotify ? event->xproperty.state : -1;
 }
 
 static inline int v_multiwindow_x11_event_x(XEvent *event) {
@@ -213,6 +225,55 @@ static inline int v_multiwindow_x11_button_modifier_bit(int mouse_button) {
 		return 0x400;
 	default:
 		return 0;
+	}
+}
+
+static inline XIM v_multiwindow_x11_open_im(Display *display) {
+	if (display == NULL) {
+		return NULL;
+	}
+	setlocale(LC_CTYPE, "");
+	XSetLocaleModifiers("");
+	XIM im = XOpenIM(display, NULL, NULL, NULL);
+	if (im == NULL) {
+		XSetLocaleModifiers("@im=none");
+		im = XOpenIM(display, NULL, NULL, NULL);
+	}
+	return im;
+}
+
+static inline void v_multiwindow_x11_close_im(XIM im) {
+	if (im != NULL) {
+		XCloseIM(im);
+	}
+}
+
+static inline XIC v_multiwindow_x11_create_ic(XIM im, unsigned long window) {
+	if (im == NULL || window == 0) {
+		return NULL;
+	}
+	return XCreateIC(im,
+		XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+		XNClientWindow, (Window)window,
+		XNFocusWindow, (Window)window,
+		NULL);
+}
+
+static inline void v_multiwindow_x11_destroy_ic(XIC ic) {
+	if (ic != NULL) {
+		XDestroyIC(ic);
+	}
+}
+
+static inline void v_multiwindow_x11_set_ic_focus(XIC ic) {
+	if (ic != NULL) {
+		XSetICFocus(ic);
+	}
+}
+
+static inline void v_multiwindow_x11_unset_ic_focus(XIC ic) {
+	if (ic != NULL) {
+		XUnsetICFocus(ic);
 	}
 }
 
@@ -611,6 +672,64 @@ static inline int v_multiwindow_x11_key_code(XEvent *event, int *keycodes, int k
 		return keycodes[scancode];
 	}
 	return keycode;
+}
+
+static inline int v_multiwindow_x11_utf8_decode_next(const char *buf, int count, int *offset, unsigned int *out_codepoint) {
+	if (buf == NULL || offset == NULL || out_codepoint == NULL || *offset >= count) {
+		return 0;
+	}
+	const unsigned char *bytes = (const unsigned char *)buf;
+	int i = *offset;
+	unsigned int codepoint = 0;
+	int width = 0;
+	if ((bytes[i] & 0x80) == 0) {
+		codepoint = bytes[i];
+		width = 1;
+	} else if ((bytes[i] & 0xe0) == 0xc0 && i + 1 < count) {
+		codepoint = ((unsigned int)(bytes[i] & 0x1f) << 6) |
+			(unsigned int)(bytes[i + 1] & 0x3f);
+		width = 2;
+	} else if ((bytes[i] & 0xf0) == 0xe0 && i + 2 < count) {
+		codepoint = ((unsigned int)(bytes[i] & 0x0f) << 12) |
+			((unsigned int)(bytes[i + 1] & 0x3f) << 6) |
+			(unsigned int)(bytes[i + 2] & 0x3f);
+		width = 3;
+	} else if ((bytes[i] & 0xf8) == 0xf0 && i + 3 < count) {
+		codepoint = ((unsigned int)(bytes[i] & 0x07) << 18) |
+			((unsigned int)(bytes[i + 1] & 0x3f) << 12) |
+			((unsigned int)(bytes[i + 2] & 0x3f) << 6) |
+			(unsigned int)(bytes[i + 3] & 0x3f);
+		width = 4;
+	}
+	if (width == 0 || (codepoint >= 0xd800U && codepoint <= 0xdfffU) || codepoint >= 0x110000U) {
+		*offset = i + 1;
+		return 0;
+	}
+	*offset = i + width;
+	*out_codepoint = codepoint;
+	return 1;
+}
+
+static inline int v_multiwindow_x11_char_codes(XIC ic, XEvent *event, unsigned int *codes, int codes_len) {
+	if (ic == NULL || event == NULL || event->type != KeyPress || codes == NULL || codes_len <= 0) {
+		return 0;
+	}
+	char buf[128];
+	KeySym keysym = NoSymbol;
+	Status status = 0;
+	int count = Xutf8LookupString(ic, &event->xkey, buf, (int)sizeof(buf), &keysym, &status);
+	if (status == XBufferOverflow || (status != XLookupChars && status != XLookupBoth) || count <= 0 || count > (int)sizeof(buf)) {
+		return 0;
+	}
+	int offset = 0;
+	int out_count = 0;
+	while (offset < count && out_count < codes_len) {
+		unsigned int codepoint = 0;
+		if (v_multiwindow_x11_utf8_decode_next(buf, count, &offset, &codepoint) && codepoint != 0) {
+			codes[out_count++] = codepoint;
+		}
+	}
+	return out_count;
 }
 
 static inline int v_multiwindow_x11_apply_config_hints(Display *display, unsigned long window, int width, int height, int min_width, int min_height, int resizable, int borderless, int fullscreen) {

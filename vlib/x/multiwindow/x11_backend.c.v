@@ -25,11 +25,21 @@ const x11_enter_notify = 7
 const x11_leave_notify = 8
 const x11_focus_in = 9
 const x11_focus_out = 10
+const x11_property_notify = 28
+const x11_selection_notify = 31
 const x11_scroll_up = 4
 const x11_scroll_down = 5
 const x11_scroll_right = 6
 const x11_scroll_left = 7
 const x11_invalid_mouse_button = 256
+const x11_property_new_value = 0
+const x11_prop_mode_replace = 0
+const x11_normal_state = 1
+const x11_iconic_state = 3
+const x11_modifier_ctrl = u32(2)
+const x11_key_v = 86
+const x11_xdnd_version = 5
+const x11_max_char_codes = 32
 
 $if x32 {
 	type X11NativeLong = int
@@ -97,12 +107,27 @@ $if linux && x_multiwindow_x11 ? {
 	}
 
 	@[typedef]
+	struct C.XSelectionEvent {
+	mut:
+		@type      int
+		serial     X11NativeULong
+		send_event int
+		display    &C.Display = unsafe { nil }
+		requestor  X11NativeWindow
+		selection  X11NativeAtom
+		target     X11NativeAtom
+		property   X11NativeAtom
+		time       X11NativeULong
+	}
+
+	@[typedef]
 	union C.XEvent {
 	mut:
 		@type          int
 		xclient        C.XClientMessageEvent
 		xconfigure     C.XConfigureEvent
 		xdestroywindow C.XDestroyWindowEvent
+		xselection     C.XSelectionEvent
 		pad            [24]X11NativeLong
 	}
 
@@ -124,6 +149,12 @@ $if linux && x_multiwindow_x11 ? {
 	fn C.XSync(display &C.Display, discard int) int
 	fn C.XPending(display &C.Display) int
 	fn C.XNextEvent(display &C.Display, event &C.XEvent) int
+	fn C.XGetWindowProperty(display &C.Display, window X11NativeWindow, property X11NativeAtom, long_offset X11NativeLong, long_length X11NativeLong, delete int, req_type X11NativeAtom, actual_type_return &X11NativeAtom, actual_format_return &int, nitems_return &X11NativeULong, bytes_after_return &X11NativeULong, prop_return &&u8) int
+	fn C.XChangeProperty(display &C.Display, window X11NativeWindow, property X11NativeAtom, @type X11NativeAtom, format int, mode int, data &u8, nelements int) int
+	fn C.XConvertSelection(display &C.Display, selection X11NativeAtom, target X11NativeAtom, property X11NativeAtom, requestor X11NativeWindow, time X11NativeULong) int
+	fn C.XSendEvent(display &C.Display, window X11NativeWindow, propagate int, event_mask X11NativeLong, event_send &C.XEvent) int
+	fn C.XFilterEvent(event &C.XEvent, window X11NativeWindow) int
+	fn C.XFree(data voidptr) int
 	fn C.v_multiwindow_x11_event_mask() X11NativeLong
 	fn C.v_multiwindow_x11_event_window(event &C.XEvent) X11NativeWindow
 	fn C.v_multiwindow_x11_event_x(event &C.XEvent) int
@@ -131,14 +162,23 @@ $if linux && x_multiwindow_x11 ? {
 	fn C.v_multiwindow_x11_event_state(event &C.XEvent) u32
 	fn C.v_multiwindow_x11_event_keycode(event &C.XEvent) u32
 	fn C.v_multiwindow_x11_event_button(event &C.XEvent) u32
+	fn C.v_multiwindow_x11_property_atom(event &C.XEvent) X11NativeAtom
+	fn C.v_multiwindow_x11_property_state(event &C.XEvent) int
 	fn C.v_multiwindow_x11_focus_mode(event &C.XEvent) int
 	fn C.v_multiwindow_x11_is_notify_grab_or_ungrab(mode int) int
 	fn C.v_multiwindow_x11_modifiers(state u32) int
 	fn C.v_multiwindow_x11_key_modifier_bit(key_code int) int
 	fn C.v_multiwindow_x11_mouse_button(button u32) int
 	fn C.v_multiwindow_x11_button_modifier_bit(mouse_button int) int
+	fn C.v_multiwindow_x11_open_im(display &C.Display) voidptr
+	fn C.v_multiwindow_x11_close_im(im voidptr)
+	fn C.v_multiwindow_x11_create_ic(im voidptr, window X11NativeWindow) voidptr
+	fn C.v_multiwindow_x11_destroy_ic(ic voidptr)
+	fn C.v_multiwindow_x11_set_ic_focus(ic voidptr)
+	fn C.v_multiwindow_x11_unset_ic_focus(ic voidptr)
 	fn C.v_multiwindow_x11_init_keycodes(display &C.Display, keycodes &int, keycodes_len int)
 	fn C.v_multiwindow_x11_key_code(event &C.XEvent, keycodes &int, keycodes_len int) int
+	fn C.v_multiwindow_x11_char_codes(ic voidptr, event &C.XEvent, codes &u32, codes_len int) int
 	fn C.v_multiwindow_x11_apply_config_hints(display &C.Display, window X11NativeWindow, width int, height int, min_width int, min_height int, resizable int, borderless int, fullscreen int) int
 	fn C.v_multiwindow_x11_get_window_size(display &C.Display, window X11NativeWindow, out_width &int, out_height &int) int
 	fn C.v_multiwindow_x11_egl_get_display(display &C.Display) voidptr
@@ -160,6 +200,7 @@ struct X11WindowRecord {
 	id          WindowId
 	window      X11NativeWindow
 	colormap    X11NativeColormap
+	xic         voidptr
 	egl_surface voidptr
 mut:
 	config          WindowConfig
@@ -172,6 +213,7 @@ mut:
 	mouse_pos_valid bool
 	mouse_buttons   u8
 	key_repeat      [256]bool
+	window_state    int
 }
 
 struct X11Backend {
@@ -181,6 +223,23 @@ mut:
 	root             X11NativeWindow
 	wm_protocols     X11NativeAtom
 	wm_delete_window X11NativeAtom
+	wm_state         X11NativeAtom
+	xdnd_aware       X11NativeAtom
+	xdnd_enter       X11NativeAtom
+	xdnd_position    X11NativeAtom
+	xdnd_status      X11NativeAtom
+	xdnd_action_copy X11NativeAtom
+	xdnd_drop        X11NativeAtom
+	xdnd_leave       X11NativeAtom
+	xdnd_finished    X11NativeAtom
+	xdnd_selection   X11NativeAtom
+	xdnd_type_list   X11NativeAtom
+	text_uri_list    X11NativeAtom
+	xdnd_source      X11NativeWindow
+	xdnd_target      X11NativeWindow
+	xdnd_format      X11NativeAtom
+	xdnd_version     X11NativeLong
+	xim              voidptr
 	egl_display      voidptr
 	egl_config       voidptr
 	egl_context      voidptr
@@ -215,9 +274,9 @@ fn (backend &X11Backend) capabilities() Capabilities {
 		input_events:       true
 		mouse_events:       true
 		keyboard_events:    true
-		text_events:        false
+		text_events:        true
 		focus_events:       true
-		drop_events:        false
+		drop_events:        true
 		touch_events:       false
 	}
 }
@@ -237,9 +296,26 @@ fn (mut backend X11Backend) start(require_renderer bool) ! {
 		backend.root = C.XDefaultRootWindow(display)
 		backend.wm_protocols = C.XInternAtom(display, c'WM_PROTOCOLS', 0)
 		backend.wm_delete_window = C.XInternAtom(display, c'WM_DELETE_WINDOW', 0)
+		backend.wm_state = C.XInternAtom(display, c'WM_STATE', 0)
+		backend.xdnd_aware = C.XInternAtom(display, c'XdndAware', 0)
+		backend.xdnd_enter = C.XInternAtom(display, c'XdndEnter', 0)
+		backend.xdnd_position = C.XInternAtom(display, c'XdndPosition', 0)
+		backend.xdnd_status = C.XInternAtom(display, c'XdndStatus', 0)
+		backend.xdnd_action_copy = C.XInternAtom(display, c'XdndActionCopy', 0)
+		backend.xdnd_drop = C.XInternAtom(display, c'XdndDrop', 0)
+		backend.xdnd_leave = C.XInternAtom(display, c'XdndLeave', 0)
+		backend.xdnd_finished = C.XInternAtom(display, c'XdndFinished', 0)
+		backend.xdnd_selection = C.XInternAtom(display, c'XdndSelection', 0)
+		backend.xdnd_type_list = C.XInternAtom(display, c'XdndTypeList', 0)
+		backend.text_uri_list = C.XInternAtom(display, c'text/uri-list', 0)
+		backend.xim = C.v_multiwindow_x11_open_im(display)
 		C.v_multiwindow_x11_init_keycodes(display, &backend.keycodes[0], 256)
 		if require_renderer {
 			backend.init_renderer() or {
+				if backend.xim != unsafe { nil } {
+					C.v_multiwindow_x11_close_im(backend.xim)
+					backend.xim = unsafe { nil }
+				}
 				C.XCloseDisplay(display)
 				backend.display = unsafe { nil }
 				return err
@@ -318,6 +394,8 @@ fn (mut backend X11Backend) create_window(id WindowId, config WindowConfig) !Win
 			}, true) or {}
 			return error(err_x11_create_window_failed)
 		}
+		backend.announce_xdnd_for_window(window)
+		xic := C.v_multiwindow_x11_create_ic(backend.xim, window)
 		if config.visible {
 			C.XMapWindow(backend.display, window)
 		}
@@ -326,6 +404,7 @@ fn (mut backend X11Backend) create_window(id WindowId, config WindowConfig) !Win
 				id:          id
 				window:      window
 				colormap:    colormap
+				xic:         xic
 				egl_surface: egl_surface
 				config:      window_config_with_size(config, actual_size.width, actual_size.height)
 				width:       actual_size.width
@@ -341,6 +420,7 @@ fn (mut backend X11Backend) create_window(id WindowId, config WindowConfig) !Win
 				id:          id
 				window:      window
 				colormap:    colormap
+				xic:         xic
 				egl_surface: egl_surface
 				config:      window_config_with_size(config, actual_size.width, actual_size.height)
 				width:       actual_size.width
@@ -353,13 +433,15 @@ fn (mut backend X11Backend) create_window(id WindowId, config WindowConfig) !Win
 			height: actual_height
 		}
 		backend.windows << X11WindowRecord{
-			id:          id
-			window:      window
-			colormap:    colormap
-			egl_surface: egl_surface
-			config:      window_config_with_size(config, actual_size.width, actual_size.height)
-			width:       actual_size.width
-			height:      actual_size.height
+			id:           id
+			window:       window
+			colormap:     colormap
+			xic:          xic
+			egl_surface:  egl_surface
+			config:       window_config_with_size(config, actual_size.width, actual_size.height)
+			width:        actual_size.width
+			height:       actual_size.height
+			window_state: backend.window_state(window)
 		}
 		return actual_size
 	} $else {
@@ -463,6 +545,9 @@ fn (mut backend X11Backend) poll_queued_events() ![]QueuedEvent {
 		for C.XPending(backend.display) > 0 {
 			mut event := C.XEvent{}
 			C.XNextEvent(backend.display, &event)
+			if C.XFilterEvent(&event, X11NativeWindow(0)) != 0 {
+				continue
+			}
 			event_type := unsafe { event.@type }
 			match event_type {
 				x11_client_message {
@@ -477,6 +562,8 @@ fn (mut backend X11Backend) poll_queued_events() ![]QueuedEvent {
 							kind:      .window_close_requested
 							window_id: id
 						})
+					} else if format == 32 {
+						events << backend.queued_xdnd_client_message_events(&event)
 					}
 				}
 				x11_configure_notify {
@@ -545,6 +632,7 @@ fn (mut backend X11Backend) poll_queued_events() ![]QueuedEvent {
 						continue
 					}
 					index := backend.window_record_index_for_event(&event) or { continue }
+					C.v_multiwindow_x11_set_ic_focus(backend.windows[index].xic)
 					events << queued_input_event(backend.input_event_from_record(backend.windows[index],
 						.focused))
 				}
@@ -553,8 +641,31 @@ fn (mut backend X11Backend) poll_queued_events() ![]QueuedEvent {
 						continue
 					}
 					index := backend.window_record_index_for_event(&event) or { continue }
+					C.v_multiwindow_x11_unset_ic_focus(backend.windows[index].xic)
 					events << queued_input_event(backend.input_event_from_record(backend.windows[index],
 						.unfocused))
+				}
+				x11_property_notify {
+					if C.v_multiwindow_x11_property_state(&event) != x11_property_new_value
+						|| C.v_multiwindow_x11_property_atom(&event) != backend.wm_state {
+						continue
+					}
+					index := backend.window_record_index_for_event(&event) or { continue }
+					state := backend.window_state(backend.windows[index].window)
+					if state == backend.windows[index].window_state {
+						continue
+					}
+					backend.windows[index].window_state = state
+					if state == x11_iconic_state {
+						events << queued_input_event(backend.input_event_from_record(backend.windows[index],
+							.iconified))
+					} else if state == x11_normal_state {
+						events << queued_input_event(backend.input_event_from_record(backend.windows[index],
+							.restored))
+					}
+				}
+				x11_selection_notify {
+					events << backend.queued_xdnd_selection_events(&event)
 				}
 				else {}
 			}
@@ -589,24 +700,65 @@ fn (backend &X11Backend) input_event_with_payload(record X11WindowRecord, kind I
 	}
 }
 
+fn (backend &X11Backend) input_char_event(record X11WindowRecord, char_code u32, key_repeat bool, modifiers u32) InputEvent {
+	return InputEvent{
+		kind:               .char
+		window_id:          record.id
+		char_code:          char_code
+		key_repeat:         key_repeat
+		modifiers:          modifiers
+		window_width:       record.width
+		window_height:      record.height
+		framebuffer_width:  record.width
+		framebuffer_height: record.height
+	}
+}
+
+fn (backend &X11Backend) input_files_dropped_event(record X11WindowRecord, files []string) InputEvent {
+	return InputEvent{
+		kind:               .files_dropped
+		window_id:          record.id
+		mouse_x:            record.mouse_x
+		mouse_y:            record.mouse_y
+		mouse_dx:           record.mouse_dx
+		mouse_dy:           record.mouse_dy
+		window_width:       record.width
+		window_height:      record.height
+		framebuffer_width:  record.width
+		framebuffer_height: record.height
+		mouse_button:       x11_invalid_mouse_button
+		dropped_files:      files.clone()
+	}
+}
+
 $if linux && x_multiwindow_x11 ? {
 	fn (mut backend X11Backend) queued_key_press_event(index int, event &C.XEvent) []QueuedEvent {
 		mut events := []QueuedEvent{}
 		key_code := C.v_multiwindow_x11_key_code(event, &backend.keycodes[0], 256)
-		if key_code == 0 {
-			return events
-		}
 		native_keycode := int(C.v_multiwindow_x11_event_keycode(event))
 		mut repeat := false
 		if native_keycode >= 0 && native_keycode < 256 {
 			repeat = backend.windows[index].key_repeat[native_keycode]
 			backend.windows[index].key_repeat[native_keycode] = true
 		}
-		input := backend.input_event_with_payload(backend.windows[index], .key_down, key_code,
-			repeat,
-			u32(C.v_multiwindow_x11_modifiers(C.v_multiwindow_x11_event_state(event)) | C.v_multiwindow_x11_key_modifier_bit(key_code)),
-			x11_invalid_mouse_button, 0, 0)
-		events << queued_input_event(input)
+		mut modifiers := u32(C.v_multiwindow_x11_modifiers(C.v_multiwindow_x11_event_state(event)))
+		if key_code != 0 {
+			modifiers |= u32(C.v_multiwindow_x11_key_modifier_bit(key_code))
+			input := backend.input_event_with_payload(backend.windows[index], .key_down, key_code,
+				repeat, modifiers, x11_invalid_mouse_button, 0, 0)
+			events << queued_input_event(input)
+			if x11_is_clipboard_paste(key_code, modifiers) {
+				events << queued_input_event(backend.input_event_with_payload(backend.windows[index],
+					.clipboard_pasted, 0, false, modifiers, x11_invalid_mouse_button, 0, 0))
+			}
+		}
+		mut char_codes := [x11_max_char_codes]u32{}
+		char_count := C.v_multiwindow_x11_char_codes(backend.windows[index].xic, event,
+			&char_codes[0], x11_max_char_codes)
+		for i in 0 .. char_count {
+			events << queued_input_event(backend.input_char_event(backend.windows[index],
+				char_codes[i], repeat, modifiers))
+		}
 		return events
 	}
 
@@ -716,6 +868,217 @@ $if linux && x_multiwindow_x11 ? {
 	fn (backend &X11Backend) window_record_index_for_event(event &C.XEvent) ?int {
 		return backend.window_record_index_for_native(C.v_multiwindow_x11_event_window(event))
 	}
+
+	fn (backend &X11Backend) window_state(window X11NativeWindow) int {
+		mut result := x11_normal_state
+		mut actual_type := X11NativeAtom(0)
+		mut actual_format := 0
+		mut item_count := X11NativeULong(0)
+		mut bytes_after := X11NativeULong(0)
+		mut state := &u8(unsafe { nil })
+		C.XGetWindowProperty(backend.display, window, backend.wm_state, X11NativeLong(0),
+			X11NativeLong(0x7fffffff), 0, backend.wm_state, &actual_type, &actual_format,
+			&item_count, &bytes_after, &&u8(&state))
+		if item_count >= X11NativeULong(2) && state != unsafe { nil } {
+			unsafe {
+				result = int(*(&u32(state)))
+			}
+		}
+		if state != unsafe { nil } {
+			C.XFree(state)
+		}
+		return result
+	}
+
+	fn (mut backend X11Backend) announce_xdnd_for_window(window X11NativeWindow) {
+		if backend.xdnd_aware == X11NativeAtom(0) {
+			return
+		}
+		version := X11NativeAtom(x11_xdnd_version)
+		C.XChangeProperty(backend.display, window, backend.xdnd_aware, X11NativeAtom(4), 32,
+			x11_prop_mode_replace, unsafe { &u8(&version) }, 1)
+	}
+
+	fn (mut backend X11Backend) queued_xdnd_client_message_events(event &C.XEvent) []QueuedEvent {
+		message_type := unsafe { event.xclient.message_type }
+		if message_type == backend.xdnd_enter {
+			backend.handle_xdnd_enter(event)
+		} else if message_type == backend.xdnd_position {
+			backend.handle_xdnd_position(event)
+		} else if message_type == backend.xdnd_drop {
+			backend.handle_xdnd_drop(event)
+		} else if message_type == backend.xdnd_leave {
+			backend.clear_xdnd_state()
+		}
+		return []QueuedEvent{}
+	}
+
+	fn (mut backend X11Backend) handle_xdnd_enter(event &C.XEvent) {
+		backend.xdnd_source = unsafe { X11NativeWindow(event.xclient.data.l[0]) }
+		backend.xdnd_target = unsafe { event.xclient.window }
+		backend.xdnd_version = unsafe { event.xclient.data.l[1] >> 24 }
+		backend.xdnd_format = X11NativeAtom(0)
+		if backend.xdnd_version > x11_xdnd_version {
+			return
+		}
+		is_list := (unsafe { event.xclient.data.l[1] } & X11NativeLong(1)) != 0
+		if is_list {
+			backend.xdnd_format = backend.xdnd_format_from_type_list()
+			return
+		}
+		for i in 2 .. 5 {
+			format := unsafe { X11NativeAtom(event.xclient.data.l[i]) }
+			if format == backend.text_uri_list {
+				backend.xdnd_format = backend.text_uri_list
+				return
+			}
+		}
+	}
+
+	fn (mut backend X11Backend) handle_xdnd_position(event &C.XEvent) {
+		if backend.xdnd_version > x11_xdnd_version || backend.xdnd_source == X11NativeWindow(0) {
+			return
+		}
+		backend.xdnd_target = unsafe { event.xclient.window }
+		backend.send_xdnd_status(backend.xdnd_format != X11NativeAtom(0))
+	}
+
+	fn (mut backend X11Backend) handle_xdnd_drop(event &C.XEvent) {
+		if backend.xdnd_version > x11_xdnd_version {
+			return
+		}
+		backend.xdnd_target = unsafe { event.xclient.window }
+		if backend.xdnd_source == X11NativeWindow(0) || backend.xdnd_format == X11NativeAtom(0) {
+			backend.send_xdnd_finished(backend.xdnd_target, false)
+			backend.clear_xdnd_state()
+			return
+		}
+		time := if backend.xdnd_version >= 1 {
+			unsafe { X11NativeULong(event.xclient.data.l[2]) }
+		} else {
+			X11NativeULong(0)
+		}
+		C.XConvertSelection(backend.display, backend.xdnd_selection, backend.xdnd_format,
+			backend.xdnd_selection, backend.xdnd_target, time)
+	}
+
+	fn (mut backend X11Backend) queued_xdnd_selection_events(event &C.XEvent) []QueuedEvent {
+		mut events := []QueuedEvent{}
+		if unsafe { event.xselection.selection } != backend.xdnd_selection {
+			return events
+		}
+		requestor := unsafe { event.xselection.requestor }
+		property := unsafe { event.xselection.property }
+		if property == X11NativeAtom(0) {
+			backend.send_xdnd_finished(requestor, false)
+			backend.clear_xdnd_state()
+			return events
+		}
+		index := backend.window_record_index_for_native(requestor) or {
+			backend.send_xdnd_finished(requestor, false)
+			backend.clear_xdnd_state()
+			return events
+		}
+		mut actual_type := X11NativeAtom(0)
+		mut actual_format := 0
+		mut item_count := X11NativeULong(0)
+		mut bytes_after := X11NativeULong(0)
+		mut data := &u8(unsafe { nil })
+		C.XGetWindowProperty(backend.display, requestor, property, X11NativeLong(0),
+			X11NativeLong(0x7fffffff), 1, backend.text_uri_list, &actual_type, &actual_format,
+			&item_count, &bytes_after, &&u8(&data))
+		valid_payload := actual_type == backend.text_uri_list && actual_format == 8
+		payload := if valid_payload && data != unsafe { nil } && item_count > X11NativeULong(0) {
+			unsafe { tos(data, int(item_count)).clone() }
+		} else {
+			''
+		}
+		if data != unsafe { nil } {
+			C.XFree(data)
+		}
+		files := dropped_files_from_uri_list(payload)
+		if files.len > 0 {
+			events << queued_input_event(backend.input_files_dropped_event(backend.windows[index],
+				files))
+		}
+		backend.send_xdnd_finished(requestor, files.len > 0)
+		backend.clear_xdnd_state()
+		return events
+	}
+
+	fn (mut backend X11Backend) xdnd_format_from_type_list() X11NativeAtom {
+		if backend.xdnd_source == X11NativeWindow(0) {
+			return X11NativeAtom(0)
+		}
+		mut actual_type := X11NativeAtom(0)
+		mut actual_format := 0
+		mut item_count := X11NativeULong(0)
+		mut bytes_after := X11NativeULong(0)
+		mut formats := &X11NativeAtom(unsafe { nil })
+		C.XGetWindowProperty(backend.display, backend.xdnd_source, backend.xdnd_type_list,
+			X11NativeLong(0), X11NativeLong(0x7fffffff), 0, X11NativeAtom(4), &actual_type,
+			&actual_format, &item_count, &bytes_after, unsafe { &&u8(&formats) })
+		mut result := X11NativeAtom(0)
+		if formats != unsafe { nil } {
+			for i in 0 .. int(item_count) {
+				if unsafe { formats[i] } == backend.text_uri_list {
+					result = backend.text_uri_list
+					break
+				}
+			}
+			C.XFree(formats)
+		}
+		return result
+	}
+
+	fn (backend &X11Backend) send_xdnd_status(accepted bool) {
+		if backend.xdnd_source == X11NativeWindow(0) {
+			return
+		}
+		mut reply := C.XEvent{}
+		reply.@type = x11_client_message
+		unsafe {
+			reply.xclient.window = backend.xdnd_source
+			reply.xclient.message_type = backend.xdnd_status
+			reply.xclient.format = 32
+			reply.xclient.data.l[0] = X11NativeLong(backend.xdnd_target)
+			if accepted {
+				reply.xclient.data.l[1] = X11NativeLong(1)
+				if backend.xdnd_version >= 2 {
+					reply.xclient.data.l[4] = X11NativeLong(backend.xdnd_action_copy)
+				}
+			}
+		}
+		C.XSendEvent(backend.display, backend.xdnd_source, 0, X11NativeLong(0), &reply)
+		C.XFlush(backend.display)
+	}
+
+	fn (backend &X11Backend) send_xdnd_finished(requestor X11NativeWindow, accepted bool) {
+		if backend.xdnd_source == X11NativeWindow(0) || backend.xdnd_version < 2 {
+			return
+		}
+		mut reply := C.XEvent{}
+		reply.@type = x11_client_message
+		unsafe {
+			reply.xclient.window = backend.xdnd_source
+			reply.xclient.message_type = backend.xdnd_finished
+			reply.xclient.format = 32
+			reply.xclient.data.l[0] = X11NativeLong(requestor)
+			if accepted {
+				reply.xclient.data.l[1] = X11NativeLong(1)
+				reply.xclient.data.l[2] = X11NativeLong(backend.xdnd_action_copy)
+			}
+		}
+		C.XSendEvent(backend.display, backend.xdnd_source, 0, X11NativeLong(0), &reply)
+		C.XFlush(backend.display)
+	}
+
+	fn (mut backend X11Backend) clear_xdnd_state() {
+		backend.xdnd_source = X11NativeWindow(0)
+		backend.xdnd_target = X11NativeWindow(0)
+		backend.xdnd_format = X11NativeAtom(0)
+		backend.xdnd_version = X11NativeLong(0)
+	}
 }
 
 fn (mut backend X11Backend) stop() ! {
@@ -728,6 +1091,10 @@ fn (mut backend X11Backend) stop() ! {
 			backend.destroy_window(record.id)!
 		}
 		backend.shutdown_renderer()
+		if backend.xim != unsafe { nil } {
+			C.v_multiwindow_x11_close_im(backend.xim)
+			backend.xim = unsafe { nil }
+		}
 		if backend.display != unsafe { nil } {
 			if C.XCloseDisplay(backend.display) != 0 {
 				return error(err_x11_close_display_failed)
@@ -926,6 +1293,9 @@ fn (mut backend X11Backend) release_window_resources(record X11WindowRecord, des
 			C.v_multiwindow_x11_egl_clear_current(backend.egl_display)
 			C.v_multiwindow_x11_egl_destroy_surface(backend.egl_display, record.egl_surface)
 		}
+		if record.xic != unsafe { nil } {
+			C.v_multiwindow_x11_destroy_ic(record.xic)
+		}
 		if destroy_native {
 			backend.destroy_native_window(record.window, record.colormap)!
 		} else if backend.display != unsafe { nil } && record.colormap != X11NativeColormap(0) {
@@ -961,4 +1331,8 @@ fn (mut backend X11Backend) destroy_native_window(window X11NativeWindow, colorm
 
 fn x11_bool_to_int(value bool) int {
 	return if value { 1 } else { 0 }
+}
+
+fn x11_is_clipboard_paste(key_code int, modifiers u32) bool {
+	return key_code == x11_key_v && (modifiers & x11_modifier_ctrl) != 0
 }

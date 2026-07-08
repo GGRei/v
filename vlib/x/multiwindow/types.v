@@ -243,3 +243,59 @@ fn window_extent_for_minimum(value int, minimum int) int {
 	}
 	return value
 }
+
+fn dropped_files_from_uri_list(payload string) []string {
+	mut files := []string{}
+	for raw_line in payload.split('\n') {
+		line := if raw_line.ends_with('\r') {
+			raw_line[..raw_line.len - 1]
+		} else {
+			raw_line
+		}
+		if line.len == 0 || line.starts_with('#') || !line.starts_with('file://') {
+			continue
+		}
+		mut path := line[7..]
+		if path.starts_with('localhost/') {
+			path = path[9..]
+		}
+		if path.len == 0 || path[0] != `/` {
+			continue
+		}
+		files << uri_percent_decode(path)
+	}
+	return files
+}
+
+fn uri_percent_decode(value string) string {
+	bytes := value.bytes()
+	mut decoded := []u8{cap: bytes.len}
+	mut i := 0
+	for i < bytes.len {
+		if bytes[i] == `%` && i + 2 < bytes.len {
+			hi := uri_hex_nibble(bytes[i + 1])
+			lo := uri_hex_nibble(bytes[i + 2])
+			if hi >= 0 && lo >= 0 {
+				decoded << u8(hi * 16 + lo)
+				i += 3
+				continue
+			}
+		}
+		decoded << bytes[i]
+		i++
+	}
+	return decoded.bytestr()
+}
+
+fn uri_hex_nibble(ch u8) int {
+	if ch >= `0` && ch <= `9` {
+		return int(ch - `0`)
+	}
+	if ch >= `a` && ch <= `f` {
+		return int(ch - `a`) + 10
+	}
+	if ch >= `A` && ch <= `F` {
+		return int(ch - `A`) + 10
+	}
+	return -1
+}

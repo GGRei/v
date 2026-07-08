@@ -437,118 +437,18 @@ fn test_multiwindow_drain_input_events_routes_gg_event_without_lifecycle_polluti
 	app.stop()!
 }
 
-fn test_multiwindow_window_input_event_roundtrip_covers_event_families() {
+fn test_multiwindow_window_input_event_roundtrip_covers_all_real_sokol_event_types() {
+	event_types := multiwindow_real_sokol_event_types()
+	assert event_types.len == int(sapp.EventType.num)
+	assert input_event_type_to_core(.num) == multiwindow.InputEventKind.invalid
 	mut app := new_app(backend: .mock)!
 	win := app.create_window(title: 'Input roundtrip', width: 320, height: 240)!
 	assert app.drain_events()!.len == 1
 
-	mut touches := [8]TouchPoint{}
-	touches[0] = TouchPoint{
-		identifier:       7
-		pos_x:            11.5
-		pos_y:            12.5
-		android_tooltype: unsafe { sapp.TouchToolType(1) }
-		changed:          true
+	mut expected_events := []WindowInputEvent{cap: event_types.len}
+	for i, typ in event_types {
+		expected_events << multiwindow_window_input_event_for_type(win, typ, u64(i + 1))
 	}
-	touches[1] = TouchPoint{
-		identifier:       8
-		pos_x:            21.5
-		pos_y:            22.5
-		android_tooltype: unsafe { sapp.TouchToolType(2) }
-		changed:          false
-	}
-
-	expected_events := [
-		WindowInputEvent{
-			window: win
-			event:  Event{
-				frame_count: 1
-				typ:         .char
-				char_code:   u32(0xe9)
-				key_repeat:  true
-				modifiers:   3
-			}
-		},
-		WindowInputEvent{
-			window: win
-			event:  Event{
-				frame_count: 2
-				typ:         .key_up
-				key_code:    .escape
-				key_repeat:  true
-				modifiers:   5
-			}
-		},
-		WindowInputEvent{
-			window: win
-			event:  Event{
-				frame_count:  3
-				typ:          .mouse_up
-				mouse_button: .right
-				mouse_x:      40.5
-				mouse_y:      41.5
-				mouse_dx:     -2.25
-				mouse_dy:     3.5
-				modifiers:    0x100
-			}
-		},
-		WindowInputEvent{
-			window: win
-			event:  Event{
-				frame_count: 4
-				typ:         .mouse_enter
-				mouse_x:     1.25
-				mouse_y:     2.5
-			}
-		},
-		WindowInputEvent{
-			window: win
-			event:  Event{
-				frame_count: 5
-				typ:         .mouse_leave
-				mouse_x:     3.25
-				mouse_y:     4.5
-			}
-		},
-		WindowInputEvent{
-			window: win
-			event:  Event{
-				frame_count: 6
-				typ:         .focused
-			}
-		},
-		WindowInputEvent{
-			window: win
-			event:  Event{
-				frame_count: 7
-				typ:         .unfocused
-			}
-		},
-		WindowInputEvent{
-			window: win
-			event:  Event{
-				frame_count: 8
-				typ:         .clipboard_pasted
-			}
-		},
-		WindowInputEvent{
-			window:        win
-			event:         Event{
-				frame_count: 9
-				typ:         .files_dropped
-			}
-			dropped_files: ['/tmp/a.txt', '/tmp/b.txt']
-		},
-		WindowInputEvent{
-			window: win
-			event:  Event{
-				frame_count: 10
-				typ:         .touches_began
-				num_touches: 2
-				touches:     touches
-			}
-		},
-	]
 	for event in expected_events {
 		app.enqueue_mock_input_for_test(event)!
 	}
@@ -592,6 +492,83 @@ fn assert_window_input_event_roundtrip(actual WindowInputEvent, expected WindowI
 	assert actual.event.window_height == expected.event.window_height
 	assert actual.event.framebuffer_width == expected.event.framebuffer_width
 	assert actual.event.framebuffer_height == expected.event.framebuffer_height
+}
+
+fn multiwindow_real_sokol_event_types() []sapp.EventType {
+	return [
+		sapp.EventType.invalid,
+		.key_down,
+		.key_up,
+		.char,
+		.mouse_down,
+		.mouse_up,
+		.mouse_scroll,
+		.mouse_move,
+		.mouse_enter,
+		.mouse_leave,
+		.touches_began,
+		.touches_moved,
+		.touches_ended,
+		.touches_cancelled,
+		.resized,
+		.iconified,
+		.restored,
+		.focused,
+		.unfocused,
+		.suspended,
+		.resumed,
+		.quit_requested,
+		.clipboard_pasted,
+		.files_dropped,
+	]
+}
+
+fn multiwindow_window_input_event_for_type(win WindowId, typ sapp.EventType, frame_count u64) WindowInputEvent {
+	mut touches := [8]TouchPoint{}
+	touches[0] = TouchPoint{
+		identifier:       7
+		pos_x:            11.5
+		pos_y:            12.5
+		android_tooltype: unsafe { sapp.TouchToolType(1) }
+		changed:          true
+	}
+	touches[1] = TouchPoint{
+		identifier:       8
+		pos_x:            21.5
+		pos_y:            22.5
+		android_tooltype: unsafe { sapp.TouchToolType(2) }
+		changed:          false
+	}
+	dropped_files := if typ == .files_dropped {
+		['/tmp/a.txt', '/tmp/b.txt']
+	} else {
+		[]string{}
+	}
+	return WindowInputEvent{
+		window:        win
+		event:         Event{
+			frame_count:        frame_count
+			typ:                typ
+			key_code:           .escape
+			char_code:          u32(0xe9)
+			key_repeat:         true
+			modifiers:          0x105
+			mouse_button:       .middle
+			mouse_x:            40.5
+			mouse_y:            41.5
+			mouse_dx:           -2.25
+			mouse_dy:           3.5
+			scroll_x:           -1.25
+			scroll_y:           2.5
+			num_touches:        2
+			touches:            touches
+			window_width:       640
+			window_height:      360
+			framebuffer_width:  1280
+			framebuffer_height: 720
+		}
+		dropped_files: dropped_files
+	}
 }
 
 fn test_multiwindow_rejects_invalid_window_size_from_core() {

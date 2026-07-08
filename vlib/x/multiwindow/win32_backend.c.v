@@ -9,6 +9,7 @@ $if windows {
 	#flag windows -D_UNICODE
 	#flag windows -luser32
 	#flag windows -lgdi32
+	#flag windows -lshell32
 	#include <windows.h>
 	#insert "@VMODROOT/vlib/x/multiwindow/win32_backend_helpers.h"
 }
@@ -36,6 +37,9 @@ mut:
 	mouse_dx               f32
 	mouse_dy               f32
 	mouse_pos_valid        bool
+	iconified              bool
+	pending_dropped_files  []string
+	pending_drop_modifiers u32
 	pending_high_surrogate u32
 	suppress_control_char  u32
 	swapchain              voidptr
@@ -230,6 +234,19 @@ $if windows {
 				}
 			}
 			.focused, .unfocused {}
+			.clipboard_pasted {}
+			.iconified {
+				if record.iconified {
+					return
+				}
+				record.iconified = true
+			}
+			.restored {
+				if !record.iconified {
+					return
+				}
+				record.iconified = false
+			}
 			else {
 				return
 			}
@@ -247,6 +264,102 @@ $if windows {
 				record.suppress_control_char = control_char
 			}
 		}
+	}
+
+	@[export: 'v_multiwindow_win32_window_drop_begin']
+	@[markused]
+	fn win32_window_drop_begin(data voidptr, sequence u64, mouse_x int, mouse_y int, modifiers u32) {
+		_ = sequence
+		if data == unsafe { nil } {
+			return
+		}
+		mut record := unsafe { &Win32WindowRecord(data) }
+		record.pending_dropped_files.clear()
+		record.pending_drop_modifiers = modifiers
+		record.update_mouse_position(mouse_x, mouse_y, true)
+	}
+
+	@[export: 'v_multiwindow_win32_window_drop_file']
+	@[markused]
+	fn win32_window_drop_file(data voidptr, sequence u64, path &char) {
+		_ = sequence
+		if data == unsafe { nil } || path == unsafe { nil } {
+			return
+		}
+		mut record := unsafe { &Win32WindowRecord(data) }
+		record.pending_dropped_files << unsafe { cstring_to_vstring(path) }
+	}
+
+	@[export: 'v_multiwindow_win32_window_drop_end']
+	@[markused]
+	fn win32_window_drop_end(data voidptr, sequence u64) {
+		if data == unsafe { nil } {
+			return
+		}
+		mut record := unsafe { &Win32WindowRecord(data) }
+		if record.pending_dropped_files.len == 0 {
+			return
+		}
+		input := InputEvent{
+			kind:               .files_dropped
+			window_id:          record.id
+			modifiers:          record.pending_drop_modifiers
+			mouse_x:            record.mouse_x
+			mouse_y:            record.mouse_y
+			mouse_dx:           record.mouse_dx
+			mouse_dy:           record.mouse_dy
+			window_width:       record.width
+			window_height:      record.height
+			framebuffer_width:  record.width
+			framebuffer_height: record.height
+			mouse_button:       256
+			dropped_files:      record.pending_dropped_files.clone()
+		}
+		record.pending_dropped_files.clear()
+		record.enqueue_native_event(sequence, queued_input_event(input))
+	}
+
+	@[export: 'v_multiwindow_win32_window_touch_event']
+	@[markused]
+	fn win32_window_touch_event(data voidptr, sequence u64, kind int, modifiers u32, count int, ids &u64, xs &int, ys &int, changed &int) {
+		if data == unsafe { nil } || count <= 0 || ids == unsafe { nil } || xs == unsafe { nil }
+			|| ys == unsafe { nil } || changed == unsafe { nil } {
+			return
+		}
+		input_kind := win32_input_kind(kind)
+		if input_kind == .invalid {
+			return
+		}
+		mut record := unsafe { &Win32WindowRecord(data) }
+		touch_count := if count > 8 { 8 } else { count }
+		mut touches := [8]InputTouchPoint{}
+		for i in 0 .. touch_count {
+			x := unsafe { xs[i] }
+			y := unsafe { ys[i] }
+			touches[i] = InputTouchPoint{
+				identifier: unsafe { ids[i] }
+				pos_x:      f32(x)
+				pos_y:      f32(y)
+				changed:    unsafe { changed[i] } != 0
+			}
+		}
+		first_x := unsafe { xs[0] }
+		first_y := unsafe { ys[0] }
+		input := InputEvent{
+			kind:               input_kind
+			window_id:          record.id
+			modifiers:          modifiers
+			mouse_x:            f32(first_x)
+			mouse_y:            f32(first_y)
+			num_touches:        touch_count
+			touches:            touches
+			window_width:       record.width
+			window_height:      record.height
+			framebuffer_width:  record.width
+			framebuffer_height: record.height
+			mouse_button:       256
+		}
+		record.enqueue_native_event(sequence, queued_input_event(input))
 	}
 }
 
@@ -353,6 +466,12 @@ fn win32_input_kind(kind int) InputEventKind {
 		9 { InputEventKind.mouse_leave }
 		10 { InputEventKind.focused }
 		11 { InputEventKind.unfocused }
+		12 { InputEventKind.iconified }
+		13 { InputEventKind.restored }
+		14 { InputEventKind.clipboard_pasted }
+		15 { InputEventKind.touches_began }
+		16 { InputEventKind.touches_moved }
+		17 { InputEventKind.touches_ended }
 		else { InputEventKind.invalid }
 	}
 }
@@ -412,8 +531,8 @@ fn (backend &Win32Backend) capabilities() Capabilities {
 		keyboard_events:    true
 		text_events:        true
 		focus_events:       true
-		drop_events:        false
-		touch_events:       false
+		drop_events:        true
+		touch_events:       true
 	}
 }
 

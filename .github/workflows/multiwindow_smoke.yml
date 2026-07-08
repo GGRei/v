@@ -54,20 +54,28 @@ jobs:
       - name: Build local V
         run: make -j2
 
-      - name: Restore gg regressions workflow fixture
-        run: cp .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
-
       - name: Test legacy gg import multiwindow isolation
         run: env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ./v test vlib/gg/legacy_import_multiwindow_isolation_test.v
 
       - name: Test default/mock policy
-        run: env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ./v -d gg_multiwindow test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+        run: |
+          set -euo pipefail
+          cp .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
+          trap 'rm -f .github/workflows/gg_regressions_ci.yml' EXIT
+          env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ./v -d gg_multiwindow test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
 
       - name: Test Wayland compile path
-        run: env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ./v -d gg_multiwindow -d sokol_wayland test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+        run: |
+          set -euo pipefail
+          cp .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
+          trap 'rm -f .github/workflows/gg_regressions_ci.yml' EXIT
+          env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ./v -d gg_multiwindow -d sokol_wayland test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
 
       - name: Test X11/EGL under Xvfb
         run: |
+          set -euo pipefail
+          cp .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
+          trap 'rm -f .github/workflows/gg_regressions_ci.yml' EXIT
           xvfb-run -a -s "-screen 0 1280x1024x24" env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true ./v -d gg_multiwindow -d x_multiwindow_x11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
 
       - name: Compile gg multiwindow examples
@@ -244,10 +252,6 @@ jobs:
         if: ${{ matrix.ccompiler == 'tcc' }}
         run: .\makev.bat -tcc
 
-      - name: Restore gg regressions workflow fixture
-        if: ${{ matrix.ccompiler == 'msvc' || matrix.ccompiler == 'gcc' }}
-        run: Copy-Item -Force .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
-
       - name: Diagnose legacy gg import multiwindow isolation functions with MSVC
         if: ${{ matrix.ccompiler == 'msvc' }}
         continue-on-error: true
@@ -345,12 +349,26 @@ jobs:
 
       - name: Test multiwindow D3D11 path with MSVC
         if: ${{ matrix.ccompiler == 'msvc' }}
-        run: .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+        shell: pwsh
+        run: |
+          Copy-Item -Force .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
+          $status = 0
+          try {
+            .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+            $status = $LASTEXITCODE
+          } finally {
+            Remove-Item -Force .github/workflows/gg_regressions_ci.yml -ErrorAction SilentlyContinue
+          }
+          exit $status
 
       - name: Test multiwindow D3D11 path with GCC
         if: ${{ matrix.ccompiler == 'gcc' }}
         shell: msys2 {0}
-        run: ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+        run: |
+          set -euo pipefail
+          cp .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
+          trap 'rm -f .github/workflows/gg_regressions_ci.yml' EXIT
+          ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
 
       - name: Compile gg multiwindow example with MSVC
         if: ${{ matrix.ccompiler == 'msvc' }}
@@ -371,14 +389,15 @@ jobs:
       - name: Build local V
         run: make -j3
 
-      - name: Restore gg regressions workflow fixture
-        run: cp .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
-
       - name: Test legacy gg import multiwindow isolation
         run: ./v test vlib/gg/legacy_import_multiwindow_isolation_test.v
 
       - name: Test multiwindow Metal path
-        run: ./v -d gg_multiwindow -d sokol_metal test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+        run: |
+          set -euo pipefail
+          cp .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
+          trap 'rm -f .github/workflows/gg_regressions_ci.yml' EXIT
+          ./v -d gg_multiwindow -d sokol_metal test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
 
       - name: Test AppKit GLCore rejection guard
         run: ./v -d gg_multiwindow -d darwin_sokol_glcore33 test vlib/x/multiwindow/multiwindow_test.v

@@ -2,6 +2,8 @@
 #define V_MULTIWINDOW_WAYLAND_BACKEND_HELPERS_H
 
 #include <stdint.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <EGL/egl.h>
 #include <wayland-client.h>
@@ -33,10 +35,24 @@ void v_multiwindow_wayland_pointer_leave(void *data, void *pointer, uint32_t ser
 void v_multiwindow_wayland_pointer_motion(void *data, void *pointer, uint32_t time, double x, double y);
 void v_multiwindow_wayland_pointer_button(void *data, void *pointer, uint32_t serial, uint32_t time, uint32_t button, uint32_t state);
 void v_multiwindow_wayland_pointer_axis(void *data, void *pointer, uint32_t time, uint32_t axis, double value);
+void v_multiwindow_wayland_keyboard_keymap(void *data, void *keyboard, uint32_t format, int fd, uint32_t size);
 void v_multiwindow_wayland_keyboard_enter(void *data, void *keyboard, uint32_t serial, void *surface);
 void v_multiwindow_wayland_keyboard_leave(void *data, void *keyboard, uint32_t serial, void *surface);
 void v_multiwindow_wayland_keyboard_key(void *data, void *keyboard, uint32_t serial, uint32_t time, uint32_t key, uint32_t state);
 void v_multiwindow_wayland_keyboard_modifiers(void *data, void *keyboard, uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched, uint32_t mods_locked, uint32_t group);
+void v_multiwindow_wayland_touch_down(void *data, void *touch, uint32_t serial, uint32_t time, void *surface, int32_t id, double x, double y);
+void v_multiwindow_wayland_touch_up(void *data, void *touch, uint32_t serial, uint32_t time, int32_t id);
+void v_multiwindow_wayland_touch_motion(void *data, void *touch, uint32_t time, int32_t id, double x, double y);
+void v_multiwindow_wayland_touch_cancel(void *data, void *touch);
+void v_multiwindow_wayland_data_offer_offer(void *data, void *offer, char *mime_type);
+void v_multiwindow_wayland_data_offer_source_actions(void *data, void *offer, uint32_t source_actions);
+void v_multiwindow_wayland_data_offer_action(void *data, void *offer, uint32_t dnd_action);
+void v_multiwindow_wayland_data_device_data_offer(void *data, void *device, void *offer);
+void v_multiwindow_wayland_data_device_enter(void *data, void *device, uint32_t serial, void *surface, double x, double y, void *offer);
+void v_multiwindow_wayland_data_device_leave(void *data, void *device);
+void v_multiwindow_wayland_data_device_motion(void *data, void *device, uint32_t time, double x, double y);
+void v_multiwindow_wayland_data_device_drop(void *data, void *device);
+void v_multiwindow_wayland_data_device_selection(void *data, void *device, void *offer);
 
 #if !defined(XDG_SHELL_CLIENT_PROTOCOL_H)
 struct xdg_wm_base;
@@ -175,13 +191,7 @@ static void v_multiwindow_wayland_pointer_axis_discrete_trampoline(void *data, s
 }
 
 static void v_multiwindow_wayland_keyboard_keymap_trampoline(void *data, struct wl_keyboard *keyboard, uint32_t format, int fd, uint32_t size) {
-	(void)data;
-	(void)keyboard;
-	(void)format;
-	(void)size;
-	if (fd >= 0) {
-		close(fd);
-	}
+	v_multiwindow_wayland_keyboard_keymap(data, (void *)keyboard, format, fd, size);
 }
 
 static void v_multiwindow_wayland_keyboard_enter_trampoline(void *data, struct wl_keyboard *keyboard, uint32_t serial, struct wl_surface *surface, struct wl_array *keys) {
@@ -206,6 +216,78 @@ static void v_multiwindow_wayland_keyboard_repeat_info_trampoline(void *data, st
 	(void)keyboard;
 	(void)rate;
 	(void)delay;
+}
+
+static void v_multiwindow_wayland_touch_down_trampoline(void *data, struct wl_touch *touch, uint32_t serial, uint32_t time, struct wl_surface *surface, int32_t id, wl_fixed_t x, wl_fixed_t y) {
+	v_multiwindow_wayland_touch_down(data, (void *)touch, serial, time, (void *)surface, id, wl_fixed_to_double(x), wl_fixed_to_double(y));
+}
+
+static void v_multiwindow_wayland_touch_up_trampoline(void *data, struct wl_touch *touch, uint32_t serial, uint32_t time, int32_t id) {
+	v_multiwindow_wayland_touch_up(data, (void *)touch, serial, time, id);
+}
+
+static void v_multiwindow_wayland_touch_motion_trampoline(void *data, struct wl_touch *touch, uint32_t time, int32_t id, wl_fixed_t x, wl_fixed_t y) {
+	v_multiwindow_wayland_touch_motion(data, (void *)touch, time, id, wl_fixed_to_double(x), wl_fixed_to_double(y));
+}
+
+static void v_multiwindow_wayland_touch_frame_trampoline(void *data, struct wl_touch *touch) {
+	(void)data;
+	(void)touch;
+}
+
+static void v_multiwindow_wayland_touch_cancel_trampoline(void *data, struct wl_touch *touch) {
+	v_multiwindow_wayland_touch_cancel(data, (void *)touch);
+}
+
+static void v_multiwindow_wayland_touch_shape_trampoline(void *data, struct wl_touch *touch, int32_t id, wl_fixed_t major, wl_fixed_t minor) {
+	(void)data;
+	(void)touch;
+	(void)id;
+	(void)major;
+	(void)minor;
+}
+
+static void v_multiwindow_wayland_touch_orientation_trampoline(void *data, struct wl_touch *touch, int32_t id, wl_fixed_t orientation) {
+	(void)data;
+	(void)touch;
+	(void)id;
+	(void)orientation;
+}
+
+static void v_multiwindow_wayland_data_offer_offer_trampoline(void *data, struct wl_data_offer *offer, const char *mime_type) {
+	v_multiwindow_wayland_data_offer_offer(data, (void *)offer, (char *)mime_type);
+}
+
+static void v_multiwindow_wayland_data_offer_source_actions_trampoline(void *data, struct wl_data_offer *offer, uint32_t source_actions) {
+	v_multiwindow_wayland_data_offer_source_actions(data, (void *)offer, source_actions);
+}
+
+static void v_multiwindow_wayland_data_offer_action_trampoline(void *data, struct wl_data_offer *offer, uint32_t dnd_action) {
+	v_multiwindow_wayland_data_offer_action(data, (void *)offer, dnd_action);
+}
+
+static void v_multiwindow_wayland_data_device_data_offer_trampoline(void *data, struct wl_data_device *device, struct wl_data_offer *offer) {
+	v_multiwindow_wayland_data_device_data_offer(data, (void *)device, (void *)offer);
+}
+
+static void v_multiwindow_wayland_data_device_enter_trampoline(void *data, struct wl_data_device *device, uint32_t serial, struct wl_surface *surface, wl_fixed_t x, wl_fixed_t y, struct wl_data_offer *offer) {
+	v_multiwindow_wayland_data_device_enter(data, (void *)device, serial, (void *)surface, wl_fixed_to_double(x), wl_fixed_to_double(y), (void *)offer);
+}
+
+static void v_multiwindow_wayland_data_device_leave_trampoline(void *data, struct wl_data_device *device) {
+	v_multiwindow_wayland_data_device_leave(data, (void *)device);
+}
+
+static void v_multiwindow_wayland_data_device_motion_trampoline(void *data, struct wl_data_device *device, uint32_t time, wl_fixed_t x, wl_fixed_t y) {
+	v_multiwindow_wayland_data_device_motion(data, (void *)device, time, wl_fixed_to_double(x), wl_fixed_to_double(y));
+}
+
+static void v_multiwindow_wayland_data_device_drop_trampoline(void *data, struct wl_data_device *device) {
+	v_multiwindow_wayland_data_device_drop(data, (void *)device);
+}
+
+static void v_multiwindow_wayland_data_device_selection_trampoline(void *data, struct wl_data_device *device, struct wl_data_offer *offer) {
+	v_multiwindow_wayland_data_device_selection(data, (void *)device, (void *)offer);
 }
 
 static const struct wl_registry_listener v_multiwindow_wayland_registry_listener = {
@@ -252,6 +334,31 @@ static const struct wl_keyboard_listener v_multiwindow_wayland_keyboard_listener
 	v_multiwindow_wayland_keyboard_repeat_info_trampoline,
 };
 
+static const struct wl_touch_listener v_multiwindow_wayland_touch_listener = {
+	v_multiwindow_wayland_touch_down_trampoline,
+	v_multiwindow_wayland_touch_up_trampoline,
+	v_multiwindow_wayland_touch_motion_trampoline,
+	v_multiwindow_wayland_touch_frame_trampoline,
+	v_multiwindow_wayland_touch_cancel_trampoline,
+	v_multiwindow_wayland_touch_shape_trampoline,
+	v_multiwindow_wayland_touch_orientation_trampoline,
+};
+
+static const struct wl_data_offer_listener v_multiwindow_wayland_data_offer_listener = {
+	v_multiwindow_wayland_data_offer_offer_trampoline,
+	v_multiwindow_wayland_data_offer_source_actions_trampoline,
+	v_multiwindow_wayland_data_offer_action_trampoline,
+};
+
+static const struct wl_data_device_listener v_multiwindow_wayland_data_device_listener = {
+	v_multiwindow_wayland_data_device_data_offer_trampoline,
+	v_multiwindow_wayland_data_device_enter_trampoline,
+	v_multiwindow_wayland_data_device_leave_trampoline,
+	v_multiwindow_wayland_data_device_motion_trampoline,
+	v_multiwindow_wayland_data_device_drop_trampoline,
+	v_multiwindow_wayland_data_device_selection_trampoline,
+};
+
 static inline uint32_t v_multiwindow_wayland_compositor_bind_version(uint32_t version) {
 	return version < 4 ? version : 4;
 }
@@ -275,6 +382,13 @@ static inline void *v_multiwindow_wayland_bind_xdg_wm_base(struct wl_registry *r
 
 static inline void *v_multiwindow_wayland_bind_seat(struct wl_registry *registry, uint32_t name, uint32_t version) {
 	return wl_registry_bind(registry, name, &wl_seat_interface, v_multiwindow_wayland_seat_bind_version(version));
+}
+
+static inline void *v_multiwindow_wayland_bind_data_device_manager(struct wl_registry *registry, uint32_t name, uint32_t version) {
+	if (version < 3) {
+		return NULL;
+	}
+	return wl_registry_bind(registry, name, &wl_data_device_manager_interface, 3);
 }
 
 static inline int v_multiwindow_wayland_add_registry_listener(struct wl_registry *registry, void *data) {
@@ -305,12 +419,78 @@ static inline void *v_multiwindow_wayland_seat_get_keyboard(struct wl_seat *seat
 	return (void *)wl_seat_get_keyboard(seat);
 }
 
+static inline void *v_multiwindow_wayland_seat_get_touch(struct wl_seat *seat) {
+	return (void *)wl_seat_get_touch(seat);
+}
+
+static inline void *v_multiwindow_wayland_data_device_manager_get_data_device(struct wl_data_device_manager *manager, struct wl_seat *seat) {
+	return (void *)wl_data_device_manager_get_data_device(manager, seat);
+}
+
 static inline int v_multiwindow_wayland_add_pointer_listener(struct wl_pointer *pointer, void *data) {
 	return wl_pointer_add_listener(pointer, &v_multiwindow_wayland_pointer_listener, data);
 }
 
 static inline int v_multiwindow_wayland_add_keyboard_listener(struct wl_keyboard *keyboard, void *data) {
 	return wl_keyboard_add_listener(keyboard, &v_multiwindow_wayland_keyboard_listener, data);
+}
+
+static inline int v_multiwindow_wayland_add_touch_listener(struct wl_touch *touch, void *data) {
+	return wl_touch_add_listener(touch, &v_multiwindow_wayland_touch_listener, data);
+}
+
+static inline int v_multiwindow_wayland_add_data_device_listener(struct wl_data_device *device, void *data) {
+	return wl_data_device_add_listener(device, &v_multiwindow_wayland_data_device_listener, data);
+}
+
+static inline int v_multiwindow_wayland_add_data_offer_listener(struct wl_data_offer *offer, void *data) {
+	return wl_data_offer_add_listener(offer, &v_multiwindow_wayland_data_offer_listener, data);
+}
+
+static inline void v_multiwindow_wayland_data_offer_accept(struct wl_data_offer *offer, uint32_t serial, const char *mime_type) {
+	wl_data_offer_accept(offer, serial, mime_type);
+}
+
+static inline void v_multiwindow_wayland_data_offer_set_copy_action(struct wl_data_offer *offer) {
+	wl_data_offer_set_actions(offer, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY, WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY);
+}
+
+static inline void v_multiwindow_wayland_data_offer_receive(struct wl_data_offer *offer, const char *mime_type, int fd) {
+	wl_data_offer_receive(offer, mime_type, fd);
+}
+
+static inline int v_multiwindow_wayland_fd_set_nonblocking(int fd) {
+	int flags = fcntl(fd, F_GETFL, 0);
+	if (flags < 0) {
+		return 0;
+	}
+	return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+}
+
+static inline int v_multiwindow_wayland_read_would_block(void) {
+	return errno == EAGAIN || errno == EWOULDBLOCK;
+}
+
+static inline void v_multiwindow_wayland_data_offer_finish(struct wl_data_offer *offer) {
+	wl_data_offer_finish(offer);
+}
+
+static inline void v_multiwindow_wayland_data_offer_destroy(struct wl_data_offer *offer) {
+	if (offer != NULL) {
+		wl_data_offer_destroy(offer);
+	}
+}
+
+static inline void v_multiwindow_wayland_data_device_destroy(struct wl_data_device *device) {
+	if (device != NULL) {
+		wl_data_device_destroy(device);
+	}
+}
+
+static inline void v_multiwindow_wayland_data_device_manager_destroy(struct wl_data_device_manager *manager) {
+	if (manager != NULL) {
+		wl_data_device_manager_destroy(manager);
+	}
 }
 
 static inline void v_multiwindow_wayland_pointer_destroy(struct wl_pointer *pointer) {
@@ -339,6 +519,21 @@ static inline void v_multiwindow_wayland_keyboard_destroy(struct wl_keyboard *ke
 		}
 #else
 		wl_keyboard_destroy(keyboard);
+#endif
+	}
+}
+
+static inline void v_multiwindow_wayland_touch_destroy(struct wl_touch *touch) {
+	if (touch != NULL) {
+#ifdef WL_TOUCH_RELEASE
+		uint32_t version = wl_proxy_get_version((struct wl_proxy *)touch);
+		if (version >= 3) {
+			wl_proxy_marshal_flags((struct wl_proxy *)touch, WL_TOUCH_RELEASE, NULL, version, WL_MARSHAL_FLAG_DESTROY);
+		} else {
+			wl_touch_destroy(touch);
+		}
+#else
+		wl_touch_destroy(touch);
 #endif
 	}
 }

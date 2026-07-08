@@ -12,6 +12,7 @@ mut:
 	backend         Backend
 	windows         []WindowSlot
 	events          []QueuedEvent
+	frame_count     u64
 	owner_thread_id u64
 	state_mutex     &sync.Mutex        = sync.new_mutex()
 	owner           &executor.Executor = unsafe { nil }
@@ -23,16 +24,20 @@ pub fn new_app(config Config) !&App {
 		return error(err_queue_size_invalid)
 	}
 	mut backend := new_backend(config.backend, config.require_renderer)!
-	backend.start(config.require_renderer)!
-	mut owner := executor.new(queue_size: config.queue_size)!
-	return &App{
+	mut app := &App{
 		config:          config
 		status:          .running
 		backend:         backend
 		owner_thread_id: sync.thread_id()
 		state_mutex:     sync.new_mutex()
-		owner:           owner
 	}
+	app.backend.start(config.require_renderer)!
+	mut owner := executor.new(queue_size: config.queue_size) or {
+		app.backend.stop() or {}
+		return err
+	}
+	app.owner = owner
+	return app
 }
 
 // status reports the application lifecycle state.
@@ -239,6 +244,8 @@ pub fn (mut app App) poll_events() !int {
 		app.state_mutex.unlock()
 	}
 	app.ensure_running_locked()!
+	app.frame_count++
+	frame_count := app.frame_count
 	events := app.backend.poll_queued_events()!
 	mut accepted := 0
 	for event in events {
@@ -249,7 +256,7 @@ pub fn (mut app App) poll_events() !int {
 				}
 			}
 			.input {
-				if app.accept_input_event_locked(event.input) {
+				if app.accept_input_event_locked(event.input, frame_count) {
 					accepted++
 				}
 			}
@@ -323,20 +330,50 @@ fn (mut app App) accept_lifecycle_event_locked(event Event) bool {
 	}
 }
 
-fn (mut app App) accept_input_event_locked(event InputEvent) bool {
-	if event.kind == .resized {
-		if event.window_width <= 0 || event.window_height <= 0 {
+fn (mut app App) accept_input_event_locked(event InputEvent, frame_count u64) bool {
+	input_event := input_event_with_frame_count(event, frame_count)
+	if input_event.kind == .resized {
+		if input_event.window_width <= 0 || input_event.window_height <= 0 {
 			return false
 		}
-		index := app.live_window_index(event.window_id) or { return false }
+		index := app.live_window_index(input_event.window_id) or { return false }
 		app.windows[index].config = window_config_with_size(app.windows[index].config,
-			event.window_width, event.window_height)
-		app.events << queued_input_event(event)
+			input_event.window_width, input_event.window_height)
+		app.events << queued_input_event(input_event)
 		return true
 	}
-	app.live_window_index(event.window_id) or { return false }
-	app.events << queued_input_event(event)
+	app.live_window_index(input_event.window_id) or { return false }
+	app.events << queued_input_event(input_event)
 	return true
+}
+
+fn input_event_with_frame_count(event InputEvent, frame_count u64) InputEvent {
+	if event.frame_count != 0 {
+		return event
+	}
+	return InputEvent{
+		kind:               event.kind
+		window_id:          event.window_id
+		frame_count:        frame_count
+		key_code:           event.key_code
+		char_code:          event.char_code
+		key_repeat:         event.key_repeat
+		modifiers:          event.modifiers
+		mouse_button:       event.mouse_button
+		mouse_x:            event.mouse_x
+		mouse_y:            event.mouse_y
+		mouse_dx:           event.mouse_dx
+		mouse_dy:           event.mouse_dy
+		scroll_x:           event.scroll_x
+		scroll_y:           event.scroll_y
+		num_touches:        event.num_touches
+		touches:            event.touches
+		window_width:       event.window_width
+		window_height:      event.window_height
+		framebuffer_width:  event.framebuffer_width
+		framebuffer_height: event.framebuffer_height
+		dropped_files:      event.dropped_files.clone()
+	}
 }
 
 $if test {

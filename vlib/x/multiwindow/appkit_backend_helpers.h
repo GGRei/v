@@ -26,11 +26,20 @@ extern "C" {
 #define V_MULTIWINDOW_APPKIT_INPUT_FOCUSED 10
 #define V_MULTIWINDOW_APPKIT_INPUT_UNFOCUSED 11
 #define V_MULTIWINDOW_APPKIT_INPUT_RESIZED 12
+#define V_MULTIWINDOW_APPKIT_INPUT_ICONIFIED 13
+#define V_MULTIWINDOW_APPKIT_INPUT_RESTORED 14
+#define V_MULTIWINDOW_APPKIT_INPUT_CLIPBOARD_PASTED 15
+#define V_MULTIWINDOW_APPKIT_INPUT_FILES_DROPPED 16
+#define V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_BEGAN 17
+#define V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_MOVED 18
+#define V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_ENDED 19
+#define V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_CANCELLED 20
 
 #define V_MULTIWINDOW_APPKIT_MOUSE_BUTTON_LEFT 0
 #define V_MULTIWINDOW_APPKIT_MOUSE_BUTTON_RIGHT 1
 #define V_MULTIWINDOW_APPKIT_MOUSE_BUTTON_MIDDLE 2
 #define V_MULTIWINDOW_APPKIT_MOUSE_BUTTON_INVALID 256
+#define V_MULTIWINDOW_APPKIT_MAX_TOUCH_POINTS 8
 
 #define V_MULTIWINDOW_APPKIT_MODIFIER_LMB 0x100
 #define V_MULTIWINDOW_APPKIT_MODIFIER_RMB 0x200
@@ -56,6 +65,13 @@ typedef struct VMultiwindowAppKitQueuedEvent {
 	int window_height;
 	int framebuffer_width;
 	int framebuffer_height;
+	int dropped_file_count;
+	char **dropped_files;
+	int touch_count;
+	uint64_t touch_ids[V_MULTIWINDOW_APPKIT_MAX_TOUCH_POINTS];
+	float touch_x[V_MULTIWINDOW_APPKIT_MAX_TOUCH_POINTS];
+	float touch_y[V_MULTIWINDOW_APPKIT_MAX_TOUCH_POINTS];
+	int touch_changed[V_MULTIWINDOW_APPKIT_MAX_TOUCH_POINTS];
 } VMultiwindowAppKitQueuedEvent;
 
 int v_multiwindow_appkit_is_main_thread(void);
@@ -69,6 +85,7 @@ int v_multiwindow_appkit_set_window_title(void *state_ptr, const char *title);
 int v_multiwindow_appkit_resize_window(void *state_ptr, int width, int height, int *out_width, int *out_height, int *out_framebuffer_width, int *out_framebuffer_height);
 void v_multiwindow_appkit_poll_events(void);
 int v_multiwindow_appkit_take_queued_event(void *state_ptr, VMultiwindowAppKitQueuedEvent *out_event);
+void v_multiwindow_appkit_release_queued_event_resources(VMultiwindowAppKitQueuedEvent *event);
 int v_multiwindow_appkit_begin_frame(void *state_ptr, void *device_ptr, void **out_drawable, void **out_depth_texture, int *out_framebuffer_width, int *out_framebuffer_height);
 void v_multiwindow_appkit_end_frame(void *state_ptr);
 void v_multiwindow_appkit_abort_frame(void *state_ptr);

@@ -6,11 +6,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include "appkit_backend_helpers.h"
 
 @class VMultiwindowAppKitWindowState;
 
-@interface VMultiwindowAppKitView : NSView
+@interface VMultiwindowAppKitView : NSView <NSDraggingDestination>
 @property(weak) VMultiwindowAppKitWindowState *state;
 @property(strong) NSTrackingArea *trackingArea;
 @end
@@ -45,7 +46,9 @@
 - (void)queueInputEvent:(VMultiwindowAppKitQueuedEvent)event;
 - (void)queueKeyEvent:(int)kind keyCode:(int)keyCode repeat:(BOOL)repeat modifiers:(uint32_t)modifiers;
 - (void)queueCharEventsFromString:(NSString *)characters repeat:(BOOL)repeat modifiers:(uint32_t)modifiers;
+- (void)queueTouchEvent:(int)kind changedPhase:(NSTouchPhase)phase event:(NSEvent *)event view:(NSView *)view;
 - (void)updateMousePositionFromEvent:(NSEvent *)event clearDelta:(BOOL)clearDelta;
+- (void)updateMousePositionFromWindowPoint:(NSPoint)point clearDelta:(BOOL)clearDelta;
 - (void)setKeyDown:(BOOL)down forKeyCode:(int)keyCode;
 - (void)clearKeyDownState;
 - (void)clearQueuedEvents;
@@ -60,6 +63,31 @@ static VMultiwindowAppKitQueuedEvent v_multiwindow_appkit_zero_event(void) {
 	VMultiwindowAppKitQueuedEvent event = {0};
 	event.mouse_button = V_MULTIWINDOW_APPKIT_MOUSE_BUTTON_INVALID;
 	return event;
+}
+
+static char *v_multiwindow_appkit_copy_cstring(const char *value) {
+	if (value == NULL) {
+		return NULL;
+	}
+	size_t len = strlen(value);
+	char *copy = (char *)calloc(len + 1, 1);
+	if (copy == NULL) {
+		return NULL;
+	}
+	memcpy(copy, value, len);
+	return copy;
+}
+
+void v_multiwindow_appkit_release_queued_event_resources(VMultiwindowAppKitQueuedEvent *event) {
+	if (event == NULL || event->dropped_files == NULL) {
+		return;
+	}
+	for (int i = 0; i < event->dropped_file_count; i++) {
+		free(event->dropped_files[i]);
+	}
+	free(event->dropped_files);
+	event->dropped_files = NULL;
+	event->dropped_file_count = 0;
 }
 
 static uint32_t v_multiwindow_appkit_modifiers(NSEvent *event) {
@@ -280,6 +308,53 @@ static BOOL v_multiwindow_appkit_modifier_key_is_pressed(NSEventModifierFlags fl
 	return YES;
 }
 
+static BOOL v_multiwindow_appkit_touch_sets_share_identity(NSSet<NSTouch *> *touches, NSTouch *target) {
+	if (target == nil) {
+		return NO;
+	}
+	id targetIdentity = target.identity;
+	for (NSTouch *touch in touches) {
+		if (touch == target) {
+			return YES;
+		}
+		id identity = touch.identity;
+		if (identity != nil && targetIdentity != nil && identity == targetIdentity) {
+			return YES;
+		}
+		if (identity != nil && targetIdentity != nil && [identity isEqual:targetIdentity]) {
+			return YES;
+		}
+	}
+	return NO;
+}
+
+static float v_multiwindow_appkit_clamp_unit(CGFloat value) {
+	if (value < 0.0) {
+		return 0.0f;
+	}
+	if (value > 1.0) {
+		return 1.0f;
+	}
+	return (float)value;
+}
+
+static void v_multiwindow_appkit_fill_touch_point(VMultiwindowAppKitWindowState *state, VMultiwindowAppKitQueuedEvent *event, int index, NSTouch *touch, BOOL changed) {
+	if (state == nil || event == NULL || touch == nil || index < 0 || index >= V_MULTIWINDOW_APPKIT_MAX_TOUCH_POINTS) {
+		return;
+	}
+	id identity = touch.identity;
+	const void *identity_ptr = identity != nil ? (__bridge const void *)identity : (__bridge const void *)touch;
+	float width = state.framebufferWidth > 1 ? (float)(state.framebufferWidth - 1) : 0.0f;
+	float height = state.framebufferHeight > 1 ? (float)(state.framebufferHeight - 1) : 0.0f;
+	NSPoint normalized = touch.normalizedPosition;
+	float x = v_multiwindow_appkit_clamp_unit(normalized.x) * width;
+	float y = (1.0f - v_multiwindow_appkit_clamp_unit(normalized.y)) * height;
+	event->touch_ids[index] = (uint64_t)(uintptr_t)identity_ptr;
+	event->touch_x[index] = x;
+	event->touch_y[index] = y;
+	event->touch_changed[index] = changed ? 1 : 0;
+}
+
 @implementation VMultiwindowAppKitWindowState
 - (instancetype)init {
 	self = [super init];
@@ -363,6 +438,7 @@ static BOOL v_multiwindow_appkit_modifier_key_is_pressed(NSEventModifierFlags fl
 	event.sequence = v_multiwindow_appkit_next_event_sequence();
 	VMultiwindowAppKitQueuedEvent *queued = calloc(1, sizeof(VMultiwindowAppKitQueuedEvent));
 	if (queued == NULL) {
+		v_multiwindow_appkit_release_queued_event_resources(&event);
 		return;
 	}
 	*queued = event;
@@ -437,9 +513,46 @@ static BOOL v_multiwindow_appkit_modifier_key_is_pressed(NSEventModifierFlags fl
 	}
 }
 
+- (void)queueTouchEvent:(int)kind changedPhase:(NSTouchPhase)phase event:(NSEvent *)event view:(NSView *)view {
+	if (event == nil || view == nil) {
+		return;
+	}
+	NSSet<NSTouch *> *changedTouches = [event touchesMatchingPhase:phase inView:view];
+	NSSet<NSTouch *> *allTouches = [event touchesMatchingPhase:NSTouchPhaseAny inView:view];
+	if (allTouches.count == 0) {
+		allTouches = changedTouches;
+	}
+	if (allTouches.count == 0) {
+		return;
+	}
+	VMultiwindowAppKitQueuedEvent queued = v_multiwindow_appkit_zero_event();
+	queued.input_kind = kind;
+	queued.modifiers = v_multiwindow_appkit_modifiers(event);
+	int index = 0;
+	for (NSTouch *touch in allTouches) {
+		if (index >= V_MULTIWINDOW_APPKIT_MAX_TOUCH_POINTS) {
+			break;
+		}
+		BOOL changed = v_multiwindow_appkit_touch_sets_share_identity(changedTouches, touch);
+		v_multiwindow_appkit_fill_touch_point(self, &queued, index, touch, changed);
+		index++;
+	}
+	if (index == 0) {
+		return;
+	}
+	queued.touch_count = index;
+	queued.mouse_x = queued.touch_x[0];
+	queued.mouse_y = queued.touch_y[0];
+	[self queueInputEvent:queued];
+}
+
 - (void)updateMousePositionFromEvent:(NSEvent *)event clearDelta:(BOOL)clearDelta {
-	NSView *content = self.window.contentView != nil ? self.window.contentView : self.view;
 	NSPoint point = event.locationInWindow;
+	[self updateMousePositionFromWindowPoint:point clearDelta:clearDelta];
+}
+
+- (void)updateMousePositionFromWindowPoint:(NSPoint)point clearDelta:(BOOL)clearDelta {
+	NSView *content = self.window.contentView != nil ? self.window.contentView : self.view;
 	if (content != nil) {
 		point = [content convertPoint:point fromView:nil];
 	}
@@ -478,6 +591,7 @@ static BOOL v_multiwindow_appkit_modifier_key_is_pressed(NSEventModifierFlags fl
 - (void)clearQueuedEvents {
 	for (NSValue *value in self.queuedEvents) {
 		VMultiwindowAppKitQueuedEvent *event = (VMultiwindowAppKitQueuedEvent *)value.pointerValue;
+		v_multiwindow_appkit_release_queued_event_resources(event);
 		free(event);
 	}
 	[self.queuedEvents removeAllObjects];
@@ -566,6 +680,22 @@ static BOOL v_multiwindow_appkit_modifier_key_is_pressed(NSEventModifierFlags fl
 	event.modifiers = v_multiwindow_appkit_modifiers(nil);
 	[self queueInputEvent:event];
 }
+
+- (void)windowDidMiniaturize:(NSNotification *)notification {
+	(void)notification;
+	VMultiwindowAppKitQueuedEvent event = v_multiwindow_appkit_zero_event();
+	event.input_kind = V_MULTIWINDOW_APPKIT_INPUT_ICONIFIED;
+	event.modifiers = v_multiwindow_appkit_modifiers(nil);
+	[self queueInputEvent:event];
+}
+
+- (void)windowDidDeminiaturize:(NSNotification *)notification {
+	(void)notification;
+	VMultiwindowAppKitQueuedEvent event = v_multiwindow_appkit_zero_event();
+	event.input_kind = V_MULTIWINDOW_APPKIT_INPUT_RESTORED;
+	event.modifiers = v_multiwindow_appkit_modifiers(nil);
+	[self queueInputEvent:event];
+}
 @end
 
 @implementation VMultiwindowAppKitView
@@ -616,6 +746,60 @@ static BOOL v_multiwindow_appkit_modifier_key_is_pressed(NSEventModifierFlags fl
 	queued.mouse_dx = state.mouseDx;
 	queued.mouse_dy = state.mouseDy;
 	[state queueInputEvent:queued];
+}
+
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+	NSPasteboard *pasteboard = sender.draggingPasteboard;
+	if ([pasteboard canReadObjectForClasses:@[ NSURL.class ]
+	                                options:@{ NSPasteboardURLReadingFileURLsOnlyKey: @YES }]) {
+		return NSDragOperationCopy;
+	}
+	return NSDragOperationNone;
+}
+
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender {
+	return [self draggingEntered:sender];
+}
+
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+	VMultiwindowAppKitWindowState *state = self.state;
+	if (state == nil) {
+		return NO;
+	}
+	NSPasteboard *pasteboard = sender.draggingPasteboard;
+	NSArray<NSURL *> *urls = [pasteboard readObjectsForClasses:@[ NSURL.class ]
+	                                                   options:@{ NSPasteboardURLReadingFileURLsOnlyKey: @YES }];
+	if (urls.count == 0) {
+		return NO;
+	}
+	[state updateMousePositionFromWindowPoint:sender.draggingLocation clearDelta:YES];
+	VMultiwindowAppKitQueuedEvent queued = v_multiwindow_appkit_zero_event();
+	queued.input_kind = V_MULTIWINDOW_APPKIT_INPUT_FILES_DROPPED;
+	queued.modifiers = v_multiwindow_appkit_modifiers(nil);
+	queued.mouse_x = state.mouseX;
+	queued.mouse_y = state.mouseY;
+	queued.dropped_files = (char **)calloc(urls.count, sizeof(char *));
+	if (queued.dropped_files == NULL) {
+		return NO;
+	}
+	for (NSURL *url in urls) {
+		if (!url.fileURL) {
+			continue;
+		}
+		const char *path = url.standardizedURL.path.UTF8String;
+		char *copy = v_multiwindow_appkit_copy_cstring(path);
+		if (copy == NULL) {
+			continue;
+		}
+		queued.dropped_files[queued.dropped_file_count] = copy;
+		queued.dropped_file_count++;
+	}
+	if (queued.dropped_file_count == 0) {
+		v_multiwindow_appkit_release_queued_event_resources(&queued);
+		return NO;
+	}
+	[state queueInputEvent:queued];
+	return YES;
 }
 
 - (void)mouseEntered:(NSEvent *)event {
@@ -710,6 +894,34 @@ static BOOL v_multiwindow_appkit_modifier_key_is_pressed(NSEventModifierFlags fl
 	[state queueInputEvent:queued];
 }
 
+- (void)touchesBeganWithEvent:(NSEvent *)event {
+	[self.state queueTouchEvent:V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_BEGAN
+	               changedPhase:NSTouchPhaseBegan
+	                      event:event
+	                       view:self];
+}
+
+- (void)touchesMovedWithEvent:(NSEvent *)event {
+	[self.state queueTouchEvent:V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_MOVED
+	               changedPhase:NSTouchPhaseMoved
+	                      event:event
+	                       view:self];
+}
+
+- (void)touchesEndedWithEvent:(NSEvent *)event {
+	[self.state queueTouchEvent:V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_ENDED
+	               changedPhase:NSTouchPhaseEnded
+	                      event:event
+	                       view:self];
+}
+
+- (void)touchesCancelledWithEvent:(NSEvent *)event {
+	[self.state queueTouchEvent:V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_CANCELLED
+	               changedPhase:NSTouchPhaseCancelled
+	                      event:event
+	                       view:self];
+}
+
 - (void)keyDown:(NSEvent *)event {
 	VMultiwindowAppKitWindowState *state = self.state;
 	if (state == nil) {
@@ -719,9 +931,20 @@ static BOOL v_multiwindow_appkit_modifier_key_is_pressed(NSEventModifierFlags fl
 	int keyCode = v_multiwindow_appkit_key_code(event.keyCode);
 	[state queueKeyEvent:V_MULTIWINDOW_APPKIT_INPUT_KEY_DOWN keyCode:keyCode repeat:event.isARepeat modifiers:modifiers];
 	[state queueCharEventsFromString:event.characters repeat:event.isARepeat modifiers:modifiers];
+	if (modifiers == 8 && keyCode == 86) {
+		VMultiwindowAppKitQueuedEvent queued = v_multiwindow_appkit_zero_event();
+		queued.input_kind = V_MULTIWINDOW_APPKIT_INPUT_CLIPBOARD_PASTED;
+		queued.modifiers = modifiers;
+		[state queueInputEvent:queued];
+	}
 }
 
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
+	if (v_multiwindow_appkit_key_code(event.keyCode) == 86 &&
+	    v_multiwindow_appkit_modifiers(event) == 8) {
+		[self keyDown:event];
+		return YES;
+	}
 	if (v_multiwindow_appkit_key_code(event.keyCode) == 258) {
 		[self keyDown:event];
 		return YES;
@@ -848,10 +1071,12 @@ int v_multiwindow_appkit_create_window(void *device_ptr, const char *title, int 
 		if (view == nil) {
 			return 0;
 		}
+		view.acceptsTouchEvents = YES;
 		VMultiwindowAppKitWindowState *state = [[VMultiwindowAppKitWindowState alloc] init];
 		state.window = window;
 		state.view = view;
 		view.state = state;
+		[view registerForDraggedTypes:@[ NSPasteboardTypeFileURL ]];
 		state.highDpi = high_dpi ? YES : NO;
 		state.flagsChangedStore = (uint32_t)NSEvent.modifierFlags;
 		if (device_ptr != NULL) {

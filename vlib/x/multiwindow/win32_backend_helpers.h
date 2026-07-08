@@ -1,7 +1,38 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <windows.h>
+#include <shellapi.h>
+
+#ifndef WM_TOUCH
+#define WM_TOUCH 0x0240
+typedef HANDLE HTOUCHINPUT;
+typedef struct tagTOUCHINPUT {
+	LONG x;
+	LONG y;
+	HANDLE hSource;
+	DWORD dwID;
+	DWORD dwFlags;
+	DWORD dwMask;
+	DWORD dwTime;
+	ULONG_PTR dwExtraInfo;
+	DWORD cxContact;
+	DWORD cyContact;
+} TOUCHINPUT, *PTOUCHINPUT;
+#endif
+#ifndef TOUCHEVENTF_MOVE
+#define TOUCHEVENTF_MOVE 0x0001
+#endif
+#ifndef TOUCHEVENTF_DOWN
+#define TOUCHEVENTF_DOWN 0x0002
+#endif
+#ifndef TOUCHEVENTF_UP
+#define TOUCHEVENTF_UP 0x0004
+#endif
+#ifndef TOUCH_COORD_TO_PIXEL
+#define TOUCH_COORD_TO_PIXEL(l) ((l) / 100)
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,6 +46,10 @@ V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_close_reque
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_destroyed(void *data, uint64_t sequence);
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_resized(void *data, uint64_t sequence, int width, int height);
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_input_event(void *data, uint64_t sequence, int kind, int key_code, uint32_t char_code, int key_repeat, uint32_t modifiers, int mouse_button, int mouse_x, int mouse_y, int wheel_delta_x, int wheel_delta_y);
+V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_drop_begin(void *data, uint64_t sequence, int mouse_x, int mouse_y, uint32_t modifiers);
+V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_drop_file(void *data, uint64_t sequence, const char *path);
+V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_drop_end(void *data, uint64_t sequence);
+V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_touch_event(void *data, uint64_t sequence, int kind, uint32_t modifiers, int count, const uint64_t *ids, const int *xs, const int *ys, const int *changed);
 #undef V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE
 #ifdef __cplusplus
 }
@@ -31,10 +66,17 @@ V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_input_event
 #define V_MULTIWINDOW_WIN32_INPUT_MOUSE_LEAVE 9
 #define V_MULTIWINDOW_WIN32_INPUT_FOCUSED 10
 #define V_MULTIWINDOW_WIN32_INPUT_UNFOCUSED 11
+#define V_MULTIWINDOW_WIN32_INPUT_ICONIFIED 12
+#define V_MULTIWINDOW_WIN32_INPUT_RESTORED 13
+#define V_MULTIWINDOW_WIN32_INPUT_CLIPBOARD_PASTED 14
+#define V_MULTIWINDOW_WIN32_INPUT_TOUCHES_BEGAN 15
+#define V_MULTIWINDOW_WIN32_INPUT_TOUCHES_MOVED 16
+#define V_MULTIWINDOW_WIN32_INPUT_TOUCHES_ENDED 17
 #define V_MULTIWINDOW_WIN32_MOUSE_BUTTON_LEFT 0
 #define V_MULTIWINDOW_WIN32_MOUSE_BUTTON_RIGHT 1
 #define V_MULTIWINDOW_WIN32_MOUSE_BUTTON_MIDDLE 2
 #define V_MULTIWINDOW_WIN32_MOUSE_BUTTON_INVALID 256
+#define V_MULTIWINDOW_WIN32_MAX_TOUCH_POINTS 8
 #define V_MULTIWINDOW_WIN32_MODIFIER_LMB 0x100
 #define V_MULTIWINDOW_WIN32_MODIFIER_RMB 0x200
 #define V_MULTIWINDOW_WIN32_MODIFIER_MMB 0x400
@@ -335,6 +377,62 @@ static inline int v_multiwindow_win32_key_repeat(LPARAM lparam) {
 	return (lparam & 0x40000000) != 0;
 }
 
+typedef BOOL(WINAPI *v_multiwindow_win32_register_touch_window_proc)(HWND, ULONG);
+typedef BOOL(WINAPI *v_multiwindow_win32_unregister_touch_window_proc)(HWND);
+typedef BOOL(WINAPI *v_multiwindow_win32_get_touch_input_info_proc)(HTOUCHINPUT, UINT, PTOUCHINPUT, int);
+typedef BOOL(WINAPI *v_multiwindow_win32_close_touch_input_handle_proc)(HTOUCHINPUT);
+
+static inline FARPROC v_multiwindow_win32_user32_proc(const char *name) {
+	HMODULE user32 = GetModuleHandleW(L"user32.dll");
+	if (!user32) {
+		return NULL;
+	}
+	return GetProcAddress(user32, name);
+}
+
+static inline int v_multiwindow_win32_register_touch_window(HWND hwnd) {
+	v_multiwindow_win32_register_touch_window_proc fn = (v_multiwindow_win32_register_touch_window_proc)v_multiwindow_win32_user32_proc("RegisterTouchWindow");
+	return fn ? (fn(hwnd, 0) != 0) : 0;
+}
+
+static inline void v_multiwindow_win32_unregister_touch_window(HWND hwnd) {
+	v_multiwindow_win32_unregister_touch_window_proc fn = (v_multiwindow_win32_unregister_touch_window_proc)v_multiwindow_win32_user32_proc("UnregisterTouchWindow");
+	if (fn) {
+		fn(hwnd);
+	}
+}
+
+static inline int v_multiwindow_win32_get_touch_input_info(HTOUCHINPUT handle, UINT count, PTOUCHINPUT inputs) {
+	v_multiwindow_win32_get_touch_input_info_proc fn = (v_multiwindow_win32_get_touch_input_info_proc)v_multiwindow_win32_user32_proc("GetTouchInputInfo");
+	return fn ? (fn(handle, count, inputs, sizeof(TOUCHINPUT)) != 0) : 0;
+}
+
+static inline void v_multiwindow_win32_close_touch_input_handle(HTOUCHINPUT handle) {
+	v_multiwindow_win32_close_touch_input_handle_proc fn = (v_multiwindow_win32_close_touch_input_handle_proc)v_multiwindow_win32_user32_proc("CloseTouchInputHandle");
+	if (fn) {
+		fn(handle);
+	}
+}
+
+static inline char *v_multiwindow_win32_wide_to_utf8_alloc(const wchar_t *value) {
+	if (!value) {
+		return NULL;
+	}
+	int required = WideCharToMultiByte(CP_UTF8, 0, value, -1, NULL, 0, NULL, NULL);
+	if (required <= 0) {
+		return NULL;
+	}
+	char *utf8 = (char *)malloc((size_t)required);
+	if (!utf8) {
+		return NULL;
+	}
+	if (WideCharToMultiByte(CP_UTF8, 0, value, -1, utf8, required, NULL, NULL) <= 0) {
+		free(utf8);
+		return NULL;
+	}
+	return utf8;
+}
+
 static inline int v_multiwindow_win32_begin_mouse_tracking(HWND hwnd) {
 	if (GetPropW(hwnd, v_multiwindow_win32_mouse_tracked_prop)) {
 		return 0;
@@ -353,6 +451,92 @@ static inline int v_multiwindow_win32_begin_mouse_tracking(HWND hwnd) {
 
 static inline void v_multiwindow_win32_end_mouse_tracking(HWND hwnd) {
 	RemovePropW(hwnd, v_multiwindow_win32_mouse_tracked_prop);
+}
+
+static inline void v_multiwindow_win32_emit_drop_files(HWND hwnd, void *data, HDROP hdrop) {
+	if (!data || !hdrop) {
+		if (hdrop) {
+			DragFinish(hdrop);
+		}
+		return;
+	}
+	POINT point = {0, 0};
+	DragQueryPoint(hdrop, &point);
+	uint64_t sequence = v_multiwindow_win32_next_event_sequence();
+	v_multiwindow_win32_window_drop_begin(data, sequence, point.x, point.y, v_multiwindow_win32_modifiers());
+	UINT count = DragQueryFileW(hdrop, 0xFFFFFFFFu, NULL, 0);
+	for (UINT i = 0; i < count; i++) {
+		UINT chars = DragQueryFileW(hdrop, i, NULL, 0);
+		if (chars == 0) {
+			continue;
+		}
+		wchar_t *wide_path = (wchar_t *)calloc((size_t)chars + 1, sizeof(wchar_t));
+		if (!wide_path) {
+			continue;
+		}
+		if (DragQueryFileW(hdrop, i, wide_path, chars + 1) != 0) {
+			char *path = v_multiwindow_win32_wide_to_utf8_alloc(wide_path);
+			if (path) {
+				v_multiwindow_win32_window_drop_file(data, sequence, path);
+				free(path);
+			}
+		}
+		free(wide_path);
+	}
+	v_multiwindow_win32_window_drop_end(data, sequence);
+	DragFinish(hdrop);
+	(void)hwnd;
+}
+
+static inline void v_multiwindow_win32_emit_touch_group(HWND hwnd, void *data, const TOUCHINPUT *inputs, UINT count, DWORD flag, int kind, uint64_t sequence, uint32_t modifiers) {
+	uint64_t ids[V_MULTIWINDOW_WIN32_MAX_TOUCH_POINTS];
+	int xs[V_MULTIWINDOW_WIN32_MAX_TOUCH_POINTS];
+	int ys[V_MULTIWINDOW_WIN32_MAX_TOUCH_POINTS];
+	int changed[V_MULTIWINDOW_WIN32_MAX_TOUCH_POINTS];
+	int out_count = 0;
+	for (UINT i = 0; i < count; i++) {
+		if ((inputs[i].dwFlags & flag) == 0) {
+			continue;
+		}
+		POINT point = {TOUCH_COORD_TO_PIXEL(inputs[i].x), TOUCH_COORD_TO_PIXEL(inputs[i].y)};
+		ScreenToClient(hwnd, &point);
+		ids[out_count] = (uint64_t)inputs[i].dwID;
+		xs[out_count] = point.x;
+		ys[out_count] = point.y;
+		changed[out_count] = 1;
+		out_count++;
+		if (out_count == V_MULTIWINDOW_WIN32_MAX_TOUCH_POINTS) {
+			v_multiwindow_win32_window_touch_event(data, sequence, kind, modifiers, out_count, ids, xs, ys, changed);
+			out_count = 0;
+		}
+	}
+	if (out_count > 0) {
+		v_multiwindow_win32_window_touch_event(data, sequence, kind, modifiers, out_count, ids, xs, ys, changed);
+	}
+}
+
+static inline int v_multiwindow_win32_emit_touch_event(HWND hwnd, void *data, WPARAM wparam, LPARAM lparam) {
+	UINT count = LOWORD(wparam);
+	HTOUCHINPUT handle = (HTOUCHINPUT)lparam;
+	if (!data || count == 0 || !handle) {
+		return 0;
+	}
+	TOUCHINPUT *inputs = (TOUCHINPUT *)calloc((size_t)count, sizeof(TOUCHINPUT));
+	if (!inputs) {
+		return 0;
+	}
+	if (!v_multiwindow_win32_get_touch_input_info(handle, count, inputs)) {
+		free(inputs);
+		return 0;
+	}
+	v_multiwindow_win32_close_touch_input_handle(handle);
+	uint64_t sequence = v_multiwindow_win32_next_event_sequence();
+	uint32_t modifiers = v_multiwindow_win32_modifiers();
+	v_multiwindow_win32_emit_touch_group(hwnd, data, inputs, count, TOUCHEVENTF_DOWN, V_MULTIWINDOW_WIN32_INPUT_TOUCHES_BEGAN, sequence, modifiers);
+	v_multiwindow_win32_emit_touch_group(hwnd, data, inputs, count, TOUCHEVENTF_MOVE, V_MULTIWINDOW_WIN32_INPUT_TOUCHES_MOVED, sequence, modifiers);
+	v_multiwindow_win32_emit_touch_group(hwnd, data, inputs, count, TOUCHEVENTF_UP, V_MULTIWINDOW_WIN32_INPUT_TOUCHES_ENDED, sequence, modifiers);
+	free(inputs);
+	return 1;
 }
 
 static LRESULT CALLBACK v_multiwindow_win32_wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -379,6 +563,8 @@ static LRESULT CALLBACK v_multiwindow_win32_wnd_proc(HWND hwnd, UINT msg, WPARAM
 			RemovePropW(hwnd, v_multiwindow_win32_min_width_prop);
 			RemovePropW(hwnd, v_multiwindow_win32_min_height_prop);
 			v_multiwindow_win32_end_mouse_tracking(hwnd);
+			v_multiwindow_win32_unregister_touch_window(hwnd);
+			DragAcceptFiles(hwnd, FALSE);
 			return 0;
 		}
 		break;
@@ -419,7 +605,13 @@ static LRESULT CALLBACK v_multiwindow_win32_wnd_proc(HWND hwnd, UINT msg, WPARAM
 		}
 		break;
 	case WM_SIZE:
-		if (data && wparam != SIZE_MINIMIZED) {
+		if (data) {
+			uint64_t state_sequence = v_multiwindow_win32_next_event_sequence();
+			if (wparam == SIZE_MINIMIZED) {
+				v_multiwindow_win32_window_input_event(data, state_sequence, V_MULTIWINDOW_WIN32_INPUT_ICONIFIED, 0, 0, 0, v_multiwindow_win32_modifiers(), V_MULTIWINDOW_WIN32_MOUSE_BUTTON_INVALID, 0, 0, 0, 0);
+				break;
+			}
+			v_multiwindow_win32_window_input_event(data, state_sequence, V_MULTIWINDOW_WIN32_INPUT_RESTORED, 0, 0, 0, v_multiwindow_win32_modifiers(), V_MULTIWINDOW_WIN32_MOUSE_BUTTON_INVALID, 0, 0, 0, 0);
 			RECT rect = {0, 0, 0, 0};
 			if (GetClientRect(hwnd, &rect)) {
 				int width = rect.right - rect.left;
@@ -500,7 +692,11 @@ static LRESULT CALLBACK v_multiwindow_win32_wnd_proc(HWND hwnd, UINT msg, WPARAM
 			int key_code = v_multiwindow_win32_key_code(wparam, lparam);
 			if (key_code != 0) {
 				uint64_t sequence = v_multiwindow_win32_next_event_sequence();
-				v_multiwindow_win32_window_input_event(data, sequence, V_MULTIWINDOW_WIN32_INPUT_KEY_DOWN, key_code, 0, v_multiwindow_win32_key_repeat(lparam), v_multiwindow_win32_modifiers(), V_MULTIWINDOW_WIN32_MOUSE_BUTTON_INVALID, 0, 0, 0, 0);
+				uint32_t modifiers = v_multiwindow_win32_modifiers();
+				v_multiwindow_win32_window_input_event(data, sequence, V_MULTIWINDOW_WIN32_INPUT_KEY_DOWN, key_code, 0, v_multiwindow_win32_key_repeat(lparam), modifiers, V_MULTIWINDOW_WIN32_MOUSE_BUTTON_INVALID, 0, 0, 0, 0);
+				if (key_code == 86 && modifiers == 2) {
+					v_multiwindow_win32_window_input_event(data, sequence, V_MULTIWINDOW_WIN32_INPUT_CLIPBOARD_PASTED, 0, 0, 0, modifiers, V_MULTIWINDOW_WIN32_MOUSE_BUTTON_INVALID, 0, 0, 0, 0);
+				}
 				return 0;
 			}
 		}
@@ -537,6 +733,17 @@ static LRESULT CALLBACK v_multiwindow_win32_wnd_proc(HWND hwnd, UINT msg, WPARAM
 		if (data && v_multiwindow_win32_is_char_code(wparam)) {
 			uint64_t sequence = v_multiwindow_win32_next_event_sequence();
 			v_multiwindow_win32_window_input_event(data, sequence, V_MULTIWINDOW_WIN32_INPUT_CHAR, 0, (uint32_t)wparam, v_multiwindow_win32_key_repeat(lparam), v_multiwindow_win32_modifiers(), V_MULTIWINDOW_WIN32_MOUSE_BUTTON_INVALID, 0, 0, 0, 0);
+			return 0;
+		}
+		break;
+	case WM_DROPFILES:
+		if (data) {
+			v_multiwindow_win32_emit_drop_files(hwnd, data, (HDROP)wparam);
+			return 0;
+		}
+		break;
+	case WM_TOUCH:
+		if (v_multiwindow_win32_emit_touch_event(hwnd, data, wparam, lparam)) {
 			return 0;
 		}
 		break;
@@ -606,6 +813,8 @@ static inline void *v_multiwindow_win32_create_window(const wchar_t *title, int 
 	if (hwnd) {
 		v_multiwindow_win32_set_hwnd_int_prop(hwnd, v_multiwindow_win32_min_width_prop, min_width);
 		v_multiwindow_win32_set_hwnd_int_prop(hwnd, v_multiwindow_win32_min_height_prop, min_height);
+		DragAcceptFiles(hwnd, TRUE);
+		v_multiwindow_win32_register_touch_window(hwnd);
 	}
 	if (hwnd && visible) {
 		ShowWindow(hwnd, fullscreen ? SW_MAXIMIZE : SW_SHOW);

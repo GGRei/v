@@ -115,8 +115,11 @@ xvfb-run -a v -d gg_multiwindow -d x_multiwindow_x11 run examples/gg/multiwindow
 events through `input_fn`. Lifecycle events use `gg.WindowEvent` and cover
 created, resized, close-requested and destroyed windows. Input events use
 `gg.WindowInputEvent`, which adds the target `gg.WindowId` to the normal
-`gg.Event` payload so existing key, mouse, scroll and focus event fields keep
-the same gg-facing types.
+`gg.Event` payload so existing key, mouse, scroll, focus and window-state event
+fields keep the same gg-facing types.
+For native multi-window events, `gg.Event.frame_count` is assigned by the
+underlying multi-window owner poll cycle so events collected by the same
+`app.poll_events()` call share a frame count.
 
 `input_fn` has the `gg.AppInputFn` shape:
 
@@ -135,9 +138,17 @@ on a class of native events: `input_events`, `mouse_events`, `keyboard_events`,
 `text_events`, `focus_events`, `drop_events` and `touch_events` report what the
 selected backend can actually deliver. Backends must leave unsupported classes
 false instead of emulating partial support. Current native backends route
-window-scoped mouse, keyboard, focus and resize events where the platform
-implementation supports them; text, drop and touch events should be treated as
-available only when their corresponding capability is true.
+window-scoped mouse, keyboard, focus, resize and iconified/restored events where
+the platform implementation supports them. `drop_events` is true on native
+backends that clone dropped file paths into `WindowInputEvent.dropped_files`;
+`touch_events` is true only where native touch input is wired. Win32 reports the
+`WM_TOUCH` began/moved/ended states; AppKit also reports cancelled touches from
+`touchesCancelledWithEvent:`. Clipboard paste is reported as an event signal;
+clipboard contents are not carried by `WindowInputEvent`. X11 text uses
+XIM/XIC with `Xutf8LookupString`, and X11 file drops use XDND `text/uri-list`.
+Wayland text uses xkb keymap/state for key-press characters, and Wayland file
+drops use `wl_data_device`/`wl_data_offer` `text/uri-list`; neither Linux text
+path implements full IME/composed text yet.
 
 The multi-window event queue is separate from legacy `gg.Context` callbacks.
 Normal single-window applications keep using the existing `event_fn`,

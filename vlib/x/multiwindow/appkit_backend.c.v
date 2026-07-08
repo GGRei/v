@@ -37,6 +37,13 @@ $if darwin {
 		window_height      int
 		framebuffer_width  int
 		framebuffer_height int
+		dropped_file_count int
+		dropped_files      &&char = unsafe { nil }
+		touch_count        int
+		touch_ids          [8]u64
+		touch_x            [8]f32
+		touch_y            [8]f32
+		touch_changed      [8]int
 	}
 
 	fn C.v_multiwindow_appkit_is_main_thread() int
@@ -50,6 +57,7 @@ $if darwin {
 	fn C.v_multiwindow_appkit_resize_window(state voidptr, width int, height int, out_width &int, out_height &int, out_framebuffer_width &int, out_framebuffer_height &int) int
 	fn C.v_multiwindow_appkit_poll_events()
 	fn C.v_multiwindow_appkit_take_queued_event(state voidptr, out_event &C.VMultiwindowAppKitQueuedEvent) int
+	fn C.v_multiwindow_appkit_release_queued_event_resources(event &C.VMultiwindowAppKitQueuedEvent)
 	fn C.v_multiwindow_appkit_begin_frame(state voidptr, device voidptr, out_drawable &voidptr, out_depth_texture &voidptr, out_framebuffer_width &int, out_framebuffer_height &int) int
 	fn C.v_multiwindow_appkit_end_frame(state voidptr)
 	fn C.v_multiwindow_appkit_abort_frame(state voidptr)
@@ -111,8 +119,8 @@ fn (backend &AppKitBackend) capabilities() Capabilities {
 		keyboard_events:    true
 		text_events:        true
 		focus_events:       true
-		drop_events:        false
-		touch_events:       false
+		drop_events:        true
+		touch_events:       true
 	}
 }
 
@@ -267,8 +275,31 @@ $if darwin {
 			10 { InputEventKind.focused }
 			11 { InputEventKind.unfocused }
 			12 { InputEventKind.resized }
+			13 { InputEventKind.iconified }
+			14 { InputEventKind.restored }
+			15 { InputEventKind.clipboard_pasted }
+			16 { InputEventKind.files_dropped }
+			17 { InputEventKind.touches_began }
+			18 { InputEventKind.touches_moved }
+			19 { InputEventKind.touches_ended }
+			20 { InputEventKind.touches_cancelled }
 			else { InputEventKind.invalid }
 		}
+	}
+
+	@[markused]
+	fn appkit_dropped_files_from_native(native_event C.VMultiwindowAppKitQueuedEvent) []string {
+		if native_event.dropped_file_count <= 0 || native_event.dropped_files == unsafe { nil } {
+			return []string{}
+		}
+		mut files := []string{cap: native_event.dropped_file_count}
+		for i in 0 .. native_event.dropped_file_count {
+			path := unsafe { native_event.dropped_files[i] }
+			if path != unsafe { nil } {
+				files << unsafe { cstring_to_vstring(path) }
+			}
+		}
+		return files
 	}
 
 	@[markused]
@@ -300,6 +331,22 @@ $if darwin {
 			if input_kind == .invalid {
 				return none
 			}
+			mut touch_count := native_event.touch_count
+			if touch_count < 0 {
+				touch_count = 0
+			}
+			if touch_count > 8 {
+				touch_count = 8
+			}
+			mut touches := [8]InputTouchPoint{}
+			for i in 0 .. touch_count {
+				touches[i] = InputTouchPoint{
+					identifier: native_event.touch_ids[i]
+					pos_x:      native_event.touch_x[i]
+					pos_y:      native_event.touch_y[i]
+					changed:    native_event.touch_changed[i] != 0
+				}
+			}
 			return queued_input_event(InputEvent{
 				kind:               input_kind
 				window_id:          record.id
@@ -314,10 +361,13 @@ $if darwin {
 				mouse_dy:           native_event.mouse_dy
 				scroll_x:           native_event.scroll_x
 				scroll_y:           native_event.scroll_y
+				num_touches:        touch_count
+				touches:            touches
 				window_width:       native_event.window_width
 				window_height:      native_event.window_height
 				framebuffer_width:  native_event.framebuffer_width
 				framebuffer_height: native_event.framebuffer_height
+				dropped_files:      appkit_dropped_files_from_native(native_event)
 			})
 		}
 		return none
@@ -362,7 +412,11 @@ fn (mut backend AppKitBackend) poll_queued_events() ![]QueuedEvent {
 					backend.windows[i].framebuffer_width = native_event.framebuffer_width
 					backend.windows[i].framebuffer_height = native_event.framebuffer_height
 				}
-				event := appkit_queued_event_from_native(record, native_event) or { continue }
+				event := appkit_queued_event_from_native(record, native_event) or {
+					C.v_multiwindow_appkit_release_queued_event_resources(&native_event)
+					continue
+				}
+				C.v_multiwindow_appkit_release_queued_event_resources(&native_event)
 				native_events << AppKitNativeQueuedEvent{
 					sequence: native_event.sequence
 					event:    event

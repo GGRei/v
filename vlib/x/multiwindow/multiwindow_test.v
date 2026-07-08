@@ -43,6 +43,12 @@ fn test_destroy_child_keeps_app_and_other_windows_alive() {
 	app.stop()!
 }
 
+fn test_dropped_files_from_uri_list_decodes_local_file_urls() {
+	payload := '# comment\r\nfile:///tmp/a%20b.txt\r\nfile://localhost/home/me/c%23d.txt\nhttp://ignored\nfile://remotehost/not-local\n'
+	files := dropped_files_from_uri_list(payload)
+	assert files == ['/tmp/a b.txt', '/home/me/c#d.txt']
+}
+
 fn test_destroy_last_window_keeps_app_running_without_live_windows() {
 	mut app := new_app()!
 	only := app.create_window(title: 'Only')!
@@ -253,6 +259,70 @@ fn test_mock_input_events_are_routed_without_polluting_lifecycle_drain() {
 	assert input_events[0].window_id == win
 	assert input_events[0].mouse_x == 12.5
 	assert input_events[0].mouse_y == 34.5
+	assert app.drain_input_events()!.len == 0
+	app.stop()!
+}
+
+fn test_input_events_without_frame_count_are_stamped_per_poll() {
+	mut app := new_app()!
+	win := app.create_window(title: 'Input frame count')!
+	assert app.drain_events()!.len == 1
+
+	app.enqueue_mock_input_for_test(InputEvent{
+		kind:      .mouse_move
+		window_id: win
+		mouse_x:   1
+		mouse_y:   2
+	})!
+	assert app.poll_events()! == 1
+	first := app.drain_input_events()!
+	assert first.len == 1
+	assert first[0].frame_count == 1
+
+	app.enqueue_mock_input_for_test(InputEvent{
+		kind:        .key_down
+		window_id:   win
+		frame_count: 99
+		key_code:    65
+	})!
+	assert app.poll_events()! == 1
+	second := app.drain_input_events()!
+	assert second.len == 1
+	assert second[0].frame_count == 99
+
+	app.enqueue_mock_input_for_test(InputEvent{
+		kind:      .mouse_up
+		window_id: win
+	})!
+	assert app.poll_events()! == 1
+	third := app.drain_input_events()!
+	assert third.len == 1
+	assert third[0].frame_count == 3
+	app.stop()!
+}
+
+fn test_mock_input_roundtrip_covers_all_input_event_kinds() {
+	event_kinds := all_input_event_kinds_for_test()
+	assert_input_event_kind_list_matches_types_source(event_kinds)
+	mut app := new_app()!
+	win := app.create_window(title: 'Input kind coverage')!
+	assert app.drain_events()!.len == 1
+
+	mut expected_events := []InputEvent{cap: event_kinds.len}
+	for i, kind in event_kinds {
+		expected_events << input_event_for_kind_for_test(win, kind, u64(i + 1))
+	}
+	for event in expected_events {
+		app.enqueue_mock_input_for_test(event)!
+	}
+
+	assert app.poll_events()! == expected_events.len
+	actual_events := app.drain_input_events()!
+	assert actual_events.len == expected_events.len
+	for i, actual in actual_events {
+		assert_input_event_roundtrip(actual, expected_events[i])
+	}
+	assert app.drain_events()!.len == 0
 	assert app.drain_input_events()!.len == 0
 	app.stop()!
 }
@@ -476,6 +546,27 @@ fn test_invalid_app_and_window_config_are_rejected() {
 		return
 	}
 	assert false, 'create_window accepted zero width'
+}
+
+fn test_new_app_starts_backend_on_stable_app_backend_before_owner_queue_source_guard() {
+	source := multiwindow_source_file('app.v')
+	body :=
+		source.all_after('pub fn new_app(config Config) !&App {').all_before('// status reports')
+
+	assert body.contains('mut app := &App{')
+	assert body.contains('app.backend.start(config.require_renderer)!')
+	assert body.contains('mut owner := executor.new(queue_size: config.queue_size) or {')
+	assert body.contains('app.backend.stop() or {}')
+	assert body.contains('app.owner = owner')
+	assert !body.contains('\n\tbackend.start(config.require_renderer)!')
+	assert_source_order(body, 'mut app := &App{', 'app.backend.start(config.require_renderer)!')
+	assert_source_order(body, 'app.backend.start(config.require_renderer)!',
+		'mut owner := executor.new(queue_size: config.queue_size) or {')
+	owner_failure_body := body.all_after('mut owner := executor.new(queue_size: config.queue_size) or {')
+		.all_before('app.owner = owner')
+	assert_source_order(owner_failure_body, 'app.backend.stop() or {}', 'return err')
+	assert_source_order(body, 'mut owner := executor.new(queue_size: config.queue_size) or {',
+		'app.owner = owner')
 }
 
 fn test_unknown_and_stale_window_ids_are_rejected() {
@@ -887,9 +978,9 @@ fn assert_x11_input_capabilities(caps Capabilities) {
 	assert caps.input_events
 	assert caps.mouse_events
 	assert caps.keyboard_events
-	assert !caps.text_events
+	assert caps.text_events
 	assert caps.focus_events
-	assert !caps.drop_events
+	assert caps.drop_events
 	assert !caps.touch_events
 }
 
@@ -897,10 +988,10 @@ fn assert_wayland_input_capabilities(caps Capabilities) {
 	assert caps.input_events
 	assert caps.mouse_events
 	assert caps.keyboard_events
-	assert !caps.text_events
+	assert caps.text_events
 	assert caps.focus_events
-	assert !caps.drop_events
-	assert !caps.touch_events
+	assert caps.drop_events
+	assert caps.touch_events
 }
 
 fn assert_win32_input_capabilities(caps Capabilities) {
@@ -909,8 +1000,8 @@ fn assert_win32_input_capabilities(caps Capabilities) {
 	assert caps.keyboard_events
 	assert caps.text_events
 	assert caps.focus_events
-	assert !caps.drop_events
-	assert !caps.touch_events
+	assert caps.drop_events
+	assert caps.touch_events
 }
 
 fn assert_appkit_input_capabilities(caps Capabilities) {
@@ -919,8 +1010,8 @@ fn assert_appkit_input_capabilities(caps Capabilities) {
 	assert caps.keyboard_events
 	assert caps.text_events
 	assert caps.focus_events
-	assert !caps.drop_events
-	assert !caps.touch_events
+	assert caps.drop_events
+	assert caps.touch_events
 }
 
 fn test_fake_wayland_lifecycle_capabilities_do_not_claim_render_ready() {
@@ -1284,11 +1375,35 @@ fn test_win32_input_events_are_queued_and_capability_scoped_source_guard() {
 	assert win32_backend_source.contains('keyboard_events:    true')
 	assert win32_backend_source.contains('text_events:        true')
 	assert win32_backend_source.contains('focus_events:       true')
-	assert win32_backend_source.contains('drop_events:        false')
-	assert win32_backend_source.contains('touch_events:       false')
+	assert win32_backend_source.contains('drop_events:        true')
+	assert win32_backend_source.contains('touch_events:       true')
+	assert win32_backend_source.contains('pending_dropped_files  []string')
+	assert win32_backend_source.contains('dropped_files:      record.pending_dropped_files.clone()')
+	assert win32_backend_source.contains('.files_dropped')
+	assert win32_backend_source.contains('InputEventKind.clipboard_pasted')
+	assert win32_backend_source.contains('InputEventKind.touches_began')
+	assert win32_backend_source.contains('InputEventKind.touches_moved')
+	assert win32_backend_source.contains('InputEventKind.touches_ended')
+	assert !win32_backend_source.contains('InputEventKind.touches_cancelled')
+	assert win32_backend_source.contains('fn win32_window_drop_begin')
+	assert win32_backend_source.contains('fn win32_window_drop_file')
+	assert win32_backend_source.contains('fn win32_window_drop_end')
+	assert win32_backend_source.contains('fn win32_window_touch_event')
+	assert win32_backend_source.contains('iconified              bool')
+	assert win32_backend_source.contains('12 { InputEventKind.iconified }')
+	assert win32_backend_source.contains('13 { InputEventKind.restored }')
+	assert win32_backend_source.contains('if record.iconified')
+	assert win32_backend_source.contains('if !record.iconified')
 
 	assert win32_helper_source.contains('GWLP_USERDATA')
 	assert win32_helper_source.contains('v_multiwindow_win32_next_event_sequence')
+	assert win32_helper_source.contains('V_MULTIWINDOW_WIN32_INPUT_ICONIFIED')
+	assert win32_helper_source.contains('V_MULTIWINDOW_WIN32_INPUT_RESTORED')
+	assert win32_helper_source.contains('V_MULTIWINDOW_WIN32_INPUT_CLIPBOARD_PASTED')
+	assert win32_helper_source.contains('V_MULTIWINDOW_WIN32_INPUT_TOUCHES_BEGAN')
+	assert win32_helper_source.contains('V_MULTIWINDOW_WIN32_INPUT_TOUCHES_MOVED')
+	assert win32_helper_source.contains('V_MULTIWINDOW_WIN32_INPUT_TOUCHES_ENDED')
+	assert !win32_helper_source.contains('V_MULTIWINDOW_WIN32_INPUT_TOUCHES_CANCELLED')
 	assert win32_helper_source.contains('WM_MOUSEMOVE')
 	assert win32_helper_source.contains('TrackMouseEvent')
 	assert win32_helper_source.contains('WM_MOUSELEAVE')
@@ -1304,6 +1419,9 @@ fn test_win32_input_events_are_queued_and_capability_scoped_source_guard() {
 	assert win32_helper_source.contains('WM_CHAR')
 	assert win32_helper_source.contains('WM_SETFOCUS')
 	assert win32_helper_source.contains('WM_KILLFOCUS')
+	assert win32_helper_source.contains('wparam == SIZE_MINIMIZED')
+	assert win32_helper_source.contains('V_MULTIWINDOW_WIN32_INPUT_ICONIFIED')
+	assert win32_helper_source.contains('V_MULTIWINDOW_WIN32_INPUT_RESTORED')
 	assert win32_helper_source.contains('v_multiwindow_win32_key_code')
 	assert win32_helper_source.contains('v_multiwindow_win32_modifiers')
 	assert win32_helper_source.contains('GetAsyncKeyState(VK_LBUTTON)')
@@ -1317,10 +1435,28 @@ fn test_win32_input_events_are_queued_and_capability_scoped_source_guard() {
 	assert !win32_backend_source.contains('.quit_requested')
 	assert !win32_helper_source.contains('V_MULTIWINDOW_WIN32_INPUT_QUIT_REQUESTED')
 	assert !win32_helper_source.contains('WM_SYSCHAR')
-	assert !win32_helper_source.contains('WM_DROPFILES')
-	assert !win32_helper_source.contains('DragAcceptFiles')
-	assert !win32_helper_source.contains('WM_TOUCH')
-	assert !win32_helper_source.contains('RegisterTouchWindow')
+	assert win32_helper_source.contains('WM_DROPFILES')
+	assert win32_helper_source.contains('DragAcceptFiles')
+	assert win32_helper_source.contains('DragQueryFileW')
+	assert win32_helper_source.contains('DragQueryPoint')
+	assert win32_helper_source.contains('DragFinish')
+	assert win32_helper_source.contains('v_multiwindow_win32_window_drop_begin')
+	assert win32_helper_source.contains('v_multiwindow_win32_window_drop_file')
+	assert win32_helper_source.contains('v_multiwindow_win32_window_drop_end')
+	assert win32_helper_source.contains('WM_TOUCH')
+	assert win32_helper_source.contains('v_multiwindow_win32_register_touch_window')
+	assert win32_helper_source.contains('RegisterTouchWindow')
+	assert win32_helper_source.contains('GetTouchInputInfo')
+	assert win32_helper_source.contains('CloseTouchInputHandle')
+	assert win32_helper_source.contains('ScreenToClient(hwnd, &point)')
+	assert win32_helper_source.contains('changed[out_count] = 1;')
+	assert_source_order(win32_helper_source,
+		'v_multiwindow_win32_get_touch_input_info(handle, count, inputs)',
+		'v_multiwindow_win32_close_touch_input_handle(handle);')
+	assert_source_order(win32_helper_source,
+		'v_multiwindow_win32_close_touch_input_handle(handle);',
+		'v_multiwindow_win32_emit_touch_group(hwnd, data, inputs, count, TOUCHEVENTF_DOWN')
+	assert !win32_helper_source.contains('WM_POINTERCANCEL')
 	assert !win32_helper_source.contains('WM_IME')
 
 	syskey_down_start := win32_helper_source.index('case WM_SYSKEYDOWN:') or {
@@ -1504,13 +1640,48 @@ fn test_appkit_input_events_are_queued_and_capability_scoped_source_guard() {
 	assert appkit_backend_source.contains('keyboard_events:    true')
 	assert appkit_backend_source.contains('text_events:        true')
 	assert appkit_backend_source.contains('focus_events:       true')
-	assert appkit_backend_source.contains('drop_events:        false')
-	assert appkit_backend_source.contains('touch_events:       false')
+	assert appkit_backend_source.contains('drop_events:        true')
+	assert appkit_backend_source.contains('touch_events:       true')
+	assert appkit_backend_source.contains('13 { InputEventKind.iconified }')
+	assert appkit_backend_source.contains('14 { InputEventKind.restored }')
+	assert appkit_backend_source.contains('15 { InputEventKind.clipboard_pasted }')
+	assert appkit_backend_source.contains('16 { InputEventKind.files_dropped }')
+	assert appkit_backend_source.contains('17 { InputEventKind.touches_began }')
+	assert appkit_backend_source.contains('18 { InputEventKind.touches_moved }')
+	assert appkit_backend_source.contains('19 { InputEventKind.touches_ended }')
+	assert appkit_backend_source.contains('20 { InputEventKind.touches_cancelled }')
+	assert appkit_backend_source.contains('dropped_files:      appkit_dropped_files_from_native(native_event)')
+	assert appkit_backend_source.contains('mut touch_count := native_event.touch_count')
+	assert appkit_backend_source.contains('if touch_count > 8')
+	assert appkit_backend_source.contains('mut touches := [8]InputTouchPoint{}')
+	assert appkit_backend_source.contains('num_touches:        touch_count')
+	assert appkit_backend_source.contains('touches:            touches')
+	assert appkit_backend_source.contains('fn appkit_dropped_files_from_native')
+	assert !appkit_backend_source.contains('fn appkit_touch_count')
+	assert !appkit_backend_source.contains('fn appkit_touches_from_native')
+	assert appkit_backend_source.contains('C.v_multiwindow_appkit_release_queued_event_resources')
 
 	assert appkit_header_source.contains('typedef struct VMultiwindowAppKitQueuedEvent')
 	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_INPUT_MOUSE_MOVE')
 	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_INPUT_RESIZED')
+	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_INPUT_ICONIFIED')
+	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_INPUT_RESTORED')
+	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_INPUT_CLIPBOARD_PASTED')
+	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_INPUT_FILES_DROPPED')
+	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_BEGAN')
+	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_MOVED')
+	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_ENDED')
+	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_CANCELLED')
+	assert appkit_header_source.contains('V_MULTIWINDOW_APPKIT_MAX_TOUCH_POINTS 8')
+	assert appkit_header_source.contains('int dropped_file_count;')
+	assert appkit_header_source.contains('char **dropped_files;')
+	assert appkit_header_source.contains('int touch_count;')
+	assert appkit_header_source.contains('uint64_t touch_ids[V_MULTIWINDOW_APPKIT_MAX_TOUCH_POINTS];')
+	assert appkit_header_source.contains('float touch_x[V_MULTIWINDOW_APPKIT_MAX_TOUCH_POINTS];')
+	assert appkit_header_source.contains('float touch_y[V_MULTIWINDOW_APPKIT_MAX_TOUCH_POINTS];')
+	assert appkit_header_source.contains('int touch_changed[V_MULTIWINDOW_APPKIT_MAX_TOUCH_POINTS];')
 	assert appkit_header_source.contains('int v_multiwindow_appkit_take_queued_event')
+	assert appkit_header_source.contains('void v_multiwindow_appkit_release_queued_event_resources')
 	assert !appkit_header_source.contains('v_multiwindow_appkit_take_close_requested')
 	assert !appkit_header_source.contains('v_multiwindow_appkit_take_resized')
 	assert !appkit_header_source.contains('v_multiwindow_appkit_take_destroyed')
@@ -1528,6 +1699,16 @@ fn test_appkit_input_events_are_queued_and_capability_scoped_source_guard() {
 	assert appkit_impl_source.contains('NSTrackingEnabledDuringMouseDrag')
 	assert appkit_impl_source.contains('windowDidBecomeKey')
 	assert appkit_impl_source.contains('windowDidResignKey')
+	assert appkit_impl_source.contains('windowDidMiniaturize')
+	assert appkit_impl_source.contains('windowDidDeminiaturize')
+	assert appkit_impl_source.contains('V_MULTIWINDOW_APPKIT_INPUT_ICONIFIED')
+	assert appkit_impl_source.contains('V_MULTIWINDOW_APPKIT_INPUT_RESTORED')
+	assert appkit_impl_source.contains('V_MULTIWINDOW_APPKIT_INPUT_CLIPBOARD_PASTED')
+	assert appkit_impl_source.contains('V_MULTIWINDOW_APPKIT_INPUT_FILES_DROPPED')
+	assert appkit_impl_source.contains('V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_BEGAN')
+	assert appkit_impl_source.contains('V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_MOVED')
+	assert appkit_impl_source.contains('V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_ENDED')
+	assert appkit_impl_source.contains('V_MULTIWINDOW_APPKIT_INPUT_TOUCHES_CANCELLED')
 	assert appkit_impl_source.contains('clearKeyDownState')
 	assert appkit_impl_source.contains('windowShouldClose')
 	assert appkit_impl_source.contains('queueResizeEvents')
@@ -1553,6 +1734,27 @@ fn test_appkit_input_events_are_queued_and_capability_scoped_source_guard() {
 	assert appkit_impl_source.contains('keyDown:')
 	assert appkit_impl_source.contains('keyUp:')
 	assert appkit_impl_source.contains('flagsChanged:')
+	assert appkit_impl_source.contains('NSDraggingDestination')
+	assert appkit_impl_source.contains('registerForDraggedTypes')
+	assert appkit_impl_source.contains('NSPasteboardTypeFileURL')
+	assert appkit_impl_source.contains('performDragOperation')
+	assert appkit_impl_source.contains('readObjectsForClasses:@[ NSURL.class ]')
+	assert appkit_impl_source.contains('dropped_files')
+	assert appkit_impl_source.contains('v_multiwindow_appkit_release_queued_event_resources')
+	assert appkit_impl_source.contains('view.acceptsTouchEvents = YES;')
+	assert appkit_impl_source.contains('touchesBeganWithEvent:')
+	assert appkit_impl_source.contains('touchesMovedWithEvent:')
+	assert appkit_impl_source.contains('touchesEndedWithEvent:')
+	assert appkit_impl_source.contains('touchesCancelledWithEvent:')
+	assert appkit_impl_source.contains('touchesMatchingPhase:NSTouchPhaseAny inView:view')
+	assert appkit_impl_source.contains('NSTouchPhaseBegan')
+	assert appkit_impl_source.contains('NSTouchPhaseMoved')
+	assert appkit_impl_source.contains('NSTouchPhaseEnded')
+	assert appkit_impl_source.contains('NSTouchPhaseCancelled')
+	assert appkit_impl_source.contains('v_multiwindow_appkit_touch_sets_share_identity')
+	assert appkit_impl_source.contains('v_multiwindow_appkit_fill_touch_point')
+	assert appkit_impl_source.contains('touch.normalizedPosition')
+	assert appkit_impl_source.contains('event->touch_changed[index] = changed ? 1 : 0;')
 	assert appkit_impl_source.contains('#include <IOKit/hidsystem/IOLLEvent.h>')
 	assert appkit_impl_source.contains('v_multiwindow_appkit_modifier_flag_for_key_code')
 	assert appkit_impl_source.contains('v_multiwindow_appkit_modifier_key_is_pressed')
@@ -1584,9 +1786,6 @@ fn test_appkit_input_events_are_queued_and_capability_scoped_source_guard() {
 	assert appkit_impl_source.contains('event.characters')
 	assert appkit_impl_source.contains('v_multiwindow_appkit_keycodes')
 	assert !appkit_impl_source.contains('nextKeyDownStateForKeyCode')
-	assert !appkit_impl_source.contains('NSDraggingDestination')
-	assert !appkit_impl_source.contains('registerForDraggedTypes')
-	assert !appkit_impl_source.contains('touchesBegan')
 }
 
 fn test_appkit_macos_cgen_emits_record_and_literal_input_mapping() {
@@ -1889,7 +2088,7 @@ fn test_x11_backend_native_deps_are_flag_gated_source_guard() {
 		'#include <X11/Xlib.h>')
 }
 
-fn test_x11_input_support_is_queued_without_claiming_text_source_guard() {
+fn test_x11_input_support_queues_key_char_and_focus_source_guard() {
 	backend_source := multiwindow_source_file('backend.v')
 	x11_backend_source := multiwindow_source_file('x11_backend.c.v')
 	x11_helper_source := multiwindow_source_file('x11_egl_backend_helpers.h')
@@ -1898,26 +2097,78 @@ fn test_x11_input_support_is_queued_without_claiming_text_source_guard() {
 	assert x11_backend_source.contains('input_events:       true')
 	assert x11_backend_source.contains('mouse_events:       true')
 	assert x11_backend_source.contains('keyboard_events:    true')
-	assert x11_backend_source.contains('text_events:        false')
+	assert x11_backend_source.contains('text_events:        true')
 	assert x11_backend_source.contains('focus_events:       true')
-	assert x11_backend_source.contains('drop_events:        false')
+	assert x11_backend_source.contains('drop_events:        true')
 	assert x11_backend_source.contains('touch_events:       false')
+	assert x11_backend_source.contains('.clipboard_pasted')
+	assert x11_backend_source.contains('x11_is_clipboard_paste')
+	assert x11_backend_source.contains('const x11_modifier_ctrl = u32(2)')
+	assert x11_backend_source.contains('const x11_key_v = 86')
+	for required_xdnd in ['XdndAware', 'XdndEnter', 'XdndPosition', 'XdndStatus', 'XdndActionCopy',
+		'XdndDrop', 'XdndLeave', 'XdndFinished', 'XdndSelection', 'XdndTypeList', 'text/uri-list'] {
+		assert x11_backend_source.contains(required_xdnd)
+	}
+	assert x11_backend_source.contains('announce_xdnd_for_window')
+	assert x11_backend_source.contains('C.XChangeProperty')
+	assert x11_backend_source.contains('C.XConvertSelection')
+	assert x11_backend_source.contains('C.XSendEvent')
+	assert x11_backend_source.contains('C.XFilterEvent(&event, X11NativeWindow(0))')
+	assert_source_order(x11_backend_source, 'C.XNextEvent(backend.display, &event)',
+		'C.XFilterEvent(&event, X11NativeWindow(0))')
+	assert_source_order(x11_backend_source, 'C.XFilterEvent(&event, X11NativeWindow(0))',
+		'event_type := unsafe { event.@type }')
+	assert x11_backend_source.contains('queued_xdnd_client_message_events')
+	assert x11_backend_source.contains('queued_xdnd_selection_events')
+	assert x11_backend_source.contains('send_xdnd_status')
+	assert x11_backend_source.contains('send_xdnd_finished')
+	assert x11_backend_source.contains('.files_dropped')
+	assert x11_backend_source.contains('dropped_files_from_uri_list(payload)')
+	assert x11_backend_source.contains('valid_payload := actual_type == backend.text_uri_list && actual_format == 8')
 	assert x11_backend_source.contains('fn (mut backend X11Backend) poll_queued_events')
 	assert x11_backend_source.contains('queued_input_event')
 	assert x11_backend_source.contains('C.v_multiwindow_x11_is_notify_grab_or_ungrab')
 	assert x11_backend_source.contains('queued_key_press_event')
 	assert x11_backend_source.contains('queued_key_release_event')
+	assert_source_order(x11_backend_source, 'events << queued_input_event(input)',
+		'events << queued_input_event(backend.input_char_event')
+	assert x11_backend_source.contains('fn (backend &X11Backend) input_char_event')
+	assert x11_backend_source.contains('C.v_multiwindow_x11_char_codes(backend.windows[index].xic, event,')
+	key_press_body :=
+		x11_backend_source.all_after('fn (mut backend X11Backend) queued_key_press_event').all_before('fn (mut backend X11Backend) queued_key_release_event')
+	assert !key_press_body.contains('if key_code == 0 {\n\t\t\treturn events\n\t\t}')
+	assert key_press_body.contains('if key_code != 0 {')
+	assert key_press_body.contains('for i in 0 .. char_count')
+	assert_source_order(x11_backend_source, 'events << queued_input_event(input)',
+		'.clipboard_pasted')
+	assert_source_order(x11_backend_source, '.clipboard_pasted',
+		'events << queued_input_event(backend.input_char_event')
 	assert x11_backend_source.contains('queued_button_press_event')
 	assert x11_backend_source.contains('queued_button_release_event')
 	assert x11_backend_source.contains('queued_mouse_position_event')
 	assert x11_backend_source.contains('mouse_buttons')
+	assert x11_backend_source.contains('wm_state')
+	assert x11_backend_source.contains('window_state')
+	assert x11_backend_source.contains('x11_property_notify')
+	assert x11_backend_source.contains('C.v_multiwindow_x11_property_atom')
+	assert x11_backend_source.contains('C.v_multiwindow_x11_property_state')
+	assert x11_backend_source.contains('x11_property_new_value')
+	assert x11_backend_source.contains('x11_iconic_state')
+	assert x11_backend_source.contains('.iconified')
+	assert x11_backend_source.contains('x11_normal_state')
+	assert x11_backend_source.contains('.restored')
+	assert x11_backend_source.contains('fn (backend &X11Backend) window_state(window X11NativeWindow) int')
+	assert x11_backend_source.contains('C.XGetWindowProperty')
+	assert x11_backend_source.contains('C.XFree')
 
 	for required_mask in ['StructureNotifyMask', 'KeyPressMask', 'KeyReleaseMask',
 		'PointerMotionMask', 'ButtonPressMask', 'ButtonReleaseMask', 'FocusChangeMask',
-		'EnterWindowMask', 'LeaveWindowMask'] {
+		'EnterWindowMask', 'LeaveWindowMask', 'PropertyChangeMask'] {
 		assert x11_helper_source.contains(required_mask)
 	}
-	assert !x11_helper_source.contains('PropertyChangeMask')
+	assert x11_helper_source.contains('PropertyNotify')
+	assert x11_helper_source.contains('v_multiwindow_x11_property_atom')
+	assert x11_helper_source.contains('v_multiwindow_x11_property_state')
 	assert x11_helper_source.contains('v_multiwindow_x11_event_window')
 	assert x11_helper_source.contains('v_multiwindow_x11_modifiers')
 	assert x11_helper_source.contains('Button1Mask')
@@ -1925,7 +2176,27 @@ fn test_x11_input_support_is_queued_without_claiming_text_source_guard() {
 	assert x11_helper_source.contains('Button3Mask')
 	assert x11_helper_source.contains('v_multiwindow_x11_key_code')
 	assert x11_helper_source.contains('XLookupKeysym')
+	assert x11_helper_source.contains('v_multiwindow_x11_open_im')
+	assert x11_helper_source.contains('XSetLocaleModifiers')
+	assert x11_helper_source.contains('XOpenIM')
+	assert x11_helper_source.contains('v_multiwindow_x11_create_ic')
+	assert x11_helper_source.contains('XCreateIC')
+	assert x11_helper_source.contains('XNInputStyle')
+	assert x11_helper_source.contains('XIMPreeditNothing | XIMStatusNothing')
+	assert x11_helper_source.contains('v_multiwindow_x11_destroy_ic')
+	assert x11_helper_source.contains('XDestroyIC')
+	assert x11_helper_source.contains('v_multiwindow_x11_set_ic_focus')
+	assert x11_helper_source.contains('XSetICFocus')
+	assert x11_helper_source.contains('v_multiwindow_x11_unset_ic_focus')
+	assert x11_helper_source.contains('XUnsetICFocus')
+	assert x11_helper_source.contains('v_multiwindow_x11_char_codes')
+	assert x11_helper_source.contains('Xutf8LookupString')
+	assert x11_helper_source.contains('XBufferOverflow')
+	assert x11_helper_source.contains('char buf[128]')
+	assert x11_helper_source.contains('v_multiwindow_x11_utf8_decode_next')
+	assert !x11_helper_source.contains('v_multiwindow_x11_utf8_decode_one')
 	assert !x11_helper_source.contains('XLookupString')
+	assert !x11_helper_source.contains('v_multiwindow_x11_keysym_to_unicode')
 }
 
 fn test_x11_config_hints_are_applied_before_mapping() {
@@ -2019,7 +2290,7 @@ fn test_wayland_initial_size_is_clamped_before_mapping() {
 		'C.wl_surface_commit(surface)')
 }
 
-fn test_wayland_input_support_is_queued_without_claiming_text_drop_touch_source_guard() {
+fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 	backend_source := multiwindow_source_file('backend.v')
 	wayland_source := multiwindow_source_file('wayland_backend.c.v')
 	wayland_helper_source := multiwindow_source_file('wayland_backend_helpers.h')
@@ -2038,36 +2309,124 @@ fn test_wayland_input_support_is_queued_without_claiming_text_drop_touch_source_
 	assert wayland_source.contains('input_events:       true')
 	assert wayland_source.contains('mouse_events:       true')
 	assert wayland_source.contains('keyboard_events:    true')
-	assert wayland_source.contains('text_events:        false')
+	assert wayland_source.contains('text_events:        true')
 	assert wayland_source.contains('focus_events:       true')
-	assert wayland_source.contains('drop_events:        false')
-	assert wayland_source.contains('touch_events:       false')
+	assert wayland_source.contains('drop_events:        true')
+	assert wayland_source.contains('touch_events:       true')
+	assert wayland_source.contains('xkb_context_new')
+	assert wayland_source.contains('xkb_keymap_new_from_string')
+	assert wayland_source.contains('xkb_state_new')
+	assert wayland_source.contains('xkb_state_update_mask')
+	assert wayland_source.contains('xkb_state_key_get_utf8')
+	assert wayland_source.contains('wayland_keyboard_keymap')
+	assert wayland_source.contains('record.input_char_event')
+	assert wayland_source.contains('.clipboard_pasted')
+	assert wayland_source.contains('wayland_is_clipboard_paste')
+	assert wayland_source.contains('const wayland_key_v = 86')
+	assert_source_order(wayland_source, 'queued_input_event(input))', '.clipboard_pasted')
+	assert_source_order(wayland_source, '.clipboard_pasted', 'record.input_char_event')
+	for required_wayland_drop in ['wl_data_device_manager', 'wl_data_device', 'wl_data_offer',
+		'v_multiwindow_wayland_bind_data_device_manager',
+		'v_multiwindow_wayland_data_device_manager_get_data_device',
+		'v_multiwindow_wayland_add_data_device_listener',
+		'v_multiwindow_wayland_add_data_offer_listener', 'v_multiwindow_wayland_data_offer_accept',
+		'v_multiwindow_wayland_data_offer_set_copy_action',
+		'v_multiwindow_wayland_data_offer_receive', 'v_multiwindow_wayland_data_offer_finish',
+		'v_multiwindow_wayland_data_offer_destroy', 'v_multiwindow_wayland_data_device_destroy',
+		'v_multiwindow_wayland_data_device_manager_destroy'] {
+		assert wayland_source.contains(required_wayland_drop)
+			|| wayland_helper_source.contains(required_wayland_drop)
+	}
+	assert wayland_source.contains('wayland_data_offer_offer')
+	assert wayland_source.contains('wayland_data_offer_source_actions')
+	assert wayland_source.contains('backend.data_offer_source_actions = source_actions')
+	assert wayland_source.contains('backend.pending_drop_source_actions = source_actions')
+	assert wayland_source.contains('wayland_data_offer_action')
+	assert wayland_source.contains('backend.data_offer_selected_action = dnd_action')
+	assert wayland_source.contains('backend.data_offer_action_received = true')
+	assert wayland_source.contains('backend.pending_drop_selected_action = dnd_action')
+	assert wayland_source.contains('backend.pending_drop_action_received = true')
+	assert wayland_source.contains('wayland_data_device_drop')
+	assert !wayland_source.contains('read_data_offer_uri_list')
+	assert wayland_source.contains('begin_pending_data_offer_drop')
+	assert wayland_source.contains('drain_pending_data_offer_drop')
+	assert wayland_source.contains('finish_pending_data_offer_drop')
+	assert wayland_source.contains('wayland_dnd_action_allows_finish')
+	assert wayland_source.contains('source_actions != wayland_dnd_action_none')
+	assert wayland_source.contains('(source_actions & action) == 0')
+	assert wayland_source.contains('wayland_dnd_action_copy')
+	assert wayland_source.contains('wayland_dnd_action_move')
+	assert wayland_source.contains('pending_drop_offer')
+	assert wayland_source.contains('pending_drop_fd')
+	assert wayland_source.contains('pending_drop_buffer')
+	assert wayland_source.contains('C.v_multiwindow_wayland_fd_set_nonblocking')
+	assert wayland_source.contains('C.v_multiwindow_wayland_read_would_block')
+	assert wayland_source.contains('C.poll(&poll_fd, u64(1), 0)')
+	assert wayland_source.contains('for _ in 0 .. wayland_data_offer_max_read_chunks')
+	assert wayland_source.contains('backend.drain_pending_data_offer_drop()')
+	assert_source_order(wayland_source, 'backend.dispatch_pending_nonblocking()!',
+		'backend.drain_pending_data_offer_drop()')
+	assert wayland_source.contains('.files_dropped')
+	assert wayland_source.contains('dropped_files_from_uri_list(payload)')
+	drop_callback_start := wayland_source.index('fn wayland_data_device_drop(data voidptr, device voidptr)') or {
+		assert false, 'Wayland data-device drop callback is missing'
+		0
+	}
+	drop_callback_body :=
+		wayland_source[drop_callback_start..].all_before("@[export: 'v_multiwindow_wayland_data_device_selection']")
+	assert !drop_callback_body.contains('C.read(')
+	assert !drop_callback_body.contains('dropped_files_from_uri_list(payload)')
+	assert !drop_callback_body.contains('v_multiwindow_wayland_data_offer_finish')
+	assert drop_callback_body.contains('backend.data_offer_allows_finish()')
+	assert drop_callback_body.contains('backend.begin_pending_data_offer_drop()')
+	finish_body := wayland_source.all_after('fn (mut backend WaylandBackend) finish_pending_data_offer_drop()')
+		.all_before('fn (mut backend WaylandBackend) destroy_data_device()')
+	assert_source_order(finish_body, 'backend.pending_drop_allows_finish()',
+		'C.v_multiwindow_wayland_data_offer_finish')
+	assert finish_body.contains('if should_finish {')
+	assert finish_body.contains('backend.clear_data_offer(true)')
+	assert wayland_helper_source.contains('#include <fcntl.h>')
+	assert wayland_helper_source.contains('#include <errno.h>')
+	assert wayland_helper_source.contains('v_multiwindow_wayland_fd_set_nonblocking')
+	assert !wayland_helper_source.contains('v_multiwindow_wayland_set_nonblocking')
+	assert wayland_helper_source.contains('O_NONBLOCK')
+	assert wayland_helper_source.contains('v_multiwindow_wayland_read_would_block')
+	assert wayland_helper_source.contains('EAGAIN')
+	assert wayland_helper_source.contains('EWOULDBLOCK')
 
 	has_surface_routing := wayland_source.contains('window_record_index_for_surface')
 		|| wayland_source.contains('window_record_index_for_native_surface')
 		|| wayland_source.contains('record_index_for_surface')
 	assert has_surface_routing
-	assert wayland_source.contains('pointer_focus      WindowId')
-	assert wayland_source.contains('keyboard_focus     WindowId')
+	assert wayland_source.contains('pointer_focus')
+	assert wayland_source.contains('keyboard_focus')
+	assert wayland_source.contains('WindowId')
 	assert !wayland_source.contains('pointer_surface')
 	assert !wayland_source.contains('keyboard_surface')
 
 	assert wayland_helper_source.contains('wl_seat_listener')
 	assert wayland_helper_source.contains('wl_pointer_listener')
 	assert wayland_helper_source.contains('wl_keyboard_listener')
+	assert wayland_helper_source.contains('wl_touch_listener')
 	assert wayland_helper_source.contains('wl_fixed_to_double')
+	assert wayland_helper_source.contains('v_multiwindow_wayland_pointer_frame_trampoline')
+	assert wayland_helper_source.contains('v_multiwindow_wayland_keyboard_repeat_info_trampoline')
 	assert wayland_helper_source.contains('wl_seat_get_pointer')
 	assert wayland_helper_source.contains('wl_seat_get_keyboard')
+	assert wayland_helper_source.contains('wl_seat_get_touch')
 	uses_protocol_release := wayland_helper_source.contains('wl_pointer_release')
 		|| wayland_helper_source.contains('WL_POINTER_RELEASE')
 	if uses_protocol_release {
 		assert wayland_helper_source.contains('wl_keyboard_release')
 			|| wayland_helper_source.contains('WL_KEYBOARD_RELEASE')
+		assert wayland_helper_source.contains('wl_touch_release')
+			|| wayland_helper_source.contains('WL_TOUCH_RELEASE')
 		assert wayland_helper_source.contains('wl_seat_release')
 			|| wayland_helper_source.contains('WL_SEAT_RELEASE')
 	} else {
 		assert wayland_helper_source.contains('wl_pointer_destroy')
 		assert wayland_helper_source.contains('wl_keyboard_destroy')
+		assert wayland_helper_source.contains('wl_touch_destroy')
 		assert wayland_helper_source.contains('wl_seat_destroy')
 	}
 
@@ -2078,6 +2437,14 @@ fn test_wayland_input_support_is_queued_without_claiming_text_drop_touch_source_
 	assert wayland_source.contains('341, 345 { wayland_modifier_ctrl }')
 	assert wayland_source.contains('342, 346 { wayland_modifier_alt }')
 	assert wayland_source.contains('343, 347 { wayland_modifier_super }')
+	assert wayland_source.contains('touch_slot_for_down')
+	assert wayland_source.contains('touch_slot_for_id')
+	assert wayland_source.contains('touch_event_for_record')
+	assert wayland_source.contains('touch_cancel_event_for_record')
+	assert wayland_source.contains('.touches_began')
+	assert wayland_source.contains('.touches_moved')
+	assert wayland_source.contains('.touches_ended')
+	assert wayland_source.contains('.touches_cancelled')
 	assert wayland_source.contains('42 { 340 }')
 	assert wayland_source.contains('54 { 344 }')
 	assert wayland_source.contains('29 { 341 }')
@@ -2095,7 +2462,7 @@ fn test_wayland_registry_global_remove_and_optional_callbacks_are_guarded_source
 		|| wayland_source.contains('xdg_wm_base_name')
 	has_seat_name := wayland_source.contains('seat_global_name')
 		|| wayland_source.contains('seat_registry_name')
-		|| wayland_source.contains('seat_name          u32')
+		|| (wayland_source.contains('seat_name') && wayland_source.contains('u32'))
 	assert has_compositor_name
 	assert has_wm_base_name
 	assert has_seat_name
@@ -2156,8 +2523,14 @@ fn test_wayland_registry_global_remove_and_optional_callbacks_are_guarded_source
 	assert wayland_helper_source.contains('v_multiwindow_wayland_keyboard_keymap_trampoline')
 	keymap_body :=
 		wayland_helper_source.all_after('v_multiwindow_wayland_keyboard_keymap_trampoline').all_before('static void v_multiwindow_wayland_keyboard_enter_trampoline')
-	assert keymap_body.contains('close(fd);')
-	assert !wayland_source.contains("@[export: 'v_multiwindow_wayland_keyboard_keymap']")
+	assert keymap_body.contains('v_multiwindow_wayland_keyboard_keymap(data, (void *)keyboard, format, fd, size);')
+	assert !keymap_body.contains('close(fd);')
+	assert wayland_source.contains("@[export: 'v_multiwindow_wayland_keyboard_keymap']")
+	wayland_keymap_body :=
+		wayland_source.all_after('fn wayland_keyboard_keymap(data voidptr, keyboard voidptr, format u32, fd int, size u32)').all_before("@[export: 'v_multiwindow_wayland_keyboard_key']")
+	assert wayland_keymap_body.contains('C.close(fd)')
+	assert wayland_keymap_body.contains('C.mmap')
+	assert wayland_keymap_body.contains('C.munmap')
 }
 
 fn test_multiwindow_events_do_not_add_second_opt_in_source_guard() {
@@ -2442,6 +2815,128 @@ fn test_lifecycle_and_registry_reads_work_from_foreign_thread() {
 	t.wait()
 	assert msg == 'ok'
 	app.stop()!
+}
+
+fn all_input_event_kinds_for_test() []InputEventKind {
+	return [
+		InputEventKind.invalid,
+		.key_down,
+		.key_up,
+		.char,
+		.mouse_down,
+		.mouse_up,
+		.mouse_scroll,
+		.mouse_move,
+		.mouse_enter,
+		.mouse_leave,
+		.touches_began,
+		.touches_moved,
+		.touches_ended,
+		.touches_cancelled,
+		.resized,
+		.iconified,
+		.restored,
+		.focused,
+		.unfocused,
+		.suspended,
+		.resumed,
+		.quit_requested,
+		.clipboard_pasted,
+		.files_dropped,
+	]
+}
+
+fn input_event_for_kind_for_test(win WindowId, kind InputEventKind, frame_count u64) InputEvent {
+	mut touches := [8]InputTouchPoint{}
+	touches[0] = InputTouchPoint{
+		identifier:       7
+		pos_x:            11.5
+		pos_y:            12.5
+		android_tooltype: 1
+		changed:          true
+	}
+	touches[1] = InputTouchPoint{
+		identifier:       8
+		pos_x:            21.5
+		pos_y:            22.5
+		android_tooltype: 2
+		changed:          false
+	}
+	dropped_files := if kind == .files_dropped {
+		['/tmp/a.txt', '/tmp/b.txt']
+	} else {
+		[]string{}
+	}
+	return InputEvent{
+		kind:               kind
+		window_id:          win
+		frame_count:        frame_count
+		key_code:           65
+		char_code:          u32(0xe9)
+		key_repeat:         true
+		modifiers:          0x105
+		mouse_button:       2
+		mouse_x:            40.5
+		mouse_y:            41.5
+		mouse_dx:           -2.25
+		mouse_dy:           3.5
+		scroll_x:           -1.25
+		scroll_y:           2.5
+		num_touches:        2
+		touches:            touches
+		window_width:       640
+		window_height:      360
+		framebuffer_width:  1280
+		framebuffer_height: 720
+		dropped_files:      dropped_files
+	}
+}
+
+fn assert_input_event_roundtrip(actual InputEvent, expected InputEvent) {
+	assert actual.kind == expected.kind
+	assert actual.window_id == expected.window_id
+	assert actual.frame_count == expected.frame_count
+	assert actual.key_code == expected.key_code
+	assert actual.char_code == expected.char_code
+	assert actual.key_repeat == expected.key_repeat
+	assert actual.modifiers == expected.modifiers
+	assert actual.mouse_button == expected.mouse_button
+	assert actual.mouse_x == expected.mouse_x
+	assert actual.mouse_y == expected.mouse_y
+	assert actual.mouse_dx == expected.mouse_dx
+	assert actual.mouse_dy == expected.mouse_dy
+	assert actual.scroll_x == expected.scroll_x
+	assert actual.scroll_y == expected.scroll_y
+	assert actual.num_touches == expected.num_touches
+	for i in 0 .. actual.num_touches {
+		assert actual.touches[i].identifier == expected.touches[i].identifier
+		assert actual.touches[i].pos_x == expected.touches[i].pos_x
+		assert actual.touches[i].pos_y == expected.touches[i].pos_y
+		assert actual.touches[i].android_tooltype == expected.touches[i].android_tooltype
+		assert actual.touches[i].changed == expected.touches[i].changed
+	}
+	assert actual.window_width == expected.window_width
+	assert actual.window_height == expected.window_height
+	assert actual.framebuffer_width == expected.framebuffer_width
+	assert actual.framebuffer_height == expected.framebuffer_height
+	assert actual.dropped_files == expected.dropped_files
+}
+
+fn assert_input_event_kind_list_matches_types_source(kinds []InputEventKind) {
+	source := multiwindow_source_file('types.v')
+	enum_body := source.all_after('pub enum InputEventKind {').all_before('}')
+	mut declared := []string{}
+	for line in enum_body.split_into_lines() {
+		name := line.trim_space()
+		if name == '' || name.starts_with('//') {
+			continue
+		}
+		declared << name
+	}
+	assert declared.len == kinds.len
+	for i, kind in kinds {
+		assert declared[i] == kind.str()
+	}
 }
 
 fn multiwindow_dump_c_flags(label string, flags string) string {

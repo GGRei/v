@@ -168,22 +168,51 @@ Backend events for stale or already-destroyed window handles are filtered.
 
 `InputEvent` is the low-level backend-neutral payload used by the `gg` facade to
 rebuild `gg.Event` for a specific window. Input kinds include key down/up, char,
-mouse down/up/move/scroll/enter/leave, resize, focus/unfocus, clipboard paste,
-file drop, and touch families. Backends report which families are implemented
-through the capability booleans above; unsupported input classes must remain
-false rather than being partially emulated.
+mouse down/up/move/scroll/enter/leave, resize, iconified/restored,
+focus/unfocus, clipboard paste, file drop, and touch families. Backends report
+which families are implemented through the capability booleans above;
+unsupported input classes must remain false rather than being partially
+emulated.
+
+Native input events that do not already carry a frame counter are stamped by
+`App.poll_events()`; all input events accepted in the same poll cycle share that
+`frame_count`. Mock/test events can provide an explicit non-zero `frame_count`,
+which is preserved.
 
 Current native input support is intentionally capability-scoped:
 
 - Mock can synthesize every input family for deterministic tests.
-- Win32 routes mouse, keyboard, text/char, focus and resize input events.
-- AppKit routes mouse, keyboard, text/char, focus and resize input events.
-- X11 routes mouse, keyboard, focus and resize input events; text is false until
-  robust text/IME handling is implemented.
-- Wayland routes pointer, keyboard, focus and resize input events; text is false
-  until xkb/text handling is implemented.
-- Native drop, clipboard and touch input are false unless a backend explicitly
-  reports the corresponding capability.
+- Win32 routes mouse, keyboard, text/char, focus, resize, iconified/restored,
+  clipboard paste signals, file drops via `WM_DROPFILES`, and `WM_TOUCH`
+  down/move/up touch input. `WM_TOUCH` handles are read and closed in the
+  window procedure; `WM_TOUCH` does not expose a cancelled state, so
+  `touches_cancelled` is not emitted by the Win32 backend unless a future
+  Pointer Input path owns `POINTER_FLAG_CANCELED`.
+- AppKit routes mouse, keyboard, text/char, focus, resize, iconified/restored,
+  clipboard paste signals, and file drops through `NSDraggingDestination` file
+  URLs. It also routes AppKit `NSResponder` touch phases; positions come from
+  `NSTouch.normalizedPosition` mapped into the current framebuffer, with
+  `touches_cancelled` emitted only for `touchesCancelledWithEvent:`.
+- X11 routes mouse, keyboard, text/char, focus, resize, iconified/restored, and
+  clipboard paste signal input events. Text uses Xlib XIM/XIC with
+  `Xutf8LookupString`; this covers committed UTF-8 text from the active input
+  method without exposing Xlib objects through the public API.
+- X11 receives file drops with XDND `text/uri-list` selection conversion. It
+  decodes local `file://` URIs and queues `.files_dropped` with routed
+  `dropped_files`.
+- Wayland routes pointer, keyboard, text/char through xkb keymap/state, touch,
+  focus, clipboard paste signal, file drops through
+  `wl_data_device`/`wl_data_offer` `text/uri-list`, and resize input events.
+  Data-offer payloads are received through a non-blocking fd and drained from
+  the owner poll path; the backend only sends `wl_data_offer.finish` after a
+  valid `copy` or `move` action has been received.
+  Wayland text follows the existing `sapp` `xkb_state_key_get_utf8` model for
+  key presses; full IME/composed text is not implemented. Wayland key-repeat
+  timers and pointer frame batching are not synthesized yet; event callbacks are
+  routed as the compositor delivers them.
+- Native drop and touch input are false unless a backend explicitly reports the
+  corresponding capability. Clipboard paste is an input signal; clipboard
+  contents are not stored on `InputEvent`.
 
 `QueuedEvent` is the ordered queue entry used when lifecycle and input events
 must be consumed as a single stream. Its `kind` field tells whether the entry
