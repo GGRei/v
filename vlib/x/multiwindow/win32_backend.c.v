@@ -62,6 +62,7 @@ $if windows {
 	fn C.v_multiwindow_win32_create_window(title &u16, width int, height int, min_width int, min_height int, resizable int, borderless int, fullscreen int, visible int, data voidptr) voidptr
 	fn C.v_multiwindow_win32_destroy_window(hwnd voidptr) int
 	fn C.v_multiwindow_win32_set_window_text(hwnd voidptr, title &u16) int
+	fn C.v_multiwindow_win32_set_cursor_shape(hwnd voidptr, shape int) int
 	fn C.v_multiwindow_win32_set_client_size(hwnd voidptr, width int, height int, min_width int, min_height int, resizable int, borderless int, fullscreen int) int
 	fn C.v_multiwindow_win32_client_width(hwnd voidptr) int
 	fn C.v_multiwindow_win32_client_height(hwnd voidptr) int
@@ -287,7 +288,7 @@ $if windows {
 			return
 		}
 		mut record := unsafe { &Win32WindowRecord(data) }
-		record.pending_dropped_files << unsafe { cstring_to_vstring(path) }
+		record.pending_dropped_files << unsafe { tos_clone(&u8(path)) }
 	}
 
 	@[export: 'v_multiwindow_win32_window_drop_end']
@@ -533,6 +534,8 @@ fn (backend &Win32Backend) capabilities() Capabilities {
 		focus_events:       true
 		drop_events:        true
 		touch_events:       true
+		cursor_shapes:      true
+		native_decorations: true
 	}
 }
 
@@ -674,6 +677,24 @@ fn (mut backend Win32Backend) resize_window(id WindowId, width int, height int) 
 		_ = id
 		_ = width
 		_ = height
+		return error(err_backend_unsupported)
+	}
+}
+
+fn (mut backend Win32Backend) set_window_cursor(id WindowId, shape CursorShape) ! {
+	$if windows {
+		index := backend.window_record_index(id) or { return error(err_window_not_found) }
+		record := backend.windows[index]
+		if record.hwnd == unsafe { nil } {
+			return error(err_window_not_found)
+		}
+		if C.v_multiwindow_win32_set_cursor_shape(record.hwnd, int(shape)) == 0 {
+			return error(err_capability_unsupported)
+		}
+		return
+	} $else {
+		_ = id
+		_ = shape
 		return error(err_backend_unsupported)
 	}
 }

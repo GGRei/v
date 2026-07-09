@@ -63,6 +63,12 @@ fn (mut backend MockBackend) resize_window(id WindowId, width int, height int) !
 	return actual_size
 }
 
+fn (mut backend MockBackend) set_window_cursor(id WindowId, shape CursorShape) ! {
+	_ = shape
+	backend.window_record_index(id) or { return error(err_window_not_found) }
+	return error(err_capability_unsupported)
+}
+
 fn (mut backend MockBackend) poll_events() ![]Event {
 	mut lifecycle_events := []Event{cap: backend.pending_events.len}
 	mut remaining_events := []QueuedEvent{cap: backend.pending_events.len}

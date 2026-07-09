@@ -153,6 +153,59 @@ fn test_resize_window_uses_actual_backend_size_for_state_and_event() {
 	app.stop()!
 }
 
+fn test_interactive_move_resize_api_exists_and_mock_reports_unsupported() {
+	mut app := new_app()!
+	win := app.create_window(title: 'Interactive mock')!
+
+	mut move_rejected := false
+	app.begin_window_move(win) or {
+		assert err.msg() == err_capability_unsupported
+		move_rejected = true
+	}
+	assert move_rejected, 'mock backend accepted interactive move'
+
+	edges := [
+		WindowResizeEdge.top,
+		.bottom,
+		.left,
+		.right,
+		.top_left,
+		.top_right,
+		.bottom_left,
+		.bottom_right,
+	]
+	for edge in edges {
+		mut resize_rejected := false
+		app.begin_window_resize(win, edge) or {
+			assert err.msg() == err_capability_unsupported
+			resize_rejected = true
+		}
+		assert resize_rejected, 'mock backend accepted interactive resize edge ${edge}'
+	}
+
+	fixed := app.create_window(title: 'Fixed', resizable: false)!
+	mut fixed_resize_rejected := false
+	app.begin_window_resize(fixed, .bottom_right) or {
+		assert err.msg() == err_capability_unsupported
+		fixed_resize_rejected = true
+	}
+	assert fixed_resize_rejected, 'non-resizable window accepted interactive resize'
+	app.stop()!
+}
+
+fn test_cursor_shape_api_exists_and_mock_reports_unsupported() {
+	mut app := new_app()!
+	assert !app.capabilities().cursor_shapes
+	win := app.create_window(title: 'Cursor mock')!
+	mut cursor_rejected := false
+	app.set_window_cursor(win, .pointer) or {
+		assert err.msg() == err_capability_unsupported
+		cursor_rejected = true
+	}
+	assert cursor_rejected, 'mock backend accepted cursor shape'
+	app.stop()!
+}
+
 fn test_create_window_uses_actual_backend_initial_size_for_state_and_event() {
 	mut app := new_app()!
 	win := app.create_window(
@@ -904,6 +957,13 @@ fn test_capabilities_for_config_render_required_prefers_x11_over_wayland() {
 			}
 		} $else {
 			$if darwin {
+				if !multiwindow_render_enabled() {
+					capabilities_for_config(backend: .auto, require_renderer: true) or {
+						assert err.msg() == err_renderer_unsupported
+						return
+					}
+					assert false, 'appkit render capability succeeded without a render-enabled build'
+				}
 				$if darwin_sokol_glcore33 ? {
 					capabilities_for_config(backend: .auto, require_renderer: true) or {
 						assert err.msg() == err_renderer_unsupported
@@ -982,6 +1042,7 @@ fn assert_x11_input_capabilities(caps Capabilities) {
 	assert caps.focus_events
 	assert caps.drop_events
 	assert !caps.touch_events
+	assert caps.cursor_shapes
 }
 
 fn assert_wayland_input_capabilities(caps Capabilities) {
@@ -992,6 +1053,7 @@ fn assert_wayland_input_capabilities(caps Capabilities) {
 	assert caps.focus_events
 	assert caps.drop_events
 	assert caps.touch_events
+	assert !caps.cursor_shapes
 }
 
 fn assert_win32_input_capabilities(caps Capabilities) {
@@ -1002,6 +1064,7 @@ fn assert_win32_input_capabilities(caps Capabilities) {
 	assert caps.focus_events
 	assert caps.drop_events
 	assert caps.touch_events
+	assert caps.cursor_shapes
 }
 
 fn assert_appkit_input_capabilities(caps Capabilities) {
@@ -1012,6 +1075,7 @@ fn assert_appkit_input_capabilities(caps Capabilities) {
 	assert caps.focus_events
 	assert caps.drop_events
 	assert caps.touch_events
+	assert caps.cursor_shapes
 }
 
 fn test_fake_wayland_lifecycle_capabilities_do_not_claim_render_ready() {
@@ -1389,6 +1453,8 @@ fn test_win32_input_events_are_queued_and_capability_scoped_source_guard() {
 	assert win32_backend_source.contains('fn win32_window_drop_file')
 	assert win32_backend_source.contains('fn win32_window_drop_end')
 	assert win32_backend_source.contains('fn win32_window_touch_event')
+	assert win32_backend_source.contains('tos_clone(&u8(path))')
+	assert !win32_backend_source.contains('cstring_to_vstring(path)')
 	assert win32_backend_source.contains('iconified              bool')
 	assert win32_backend_source.contains('12 { InputEventKind.iconified }')
 	assert win32_backend_source.contains('13 { InputEventKind.restored }')
@@ -1442,12 +1508,19 @@ fn test_win32_input_events_are_queued_and_capability_scoped_source_guard() {
 	assert win32_helper_source.contains('DragFinish')
 	assert win32_helper_source.contains('v_multiwindow_win32_window_drop_begin')
 	assert win32_helper_source.contains('v_multiwindow_win32_window_drop_file')
+	assert win32_helper_source.contains('v_multiwindow_win32_window_drop_file(void *data, uint64_t sequence, char *path)')
+	assert !win32_helper_source.contains('v_multiwindow_win32_window_drop_file(void *data, uint64_t sequence, const char *path)')
 	assert win32_helper_source.contains('v_multiwindow_win32_window_drop_end')
 	assert win32_helper_source.contains('WM_TOUCH')
 	assert win32_helper_source.contains('v_multiwindow_win32_register_touch_window')
 	assert win32_helper_source.contains('RegisterTouchWindow')
 	assert win32_helper_source.contains('GetTouchInputInfo')
 	assert win32_helper_source.contains('CloseTouchInputHandle')
+	assert win32_helper_source.contains('v_multiwindow_win32_window_touch_event(void *data, uint64_t sequence, int kind, uint32_t modifiers, int count, uint64_t *ids, int *xs, int *ys, int *changed)')
+	assert !win32_helper_source.contains('v_multiwindow_win32_window_touch_event(void *data, uint64_t sequence, int kind, uint32_t modifiers, int count, const uint64_t *ids')
+	assert !win32_helper_source.contains('const int *xs')
+	assert !win32_helper_source.contains('const int *ys')
+	assert !win32_helper_source.contains('const int *changed')
 	assert win32_helper_source.contains('ScreenToClient(hwnd, &point)')
 	assert win32_helper_source.contains('changed[out_count] = 1;')
 	assert_source_order(win32_helper_source,
@@ -1657,6 +1730,8 @@ fn test_appkit_input_events_are_queued_and_capability_scoped_source_guard() {
 	assert appkit_backend_source.contains('num_touches:        touch_count')
 	assert appkit_backend_source.contains('touches:            touches')
 	assert appkit_backend_source.contains('fn appkit_dropped_files_from_native')
+	assert appkit_backend_source.contains('tos_clone(&u8(path))')
+	assert !appkit_backend_source.contains('cstring_to_vstring(path)')
 	assert !appkit_backend_source.contains('fn appkit_touch_count')
 	assert !appkit_backend_source.contains('fn appkit_touches_from_native')
 	assert appkit_backend_source.contains('C.v_multiwindow_appkit_release_queued_event_resources')
@@ -2134,6 +2209,9 @@ fn test_x11_input_support_queues_key_char_and_focus_source_guard() {
 		'events << queued_input_event(backend.input_char_event')
 	assert x11_backend_source.contains('fn (backend &X11Backend) input_char_event')
 	assert x11_backend_source.contains('C.v_multiwindow_x11_char_codes(backend.windows[index].xic, event,')
+	assert x11_backend_source.contains('const x11_max_char_codes = 32768')
+	assert x11_backend_source.contains('mut char_codes := []u32{len: x11_max_char_codes}')
+	assert x11_backend_source.contains('unsafe { &char_codes[0] }')
 	key_press_body :=
 		x11_backend_source.all_after('fn (mut backend X11Backend) queued_key_press_event').all_before('fn (mut backend X11Backend) queued_key_release_event')
 	assert !key_press_body.contains('if key_code == 0 {\n\t\t\treturn events\n\t\t}')
@@ -2160,6 +2238,17 @@ fn test_x11_input_support_queues_key_char_and_focus_source_guard() {
 	assert x11_backend_source.contains('fn (backend &X11Backend) window_state(window X11NativeWindow) int')
 	assert x11_backend_source.contains('C.XGetWindowProperty')
 	assert x11_backend_source.contains('C.XFree')
+	window_state_body :=
+		x11_backend_source.all_after('fn (backend &X11Backend) window_state(window X11NativeWindow) int').all_before('fn (mut backend X11Backend) announce_xdnd_for_window')
+	assert window_state_body.contains('mut state := &X11NativeLong(unsafe { nil })')
+	assert window_state_body.contains('status := C.XGetWindowProperty')
+	assert window_state_body.contains('status == x11_success')
+	assert window_state_body.contains('actual_type == backend.wm_state')
+	assert window_state_body.contains('actual_format == 32')
+	assert window_state_body.contains('item_count >= X11NativeULong(2)')
+	assert window_state_body.contains('state != unsafe { nil }')
+	assert window_state_body.contains('state_value := unsafe { state[0] }')
+	assert !window_state_body.contains('*(&u32(state))')
 
 	for required_mask in ['StructureNotifyMask', 'KeyPressMask', 'KeyReleaseMask',
 		'PointerMotionMask', 'ButtonPressMask', 'ButtonReleaseMask', 'FocusChangeMask',
@@ -2192,8 +2281,17 @@ fn test_x11_input_support_queues_key_char_and_focus_source_guard() {
 	assert x11_helper_source.contains('v_multiwindow_x11_char_codes')
 	assert x11_helper_source.contains('Xutf8LookupString')
 	assert x11_helper_source.contains('XBufferOverflow')
-	assert x11_helper_source.contains('char buf[128]')
+	assert x11_helper_source.contains('V_MULTIWINDOW_X11_XIM_STACK_BYTES')
+	assert x11_helper_source.contains('V_MULTIWINDOW_X11_XIM_MAX_BYTES')
+	assert x11_helper_source.contains('char stack_buf[V_MULTIWINDOW_X11_XIM_STACK_BYTES]')
+	assert x11_helper_source.contains('buf = (char *)malloc((size_t)count)')
+	assert x11_helper_source.contains('free(buf)')
+	assert_source_order(x11_helper_source, 'status == XBufferOverflow', 'malloc((size_t)count)')
+	assert_source_order_after_marker(x11_helper_source, 'buf = (char *)malloc((size_t)count)',
+		'status = 0', 'count = Xutf8LookupString')
+	assert x11_helper_source.contains('v_multiwindow_x11_decode_utf8_codes')
 	assert x11_helper_source.contains('v_multiwindow_x11_utf8_decode_next')
+	assert !x11_helper_source.contains('char buf[128]')
 	assert !x11_helper_source.contains('v_multiwindow_x11_utf8_decode_one')
 	assert !x11_helper_source.contains('XLookupString')
 	assert !x11_helper_source.contains('v_multiwindow_x11_keysym_to_unicode')
@@ -2290,10 +2388,360 @@ fn test_wayland_initial_size_is_clamped_before_mapping() {
 		'C.wl_surface_commit(surface)')
 }
 
+fn test_wayland_lifecycle_windows_attach_shm_buffer_source_guard() {
+	wayland_source := multiwindow_source_file('wayland_backend.c.v')
+	wayland_helper_source := multiwindow_source_file('wayland_backend_helpers.h')
+	create_window_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) create_window').all_before('fn (mut backend WaylandBackend) destroy_window')
+	poll_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) poll_queued_events').all_before('fn (mut record WaylandWindowRecord) enqueue_native_event')
+	lifecycle_buffer_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) ensure_lifecycle_buffer').all_before('fn (mut backend WaylandBackend) close_connection')
+
+	assert wayland_source.contains('shm                          voidptr')
+	assert wayland_source.contains('fallback_buffers')
+	assert wayland_source.contains('C.v_multiwindow_wayland_bind_shm')
+	assert wayland_source.contains('fn (mut backend WaylandBackend) ensure_lifecycle_buffer')
+	assert wayland_source.contains('C.v_multiwindow_wayland_create_shm_buffer')
+	assert wayland_source.contains('C.v_multiwindow_wayland_attach_buffer')
+	assert wayland_source.contains('C.v_multiwindow_wayland_buffer_destroy')
+	assert lifecycle_buffer_body.contains('record := backend.windows[index]')
+	assert lifecycle_buffer_body.contains('backend.windows[index].fallback_buffers << buffer')
+	assert lifecycle_buffer_body.contains('backend.windows[index].fallback_buffer_width = width')
+	assert lifecycle_buffer_body.contains('backend.windows[index].fallback_buffer_height = height')
+	assert !lifecycle_buffer_body.contains('mut record := backend.windows[index]')
+	assert !lifecycle_buffer_body.contains('record.fallback_buffers << buffer')
+	assert !lifecycle_buffer_body.contains('record.fallback_buffer_width = width')
+	assert !lifecycle_buffer_body.contains('record.fallback_buffer_height = height')
+	assert create_window_body.contains('if !backend.renderer_ready()')
+	assert create_window_body.contains('backend.ensure_lifecycle_buffer(index) or {')
+	assert_source_order(create_window_body, 'C.wl_display_roundtrip(display)',
+		'backend.ensure_lifecycle_buffer(index)')
+	assert_source_order(create_window_body, 'backend.ensure_lifecycle_buffer(index)',
+		'return WindowSize')
+	assert poll_body.contains('backend.ensure_lifecycle_buffers()!')
+	assert_source_order(poll_body, 'backend.dispatch_pending_nonblocking()!',
+		'backend.ensure_lifecycle_buffers()!')
+	assert_source_order(poll_body, 'backend.ensure_lifecycle_buffers()!',
+		'backend.drain_pending_data_offer_drop()')
+
+	for required_helper in ['v_multiwindow_wayland_create_shm_buffer', 'wl_shm_create_pool',
+		'wl_shm_pool_create_buffer', 'WL_SHM_FORMAT_XRGB8888', 'v_multiwindow_wayland_attach_buffer',
+		'wl_surface_attach', 'wl_surface_damage', 'wl_surface_commit',
+		'v_multiwindow_wayland_buffer_destroy'] {
+		assert wayland_helper_source.contains(required_helper)
+	}
+}
+
+fn test_wayland_server_side_decorations_are_requested_source_guard() {
+	wayland_source := multiwindow_source_file('wayland_backend.c.v')
+	wayland_helper_source := multiwindow_source_file('wayland_backend_helpers.h')
+	decoration_private_source := multiwindow_source_file('wayland_xdg_decoration_private.c')
+	create_window_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) create_window').all_before('fn (mut backend WaylandBackend) destroy_window')
+	destroy_window_record_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) destroy_window_record').all_before('fn (mut backend WaylandBackend) ensure_data_device')
+	decoration_configure_body :=
+		wayland_source.all_after("@[export: 'v_multiwindow_wayland_xdg_toplevel_decoration_configure']").all_before("@[export: 'v_multiwindow_wayland_seat_capabilities']")
+	decorated_window_body :=
+		wayland_source.all_after('fn (backend &WaylandBackend) has_server_side_decorated_window').all_before('fn (backend &WaylandBackend) window_native_decorations')
+	window_native_decorations_body :=
+		wayland_source.all_after('fn (backend &WaylandBackend) window_native_decorations').all_before('fn (record &WaylandWindowRecord) has_server_side_decoration')
+	server_side_decoration_body :=
+		wayland_source.all_after('fn (record &WaylandWindowRecord) has_server_side_decoration').all_before('fn (record &WaylandWindowRecord) has_client_side_decoration')
+	client_side_decoration_body :=
+		wayland_source.all_after('fn (record &WaylandWindowRecord) has_client_side_decoration').all_before('fn (mut backend WaylandBackend) start')
+
+	assert wayland_source.contains('wayland_xdg_decoration_private.c')
+	assert decoration_private_source.contains('#define xdg_toplevel_interface v_multiwindow_xdg_toplevel_interface')
+	assert decoration_private_source.contains('#define zxdg_decoration_manager_v1_interface v_multiwindow_zxdg_decoration_manager_v1_interface')
+	assert decoration_private_source.contains('#define zxdg_toplevel_decoration_v1_interface v_multiwindow_zxdg_toplevel_decoration_v1_interface')
+	assert decoration_private_source.contains('#include "xdg-decoration-unstable-v1-protocol.c"')
+
+	assert wayland_source.contains('toplevel_decoration')
+	assert wayland_source.contains('toplevel_decoration_configured bool')
+	assert wayland_source.contains('toplevel_decoration_mode')
+	assert wayland_source.contains('decoration_manager           voidptr')
+	assert wayland_source.contains('C.v_multiwindow_wayland_bind_xdg_decoration_manager')
+	assert wayland_source.contains("C.strcmp(iface, c'zxdg_decoration_manager_v1') == 0")
+	assert wayland_source.contains('backend.destroy_xdg_decoration_manager()')
+	assert wayland_source.contains("v_multiwindow_wayland_xdg_toplevel_decoration_configure']")
+	assert decoration_configure_body.contains('mode u32')
+	assert decoration_configure_body.contains('mut record := unsafe { &WaylandWindowRecord(data) }')
+	assert decoration_configure_body.contains('record.toplevel_decoration_configured = true')
+	assert decoration_configure_body.contains('record.toplevel_decoration_mode = mode')
+	assert decoration_configure_body.contains('record.toplevel_decoration_mode = wayland_xdg_toplevel_decoration_mode_client_side')
+	assert wayland_helper_source.contains('v_multiwindow_zxdg_decoration_manager_v1_interface')
+	assert wayland_helper_source.contains('v_multiwindow_zxdg_toplevel_decoration_v1_interface')
+	assert wayland_helper_source.contains('void v_multiwindow_wayland_xdg_toplevel_decoration_configure(void *data, void *decoration, uint32_t mode);')
+	assert wayland_helper_source.contains('v_multiwindow_wayland_xdg_toplevel_decoration_configure_trampoline')
+	assert wayland_helper_source.contains('v_multiwindow_wayland_xdg_toplevel_decoration_configure(data, (void *)decoration, mode);')
+	assert !wayland_helper_source.contains('(void)data;\n\t(void)decoration;\n\t(void)mode;')
+	assert wayland_helper_source.contains('v_multiwindow_wayland_xdg_toplevel_decoration_set_server_side')
+	assert wayland_helper_source.contains('ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE')
+	assert wayland_helper_source.contains('ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE')
+
+	assert create_window_body.contains('if !config.borderless && backend.decoration_manager != unsafe { nil }')
+	assert create_window_body.contains('C.v_multiwindow_wayland_xdg_decoration_manager_get_toplevel_decoration')
+	assert create_window_body.contains('C.v_multiwindow_wayland_add_xdg_toplevel_decoration_listener')
+	assert create_window_body.contains('C.v_multiwindow_wayland_xdg_toplevel_decoration_set_server_side(decoration)')
+	assert create_window_body.contains('record.toplevel_decoration = unsafe { voidptr(decoration) }')
+	assert_source_order(create_window_body,
+		'C.v_multiwindow_wayland_xdg_toplevel_decoration_set_server_side(decoration)',
+		'C.wl_surface_commit(surface)')
+	assert destroy_window_record_body.contains('C.v_multiwindow_wayland_xdg_toplevel_decoration_destroy')
+	assert_source_order(destroy_window_record_body,
+		'C.v_multiwindow_wayland_xdg_toplevel_decoration_destroy',
+		'C.v_multiwindow_wayland_xdg_toplevel_destroy')
+	assert wayland_source.contains('fn (backend &WaylandBackend) has_server_side_decorated_window() bool')
+	assert wayland_source.contains('fn (backend &WaylandBackend) window_native_decorations(id WindowId) !bool')
+	assert wayland_source.contains('fn (record &WaylandWindowRecord) has_server_side_decoration() bool')
+	assert wayland_source.contains('fn (record &WaylandWindowRecord) has_client_side_decoration() bool')
+	assert decorated_window_body.contains('mut has_server_side := false')
+	assert decorated_window_body.contains('if record.has_client_side_decoration()')
+	assert decorated_window_body.contains('return false')
+	assert decorated_window_body.contains('has_server_side = true')
+	assert decorated_window_body.contains('return has_server_side')
+	assert window_native_decorations_body.contains('return backend.windows[index].has_server_side_decoration()')
+	assert server_side_decoration_body.contains('record.toplevel_decoration_configured')
+	assert server_side_decoration_body.contains('wayland_xdg_toplevel_decoration_mode_server_side')
+	assert client_side_decoration_body.contains('record.toplevel_decoration == unsafe { nil }')
+	assert client_side_decoration_body.contains('wayland_xdg_toplevel_decoration_mode_client_side')
+}
+
+fn test_interactive_move_resize_core_source_guard() {
+	types_source := multiwindow_source_file('types.v')
+	app_source := multiwindow_source_file('app.v')
+	backend_source := multiwindow_source_file('backend.v')
+	move_backend_body :=
+		backend_source.all_after('fn (mut backend Backend) begin_window_move').all_before('fn (mut backend Backend) begin_window_resize')
+	resize_backend_body :=
+		backend_source.all_after('fn (mut backend Backend) begin_window_resize').all_before('fn (mut backend Backend) poll_events')
+
+	assert types_source.contains('pub enum WindowResizeEdge {')
+	for edge_name in ['top', 'bottom', 'left', 'right', 'top_left', 'top_right', 'bottom_left',
+		'bottom_right'] {
+		assert types_source.contains('\t${edge_name}')
+	}
+	assert types_source.contains('interactive_move_resize bool')
+	assert types_source.contains('native_decorations      bool')
+	assert app_source.contains('pub fn (mut app App) begin_window_move(id WindowId) !')
+	assert app_source.contains('pub fn (mut app App) begin_window_resize(id WindowId, edge WindowResizeEdge) !')
+	assert app_source.contains('if !app.windows[index].config.resizable')
+	assert move_backend_body.contains('.wayland { backend.wayland.begin_window_move(id)! }')
+	assert move_backend_body.contains('else { return error(err_capability_unsupported) }')
+	assert resize_backend_body.contains('.wayland { backend.wayland.begin_window_resize(id, edge)! }')
+	assert resize_backend_body.contains('else { return error(err_capability_unsupported) }')
+}
+
+fn test_cursor_shape_core_source_guard() {
+	types_source := multiwindow_source_file('types.v')
+	app_source := multiwindow_source_file('app.v')
+	backend_source := multiwindow_source_file('backend.v')
+	mock_source := multiwindow_source_file('mock_backend.v')
+	wayland_source := multiwindow_source_file('wayland_backend.c.v')
+	x11_source := multiwindow_source_file('x11_backend.c.v')
+	x11_helper_source := multiwindow_source_file('x11_egl_backend_helpers.h')
+	wayland_helper_source := multiwindow_source_file('wayland_backend_helpers.h')
+	wayland_cursor_private_source := multiwindow_source_file('wayland_cursor_shape_private.c')
+	win32_source := multiwindow_source_file('win32_backend.c.v')
+	win32_helper_source := multiwindow_source_file('win32_backend_helpers.h')
+	appkit_source := multiwindow_source_file('appkit_backend.c.v')
+	appkit_objc_source := multiwindow_source_file('appkit_backend.m')
+	appkit_helper_source := multiwindow_source_file('appkit_backend_helpers.h')
+	backend_cursor_body :=
+		backend_source.all_after('fn (mut backend Backend) set_window_cursor').all_before('fn (mut backend Backend) begin_window_move')
+	wayland_cursor_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) set_window_cursor').all_before('fn (mut backend WaylandBackend) begin_window_move')
+	wayland_registry_body :=
+		wayland_source.all_after('fn wayland_registry_handle_global').all_before("@[export: 'v_multiwindow_wayland_registry_handle_global_remove']")
+	wayland_seat_body :=
+		wayland_source.all_after("@[export: 'v_multiwindow_wayland_seat_capabilities']").all_before("@[export: 'v_multiwindow_wayland_seat_name']")
+	wayland_pointer_enter_body :=
+		wayland_source.all_after("@[export: 'v_multiwindow_wayland_pointer_enter']").all_before("@[export: 'v_multiwindow_wayland_pointer_leave']")
+	wayland_pointer_leave_body :=
+		wayland_source.all_after("@[export: 'v_multiwindow_wayland_pointer_leave']").all_before("@[export: 'v_multiwindow_wayland_pointer_motion']")
+	wayland_capabilities_body :=
+		wayland_source.all_after('fn (backend &WaylandBackend) capabilities() Capabilities').all_before('fn (backend &WaylandBackend) can_deliver_drop_events')
+	wayland_cursor_capability_body :=
+		wayland_source.all_after('fn (backend &WaylandBackend) can_set_cursor_shapes() bool').all_before('fn (backend &WaylandBackend) has_server_side_decorated_window')
+	wayland_cursor_shape_mapping_body :=
+		wayland_source.all_after('fn wayland_cursor_shape_for_shape').all_before('fn (mut backend WaylandBackend) begin_window_move')
+
+	assert types_source.contains('pub enum CursorShape {')
+	for shape_name in ['default', 'pointer', 'move', 'n_resize', 's_resize', 'e_resize', 'w_resize',
+		'ne_resize', 'nw_resize', 'se_resize', 'sw_resize', 'ew_resize', 'ns_resize', 'nesw_resize',
+		'nwse_resize', 'grab', 'grabbing'] {
+		assert types_source.contains('\t${shape_name}')
+	}
+	assert types_source.contains('cursor_shapes           bool')
+	assert app_source.contains('pub fn (mut app App) set_window_cursor(id WindowId, shape CursorShape) !')
+	assert app_source.contains('app.backend.set_window_cursor(id, shape)!')
+	assert backend_cursor_body.contains('.mock { backend.mock.set_window_cursor(id, shape)! }')
+	assert backend_cursor_body.contains('.x11 { backend.x11.set_window_cursor(id, shape)! }')
+	assert backend_cursor_body.contains('.wayland { backend.wayland.set_window_cursor(id, shape)! }')
+	assert backend_cursor_body.contains('.appkit { backend.appkit.set_window_cursor(id, shape)! }')
+	assert backend_cursor_body.contains('.win32 { backend.win32.set_window_cursor(id, shape)! }')
+	assert mock_source.contains('fn (mut backend MockBackend) set_window_cursor(id WindowId, shape CursorShape) !')
+	assert mock_source.contains('return error(err_capability_unsupported)')
+
+	assert wayland_source.contains('wayland_cursor_shape_private.c')
+	assert wayland_source.contains('cursor_shape_manager')
+	assert wayland_source.contains('cursor_shape_device')
+	assert wayland_source.contains('pointer_enter_serial')
+	assert wayland_source.contains('pointer_enter_serial_valid')
+	assert wayland_source.contains('const wayland_cursor_shape_default = u32(1)')
+	assert wayland_source.contains('const wayland_cursor_shape_pointer = u32(4)')
+	assert wayland_source.contains('const wayland_cursor_shape_move = u32(13)')
+	assert wayland_source.contains('const wayland_cursor_shape_nwse_resize = u32(29)')
+	assert wayland_capabilities_body.contains('cursor_shapes:           backend.can_set_cursor_shapes()')
+	assert wayland_cursor_capability_body.contains('return backend.pointer != unsafe { nil } && backend.cursor_shape_manager != unsafe { nil }')
+	assert wayland_cursor_capability_body.contains('&& backend.cursor_shape_device != unsafe { nil }')
+	assert !wayland_cursor_capability_body.contains('if !backend.started')
+	assert wayland_registry_body.contains("C.strcmp(iface, c'wp_cursor_shape_manager_v1') == 0")
+	assert wayland_registry_body.contains('C.v_multiwindow_wayland_bind_cursor_shape_manager')
+	assert wayland_registry_body.contains('backend.ensure_cursor_shape_device()')
+	assert wayland_source.contains('backend.destroy_cursor_shape_manager()')
+	assert wayland_seat_body.contains('backend.ensure_cursor_shape_device()')
+	assert wayland_seat_body.contains('backend.destroy_cursor_shape_device()')
+	assert wayland_pointer_enter_body.contains('backend.pointer_enter_serial = serial')
+	assert wayland_pointer_enter_body.contains('backend.pointer_enter_serial_valid = true')
+	assert !wayland_pointer_enter_body.contains('_ = serial')
+	assert wayland_pointer_leave_body.contains('backend.pointer_enter_serial_valid = false')
+	assert wayland_source.contains('fn (mut backend WaylandBackend) set_window_cursor(id WindowId, shape CursorShape) !')
+	assert wayland_cursor_body.contains('backend.window_record_index(id) or { return error(err_window_not_found) }')
+	assert wayland_cursor_body.contains('!backend.can_set_cursor_shapes() || !backend.pointer_focused')
+	assert wayland_cursor_body.contains('backend.pointer_focus != id || !backend.pointer_enter_serial_valid')
+	assert wayland_cursor_body.contains('C.v_multiwindow_wayland_cursor_shape_device_set_shape')
+	assert wayland_cursor_body.contains('backend.pointer_enter_serial')
+	assert wayland_cursor_body.contains('wayland_cursor_shape_for_shape(shape)')
+	assert wayland_cursor_body.contains('C.wl_display_flush(display)')
+	assert wayland_cursor_body.contains('return error(err_capability_unsupported)')
+	assert wayland_cursor_shape_mapping_body.contains('.pointer { wayland_cursor_shape_pointer }')
+	assert wayland_cursor_shape_mapping_body.contains('.move { wayland_cursor_shape_move }')
+	assert wayland_cursor_shape_mapping_body.contains('.ew_resize { wayland_cursor_shape_ew_resize }')
+	assert wayland_cursor_shape_mapping_body.contains('.nwse_resize { wayland_cursor_shape_nwse_resize }')
+	assert wayland_helper_source.contains('v_multiwindow_wp_cursor_shape_manager_v1_interface')
+	assert wayland_helper_source.contains('v_multiwindow_wayland_bind_cursor_shape_manager')
+	assert wayland_helper_source.contains('v_multiwindow_wayland_cursor_shape_manager_get_pointer')
+	assert wayland_helper_source.contains('v_multiwindow_wayland_cursor_shape_device_set_shape')
+	assert wayland_helper_source.contains('WP_CURSOR_SHAPE_DEVICE_V1_SET_SHAPE')
+	assert os.exists(os.join_path(@DIR, 'wayland_cursor_shape_private.c'))
+	assert wayland_cursor_private_source.contains('v_multiwindow_wp_cursor_shape_manager_v1_interface')
+	assert wayland_cursor_private_source.contains('v_multiwindow_wp_cursor_shape_device_v1_interface')
+	assert wayland_cursor_private_source.contains('"wp_cursor_shape_manager_v1"')
+	assert wayland_cursor_private_source.contains('"get_pointer"')
+	assert wayland_cursor_private_source.contains('"set_shape"')
+	assert !wayland_cursor_private_source.contains('zwp_tablet_tool_v2_interface')
+
+	assert x11_source.contains('cursor_shapes:      true')
+	assert x11_source.contains('fn (mut backend X11Backend) set_window_cursor(id WindowId, shape CursorShape) !')
+	assert x11_source.contains('C.XDefineCursor')
+	assert x11_helper_source.contains('#include <X11/cursorfont.h>')
+	assert x11_helper_source.contains('XCreateFontCursor')
+	assert x11_helper_source.contains('XC_hand2')
+	assert x11_helper_source.contains('XC_fleur')
+	assert x11_helper_source.contains('XC_sb_h_double_arrow')
+	assert x11_helper_source.contains('XC_sb_v_double_arrow')
+
+	assert win32_source.contains('cursor_shapes:      true')
+	assert win32_source.contains('fn (mut backend Win32Backend) set_window_cursor(id WindowId, shape CursorShape) !')
+	assert win32_helper_source.contains('WM_SETCURSOR')
+	assert win32_helper_source.contains('IDC_HAND')
+	assert win32_helper_source.contains('IDC_SIZEALL')
+	assert win32_helper_source.contains('IDC_SIZEWE')
+	assert win32_helper_source.contains('IDC_SIZENS')
+	assert win32_helper_source.contains('IDC_SIZENWSE')
+	assert win32_helper_source.contains('IDC_SIZENESW')
+
+	assert appkit_source.contains('cursor_shapes:      true')
+	assert appkit_source.contains('fn (mut backend AppKitBackend) set_window_cursor(id WindowId, shape CursorShape) !')
+	assert appkit_helper_source.contains('v_multiwindow_appkit_set_cursor_shape')
+	assert appkit_objc_source.contains('- (void)cursorUpdate:(NSEvent *)event')
+	assert appkit_objc_source.contains('[NSCursor pointingHandCursor]')
+	assert appkit_objc_source.contains('[NSCursor openHandCursor]')
+	assert appkit_objc_source.contains('[NSCursor resizeLeftRightCursor]')
+	assert appkit_objc_source.contains('[NSCursor resizeUpDownCursor]')
+}
+
+fn test_wayland_interactive_move_resize_source_guard() {
+	wayland_source := multiwindow_source_file('wayland_backend.c.v')
+	wayland_helper_source := multiwindow_source_file('wayland_backend_helpers.h')
+	decoration_private_source := multiwindow_source_file('wayland_xdg_decoration_private.c')
+	pointer_button_body :=
+		wayland_source.all_after("@[export: 'v_multiwindow_wayland_pointer_button']").all_before("@[export: 'v_multiwindow_wayland_pointer_axis']")
+	keyboard_key_body :=
+		wayland_source.all_after("@[export: 'v_multiwindow_wayland_keyboard_key']").all_before("@[export: 'v_multiwindow_wayland_keyboard_modifiers']")
+	touch_down_body :=
+		wayland_source.all_after("@[export: 'v_multiwindow_wayland_touch_down']").all_before("@[export: 'v_multiwindow_wayland_touch_up']")
+	resize_window_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) resize_window').all_before('fn (mut backend WaylandBackend) begin_window_move')
+	begin_move_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) begin_window_move').all_before('fn (mut backend WaylandBackend) begin_window_resize')
+	begin_resize_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) begin_window_resize').all_before('fn (mut backend WaylandBackend) poll_events')
+	edge_mapping_body :=
+		wayland_source.all_after('fn wayland_resize_edge(edge WindowResizeEdge) u32').all_before('fn wayland_is_clipboard_paste')
+
+	assert wayland_helper_source.contains('#define XDG_TOPLEVEL_MOVE 5')
+	assert wayland_helper_source.contains('#define XDG_TOPLEVEL_RESIZE 6')
+	assert wayland_helper_source.contains('v_multiwindow_wayland_xdg_toplevel_move')
+	assert wayland_helper_source.contains('v_multiwindow_wayland_xdg_toplevel_resize')
+	assert wayland_helper_source.contains('XDG_TOPLEVEL_MOVE')
+	assert wayland_helper_source.contains('XDG_TOPLEVEL_RESIZE')
+	for edge_constant in ['XDG_TOPLEVEL_RESIZE_EDGE_TOP', 'XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM',
+		'XDG_TOPLEVEL_RESIZE_EDGE_LEFT', 'XDG_TOPLEVEL_RESIZE_EDGE_RIGHT',
+		'XDG_TOPLEVEL_RESIZE_EDGE_TOP_LEFT', 'XDG_TOPLEVEL_RESIZE_EDGE_TOP_RIGHT',
+		'XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_LEFT', 'XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_RIGHT'] {
+		assert wayland_helper_source.contains(edge_constant)
+	}
+
+	assert edge_mapping_body.contains('.top { wayland_xdg_toplevel_resize_edge_top }')
+	assert edge_mapping_body.contains('.bottom { wayland_xdg_toplevel_resize_edge_bottom }')
+	assert edge_mapping_body.contains('.left { wayland_xdg_toplevel_resize_edge_left }')
+	assert edge_mapping_body.contains('.right { wayland_xdg_toplevel_resize_edge_right }')
+	assert edge_mapping_body.contains('.top_left { wayland_xdg_toplevel_resize_edge_top_left }')
+	assert edge_mapping_body.contains('.top_right { wayland_xdg_toplevel_resize_edge_top_right }')
+	assert edge_mapping_body.contains('.bottom_left { wayland_xdg_toplevel_resize_edge_bottom_left }')
+	assert edge_mapping_body.contains('.bottom_right { wayland_xdg_toplevel_resize_edge_bottom_right }')
+
+	assert !pointer_button_body.contains('_ = serial')
+	assert !pointer_button_body.contains('mut record := backend.windows[index]')
+	assert pointer_button_body.contains('backend.windows[index].store_user_action_serial(serial, backend.poll_generation)')
+	assert !keyboard_key_body.contains('_ = serial')
+	assert !keyboard_key_body.contains('mut record := backend.windows[index]')
+	assert keyboard_key_body.contains('backend.windows[index].store_user_action_serial(serial, backend.poll_generation)')
+	assert !touch_down_body.contains('_ = serial')
+	assert !touch_down_body.contains('mut record := backend.windows[index]')
+	assert touch_down_body.contains('backend.windows[index].store_user_action_serial(serial, backend.poll_generation)')
+	assert !begin_move_body.contains('mut record := backend.windows[index]')
+	assert !begin_resize_body.contains('mut record := backend.windows[index]')
+	assert begin_move_body.contains('serial := backend.windows[index].take_user_action_serial(backend.poll_generation) or {')
+	assert begin_resize_body.contains('serial := backend.windows[index].take_user_action_serial(backend.poll_generation) or {')
+	assert wayland_source.contains('fn (mut record WaylandWindowRecord) take_user_action_serial')
+	assert wayland_source.contains('fn (mut backend WaylandBackend) expire_user_action_serials')
+	assert wayland_source.contains('backend.poll_generation++')
+	assert wayland_source.contains('interactive_move_resize: backend.can_begin_interactive_move_resize()')
+	assert wayland_source.contains('native_decorations:      backend.has_server_side_decorated_window()')
+	assert !wayland_source.contains('native_decorations:      backend.decoration_manager != unsafe { nil }')
+
+	assert resize_window_body.contains('return error(err_capability_unsupported)')
+	assert begin_resize_body.contains('if !backend.windows[index].resizable')
+	assert begin_resize_body.contains('C.v_multiwindow_wayland_xdg_toplevel_resize')
+
+	for forbidden in ['gtk_shell1', 'xdg_toplevel_drag_manager_v1'] {
+		assert !wayland_source.contains(forbidden)
+		assert !wayland_helper_source.contains(forbidden)
+		assert !decoration_private_source.contains(forbidden)
+	}
+}
+
 fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 	backend_source := multiwindow_source_file('backend.v')
 	wayland_source := multiwindow_source_file('wayland_backend.c.v')
 	wayland_helper_source := multiwindow_source_file('wayland_backend_helpers.h')
+	capabilities_body :=
+		wayland_source.all_after('fn (backend &WaylandBackend) capabilities() Capabilities').all_before('fn (backend &WaylandBackend) can_deliver_drop_events')
 
 	assert backend_source.contains('.wayland {\n\t\t\treturn backend.wayland.poll_queued_events()!')
 	assert wayland_source.contains('fn (mut backend WaylandBackend) poll_queued_events() ![]QueuedEvent')
@@ -2306,25 +2754,36 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 	assert !wayland_source.contains('close_requested         bool')
 	assert !wayland_source.contains('mut close_requested_windows := []WindowId{}')
 
-	assert wayland_source.contains('input_events:       true')
-	assert wayland_source.contains('mouse_events:       true')
-	assert wayland_source.contains('keyboard_events:    true')
-	assert wayland_source.contains('text_events:        true')
-	assert wayland_source.contains('focus_events:       true')
-	assert wayland_source.contains('drop_events:        true')
-	assert wayland_source.contains('touch_events:       true')
+	assert wayland_source.contains('input_events:            true')
+	assert wayland_source.contains('mouse_events:            true')
+	assert wayland_source.contains('keyboard_events:         true')
+	assert wayland_source.contains('text_events:             true')
+	assert wayland_source.contains('focus_events:            true')
+	assert capabilities_body.contains('drop_events:             backend.can_deliver_drop_events()')
+	assert capabilities_body.contains('touch_events:            backend.can_deliver_touch_events()')
+	assert capabilities_body.contains('interactive_move_resize: backend.can_begin_interactive_move_resize()')
+	assert wayland_source.contains('fn (backend &WaylandBackend) can_deliver_drop_events() bool')
+	assert wayland_source.contains('fn (backend &WaylandBackend) can_deliver_touch_events() bool')
+	assert wayland_source.contains('fn (backend &WaylandBackend) can_begin_interactive_move_resize() bool')
+	assert wayland_source.contains('return backend.seat != unsafe { nil } && backend.data_device_manager != unsafe { nil }')
+	assert wayland_source.contains('&& backend.data_device != unsafe { nil }')
+	assert wayland_source.contains('return backend.seat != unsafe { nil } && backend.touch != unsafe { nil }')
+	assert wayland_source.contains('return backend.seat != unsafe { nil } && backend.wm_base != unsafe { nil }')
 	assert wayland_source.contains('xkb_context_new')
 	assert wayland_source.contains('xkb_keymap_new_from_string')
 	assert wayland_source.contains('xkb_state_new')
 	assert wayland_source.contains('xkb_state_update_mask')
 	assert wayland_source.contains('xkb_state_key_get_utf8')
 	assert wayland_source.contains('wayland_keyboard_keymap')
-	assert wayland_source.contains('record.input_char_event')
+	keyboard_key_body :=
+		wayland_source.all_after("@[export: 'v_multiwindow_wayland_keyboard_key']").all_before("@[export: 'v_multiwindow_wayland_keyboard_modifiers']")
+	assert keyboard_key_body.contains('backend.windows[index].input_char_event')
 	assert wayland_source.contains('.clipboard_pasted')
 	assert wayland_source.contains('wayland_is_clipboard_paste')
 	assert wayland_source.contains('const wayland_key_v = 86')
-	assert_source_order(wayland_source, 'queued_input_event(input))', '.clipboard_pasted')
-	assert_source_order(wayland_source, '.clipboard_pasted', 'record.input_char_event')
+	assert_source_order(keyboard_key_body, 'queued_input_event(input))', '.clipboard_pasted')
+	assert_source_order(keyboard_key_body, '.clipboard_pasted',
+		'backend.windows[index].input_char_event')
 	for required_wayland_drop in ['wl_data_device_manager', 'wl_data_device', 'wl_data_offer',
 		'v_multiwindow_wayland_bind_data_device_manager',
 		'v_multiwindow_wayland_data_device_manager_get_data_device',
@@ -2359,6 +2818,9 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 	assert wayland_source.contains('pending_drop_offer')
 	assert wayland_source.contains('pending_drop_fd')
 	assert wayland_source.contains('pending_drop_buffer')
+	assert wayland_source.contains('pending_drop_poll_cycles')
+	assert wayland_source.contains('wayland_data_offer_max_pending_poll_cycles')
+	assert wayland_source.contains('pending_drop_poll_cycle_expired')
 	assert wayland_source.contains('C.v_multiwindow_wayland_fd_set_nonblocking')
 	assert wayland_source.contains('C.v_multiwindow_wayland_read_would_block')
 	assert wayland_source.contains('C.poll(&poll_fd, u64(1), 0)')
@@ -2379,6 +2841,18 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 	assert !drop_callback_body.contains('v_multiwindow_wayland_data_offer_finish')
 	assert drop_callback_body.contains('backend.data_offer_allows_finish()')
 	assert drop_callback_body.contains('backend.begin_pending_data_offer_drop()')
+	expire_body := wayland_source.all_after('fn (mut backend WaylandBackend) pending_drop_poll_cycle_expired() bool')
+		.all_before('fn (mut backend WaylandBackend) drain_pending_data_offer_drop()')
+	assert expire_body.contains('backend.pending_drop_poll_cycles++')
+	assert expire_body.contains('wayland_data_offer_max_pending_poll_cycles')
+	assert !expire_body.contains('v_multiwindow_wayland_data_offer_finish')
+	assert !expire_body.contains('C.read(')
+	drain_body := wayland_source.all_after('fn (mut backend WaylandBackend) drain_pending_data_offer_drop()')
+		.all_before('fn (mut backend WaylandBackend) finish_pending_data_offer_drop()')
+	assert drain_body.contains('if backend.pending_drop_poll_cycle_expired() {')
+	assert drain_body.contains('backend.clear_data_offer(true)')
+	assert_source_order(drain_body, 'backend.pending_drop_poll_cycle_expired()',
+		'C.poll(&poll_fd, u64(1), 0)')
 	finish_body := wayland_source.all_after('fn (mut backend WaylandBackend) finish_pending_data_offer_drop()')
 		.all_before('fn (mut backend WaylandBackend) destroy_data_device()')
 	assert_source_order(finish_body, 'backend.pending_drop_allows_finish()',
@@ -2566,6 +3040,7 @@ fn test_default_gg_multiwindow_build_does_not_link_wayland_without_sokol_wayland
 		assert !output.contains('-lwayland-client')
 		assert !output.contains('-lwayland-egl')
 		assert !output.contains('wayland_xdg_shell_private.c')
+		assert !output.contains('wayland_xdg_decoration_private.c')
 	} $else {
 		return
 	}
@@ -2601,6 +3076,7 @@ fn test_sokol_wayland_build_links_wayland_when_flag_is_active() {
 		assert output.contains('-lwayland-client')
 		assert output.contains('-lwayland-egl')
 		assert output.contains('wayland_xdg_shell_private.c')
+		assert output.contains('wayland_xdg_decoration_private.c')
 	} $else {
 		return
 	}

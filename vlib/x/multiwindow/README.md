@@ -87,7 +87,32 @@ the display server, graphics device, or platform API is unavailable.
 - `input_events`, `mouse_events`, `keyboard_events`, `text_events`,
   `focus_events`, `drop_events`, `touch_events`: native input classes the
   backend can actually deliver;
+- `cursor_shapes`: native hover cursor shape updates are supported via
+  `set_window_cursor(id, shape)`. This is independent from native interactive
+  move/resize support;
+- `interactive_move_resize`: native user-driven move/resize can be requested
+  when the running backend has the required handles and current user action;
+- `native_decorations`: native/server-side decorations are effective for the
+  running backend;
 - `readback`: reserved for backends that expose readback support.
+
+Plain capability probes do not necessarily connect to the display server, so
+runtime optional globals can be unknown before startup and most of those probes
+report implementation support. For Wayland, use `app.capabilities()` after
+`new_app()` for the authoritative runtime state: `drop_events` requires a
+`wl_data_device`, `touch_events` requires `wl_touch`, and interactive
+move/resize requires a seat. Wayland cursor-shape reporting is stricter:
+`cursor_shapes` is true only after a `wp_cursor_shape_device_v1` has been
+created for the active `wl_pointer`. Wayland requests server-side decorations
+through xdg-decoration when the protocol is available; the compositor's
+`configure(mode)` decides the effective `server_side` or `client_side` mode. If
+`server_side` is refused or xdg-decoration is unavailable, apps and examples may
+draw a client-side fallback. Wayland cursor-shape feedback uses
+`wp_cursor_shape_manager_v1` when the compositor exposes it and the seat has a
+pointer; this keeps cursor theme selection compositor-side. `wl_cursor_theme`
+client-side fallback is not implemented, so `app.capabilities()` reports
+`cursor_shapes == false` on Wayland compositors that do not advertise
+cursor-shape-v1.
 
 Backend notes:
 
@@ -200,12 +225,15 @@ Current native input support is intentionally capability-scoped:
 - X11 receives file drops with XDND `text/uri-list` selection conversion. It
   decodes local `file://` URIs and queues `.files_dropped` with routed
   `dropped_files`.
-- Wayland routes pointer, keyboard, text/char through xkb keymap/state, touch,
-  focus, clipboard paste signal, file drops through
-  `wl_data_device`/`wl_data_offer` `text/uri-list`, and resize input events.
+- Wayland routes pointer, keyboard, text/char through xkb keymap/state, focus,
+  clipboard paste signal, resize input events, touch when the seat exposes
+  `wl_touch`, and file drops when `wl_data_device`/`wl_data_offer`
+  `text/uri-list` is available.
   Data-offer payloads are received through a non-blocking fd and drained from
   the owner poll path; the backend only sends `wl_data_offer.finish` after a
-  valid `copy` or `move` action has been received.
+  valid `copy` or `move` action has been received. Pending drops whose source
+  never closes the transfer fd are rejected and cleaned up after a bounded
+  number of owner poll cycles.
   Wayland text follows the existing `sapp` `xkb_state_key_get_utf8` model for
   key presses; full IME/composed text is not implemented. Wayland key-repeat
   timers and pointer frame batching are not synthesized yet; event callbacks are

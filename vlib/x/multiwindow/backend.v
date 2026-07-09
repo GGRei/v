@@ -306,6 +306,47 @@ fn (mut backend Backend) resize_window(id WindowId, width int, height int) !Wind
 	}
 }
 
+fn (backend &Backend) window_native_decorations(id WindowId, config WindowConfig) !bool {
+	if config.borderless {
+		return false
+	}
+	return match backend.kind {
+		.auto { error(err_backend_unsupported) }
+		.mock { false }
+		.x11 { true }
+		.wayland { backend.wayland.window_native_decorations(id)! }
+		.appkit { true }
+		.win32 { true }
+	}
+}
+
+fn (mut backend Backend) set_window_cursor(id WindowId, shape CursorShape) ! {
+	match backend.kind {
+		.auto { return error(err_backend_unsupported) }
+		.mock { backend.mock.set_window_cursor(id, shape)! }
+		.x11 { backend.x11.set_window_cursor(id, shape)! }
+		.wayland { backend.wayland.set_window_cursor(id, shape)! }
+		.appkit { backend.appkit.set_window_cursor(id, shape)! }
+		.win32 { backend.win32.set_window_cursor(id, shape)! }
+	}
+}
+
+fn (mut backend Backend) begin_window_move(id WindowId) ! {
+	match backend.kind {
+		.wayland { backend.wayland.begin_window_move(id)! }
+		.auto { return error(err_backend_unsupported) }
+		else { return error(err_capability_unsupported) }
+	}
+}
+
+fn (mut backend Backend) begin_window_resize(id WindowId, edge WindowResizeEdge) ! {
+	match backend.kind {
+		.wayland { backend.wayland.begin_window_resize(id, edge)! }
+		.auto { return error(err_backend_unsupported) }
+		else { return error(err_capability_unsupported) }
+	}
+}
+
 fn (mut backend Backend) poll_events() ![]Event {
 	match backend.kind {
 		.auto { return error(err_backend_unsupported) }

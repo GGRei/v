@@ -82,6 +82,7 @@ int v_multiwindow_appkit_create_window(void *device_ptr, const char *title, int 
 void v_multiwindow_appkit_destroy_window(void *state_ptr);
 void v_multiwindow_appkit_release_window(void *state_ptr);
 int v_multiwindow_appkit_set_window_title(void *state_ptr, const char *title);
+int v_multiwindow_appkit_set_cursor_shape(void *state_ptr, int shape);
 int v_multiwindow_appkit_resize_window(void *state_ptr, int width, int height, int *out_width, int *out_height, int *out_framebuffer_width, int *out_framebuffer_height);
 void v_multiwindow_appkit_poll_events(void);
 int v_multiwindow_appkit_take_queued_event(void *state_ptr, VMultiwindowAppKitQueuedEvent *out_event);

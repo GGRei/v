@@ -66,6 +66,41 @@ pub enum QueuedEventKind {
 	input
 }
 
+// WindowResizeEdge identifies the edge or corner used for an interactive,
+// user-driven native resize operation.
+pub enum WindowResizeEdge {
+	top
+	bottom
+	left
+	right
+	top_left
+	top_right
+	bottom_left
+	bottom_right
+}
+
+// CursorShape identifies a native cursor image for client-side chrome hover
+// feedback. Cursor support is independent from native interactive move/resize.
+pub enum CursorShape {
+	default
+	pointer
+	move
+	n_resize
+	s_resize
+	e_resize
+	w_resize
+	ne_resize
+	nw_resize
+	se_resize
+	sw_resize
+	ew_resize
+	ns_resize
+	nesw_resize
+	nwse_resize
+	grab
+	grabbing
+}
+
 // WindowId is an opaque generation-checked handle to a window.
 pub struct WindowId {
 	slot       int
@@ -111,43 +146,47 @@ struct WindowSize {
 // WindowInfo is a snapshot of the authoritative App-side window state.
 pub struct WindowInfo {
 pub:
-	id         WindowId
-	status     WindowStatus
-	title      string
-	width      int
-	height     int
-	min_width  int
-	min_height int
-	resizable  bool
-	visible    bool
-	high_dpi   bool
-	borderless bool
-	fullscreen bool
+	id                 WindowId
+	status             WindowStatus
+	title              string
+	width              int
+	height             int
+	min_width          int
+	min_height         int
+	resizable          bool
+	visible            bool
+	high_dpi           bool
+	borderless         bool
+	fullscreen         bool
+	native_decorations bool
 }
 
 // Capabilities reports what the selected backend can do.
 pub struct Capabilities {
 pub:
-	backend            BackendKind
-	mock               bool
-	native             bool
-	multi_window       bool
-	owner_queue        bool
-	explicit_swapchain bool
-	readback           bool
-	d3d11              bool
-	metal              bool
-	x11                bool
-	wayland            bool
-	win32              bool
-	gl                 bool
-	input_events       bool
-	mouse_events       bool
-	keyboard_events    bool
-	text_events        bool
-	focus_events       bool
-	drop_events        bool
-	touch_events       bool
+	backend                 BackendKind
+	mock                    bool
+	native                  bool
+	multi_window            bool
+	owner_queue             bool
+	explicit_swapchain      bool
+	readback                bool
+	d3d11                   bool
+	metal                   bool
+	x11                     bool
+	wayland                 bool
+	win32                   bool
+	gl                      bool
+	input_events            bool
+	mouse_events            bool
+	keyboard_events         bool
+	text_events             bool
+	focus_events            bool
+	drop_events             bool
+	touch_events            bool
+	cursor_shapes           bool
+	interactive_move_resize bool
+	native_decorations      bool
 }
 
 // Event is always routed to a specific WindowId.

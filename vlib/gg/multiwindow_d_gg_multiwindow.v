@@ -35,6 +35,40 @@ pub enum WindowEventKind {
 	window_resized
 }
 
+// WindowResizeEdge identifies the edge or corner used for an interactive,
+// user-driven native resize operation.
+pub enum WindowResizeEdge {
+	top
+	bottom
+	left
+	right
+	top_left
+	top_right
+	bottom_left
+	bottom_right
+}
+
+// WindowCursorShape identifies a native cursor image for hover feedback.
+pub enum WindowCursorShape {
+	default
+	pointer
+	move
+	n_resize
+	s_resize
+	e_resize
+	w_resize
+	ne_resize
+	nw_resize
+	se_resize
+	sw_resize
+	ew_resize
+	ns_resize
+	nesw_resize
+	nwse_resize
+	grab
+	grabbing
+}
+
 // WindowId identifies a window managed by gg.App.
 pub struct WindowId {
 	core multiwindow.WindowId
@@ -84,31 +118,35 @@ pub:
 	high_dpi   bool
 	borderless bool
 	fullscreen bool
+	native_decorations bool
 }
 
 // Capabilities reports the active gg.App backend contract.
 pub struct Capabilities {
 pub:
-	backend            MultiWindowBackend
-	mock               bool
-	native             bool
-	multi_window       bool
-	owner_queue        bool
-	explicit_swapchain bool
-	readback           bool
-	d3d11              bool
-	metal              bool
-	x11                bool
-	wayland            bool
-	win32              bool
-	gl                 bool
-	input_events       bool
-	mouse_events       bool
-	keyboard_events    bool
-	text_events        bool
-	focus_events       bool
-	drop_events        bool
-	touch_events       bool
+	backend                 MultiWindowBackend
+	mock                    bool
+	native                  bool
+	multi_window            bool
+	owner_queue             bool
+	explicit_swapchain      bool
+	readback                bool
+	d3d11                   bool
+	metal                   bool
+	x11                     bool
+	wayland                 bool
+	win32                   bool
+	gl                      bool
+	input_events            bool
+	mouse_events            bool
+	keyboard_events         bool
+	text_events             bool
+	focus_events            bool
+	drop_events             bool
+	touch_events            bool
+	cursor_shapes           bool
+	interactive_move_resize bool
+	native_decorations      bool
 }
 
 // WindowEvent is the multi-window event wrapper. The existing gg.Event remains
@@ -225,6 +263,24 @@ pub fn (mut app App) set_window_title(id WindowId, title string) ! {
 pub fn (mut app App) resize_window(id WindowId, width int, height int) ! {
 	app.ensure_initialized()!
 	app.core.resize_window(id.core, width, height)!
+}
+
+// set_window_cursor updates the native hover cursor for a live window.
+pub fn (mut app App) set_window_cursor(id WindowId, shape WindowCursorShape) ! {
+	app.ensure_initialized()!
+	app.core.set_window_cursor(id.core, window_cursor_shape_to_core(shape))!
+}
+
+// begin_window_move starts a user-driven native move for a live window.
+pub fn (mut app App) begin_window_move(id WindowId) ! {
+	app.ensure_initialized()!
+	app.core.begin_window_move(id.core)!
+}
+
+// begin_window_resize starts a user-driven native resize for a live resizable window.
+pub fn (mut app App) begin_window_resize(id WindowId, edge WindowResizeEdge) ! {
+	app.ensure_initialized()!
+	app.core.begin_window_resize(id.core, window_resize_edge_to_core(edge))!
 }
 
 // window_info returns a snapshot of a live window.
@@ -490,6 +546,36 @@ pub fn (context &WindowContext) size() Size {
 	return context.framebuffer_size()
 }
 
+// draw_rect_filled draws a filled rectangle into this window's current draw frame.
+// Coordinates are in window framebuffer pixels with top-left origin.
+pub fn (context &WindowContext) draw_rect_filled(x f32, y f32, w f32, h f32, color Color) {
+	sgl.set_context(context.sgl_context)
+	sgl.c4b(color.r, color.g, color.b, color.a)
+	sgl.begin_quads()
+	sgl.v2f(x, y)
+	sgl.v2f(x + w, y)
+	sgl.v2f(x + w, y + h)
+	sgl.v2f(x, y + h)
+	sgl.end()
+}
+
+// draw_rect_empty draws a one-pixel outline rectangle into this window's current draw frame.
+// Coordinates are in window framebuffer pixels with top-left origin.
+pub fn (context &WindowContext) draw_rect_empty(x f32, y f32, w f32, h f32, color Color) {
+	sgl.set_context(context.sgl_context)
+	sgl.c4b(color.r, color.g, color.b, color.a)
+	sgl.begin_lines()
+	sgl.v2f(x, y)
+	sgl.v2f(x + w, y)
+	sgl.v2f(x, y)
+	sgl.v2f(x, y + h)
+	sgl.v2f(x + w, y)
+	sgl.v2f(x + w, y + h)
+	sgl.v2f(x, y + h)
+	sgl.v2f(x + w, y + h)
+	sgl.end()
+}
+
 fn (mut app App) wrap_job(f AppJobFn) multiwindow.AppJobFn {
 	app_ptr := unsafe { voidptr(&app) }
 	return fn [app_ptr, f] (mut core_app multiwindow.App) ! {
@@ -659,26 +745,29 @@ fn (config WindowConfig) to_core() multiwindow.WindowConfig {
 
 fn capabilities_from_core(caps multiwindow.Capabilities) Capabilities {
 	return Capabilities{
-		backend:            backend_from_core(caps.backend)
-		mock:               caps.mock
-		native:             caps.native
-		multi_window:       caps.multi_window
-		owner_queue:        caps.owner_queue
-		explicit_swapchain: caps.explicit_swapchain
-		readback:           caps.readback
-		d3d11:              caps.d3d11
-		metal:              caps.metal
-		x11:                caps.x11
-		wayland:            caps.wayland
-		win32:              caps.win32
-		gl:                 caps.gl
-		input_events:       caps.input_events
-		mouse_events:       caps.mouse_events
-		keyboard_events:    caps.keyboard_events
-		text_events:        caps.text_events
-		focus_events:       caps.focus_events
-		drop_events:        caps.drop_events
-		touch_events:       caps.touch_events
+		backend:                 backend_from_core(caps.backend)
+		mock:                    caps.mock
+		native:                  caps.native
+		multi_window:            caps.multi_window
+		owner_queue:             caps.owner_queue
+		explicit_swapchain:      caps.explicit_swapchain
+		readback:                caps.readback
+		d3d11:                   caps.d3d11
+		metal:                   caps.metal
+		x11:                     caps.x11
+		wayland:                 caps.wayland
+		win32:                   caps.win32
+		gl:                      caps.gl
+		input_events:            caps.input_events
+		mouse_events:            caps.mouse_events
+		keyboard_events:         caps.keyboard_events
+		text_events:             caps.text_events
+		focus_events:            caps.focus_events
+		drop_events:             caps.drop_events
+		touch_events:            caps.touch_events
+		cursor_shapes:           caps.cursor_shapes
+		interactive_move_resize: caps.interactive_move_resize
+		native_decorations:      caps.native_decorations
 	}
 }
 
@@ -690,17 +779,18 @@ fn window_id_from_core(id multiwindow.WindowId) WindowId {
 
 fn window_info_from_core(info multiwindow.WindowInfo) WindowInfo {
 	return WindowInfo{
-		id:         window_id_from_core(info.id)
-		title:      info.title
-		width:      info.width
-		height:     info.height
-		min_width:  info.min_width
-		min_height: info.min_height
-		resizable:  info.resizable
-		visible:    info.visible
-		high_dpi:   info.high_dpi
-		borderless: info.borderless
-		fullscreen: info.fullscreen
+		id:                 window_id_from_core(info.id)
+		title:              info.title
+		width:              info.width
+		height:             info.height
+		min_width:          info.min_width
+		min_height:         info.min_height
+		resizable:          info.resizable
+		visible:            info.visible
+		high_dpi:           info.high_dpi
+		borderless:         info.borderless
+		fullscreen:         info.fullscreen
+		native_decorations: info.native_decorations
 	}
 }
 
@@ -763,6 +853,41 @@ fn event_kind_from_core(kind multiwindow.EventKind) WindowEventKind {
 		.window_destroyed { .window_destroyed }
 		.window_close_requested { .window_close_requested }
 		.window_resized { .window_resized }
+	}
+}
+
+fn window_resize_edge_to_core(edge WindowResizeEdge) multiwindow.WindowResizeEdge {
+	return match edge {
+		.top { .top }
+		.bottom { .bottom }
+		.left { .left }
+		.right { .right }
+		.top_left { .top_left }
+		.top_right { .top_right }
+		.bottom_left { .bottom_left }
+		.bottom_right { .bottom_right }
+	}
+}
+
+fn window_cursor_shape_to_core(shape WindowCursorShape) multiwindow.CursorShape {
+	return match shape {
+		.default { .default }
+		.pointer { .pointer }
+		.move { .move }
+		.n_resize { .n_resize }
+		.s_resize { .s_resize }
+		.e_resize { .e_resize }
+		.w_resize { .w_resize }
+		.ne_resize { .ne_resize }
+		.nw_resize { .nw_resize }
+		.se_resize { .se_resize }
+		.sw_resize { .sw_resize }
+		.ew_resize { .ew_resize }
+		.ns_resize { .ns_resize }
+		.nesw_resize { .nesw_resize }
+		.nwse_resize { .nwse_resize }
+		.grab { .grab }
+		.grabbing { .grabbing }
 	}
 }
 

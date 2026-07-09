@@ -54,6 +54,7 @@ $if darwin {
 	fn C.v_multiwindow_appkit_destroy_window(state voidptr)
 	fn C.v_multiwindow_appkit_release_window(state voidptr)
 	fn C.v_multiwindow_appkit_set_window_title(state voidptr, title &char) int
+	fn C.v_multiwindow_appkit_set_cursor_shape(state voidptr, shape int) int
 	fn C.v_multiwindow_appkit_resize_window(state voidptr, width int, height int, out_width &int, out_height &int, out_framebuffer_width &int, out_framebuffer_height &int) int
 	fn C.v_multiwindow_appkit_poll_events()
 	fn C.v_multiwindow_appkit_take_queued_event(state voidptr, out_event &C.VMultiwindowAppKitQueuedEvent) int
@@ -121,6 +122,8 @@ fn (backend &AppKitBackend) capabilities() Capabilities {
 		focus_events:       true
 		drop_events:        true
 		touch_events:       true
+		cursor_shapes:      true
+		native_decorations: true
 	}
 }
 
@@ -296,7 +299,7 @@ $if darwin {
 		for i in 0 .. native_event.dropped_file_count {
 			path := unsafe { native_event.dropped_files[i] }
 			if path != unsafe { nil } {
-				files << unsafe { cstring_to_vstring(path) }
+				files << unsafe { tos_clone(&u8(path)) }
 			}
 		}
 		return files
@@ -371,6 +374,20 @@ $if darwin {
 			})
 		}
 		return none
+	}
+}
+
+fn (mut backend AppKitBackend) set_window_cursor(id WindowId, shape CursorShape) ! {
+	$if darwin {
+		index := backend.window_record_index(id) or { return error(err_window_not_found) }
+		if C.v_multiwindow_appkit_set_cursor_shape(backend.windows[index].state, int(shape)) == 0 {
+			return error(err_capability_unsupported)
+		}
+		return
+	} $else {
+		_ = id
+		_ = shape
+		return error(err_backend_unsupported)
 	}
 }
 

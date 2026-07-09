@@ -25,6 +25,9 @@ fn test_multiwindow_new_app_reports_core_capabilities() {
 	assert caps.focus_events
 	assert caps.drop_events
 	assert caps.touch_events
+	assert !caps.cursor_shapes
+	assert !caps.interactive_move_resize
+	assert !caps.native_decorations
 
 	app.stop()!
 }
@@ -71,6 +74,9 @@ fn test_multiwindow_capabilities_for_backend_delegates_to_core() {
 	assert caps.focus_events
 	assert caps.drop_events
 	assert caps.touch_events
+	assert !caps.cursor_shapes
+	assert !caps.interactive_move_resize
+	assert !caps.native_decorations
 }
 
 fn test_multiwindow_plain_capabilities_use_core_probe_without_app_source_guard() {
@@ -98,13 +104,161 @@ fn test_multiwindow_capabilities_with_renderer_signature_source_guard() {
 	assert !source.contains('pub fn capabilities_for_backend_with_renderer(backend MultiWindowBackend,')
 }
 
+fn test_multiwindow_interactive_move_resize_source_guard() {
+	source := multiwindow_facade_source()
+	disabled_source := multiwindow_disabled_facade_source()
+
+	assert source.contains('pub enum WindowResizeEdge {')
+	assert disabled_source.contains('pub enum WindowResizeEdge {')
+	for edge_name in ['top', 'bottom', 'left', 'right', 'top_left', 'top_right', 'bottom_left',
+		'bottom_right'] {
+		assert source.contains('\t${edge_name}')
+		assert disabled_source.contains('\t${edge_name}')
+	}
+
+	assert source.contains('pub fn (mut app App) begin_window_move(id WindowId) !')
+	assert source.contains('app.core.begin_window_move(id.core)!')
+	assert source.contains('pub fn (mut app App) begin_window_resize(id WindowId, edge WindowResizeEdge) !')
+	assert source.contains('app.core.begin_window_resize(id.core, window_resize_edge_to_core(edge))!')
+	assert source.contains('fn window_resize_edge_to_core(edge WindowResizeEdge) multiwindow.WindowResizeEdge')
+	assert source.contains('interactive_move_resize bool')
+	assert source.contains('native_decorations')
+	assert source.contains('interactive_move_resize: caps.interactive_move_resize')
+	assert source.contains('native_decorations:      caps.native_decorations')
+	assert source.contains('pub enum WindowCursorShape {')
+	assert disabled_source.contains('pub enum WindowCursorShape {')
+	for shape_name in ['default', 'pointer', 'move', 'n_resize', 's_resize', 'e_resize', 'w_resize',
+		'ne_resize', 'nw_resize', 'se_resize', 'sw_resize', 'ew_resize', 'ns_resize', 'nesw_resize',
+		'nwse_resize', 'grab', 'grabbing'] {
+		assert source.contains('\t${shape_name}')
+		assert disabled_source.contains('\t${shape_name}')
+	}
+	assert source.contains('pub fn (mut app App) set_window_cursor(id WindowId, shape WindowCursorShape) !')
+	assert source.contains('app.core.set_window_cursor(id.core, window_cursor_shape_to_core(shape))!')
+	assert source.contains('fn window_cursor_shape_to_core(shape WindowCursorShape) multiwindow.CursorShape')
+	assert source.contains('cursor_shapes           bool')
+	assert source.contains('cursor_shapes:           caps.cursor_shapes')
+
+	assert disabled_source.contains('pub fn (mut app App) set_window_cursor(id WindowId, shape WindowCursorShape) !')
+	assert disabled_source.contains('pub fn (mut app App) begin_window_move(id WindowId) !')
+	assert disabled_source.contains('pub fn (mut app App) begin_window_resize(id WindowId, edge WindowResizeEdge) !')
+	disabled_cursor_source :=
+		disabled_source.all_after('// set_window_cursor updates').all_before('// begin_window_move starts')
+	disabled_move_source :=
+		disabled_source.all_after('// begin_window_move starts').all_before('// begin_window_resize starts')
+	disabled_resize_source :=
+		disabled_source.all_after('// begin_window_resize starts').all_before('// window_info returns')
+	assert disabled_cursor_source.contains('return error(err_multiwindow_not_enabled)')
+	assert disabled_move_source.contains('return error(err_multiwindow_not_enabled)')
+	assert disabled_resize_source.contains('return error(err_multiwindow_not_enabled)')
+	assert !disabled_source.contains('import x.multiwindow')
+}
+
+fn test_multiwindow_resize_edge_conversion_matches_core() {
+	assert window_resize_edge_to_core(.top) == multiwindow.WindowResizeEdge.top
+	assert window_resize_edge_to_core(.bottom) == multiwindow.WindowResizeEdge.bottom
+	assert window_resize_edge_to_core(.left) == multiwindow.WindowResizeEdge.left
+	assert window_resize_edge_to_core(.right) == multiwindow.WindowResizeEdge.right
+	assert window_resize_edge_to_core(.top_left) == multiwindow.WindowResizeEdge.top_left
+	assert window_resize_edge_to_core(.top_right) == multiwindow.WindowResizeEdge.top_right
+	assert window_resize_edge_to_core(.bottom_left) == multiwindow.WindowResizeEdge.bottom_left
+	assert window_resize_edge_to_core(.bottom_right) == multiwindow.WindowResizeEdge.bottom_right
+}
+
+fn test_multiwindow_cursor_shape_conversion_matches_core() {
+	assert window_cursor_shape_to_core(.default) == multiwindow.CursorShape.default
+	assert window_cursor_shape_to_core(.pointer) == multiwindow.CursorShape.pointer
+	assert window_cursor_shape_to_core(.move) == multiwindow.CursorShape.move
+	assert window_cursor_shape_to_core(.n_resize) == multiwindow.CursorShape.n_resize
+	assert window_cursor_shape_to_core(.s_resize) == multiwindow.CursorShape.s_resize
+	assert window_cursor_shape_to_core(.e_resize) == multiwindow.CursorShape.e_resize
+	assert window_cursor_shape_to_core(.w_resize) == multiwindow.CursorShape.w_resize
+	assert window_cursor_shape_to_core(.ne_resize) == multiwindow.CursorShape.ne_resize
+	assert window_cursor_shape_to_core(.nw_resize) == multiwindow.CursorShape.nw_resize
+	assert window_cursor_shape_to_core(.se_resize) == multiwindow.CursorShape.se_resize
+	assert window_cursor_shape_to_core(.sw_resize) == multiwindow.CursorShape.sw_resize
+	assert window_cursor_shape_to_core(.ew_resize) == multiwindow.CursorShape.ew_resize
+	assert window_cursor_shape_to_core(.ns_resize) == multiwindow.CursorShape.ns_resize
+	assert window_cursor_shape_to_core(.nesw_resize) == multiwindow.CursorShape.nesw_resize
+	assert window_cursor_shape_to_core(.nwse_resize) == multiwindow.CursorShape.nwse_resize
+	assert window_cursor_shape_to_core(.grab) == multiwindow.CursorShape.grab
+	assert window_cursor_shape_to_core(.grabbing) == multiwindow.CursorShape.grabbing
+}
+
 fn test_multiwindow_ci_does_not_run_gg_api_tests_under_fake_wayland_display() {
-	source := multiwindow_gg_regressions_workflow_source()
+	source := multiwindow_business_multiwindow_workflow_sources()
 	for line in source.split_into_lines() {
 		if line.contains('vlib/gg/multiwindow_api_d_gg_multiwindow_test.v') {
 			assert !line.contains('WAYLAND_DISPLAY=wayland-v-multiwindow-fake')
 		}
 	}
+}
+
+fn test_multiwindow_linux_ci_covers_multiwindow_workflows_source_guard() {
+	source := multiwindow_linux_workflow_source()
+	deps_source := multiwindow_linux_ci_script_source()
+	gcc_section := source.all_after('  gcc-linux:').all_before('\n  clang-linux:')
+
+	assert !source.contains('Install dependencies for gg multiwindow')
+	assert source.count('- name: Multiwindow Linux checks') == 1
+	assert gcc_section.contains('run: v run ci/linux_ci.vsh install_dependencies_for_examples_and_tools_gcc')
+	assert !gcc_section.contains('sudo apt install')
+	build_index := gcc_section.index('- name: Build V') or {
+		assert false, 'gcc-linux is missing the Build V step'
+		return
+	}
+	install_index := gcc_section.index('run: v run ci/linux_ci.vsh install_dependencies_for_examples_and_tools_gcc') or {
+		assert false, 'linux_ci.yml is missing the examples/tools dependency install step'
+		return
+	}
+	checks_index := gcc_section.index('- name: Multiwindow Linux checks') or {
+		assert false, 'linux_ci.yml is missing the unified Multiwindow Linux checks step'
+		return
+	}
+	next_gcc_step_index := gcc_section.index('- name: Recompile V with -cstrict and gcc') or {
+		assert false, 'gcc-linux is missing the step after Multiwindow Linux checks'
+		return
+	}
+	assert build_index < install_index
+	assert install_index < checks_index
+	assert checks_index < next_gcc_step_index
+	checks_body := gcc_section[checks_index..next_gcc_step_index]
+	for dependency in [
+		'libx11-dev',
+		'libxi-dev',
+		'libxcursor-dev',
+		'libxrandr-dev',
+		'libxkbcommon-dev',
+		'libxkbcommon-x11-dev',
+		'libgl-dev',
+		'libgl1-mesa-dri',
+		'libegl-dev',
+		'libwayland-dev',
+		'libwayland-egl1-mesa',
+		'wayland-protocols',
+		'xauth',
+		'xvfb',
+	] {
+		assert deps_source.contains(dependency), 'ci/linux_ci.vsh is missing dependency `${dependency}`'
+	}
+	assert checks_body.contains('vlib/gg/legacy_import_multiwindow_isolation_test.v')
+	assert checks_body.contains('env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE')
+	assert checks_body.contains('./v -d gg_multiwindow test')
+	assert checks_body.contains('./v -d gg_multiwindow -d sokol_wayland test')
+	assert checks_body.contains('xvfb-run -a -s "-screen 0 1280x1024x24"')
+	assert checks_body.contains('./v -d gg_multiwindow -d x_multiwindow_x11 test')
+	assert checks_body.contains('vlib/x/multiwindow')
+	assert checks_body.contains('vlib/gg/multiwindow_api_d_gg_multiwindow_test.v')
+	assert checks_body.contains('vlib/gg/frame_pacing_test.v')
+	assert checks_body.contains('vlib/gg/draw_fns_api_test.v')
+	assert checks_body.contains('./v -d gg_multiwindow -o /tmp/gg_multiwindow_default examples/gg/multiwindow.v')
+	assert checks_body.contains('./v -d gg_multiwindow -d x_multiwindow_x11 -o /tmp/gg_multiwindow_x11 examples/gg/multiwindow.v')
+	assert checks_body.contains('./v -d gg_multiwindow -d sokol_wayland -o /tmp/gg_multiwindow_wayland examples/gg/multiwindow.v')
+	assert checks_body.contains('run_headless_example "gg multiwindow headless mock" /tmp/gg_multiwindow_default')
+	assert checks_body.contains('run_headless_example "gg multiwindow Wayland-build headless mock" /tmp/gg_multiwindow_wayland')
+	assert checks_body.contains('run_x11_example "gg multiwindow Xvfb/X11" /tmp/gg_multiwindow_x11')
+	assert checks_body.contains('grep -Fq "capability families:" "$stdout"')
+	assert !checks_body.contains('gg_regressions_ci.yml')
 }
 
 fn test_multiwindow_auto_capabilities_match_new_app_lifecycle_policy() {
@@ -407,6 +561,66 @@ fn test_multiwindow_create_destroy_window_lifecycle_and_events() {
 	app.stop()!
 }
 
+fn test_multiwindow_interactive_move_resize_mock_reports_unsupported() {
+	mut app := new_app(backend: .mock)!
+	win := app.create_window(title: 'Interactive inspector', width: 320, height: 240)!
+	assert app.drain_events()!.len == 1
+
+	mut move_rejected := false
+	app.begin_window_move(win) or {
+		assert err.msg() == 'multiwindow: backend capability is unsupported'
+		move_rejected = true
+	}
+	assert move_rejected
+
+	for edge in all_window_resize_edges_for_test() {
+		mut resize_rejected := false
+		app.begin_window_resize(win, edge) or {
+			assert err.msg() == 'multiwindow: backend capability is unsupported'
+			resize_rejected = true
+		}
+		assert resize_rejected, 'mock backend accepted interactive resize edge ${edge}'
+	}
+
+	fixed := app.create_window(title: 'Fixed inspector', width: 320, height: 240, resizable: false)!
+	assert app.drain_events()!.len == 1
+	mut fixed_resize_rejected := false
+	app.begin_window_resize(fixed, .bottom_right) or {
+		assert err.msg() == 'multiwindow: backend capability is unsupported'
+		fixed_resize_rejected = true
+	}
+	assert fixed_resize_rejected
+	app.stop()!
+}
+
+fn test_multiwindow_cursor_shape_mock_reports_unsupported() {
+	mut app := new_app(backend: .mock)!
+	win := app.create_window(title: 'Cursor inspector', width: 320, height: 240)!
+	assert app.drain_events()!.len == 1
+	assert !app.capabilities().cursor_shapes
+
+	mut cursor_rejected := false
+	app.set_window_cursor(win, .pointer) or {
+		assert err.msg() == 'multiwindow: backend capability is unsupported'
+		cursor_rejected = true
+	}
+	assert cursor_rejected
+	app.stop()!
+}
+
+fn all_window_resize_edges_for_test() []WindowResizeEdge {
+	return [
+		WindowResizeEdge.top,
+		.bottom,
+		.left,
+		.right,
+		.top_left,
+		.top_right,
+		.bottom_left,
+		.bottom_right,
+	]
+}
+
 fn test_multiwindow_drain_input_events_routes_gg_event_without_lifecycle_pollution() {
 	mut app := new_app(backend: .mock)!
 	win := app.create_window(title: 'Input inspector', width: 320, height: 240)!
@@ -696,6 +910,20 @@ fn test_multiwindow_draw_window_commits_each_frame_source_guard() {
 	assert draw_window_source.contains('gfx.end_pass()\n\tgfx.commit()\n\tapp.core.end_render(frame)!')
 }
 
+fn test_multiwindow_window_context_rect_helpers_source_guard() {
+	source := multiwindow_facade_source()
+	disabled_source := multiwindow_disabled_facade_source()
+
+	assert source.contains('pub fn (context &WindowContext) draw_rect_filled')
+	assert source.contains('pub fn (context &WindowContext) draw_rect_empty')
+	assert source.contains('sgl.set_context(context.sgl_context)')
+	assert source.contains('sgl.begin_quads()')
+	assert source.contains('sgl.begin_lines()')
+	assert !source.contains('pub fn (context &WindowContext) draw_text')
+	assert disabled_source.contains('pub fn (context &WindowContext) draw_rect_filled')
+	assert disabled_source.contains('pub fn (context &WindowContext) draw_rect_empty')
+}
+
 fn test_multiwindow_run_rejects_missing_callbacks() {
 	mut app := new_app(backend: .mock)!
 	app.run() or {
@@ -721,6 +949,14 @@ fn test_multiwindow_zero_value_app_methods_return_initialized_error() {
 		rejected += 1
 	}
 	app.resize_window(id, 1, 1) or {
+		assert err.msg() == err_multiwindow_app_not_initialized
+		rejected += 1
+	}
+	app.begin_window_move(id) or {
+		assert err.msg() == err_multiwindow_app_not_initialized
+		rejected += 1
+	}
+	app.begin_window_resize(id, .bottom_right) or {
 		assert err.msg() == err_multiwindow_app_not_initialized
 		rejected += 1
 	}
@@ -800,7 +1036,7 @@ fn test_multiwindow_zero_value_app_methods_return_initialized_error() {
 		rejected += 1
 	}
 
-	assert rejected == 17
+	assert rejected == 19
 	assert !app.window_exists(id)
 	assert !app.capabilities().multi_window
 }
@@ -1601,6 +1837,8 @@ fn main() {
 	assert context.window_id().str() == win.str()
 	app.draw_window(win, fn (mut window gg.WindowContext) ! {
 		_ = window.window_id()
+		window.draw_rect_filled(0, 0, 8, 8, gg.rgb(20, 40, 60))
+		window.draw_rect_empty(0, 0, 8, 8, gg.white)
 	}) or {}
 	app.run(frame_fn: fn (mut app gg.App) ! {
 		_ = app.capabilities()
@@ -1661,14 +1899,124 @@ fn test_multiwindow_checked_in_example_compiles_without_running() {
 	multiwindow_assert_command_ok('compile checked-in gg multiwindow example', cmd, compile)
 }
 
-fn test_multiwindow_checked_in_example_wraps_resize_unsupported_source_guard() {
+fn test_multiwindow_checked_in_example_uses_window_context_draw_api_source_guard() {
 	source := multiwindow_example_source()
+
+	assert source.contains('import gg')
+	assert !source.contains('import sokol')
+	assert !source.contains('import x.multiwindow')
+	assert source.contains('frame_fn:')
+	assert source.contains('state.draw(mut app)!')
+	assert source.contains('app.draw_window')
+	assert source.contains('draw_rect_filled')
+	assert source.contains('draw_rect_empty')
+}
+
+fn test_multiwindow_checked_in_example_headless_mock_outputs_event_markers() {
+	$if linux {
+		vlib_dir := os.dir(@DIR)
+		example_path := os.join_path(vlib_dir, '..', 'examples', 'gg', 'multiwindow.v')
+		cmd := 'env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ${os.quoted_path(@VEXE)}${multiwindow_child_v_flags()} -path "${vlib_dir}|@vlib|@vmodules" run ${os.quoted_path(example_path)}'
+		run := os.execute(cmd)
+		multiwindow_assert_command_ok('run checked-in gg multiwindow example headless mock', cmd,
+			run)
+		output := run.output
+		for marker in [
+			'gg multi-window backend: mock',
+			'capability families:',
+			'windows=true owner_queue=true native=false',
+			'render explicit_swapchain=false',
+			'input=true mouse=true keyboard=true text=true focus=true drop=true touch=true',
+			'mock backend selected; stopping after initial lifecycle events',
+			'live windows:',
+			'window created:',
+			'window resized:',
+		] {
+			assert output.contains(marker), 'example output is missing marker `${marker}`:
+${output}'
+		}
+		assert !output.contains('multi-window example failed')
+		assert !output.contains('input marker:')
+	} $else {
+		return
+	}
+}
+
+fn test_multiwindow_checked_in_example_capabilities_and_input_summary_source_guard() {
+	source := multiwindow_example_source()
+	input_summary_source :=
+		source.all_after('fn input_event_summary').all_before('fn resize_or_ignore_unsupported')
 
 	assert source.contains('resize_or_ignore_unsupported')
 	assert source.contains("err.msg() == 'multiwindow: backend capability is unsupported'")
-	assert source.contains('input_fn: fn [mut state] (event gg.WindowInputEvent, mut app gg.App) !')
+	assert source.contains('print_capability_families(caps)')
+	assert source.contains('capability families:')
+	assert source.contains('keyboard=')
+	assert source.contains('caps.keyboard_events')
+	assert source.contains('touch=')
+	assert source.contains('caps.touch_events')
+	assert source.contains('caps.cursor_shapes')
 	assert source.contains('input_event_summary(event)')
-	assert source.contains('input logging enabled for key/mouse/focus/scroll events')
+	assert source.contains('input_fn: fn [mut state] (event gg.WindowInputEvent, mut app gg.App) !')
+	assert source.contains('visual dashboards enabled in each window')
+	assert source.contains('input logging enabled for key/mouse/focus/scroll/drop/touch events')
+	assert source.contains('Wayland client-side titlebar/frame enabled')
+	assert source.contains('chrome: Wayland client-side titlebar/frame')
+	assert source.contains('app.destroy_window(event.window)!')
+	assert source.contains('interactive move started')
+	assert source.contains('native_decorations := state.window_native_decorations(event.window)')
+	assert source.contains('update_client_chrome_cursor(event, mut app, state.caps, native_decorations)')
+	assert source.contains('maybe_begin_client_chrome_action(event, mut app, state.caps,')
+	assert source.contains('app.set_window_cursor(event.window, shape)!')
+	assert !source.contains('return gg.WindowResizeEdge.top\n')
+	assert !source.contains('x.multiwindow')
+	assert !source.contains('enqueue_mock_input_for_test')
+	assert !source.contains('input marker:')
+
+	chrome_draw_source :=
+		source.all_after('fn draw_client_chrome_zones').all_before('fn draw_client_chrome_close_button')
+	chrome_draw_guard := chrome_draw_source.all_before('titlebar := client_chrome_titlebar_height')
+	assert chrome_draw_guard.contains('if !client_chrome_enabled(caps, dashboard.native_decorations) {\n\t\treturn\n\t}')
+	assert !chrome_draw_guard.contains('draw_rect_')
+	assert chrome_draw_source.contains('draw_client_chrome_titlebar_separators(mut window, width)')
+	assert chrome_draw_source.contains('draw_client_chrome_minimize_button(mut window, width)')
+	assert chrome_draw_source.contains('draw_client_chrome_maximize_button(mut window, width)')
+	assert chrome_draw_source.contains('draw_client_chrome_close_button(mut window, width)')
+	assert source.count('draw_client_chrome_close_button(mut window, width)') == 1
+	assert source.contains('fn inactive_client_chrome_control_hit_at')
+	assert source.contains('inactive_control := inactive_client_chrome_control_hit_at(input.mouse_x')
+	assert source.contains('if inactive_control {\n\t\treturn')
+	client_chrome_predicate :=
+		source.all_after('fn client_chrome_enabled(caps gg.Capabilities, native_decorations bool) bool').all_before('fn move_hit_at')
+	assert client_chrome_predicate.contains('return caps.wayland && caps.interactive_move_resize && !native_decorations')
+
+	for branch in [
+		'.key_down {',
+		'.key_up {',
+		'.char {',
+		'.mouse_down {',
+		'.mouse_up {',
+		'.mouse_move {',
+		'.mouse_scroll {',
+		'.mouse_enter {',
+		'.mouse_leave {',
+		'.touches_began {',
+		'.touches_moved {',
+		'.touches_ended {',
+		'.touches_cancelled {',
+		'.resized {',
+		'.iconified {',
+		'.restored {',
+		'.focused {',
+		'.unfocused {',
+		'.suspended {',
+		'.resumed {',
+		'.quit_requested {',
+		'.clipboard_pasted {',
+		'.files_dropped {',
+	] {
+		assert input_summary_source.contains(branch), 'input_event_summary is missing branch `${branch}`'
+	}
 	assert !multiwindow_source_has_unwrapped_resize_window(source)
 }
 
@@ -1700,10 +2048,41 @@ fn multiwindow_facade_source() string {
 	return os.read_file(os.join_path(@DIR, 'multiwindow_d_gg_multiwindow.v')) or { panic(err) }
 }
 
-fn multiwindow_gg_regressions_workflow_source() string {
+fn multiwindow_disabled_facade_source() string {
+	return os.read_file(os.join_path(@DIR, 'multiwindow_notd_gg_multiwindow.v')) or { panic(err) }
+}
+
+fn multiwindow_linux_workflow_source() string {
 	vlib_dir := os.dir(@DIR)
-	workflow_path := os.join_path(vlib_dir, '..', '.github', 'workflows', 'gg_regressions_ci.yml')
-	return os.read_file(workflow_path) or { panic(err) }
+	workflow_path := os.join_path(vlib_dir, '..', '.github', 'workflows', 'linux_ci.yml')
+	return os.read_file(workflow_path) or {
+		assert false, 'expected business Linux workflow at ${workflow_path}: ${err.msg()}'
+		return ''
+	}
+}
+
+fn multiwindow_linux_ci_script_source() string {
+	vlib_dir := os.dir(@DIR)
+	script_path := os.join_path(vlib_dir, '..', 'ci', 'linux_ci.vsh')
+	return os.read_file(script_path) or {
+		assert false, 'expected business Linux CI script at ${script_path}: ${err.msg()}'
+		return ''
+	}
+}
+
+fn multiwindow_business_multiwindow_workflow_sources() string {
+	vlib_dir := os.dir(@DIR)
+	workflow_dir := os.join_path(vlib_dir, '..', '.github', 'workflows')
+	mut sources := []string{}
+	for workflow_name in ['linux_ci.yml', 'macos_ci.yml', 'windows_ci_msvc.yml', 'windows_ci_gcc.yml',
+		'windows_ci_tcc.yml'] {
+		workflow_path := os.join_path(workflow_dir, workflow_name)
+		if os.exists(workflow_path) {
+			sources << os.read_file(workflow_path) or { panic(err) }
+		}
+	}
+	assert sources.len > 0
+	return sources.join('\n')
 }
 
 fn multiwindow_example_source() string {

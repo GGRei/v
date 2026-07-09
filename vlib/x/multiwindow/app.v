@@ -130,6 +130,48 @@ pub fn (mut app App) resize_window(id WindowId, width int, height int) ! {
 	})
 }
 
+// set_window_cursor updates the native hover cursor for a live window when the
+// selected backend reports capabilities().cursor_shapes.
+pub fn (mut app App) set_window_cursor(id WindowId, shape CursorShape) ! {
+	app.assert_owner_thread()!
+	app.state_mutex.lock()
+	defer {
+		app.state_mutex.unlock()
+	}
+	app.ensure_running_locked()!
+	app.live_window_index(id)!
+	app.backend.set_window_cursor(id, shape)!
+}
+
+// begin_window_move starts a user-driven native move for a live window.
+// Backends that require a recent native input serial may reject the request
+// when it is not made from a deliberate user-action path.
+pub fn (mut app App) begin_window_move(id WindowId) ! {
+	app.assert_owner_thread()!
+	app.state_mutex.lock()
+	defer {
+		app.state_mutex.unlock()
+	}
+	app.ensure_running_locked()!
+	app.live_window_index(id)!
+	app.backend.begin_window_move(id)!
+}
+
+// begin_window_resize starts a user-driven native resize for a live resizable window.
+pub fn (mut app App) begin_window_resize(id WindowId, edge WindowResizeEdge) ! {
+	app.assert_owner_thread()!
+	app.state_mutex.lock()
+	defer {
+		app.state_mutex.unlock()
+	}
+	app.ensure_running_locked()!
+	index := app.live_window_index(id)!
+	if !app.windows[index].config.resizable {
+		return error(err_capability_unsupported)
+	}
+	app.backend.begin_window_resize(id, edge)!
+}
+
 // window_info returns a snapshot of the authoritative App-side window state.
 pub fn (app &App) window_info(id WindowId) !WindowInfo {
 	app.assert_owner_thread()!
@@ -138,7 +180,9 @@ pub fn (app &App) window_info(id WindowId) !WindowInfo {
 		app.state_mutex.unlock()
 	}
 	index := app.live_window_index(id)!
-	return window_info_from_slot(app.windows[index])
+	slot := app.windows[index]
+	native_decorations := app.backend.window_native_decorations(slot.id, slot.config)!
+	return window_info_from_slot(slot, native_decorations)
 }
 
 // window_ids returns live window ids in stable slot order.
@@ -167,7 +211,8 @@ pub fn (app &App) window_infos() ![]WindowInfo {
 	mut infos := []WindowInfo{cap: app.windows.len}
 	for slot in app.windows {
 		if slot.status == .alive {
-			infos << window_info_from_slot(slot)
+			native_decorations := app.backend.window_native_decorations(slot.id, slot.config)!
+			infos << window_info_from_slot(slot, native_decorations)
 		}
 	}
 	return infos
@@ -582,21 +627,22 @@ fn window_config_with_size(config WindowConfig, width int, height int) WindowCon
 	}
 }
 
-fn window_info_from_slot(slot WindowSlot) WindowInfo {
+fn window_info_from_slot(slot WindowSlot, native_decorations bool) WindowInfo {
 	config := slot.config
 	return WindowInfo{
-		id:         slot.id
-		status:     slot.status
-		title:      config.title
-		width:      config.width
-		height:     config.height
-		min_width:  config.min_width
-		min_height: config.min_height
-		resizable:  config.resizable
-		visible:    config.visible
-		high_dpi:   config.high_dpi
-		borderless: config.borderless
-		fullscreen: config.fullscreen
+		id:                 slot.id
+		status:             slot.status
+		title:              config.title
+		width:              config.width
+		height:             config.height
+		min_width:          config.min_width
+		min_height:         config.min_height
+		resizable:          config.resizable
+		visible:            config.visible
+		high_dpi:           config.high_dpi
+		borderless:         config.borderless
+		fullscreen:         config.fullscreen
+		native_decorations: native_decorations
 	}
 }
 

@@ -9,6 +9,24 @@
 #include <string.h>
 #include "appkit_backend_helpers.h"
 
+#define V_MULTIWINDOW_CURSOR_SHAPE_DEFAULT 0
+#define V_MULTIWINDOW_CURSOR_SHAPE_POINTER 1
+#define V_MULTIWINDOW_CURSOR_SHAPE_MOVE 2
+#define V_MULTIWINDOW_CURSOR_SHAPE_N_RESIZE 3
+#define V_MULTIWINDOW_CURSOR_SHAPE_S_RESIZE 4
+#define V_MULTIWINDOW_CURSOR_SHAPE_E_RESIZE 5
+#define V_MULTIWINDOW_CURSOR_SHAPE_W_RESIZE 6
+#define V_MULTIWINDOW_CURSOR_SHAPE_NE_RESIZE 7
+#define V_MULTIWINDOW_CURSOR_SHAPE_NW_RESIZE 8
+#define V_MULTIWINDOW_CURSOR_SHAPE_SE_RESIZE 9
+#define V_MULTIWINDOW_CURSOR_SHAPE_SW_RESIZE 10
+#define V_MULTIWINDOW_CURSOR_SHAPE_EW_RESIZE 11
+#define V_MULTIWINDOW_CURSOR_SHAPE_NS_RESIZE 12
+#define V_MULTIWINDOW_CURSOR_SHAPE_NESW_RESIZE 13
+#define V_MULTIWINDOW_CURSOR_SHAPE_NWSE_RESIZE 14
+#define V_MULTIWINDOW_CURSOR_SHAPE_GRAB 15
+#define V_MULTIWINDOW_CURSOR_SHAPE_GRABBING 16
+
 @class VMultiwindowAppKitWindowState;
 
 @interface VMultiwindowAppKitView : NSView <NSDraggingDestination>
@@ -39,6 +57,7 @@
 @property(assign) int height;
 @property(assign) int framebufferWidth;
 @property(assign) int framebufferHeight;
+@property(assign) int cursorShape;
 - (void)updateDimensions;
 - (BOOL)ensureDepthTextureWithDevice:(id<MTLDevice>)device;
 - (void)queueLifecycleEvent:(int)kind;
@@ -52,6 +71,7 @@
 - (void)setKeyDown:(BOOL)down forKeyCode:(int)keyCode;
 - (void)clearKeyDownState;
 - (void)clearQueuedEvents;
+- (void)applyCursorShape;
 @end
 
 static uint64_t v_multiwindow_appkit_next_event_sequence(void) {
@@ -63,6 +83,36 @@ static VMultiwindowAppKitQueuedEvent v_multiwindow_appkit_zero_event(void) {
 	VMultiwindowAppKitQueuedEvent event = {0};
 	event.mouse_button = V_MULTIWINDOW_APPKIT_MOUSE_BUTTON_INVALID;
 	return event;
+}
+
+static NSCursor *v_multiwindow_appkit_cursor_for_shape(int shape) {
+	switch (shape) {
+	case V_MULTIWINDOW_CURSOR_SHAPE_POINTER:
+		return [NSCursor pointingHandCursor];
+	case V_MULTIWINDOW_CURSOR_SHAPE_MOVE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_GRAB:
+		return [NSCursor openHandCursor];
+	case V_MULTIWINDOW_CURSOR_SHAPE_GRABBING:
+		return [NSCursor closedHandCursor];
+	case V_MULTIWINDOW_CURSOR_SHAPE_N_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_S_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_NS_RESIZE:
+		return [NSCursor resizeUpDownCursor];
+	case V_MULTIWINDOW_CURSOR_SHAPE_E_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_W_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_EW_RESIZE:
+		return [NSCursor resizeLeftRightCursor];
+	case V_MULTIWINDOW_CURSOR_SHAPE_NE_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_SW_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_NESW_RESIZE:
+		return [NSCursor resizeUpDownCursor];
+	case V_MULTIWINDOW_CURSOR_SHAPE_NW_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_SE_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_NWSE_RESIZE:
+		return [NSCursor resizeLeftRightCursor];
+	default:
+		return [NSCursor arrowCursor];
+	}
 }
 
 static char *v_multiwindow_appkit_copy_cstring(const char *value) {
@@ -597,6 +647,10 @@ static void v_multiwindow_appkit_fill_touch_point(VMultiwindowAppKitWindowState 
 	[self.queuedEvents removeAllObjects];
 }
 
+- (void)applyCursorShape {
+	[v_multiwindow_appkit_cursor_for_shape(self.cursorShape) set];
+}
+
 - (BOOL)windowShouldClose:(id)sender {
 	(void)sender;
 	[self queueLifecycleEvent:V_MULTIWINDOW_APPKIT_LIFECYCLE_CLOSE_REQUESTED];
@@ -729,6 +783,14 @@ static void v_multiwindow_appkit_fill_touch_point(VMultiwindowAppKitWindowState 
 	                                                userInfo:nil];
 	[self addTrackingArea:self.trackingArea];
 	[super updateTrackingAreas];
+}
+
+- (void)cursorUpdate:(NSEvent *)event {
+	(void)event;
+	VMultiwindowAppKitWindowState *state = self.state;
+	if (state != nil) {
+		[state applyCursorShape];
+	}
 }
 
 - (void)queueMouseEvent:(NSEvent *)event kind:(int)kind button:(int)button clearDelta:(BOOL)clearDelta {
@@ -1163,6 +1225,23 @@ int v_multiwindow_appkit_set_window_title(void *state_ptr, const char *title) {
 			return 0;
 		}
 		state.window.title = v_multiwindow_appkit_string(title);
+		return 1;
+	}
+}
+
+int v_multiwindow_appkit_set_cursor_shape(void *state_ptr, int shape) {
+	@autoreleasepool {
+		if (state_ptr == NULL || ![NSThread isMainThread] ||
+		    shape < V_MULTIWINDOW_CURSOR_SHAPE_DEFAULT ||
+		    shape > V_MULTIWINDOW_CURSOR_SHAPE_GRABBING) {
+			return 0;
+		}
+		VMultiwindowAppKitWindowState *state = (__bridge VMultiwindowAppKitWindowState *)state_ptr;
+		if (state.window == nil) {
+			return 0;
+		}
+		state.cursorShape = shape;
+		[state applyCursorShape];
 		return 1;
 	}
 }

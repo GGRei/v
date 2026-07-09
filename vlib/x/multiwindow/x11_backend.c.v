@@ -27,6 +27,7 @@ const x11_focus_in = 9
 const x11_focus_out = 10
 const x11_property_notify = 28
 const x11_selection_notify = 31
+const x11_success = 0
 const x11_scroll_up = 4
 const x11_scroll_down = 5
 const x11_scroll_right = 6
@@ -39,7 +40,7 @@ const x11_iconic_state = 3
 const x11_modifier_ctrl = u32(2)
 const x11_key_v = 86
 const x11_xdnd_version = 5
-const x11_max_char_codes = 32
+const x11_max_char_codes = 32768
 
 $if x32 {
 	type X11NativeLong = int
@@ -51,6 +52,7 @@ $if x32 {
 
 type X11NativeAtom = X11NativeULong
 type X11NativeColormap = X11NativeULong
+type X11NativeCursor = X11NativeULong
 type X11NativeWindow = X11NativeULong
 
 struct C.Display {}
@@ -144,6 +146,9 @@ $if linux && x_multiwindow_x11 ? {
 	fn C.XMapWindow(display &C.Display, window X11NativeWindow) int
 	fn C.XResizeWindow(display &C.Display, window X11NativeWindow, width u32, height u32) int
 	fn C.XDestroyWindow(display &C.Display, window X11NativeWindow) int
+	fn C.XDefineCursor(display &C.Display, window X11NativeWindow, cursor X11NativeCursor) int
+	fn C.XUndefineCursor(display &C.Display, window X11NativeWindow) int
+	fn C.XFreeCursor(display &C.Display, cursor X11NativeCursor) int
 	fn C.XFreeColormap(display &C.Display, colormap X11NativeColormap) int
 	fn C.XFlush(display &C.Display) int
 	fn C.XSync(display &C.Display, discard int) int
@@ -179,6 +184,7 @@ $if linux && x_multiwindow_x11 ? {
 	fn C.v_multiwindow_x11_init_keycodes(display &C.Display, keycodes &int, keycodes_len int)
 	fn C.v_multiwindow_x11_key_code(event &C.XEvent, keycodes &int, keycodes_len int) int
 	fn C.v_multiwindow_x11_char_codes(ic voidptr, event &C.XEvent, codes &u32, codes_len int) int
+	fn C.v_multiwindow_x11_create_cursor_for_shape(display &C.Display, shape int) X11NativeCursor
 	fn C.v_multiwindow_x11_apply_config_hints(display &C.Display, window X11NativeWindow, width int, height int, min_width int, min_height int, resizable int, borderless int, fullscreen int) int
 	fn C.v_multiwindow_x11_get_window_size(display &C.Display, window X11NativeWindow, out_width &int, out_height &int) int
 	fn C.v_multiwindow_x11_egl_get_display(display &C.Display) voidptr
@@ -203,7 +209,9 @@ struct X11WindowRecord {
 	xic         voidptr
 	egl_surface voidptr
 mut:
+	cursor          X11NativeCursor
 	config          WindowConfig
+	cursor_shape    CursorShape
 	width           int
 	height          int
 	mouse_x         f32
@@ -278,6 +286,8 @@ fn (backend &X11Backend) capabilities() Capabilities {
 		focus_events:       true
 		drop_events:        true
 		touch_events:       false
+		cursor_shapes:      true
+		native_decorations: true
 	}
 }
 
@@ -525,6 +535,41 @@ fn (mut backend X11Backend) resize_window(id WindowId, width int, height int) !W
 	}
 }
 
+fn (mut backend X11Backend) set_window_cursor(id WindowId, shape CursorShape) ! {
+	$if linux && x_multiwindow_x11 ? {
+		index := backend.window_record_index(id) or { return error(err_window_not_found) }
+		if !backend.started || backend.display == unsafe { nil } {
+			return error(err_x11_open_display_failed)
+		}
+		if backend.windows[index].cursor_shape == shape {
+			return
+		}
+		window := backend.windows[index].window
+		if shape == .default {
+			C.XUndefineCursor(backend.display, window)
+			backend.free_cursor_for_record(index)
+		} else {
+			cursor := C.v_multiwindow_x11_create_cursor_for_shape(backend.display, int(shape))
+			if cursor == X11NativeCursor(0) {
+				return error(err_capability_unsupported)
+			}
+			if C.XDefineCursor(backend.display, window, cursor) == 0 {
+				C.XFreeCursor(backend.display, cursor)
+				return error(err_capability_unsupported)
+			}
+			backend.free_cursor_for_record(index)
+			backend.windows[index].cursor = cursor
+		}
+		backend.windows[index].cursor_shape = shape
+		C.XFlush(backend.display)
+		return
+	} $else {
+		_ = id
+		_ = shape
+		return error(err_backend_unsupported)
+	}
+}
+
 fn (mut backend X11Backend) poll_events() ![]Event {
 	queued_events := backend.poll_queued_events()!
 	mut events := []Event{cap: queued_events.len}
@@ -752,9 +797,9 @@ $if linux && x_multiwindow_x11 ? {
 					.clipboard_pasted, 0, false, modifiers, x11_invalid_mouse_button, 0, 0))
 			}
 		}
-		mut char_codes := [x11_max_char_codes]u32{}
+		mut char_codes := []u32{len: x11_max_char_codes}
 		char_count := C.v_multiwindow_x11_char_codes(backend.windows[index].xic, event,
-			&char_codes[0], x11_max_char_codes)
+			unsafe { &char_codes[0] }, x11_max_char_codes)
 		for i in 0 .. char_count {
 			events << queued_input_event(backend.input_char_event(backend.windows[index],
 				char_codes[i], repeat, modifiers))
@@ -875,17 +920,17 @@ $if linux && x_multiwindow_x11 ? {
 		mut actual_format := 0
 		mut item_count := X11NativeULong(0)
 		mut bytes_after := X11NativeULong(0)
-		mut state := &u8(unsafe { nil })
-		C.XGetWindowProperty(backend.display, window, backend.wm_state, X11NativeLong(0),
+		mut state := &X11NativeLong(unsafe { nil })
+		status := C.XGetWindowProperty(backend.display, window, backend.wm_state, X11NativeLong(0),
 			X11NativeLong(0x7fffffff), 0, backend.wm_state, &actual_type, &actual_format,
-			&item_count, &bytes_after, &&u8(&state))
-		if item_count >= X11NativeULong(2) && state != unsafe { nil } {
-			unsafe {
-				result = int(*(&u32(state)))
-			}
+			&item_count, &bytes_after, unsafe { &&u8(&state) })
+		if status == x11_success && actual_type == backend.wm_state && actual_format == 32
+			&& item_count >= X11NativeULong(2) && state != unsafe { nil } {
+			state_value := unsafe { state[0] }
+			result = int(state_value)
 		}
 		if state != unsafe { nil } {
-			C.XFree(state)
+			C.XFree(unsafe { voidptr(state) })
 		}
 		return result
 	}
@@ -1287,11 +1332,30 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 	}
 }
 
+fn (mut backend X11Backend) free_cursor_for_record(index int) {
+	$if linux && x_multiwindow_x11 ? {
+		if index < 0 || index >= backend.windows.len {
+			return
+		}
+		cursor := backend.windows[index].cursor
+		if backend.display != unsafe { nil } && cursor != X11NativeCursor(0) {
+			C.XFreeCursor(backend.display, cursor)
+		}
+		backend.windows[index].cursor = X11NativeCursor(0)
+		return
+	} $else {
+		_ = index
+	}
+}
+
 fn (mut backend X11Backend) release_window_resources(record X11WindowRecord, destroy_native bool) ! {
 	$if linux && x_multiwindow_x11 ? {
 		if backend.egl_display != unsafe { nil } && record.egl_surface != unsafe { nil } {
 			C.v_multiwindow_x11_egl_clear_current(backend.egl_display)
 			C.v_multiwindow_x11_egl_destroy_surface(backend.egl_display, record.egl_surface)
+		}
+		if backend.display != unsafe { nil } && record.cursor != X11NativeCursor(0) {
+			C.XFreeCursor(backend.display, record.cursor)
 		}
 		if record.xic != unsafe { nil } {
 			C.v_multiwindow_x11_destroy_ic(record.xic)

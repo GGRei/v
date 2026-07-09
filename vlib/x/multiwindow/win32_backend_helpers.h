@@ -47,9 +47,9 @@ V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_destroyed(v
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_resized(void *data, uint64_t sequence, int width, int height);
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_input_event(void *data, uint64_t sequence, int kind, int key_code, uint32_t char_code, int key_repeat, uint32_t modifiers, int mouse_button, int mouse_x, int mouse_y, int wheel_delta_x, int wheel_delta_y);
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_drop_begin(void *data, uint64_t sequence, int mouse_x, int mouse_y, uint32_t modifiers);
-V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_drop_file(void *data, uint64_t sequence, const char *path);
+V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_drop_file(void *data, uint64_t sequence, char *path);
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_drop_end(void *data, uint64_t sequence);
-V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_touch_event(void *data, uint64_t sequence, int kind, uint32_t modifiers, int count, const uint64_t *ids, const int *xs, const int *ys, const int *changed);
+V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_touch_event(void *data, uint64_t sequence, int kind, uint32_t modifiers, int count, uint64_t *ids, int *xs, int *ys, int *changed);
 #undef V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE
 #ifdef __cplusplus
 }
@@ -87,10 +87,29 @@ V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_touch_event
 #define MAPVK_VSC_TO_VK_EX 3
 #endif
 
+#define V_MULTIWINDOW_CURSOR_SHAPE_DEFAULT 0
+#define V_MULTIWINDOW_CURSOR_SHAPE_POINTER 1
+#define V_MULTIWINDOW_CURSOR_SHAPE_MOVE 2
+#define V_MULTIWINDOW_CURSOR_SHAPE_N_RESIZE 3
+#define V_MULTIWINDOW_CURSOR_SHAPE_S_RESIZE 4
+#define V_MULTIWINDOW_CURSOR_SHAPE_E_RESIZE 5
+#define V_MULTIWINDOW_CURSOR_SHAPE_W_RESIZE 6
+#define V_MULTIWINDOW_CURSOR_SHAPE_NE_RESIZE 7
+#define V_MULTIWINDOW_CURSOR_SHAPE_NW_RESIZE 8
+#define V_MULTIWINDOW_CURSOR_SHAPE_SE_RESIZE 9
+#define V_MULTIWINDOW_CURSOR_SHAPE_SW_RESIZE 10
+#define V_MULTIWINDOW_CURSOR_SHAPE_EW_RESIZE 11
+#define V_MULTIWINDOW_CURSOR_SHAPE_NS_RESIZE 12
+#define V_MULTIWINDOW_CURSOR_SHAPE_NESW_RESIZE 13
+#define V_MULTIWINDOW_CURSOR_SHAPE_NWSE_RESIZE 14
+#define V_MULTIWINDOW_CURSOR_SHAPE_GRAB 15
+#define V_MULTIWINDOW_CURSOR_SHAPE_GRABBING 16
+
 static const wchar_t *v_multiwindow_win32_class_name = L"V_x_multiwindow_win32";
 static const wchar_t *v_multiwindow_win32_min_width_prop = L"V_x_multiwindow_min_width";
 static const wchar_t *v_multiwindow_win32_min_height_prop = L"V_x_multiwindow_min_height";
 static const wchar_t *v_multiwindow_win32_mouse_tracked_prop = L"V_x_multiwindow_mouse_tracked";
+static const wchar_t *v_multiwindow_win32_cursor_shape_prop = L"V_x_multiwindow_cursor_shape";
 
 static inline int v_multiwindow_win32_max_int(int a, int b) {
 	return a > b ? a : b;
@@ -106,6 +125,45 @@ static inline void v_multiwindow_win32_set_hwnd_int_prop(HWND hwnd, const wchar_
 	} else {
 		RemovePropW(hwnd, name);
 	}
+}
+
+static inline LPCWSTR v_multiwindow_win32_cursor_id_for_shape(int shape) {
+	switch (shape) {
+	case V_MULTIWINDOW_CURSOR_SHAPE_POINTER:
+		return IDC_HAND;
+	case V_MULTIWINDOW_CURSOR_SHAPE_MOVE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_GRAB:
+	case V_MULTIWINDOW_CURSOR_SHAPE_GRABBING:
+		return IDC_SIZEALL;
+	case V_MULTIWINDOW_CURSOR_SHAPE_N_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_S_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_NS_RESIZE:
+		return IDC_SIZENS;
+	case V_MULTIWINDOW_CURSOR_SHAPE_E_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_W_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_EW_RESIZE:
+		return IDC_SIZEWE;
+	case V_MULTIWINDOW_CURSOR_SHAPE_NE_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_SW_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_NESW_RESIZE:
+		return IDC_SIZENESW;
+	case V_MULTIWINDOW_CURSOR_SHAPE_NW_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_SE_RESIZE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_NWSE_RESIZE:
+		return IDC_SIZENWSE;
+	default:
+		return IDC_ARROW;
+	}
+}
+
+static inline int v_multiwindow_win32_apply_cursor_shape(HWND hwnd) {
+	int shape = v_multiwindow_win32_hwnd_int_prop(hwnd, v_multiwindow_win32_cursor_shape_prop);
+	HCURSOR cursor = LoadCursorW(NULL, v_multiwindow_win32_cursor_id_for_shape(shape));
+	if (cursor == NULL) {
+		return 0;
+	}
+	SetCursor(cursor);
+	return 1;
 }
 
 static inline int v_multiwindow_win32_adjusted_size(int width, int height, DWORD style, DWORD ex_style, int *out_width, int *out_height) {
@@ -562,6 +620,7 @@ static LRESULT CALLBACK v_multiwindow_win32_wnd_proc(HWND hwnd, UINT msg, WPARAM
 			SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
 			RemovePropW(hwnd, v_multiwindow_win32_min_width_prop);
 			RemovePropW(hwnd, v_multiwindow_win32_min_height_prop);
+			RemovePropW(hwnd, v_multiwindow_win32_cursor_shape_prop);
 			v_multiwindow_win32_end_mouse_tracking(hwnd);
 			v_multiwindow_win32_unregister_touch_window(hwnd);
 			DragAcceptFiles(hwnd, FALSE);
@@ -580,6 +639,11 @@ static LRESULT CALLBACK v_multiwindow_win32_wnd_proc(HWND hwnd, UINT msg, WPARAM
 			uint64_t sequence = v_multiwindow_win32_next_event_sequence();
 			v_multiwindow_win32_window_input_event(data, sequence, V_MULTIWINDOW_WIN32_INPUT_UNFOCUSED, 0, 0, 0, v_multiwindow_win32_modifiers(), V_MULTIWINDOW_WIN32_MOUSE_BUTTON_INVALID, 0, 0, 0, 0);
 			return 0;
+		}
+		break;
+	case WM_SETCURSOR:
+		if (LOWORD(lparam) == HTCLIENT && v_multiwindow_win32_apply_cursor_shape(hwnd)) {
+			return TRUE;
 		}
 		break;
 	case WM_GETMINMAXINFO:
@@ -832,6 +896,14 @@ static inline int v_multiwindow_win32_destroy_window(void *hwnd) {
 
 static inline int v_multiwindow_win32_set_window_text(void *hwnd, const wchar_t *title) {
 	return SetWindowTextW((HWND)hwnd, title) != 0;
+}
+
+static inline int v_multiwindow_win32_set_cursor_shape(void *hwnd, int shape) {
+	if (!hwnd) {
+		return 0;
+	}
+	v_multiwindow_win32_set_hwnd_int_prop((HWND)hwnd, v_multiwindow_win32_cursor_shape_prop, shape);
+	return v_multiwindow_win32_apply_cursor_shape((HWND)hwnd);
 }
 
 static inline int v_multiwindow_win32_set_client_size(void *hwnd, int width, int height, int min_width, int min_height, int resizable, int borderless, int fullscreen) {

@@ -12,6 +12,8 @@ $if linux && sokol_wayland ? {
 	#flag linux -lGL
 	#flag linux -I @VEXEROOT/thirdparty/sokol
 	#flag linux @VMODROOT/vlib/x/multiwindow/wayland_xdg_shell_private.c
+	#flag linux @VMODROOT/vlib/x/multiwindow/wayland_xdg_decoration_private.c
+	#flag linux @VMODROOT/vlib/x/multiwindow/wayland_cursor_shape_private.c
 	#include <poll.h>
 	#include <string.h>
 	#include <sys/mman.h>
@@ -47,6 +49,34 @@ const wayland_modifier_lmb = u32(0x100)
 const wayland_modifier_rmb = u32(0x200)
 const wayland_modifier_mmb = u32(0x400)
 const wayland_key_v = 86
+const wayland_xdg_toplevel_resize_edge_top = u32(1)
+const wayland_xdg_toplevel_resize_edge_bottom = u32(2)
+const wayland_xdg_toplevel_resize_edge_left = u32(4)
+const wayland_xdg_toplevel_resize_edge_top_left = u32(5)
+const wayland_xdg_toplevel_resize_edge_bottom_left = u32(6)
+const wayland_xdg_toplevel_resize_edge_right = u32(8)
+const wayland_xdg_toplevel_resize_edge_top_right = u32(9)
+const wayland_xdg_toplevel_resize_edge_bottom_right = u32(10)
+const wayland_xdg_toplevel_decoration_mode_unknown = u32(0)
+const wayland_xdg_toplevel_decoration_mode_client_side = u32(1)
+const wayland_xdg_toplevel_decoration_mode_server_side = u32(2)
+const wayland_cursor_shape_default = u32(1)
+const wayland_cursor_shape_pointer = u32(4)
+const wayland_cursor_shape_move = u32(13)
+const wayland_cursor_shape_grab = u32(16)
+const wayland_cursor_shape_grabbing = u32(17)
+const wayland_cursor_shape_e_resize = u32(18)
+const wayland_cursor_shape_n_resize = u32(19)
+const wayland_cursor_shape_ne_resize = u32(20)
+const wayland_cursor_shape_nw_resize = u32(21)
+const wayland_cursor_shape_s_resize = u32(22)
+const wayland_cursor_shape_se_resize = u32(23)
+const wayland_cursor_shape_sw_resize = u32(24)
+const wayland_cursor_shape_w_resize = u32(25)
+const wayland_cursor_shape_ew_resize = u32(26)
+const wayland_cursor_shape_ns_resize = u32(27)
+const wayland_cursor_shape_nesw_resize = u32(28)
+const wayland_cursor_shape_nwse_resize = u32(29)
 const wayland_keyboard_keymap_format_xkb_v1 = u32(1)
 const wayland_xkb_context_no_flags = 0
 const wayland_xkb_keymap_format_text_v1 = 1
@@ -55,6 +85,7 @@ const wayland_xkb_state_mods_effective = 8
 const wayland_uri_list_buffer_size = 65536
 const wayland_data_offer_drain_chunk_size = 4096
 const wayland_data_offer_max_read_chunks = 16
+const wayland_data_offer_max_pending_poll_cycles = 300
 const wayland_dnd_action_none = u32(0)
 const wayland_dnd_action_copy = u32(1)
 const wayland_dnd_action_move = u32(2)
@@ -69,6 +100,7 @@ const err_wayland_egl_make_current_failed = 'multiwindow: wayland egl make curre
 const err_wayland_egl_surface_failed = 'multiwindow: wayland egl surface failed'
 const err_wayland_egl_swap_buffers_failed = 'multiwindow: wayland egl swap buffers failed'
 const err_wayland_surface_not_configured = 'multiwindow: wayland surface is not configured'
+const err_wayland_buffer_failed = 'multiwindow: wayland buffer creation failed'
 const err_wayland_xkb_context_failed = 'multiwindow: wayland xkb context failed'
 
 struct WaylandTouchPoint {
@@ -86,23 +118,33 @@ struct WaylandWindowRecord {
 	surface      voidptr
 	xdg_surface  voidptr
 	xdg_toplevel voidptr
+	resizable    bool
 mut:
-	width                   int
-	height                  int
-	min_width               int
-	min_height              int
-	pending_toplevel_width  int
-	pending_toplevel_height int
-	configured              bool
-	pending_egl_resize      bool
-	pending_events          []WaylandNativeQueuedEvent
-	mouse_x                 f32
-	mouse_y                 f32
-	mouse_dx                f32
-	mouse_dy                f32
-	mouse_pos_valid         bool
-	wl_egl_window           voidptr
-	egl_surface             voidptr
+	width                          int
+	height                         int
+	min_width                      int
+	min_height                     int
+	pending_toplevel_width         int
+	pending_toplevel_height        int
+	configured                     bool
+	pending_egl_resize             bool
+	pending_events                 []WaylandNativeQueuedEvent
+	mouse_x                        f32
+	mouse_y                        f32
+	mouse_dx                       f32
+	mouse_dy                       f32
+	mouse_pos_valid                bool
+	fallback_buffers               []voidptr
+	fallback_buffer_width          int
+	fallback_buffer_height         int
+	wl_egl_window                  voidptr
+	egl_surface                    voidptr
+	toplevel_decoration            voidptr
+	toplevel_decoration_configured bool
+	toplevel_decoration_mode       u32
+	user_action_serial             u32
+	user_action_poll               u64
+	user_action_serial_valid       bool
 }
 
 struct WaylandNativeQueuedEvent {
@@ -120,11 +162,16 @@ mut:
 	seat                         voidptr
 	seat_name                    u32
 	pointer                      voidptr
+	cursor_shape_manager         voidptr
+	cursor_shape_manager_name    u32
+	cursor_shape_device          voidptr
 	keyboard                     voidptr
 	touch                        voidptr
 	data_device_manager          voidptr
 	data_device_manager_name     u32
 	data_device                  voidptr
+	shm                          voidptr
+	shm_name                     u32
 	data_offer                   voidptr
 	data_offer_has_uri_list      bool
 	data_offer_source_actions    u32
@@ -139,9 +186,12 @@ mut:
 	pending_drop_source_actions  u32
 	pending_drop_selected_action u32
 	pending_drop_action_received bool
+	pending_drop_poll_cycles     int
 	pending_drop_buffer          []u8
 	wm_base                      voidptr
 	wm_base_name                 u32
+	decoration_manager           voidptr
+	decoration_manager_name      u32
 	xkb_context                  voidptr
 	xkb_keymap                   voidptr
 	xkb_state                    voidptr
@@ -151,8 +201,11 @@ mut:
 	started                      bool
 	pointer_focus                WindowId
 	pointer_focused              bool
+	pointer_enter_serial         u32
+	pointer_enter_serial_valid   bool
 	keyboard_focus               WindowId
 	keyboard_focused             bool
+	poll_generation              u64
 	pointer_buttons              u32
 	modifiers                    u32
 	keys_down                    [512]bool
@@ -198,6 +251,10 @@ $if linux && sokol_wayland ? {
 
 	struct C.wl_data_offer {}
 
+	struct C.wl_shm {}
+
+	struct C.wl_buffer {}
+
 	struct C.wl_surface {}
 
 	struct C.wl_output {}
@@ -213,6 +270,14 @@ $if linux && sokol_wayland ? {
 	struct C.xdg_surface {}
 
 	struct C.xdg_toplevel {}
+
+	struct C.zxdg_decoration_manager_v1 {}
+
+	struct C.zxdg_toplevel_decoration_v1 {}
+
+	struct C.wp_cursor_shape_manager_v1 {}
+
+	struct C.wp_cursor_shape_device_v1 {}
 
 	struct C.xkb_context {}
 
@@ -239,18 +304,26 @@ $if linux && sokol_wayland ? {
 	fn C.v_multiwindow_wayland_compositor_bind_version(version u32) u32
 	fn C.v_multiwindow_wayland_bind_compositor(registry &C.wl_registry, name u32, version u32) voidptr
 	fn C.v_multiwindow_wayland_bind_xdg_wm_base(registry &C.wl_registry, name u32) voidptr
+	fn C.v_multiwindow_wayland_bind_xdg_decoration_manager(registry &C.wl_registry, name u32, version u32) voidptr
+	fn C.v_multiwindow_wayland_bind_cursor_shape_manager(registry &C.wl_registry, name u32, version u32) voidptr
 	fn C.v_multiwindow_wayland_bind_seat(registry &C.wl_registry, name u32, version u32) voidptr
 	fn C.v_multiwindow_wayland_bind_data_device_manager(registry &C.wl_registry, name u32, version u32) voidptr
+	fn C.v_multiwindow_wayland_bind_shm(registry &C.wl_registry, name u32) voidptr
 	fn C.v_multiwindow_wayland_next_event_sequence() u64
 	fn C.v_multiwindow_wayland_add_registry_listener(registry &C.wl_registry, data voidptr) int
 	fn C.v_multiwindow_wayland_add_xdg_wm_base_listener(wm_base &C.xdg_wm_base, data voidptr) int
 	fn C.v_multiwindow_wayland_add_xdg_surface_listener(xdg_surface &C.xdg_surface, data voidptr) int
 	fn C.v_multiwindow_wayland_add_xdg_toplevel_listener(toplevel &C.xdg_toplevel, data voidptr) int
+	fn C.v_multiwindow_wayland_add_xdg_toplevel_decoration_listener(decoration &C.zxdg_toplevel_decoration_v1, data voidptr) int
 	fn C.v_multiwindow_wayland_add_seat_listener(seat &C.wl_seat, data voidptr) int
 	fn C.v_multiwindow_wayland_seat_get_pointer(seat &C.wl_seat) voidptr
 	fn C.v_multiwindow_wayland_seat_get_keyboard(seat &C.wl_seat) voidptr
 	fn C.v_multiwindow_wayland_seat_get_touch(seat &C.wl_seat) voidptr
 	fn C.v_multiwindow_wayland_data_device_manager_get_data_device(manager &C.wl_data_device_manager, seat &C.wl_seat) voidptr
+	fn C.v_multiwindow_wayland_cursor_shape_manager_get_pointer(manager &C.wp_cursor_shape_manager_v1, pointer &C.wl_pointer) voidptr
+	fn C.v_multiwindow_wayland_cursor_shape_device_set_shape(device &C.wp_cursor_shape_device_v1, serial u32, shape u32)
+	fn C.v_multiwindow_wayland_cursor_shape_device_destroy(device &C.wp_cursor_shape_device_v1)
+	fn C.v_multiwindow_wayland_cursor_shape_manager_destroy(manager &C.wp_cursor_shape_manager_v1)
 	fn C.v_multiwindow_wayland_add_pointer_listener(pointer &C.wl_pointer, data voidptr) int
 	fn C.v_multiwindow_wayland_add_keyboard_listener(keyboard &C.wl_keyboard, data voidptr) int
 	fn C.v_multiwindow_wayland_add_touch_listener(touch &C.wl_touch, data voidptr) int
@@ -265,6 +338,10 @@ $if linux && sokol_wayland ? {
 	fn C.v_multiwindow_wayland_data_offer_destroy(offer &C.wl_data_offer)
 	fn C.v_multiwindow_wayland_data_device_destroy(device &C.wl_data_device)
 	fn C.v_multiwindow_wayland_data_device_manager_destroy(manager &C.wl_data_device_manager)
+	fn C.v_multiwindow_wayland_shm_destroy(shm &C.wl_shm)
+	fn C.v_multiwindow_wayland_create_shm_buffer(shm &C.wl_shm, width int, height int) voidptr
+	fn C.v_multiwindow_wayland_attach_buffer(surface &C.wl_surface, buffer &C.wl_buffer, width int, height int)
+	fn C.v_multiwindow_wayland_buffer_destroy(buffer &C.wl_buffer)
 	fn C.v_multiwindow_wayland_pointer_destroy(pointer &C.wl_pointer)
 	fn C.v_multiwindow_wayland_keyboard_destroy(keyboard &C.wl_keyboard)
 	fn C.v_multiwindow_wayland_touch_destroy(touch &C.wl_touch)
@@ -295,6 +372,12 @@ $if linux && sokol_wayland ? {
 	fn C.v_multiwindow_wayland_xdg_toplevel_set_min_size(toplevel &C.xdg_toplevel, width i32, height i32)
 	fn C.v_multiwindow_wayland_xdg_toplevel_set_max_size(toplevel &C.xdg_toplevel, width i32, height i32)
 	fn C.v_multiwindow_wayland_xdg_toplevel_set_fullscreen(toplevel &C.xdg_toplevel, output &C.wl_output)
+	fn C.v_multiwindow_wayland_xdg_toplevel_move(toplevel &C.xdg_toplevel, seat &C.wl_seat, serial u32)
+	fn C.v_multiwindow_wayland_xdg_toplevel_resize(toplevel &C.xdg_toplevel, seat &C.wl_seat, serial u32, edges u32)
+	fn C.v_multiwindow_wayland_xdg_decoration_manager_get_toplevel_decoration(manager &C.zxdg_decoration_manager_v1, toplevel &C.xdg_toplevel) &C.zxdg_toplevel_decoration_v1
+	fn C.v_multiwindow_wayland_xdg_toplevel_decoration_set_server_side(decoration &C.zxdg_toplevel_decoration_v1)
+	fn C.v_multiwindow_wayland_xdg_toplevel_decoration_destroy(decoration &C.zxdg_toplevel_decoration_v1)
+	fn C.v_multiwindow_wayland_xdg_decoration_manager_destroy(manager &C.zxdg_decoration_manager_v1)
 	fn C.v_multiwindow_wayland_xdg_toplevel_destroy(toplevel &C.xdg_toplevel)
 	fn C.v_multiwindow_wayland_egl_get_display(display &C.wl_display) voidptr
 	fn C.v_multiwindow_wayland_egl_initialize(egl_display voidptr) int
@@ -326,6 +409,21 @@ $if linux && sokol_wayland ? {
 		} else if C.strcmp(iface, c'xdg_wm_base') == 0 {
 			backend.wm_base = C.v_multiwindow_wayland_bind_xdg_wm_base(registry, name)
 			backend.wm_base_name = name
+		} else if C.strcmp(iface, c'zxdg_decoration_manager_v1') == 0
+			&& backend.decoration_manager == unsafe { nil } {
+			manager := C.v_multiwindow_wayland_bind_xdg_decoration_manager(registry, name, version)
+			if manager != unsafe { nil } {
+				backend.decoration_manager = manager
+				backend.decoration_manager_name = name
+			}
+		} else if C.strcmp(iface, c'wp_cursor_shape_manager_v1') == 0
+			&& backend.cursor_shape_manager == unsafe { nil } {
+			manager := C.v_multiwindow_wayland_bind_cursor_shape_manager(registry, name, version)
+			if manager != unsafe { nil } {
+				backend.cursor_shape_manager = manager
+				backend.cursor_shape_manager_name = name
+				backend.ensure_cursor_shape_device()
+			}
 		} else if C.strcmp(iface, c'wl_seat') == 0 && backend.seat == unsafe { nil } {
 			backend.seat = C.v_multiwindow_wayland_bind_seat(registry, name, version)
 			backend.seat_name = name
@@ -337,6 +435,12 @@ $if linux && sokol_wayland ? {
 				backend.data_device_manager = manager
 				backend.data_device_manager_name = name
 				backend.ensure_data_device(data)
+			}
+		} else if C.strcmp(iface, c'wl_shm') == 0 && backend.shm == unsafe { nil } {
+			shm := C.v_multiwindow_wayland_bind_shm(registry, name)
+			if shm != unsafe { nil } {
+				backend.shm = shm
+				backend.shm_name = name
 			}
 		}
 	}
@@ -359,11 +463,21 @@ $if linux && sokol_wayland ? {
 		} else if name == backend.data_device_manager_name {
 			backend.data_device_manager_name = 0
 			backend.destroy_data_device_manager()
+		} else if name == backend.shm_name {
+			backend.shm_name = 0
+			if backend.shm != unsafe { nil } {
+				C.v_multiwindow_wayland_shm_destroy(unsafe { &C.wl_shm(backend.shm) })
+				backend.shm = unsafe { nil }
+			}
 		} else if name == backend.wm_base_name {
 			backend.wm_base_name = 0
 			if backend.destroy_removed_wm_base_if_unused() {
 				return
 			}
+		} else if name == backend.decoration_manager_name {
+			backend.destroy_xdg_decoration_manager()
+		} else if name == backend.cursor_shape_manager_name {
+			backend.destroy_cursor_shape_manager()
 		} else if name == backend.compositor_name {
 			backend.compositor_name = 0
 			if backend.compositor != unsafe { nil } {
@@ -457,6 +571,26 @@ $if linux && sokol_wayland ? {
 		}))
 	}
 
+	@[export: 'v_multiwindow_wayland_xdg_toplevel_decoration_configure']
+	@[markused]
+	fn wayland_xdg_toplevel_decoration_configure(data voidptr, decoration voidptr, mode u32) {
+		_ = decoration
+		if data == unsafe { nil } {
+			return
+		}
+		mut record := unsafe { &WaylandWindowRecord(data) }
+		record.toplevel_decoration_configured = true
+		match mode {
+			wayland_xdg_toplevel_decoration_mode_server_side,
+			wayland_xdg_toplevel_decoration_mode_client_side {
+				record.toplevel_decoration_mode = mode
+			}
+			else {
+				record.toplevel_decoration_mode = wayland_xdg_toplevel_decoration_mode_client_side
+			}
+		}
+	}
+
 	@[export: 'v_multiwindow_wayland_seat_capabilities']
 	@[markused]
 	fn wayland_seat_capabilities(data voidptr, seat voidptr, caps u32) {
@@ -470,14 +604,17 @@ $if linux && sokol_wayland ? {
 				if pointer != unsafe { nil }
 					&& C.v_multiwindow_wayland_add_pointer_listener(unsafe { &C.wl_pointer(pointer) }, data) == 0 {
 					backend.pointer = pointer
+					backend.ensure_cursor_shape_device()
 				} else if pointer != unsafe { nil } {
 					C.v_multiwindow_wayland_pointer_destroy(unsafe { &C.wl_pointer(pointer) })
 				}
 			}
 		} else if backend.pointer != unsafe { nil } {
+			backend.destroy_cursor_shape_device()
 			C.v_multiwindow_wayland_pointer_destroy(unsafe { &C.wl_pointer(backend.pointer) })
 			backend.pointer = unsafe { nil }
 			backend.pointer_focused = false
+			backend.pointer_enter_serial_valid = false
 			backend.pointer_buttons = 0
 		}
 		if (caps & wayland_seat_capability_keyboard) != 0 {
@@ -528,7 +665,6 @@ $if linux && sokol_wayland ? {
 	@[markused]
 	fn wayland_pointer_enter(data voidptr, pointer voidptr, serial u32, surface voidptr, x f64, y f64) {
 		_ = pointer
-		_ = serial
 		if data == unsafe { nil } || surface == unsafe { nil } {
 			return
 		}
@@ -537,6 +673,8 @@ $if linux && sokol_wayland ? {
 		mut record := backend.windows[index]
 		backend.pointer_focus = record.id
 		backend.pointer_focused = true
+		backend.pointer_enter_serial = serial
+		backend.pointer_enter_serial_valid = true
 		record.update_mouse_position(f32(x), f32(y), true)
 		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(), queued_input_event(record.input_event(.mouse_enter,
 			backend.event_modifiers())))
@@ -557,6 +695,7 @@ $if linux && sokol_wayland ? {
 			backend.event_modifiers())))
 		if backend.pointer_focused && backend.pointer_focus == record.id {
 			backend.pointer_focused = false
+			backend.pointer_enter_serial_valid = false
 		}
 	}
 
@@ -580,7 +719,6 @@ $if linux && sokol_wayland ? {
 	@[markused]
 	fn wayland_pointer_button(data voidptr, pointer voidptr, serial u32, time u32, button u32, state u32) {
 		_ = pointer
-		_ = serial
 		_ = time
 		if data == unsafe { nil } {
 			return
@@ -599,15 +737,17 @@ $if linux && sokol_wayland ? {
 		} else {
 			return
 		}
-		mut record := backend.windows[index]
+		if state == wayland_pointer_button_state_pressed {
+			backend.windows[index].store_user_action_serial(serial, backend.poll_generation)
+		}
 		input_kind := if state == wayland_pointer_button_state_pressed {
 			InputEventKind.mouse_down
 		} else {
 			InputEventKind.mouse_up
 		}
-		input := record.input_event_with_payload(input_kind, backend.event_modifiers(), 0, false,
-			mouse_button, 0, 0)
-		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
+		input := backend.windows[index].input_event_with_payload(input_kind,
+			backend.event_modifiers(), 0, false, mouse_button, 0, 0)
+		backend.windows[index].enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
 			queued_input_event(input))
 	}
 
@@ -718,7 +858,6 @@ $if linux && sokol_wayland ? {
 	@[markused]
 	fn wayland_keyboard_key(data voidptr, keyboard voidptr, serial u32, time u32, key u32, state u32) {
 		_ = keyboard
-		_ = serial
 		_ = time
 		if data == unsafe { nil } {
 			return
@@ -730,6 +869,7 @@ $if linux && sokol_wayland ? {
 		key_repeat := state == wayland_keyboard_key_state_pressed && key_index > 0
 			&& backend.keys_down[key_index]
 		if state == wayland_keyboard_key_state_pressed {
+			backend.windows[index].store_user_action_serial(serial, backend.poll_generation)
 			if key_index > 0 {
 				backend.keys_down[key_index] = true
 			}
@@ -742,28 +882,31 @@ $if linux && sokol_wayland ? {
 		} else {
 			return
 		}
-		mut record := backend.windows[index]
 		if key_code != 0 {
 			input_kind := if state == wayland_keyboard_key_state_pressed {
 				InputEventKind.key_down
 			} else {
 				InputEventKind.key_up
 			}
-			input := record.input_event_with_payload(input_kind, backend.event_modifiers(),
-				key_code, key_repeat, wayland_invalid_mouse_button, 0, 0)
-			record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
+			input := backend.windows[index].input_event_with_payload(input_kind,
+				backend.event_modifiers(), key_code, key_repeat, wayland_invalid_mouse_button, 0, 0)
+			backend.windows[index].enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
 				queued_input_event(input))
 			if input_kind == .key_down
 				&& wayland_is_clipboard_paste(key_code, backend.event_modifiers()) {
-				record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(), queued_input_event(record.input_event(.clipboard_pasted,
-					backend.event_modifiers())))
+				clipboard_input := backend.windows[index].input_event(.clipboard_pasted,
+					backend.event_modifiers())
+				backend.windows[index].enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
+					queued_input_event(clipboard_input))
 			}
 		}
 		if state == wayland_keyboard_key_state_pressed {
 			char_code := backend.char_code_for_key(key + 8)
 			if char_code != 0 {
-				record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(), queued_input_event(record.input_char_event(char_code,
-					key_repeat, backend.event_modifiers())))
+				char_input := backend.windows[index].input_char_event(char_code, key_repeat,
+					backend.event_modifiers())
+				backend.windows[index].enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
+					queued_input_event(char_input))
 			}
 		}
 	}
@@ -789,24 +932,24 @@ $if linux && sokol_wayland ? {
 	@[markused]
 	fn wayland_touch_down(data voidptr, touch voidptr, serial u32, time u32, surface voidptr, id int, x f64, y f64) {
 		_ = touch
-		_ = serial
 		_ = time
 		if data == unsafe { nil } || surface == unsafe { nil } {
 			return
 		}
 		mut backend := unsafe { &WaylandBackend(data) }
 		index := backend.window_record_index_for_surface(surface) or { return }
-		mut record := backend.windows[index]
 		slot := backend.touch_slot_for_down(id) or { return }
 		backend.touches[slot] = WaylandTouchPoint{
 			active:    true
 			id:        id
-			window_id: record.id
+			window_id: backend.windows[index].id
 			x:         f32(x)
 			y:         f32(y)
 		}
-		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(), queued_input_event(backend.touch_event_for_record(record,
-			.touches_began, slot)))
+		backend.windows[index].store_user_action_serial(serial, backend.poll_generation)
+		input := backend.touch_event_for_record(backend.windows[index], .touches_began, slot)
+		backend.windows[index].enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
+			queued_input_event(input))
 	}
 
 	@[export: 'v_multiwindow_wayland_touch_up']
@@ -1022,22 +1165,84 @@ fn (backend &WaylandBackend) ensure_supported() ! {
 
 fn (backend &WaylandBackend) capabilities() Capabilities {
 	return Capabilities{
-		backend:            .wayland
-		mock:               false
-		native:             true
-		multi_window:       true
-		owner_queue:        true
-		explicit_swapchain: backend.renderer_ready()
-		wayland:            true
-		gl:                 backend.renderer_ready()
-		input_events:       true
-		mouse_events:       true
-		keyboard_events:    true
-		text_events:        true
-		focus_events:       true
-		drop_events:        true
-		touch_events:       true
+		backend:                 .wayland
+		mock:                    false
+		native:                  true
+		multi_window:            true
+		owner_queue:             true
+		explicit_swapchain:      backend.renderer_ready()
+		wayland:                 true
+		gl:                      backend.renderer_ready()
+		input_events:            true
+		mouse_events:            true
+		keyboard_events:         true
+		text_events:             true
+		focus_events:            true
+		drop_events:             backend.can_deliver_drop_events()
+		touch_events:            backend.can_deliver_touch_events()
+		cursor_shapes:           backend.can_set_cursor_shapes()
+		interactive_move_resize: backend.can_begin_interactive_move_resize()
+		native_decorations:      backend.has_server_side_decorated_window()
 	}
+}
+
+fn (backend &WaylandBackend) can_deliver_drop_events() bool {
+	if !backend.started {
+		return true
+	}
+	return backend.seat != unsafe { nil } && backend.data_device_manager != unsafe { nil }
+		&& backend.data_device != unsafe { nil }
+}
+
+fn (backend &WaylandBackend) can_deliver_touch_events() bool {
+	if !backend.started {
+		return true
+	}
+	return backend.seat != unsafe { nil } && backend.touch != unsafe { nil }
+}
+
+fn (backend &WaylandBackend) can_begin_interactive_move_resize() bool {
+	if !backend.started {
+		return true
+	}
+	return backend.seat != unsafe { nil } && backend.wm_base != unsafe { nil }
+}
+
+fn (backend &WaylandBackend) can_set_cursor_shapes() bool {
+	return backend.pointer != unsafe { nil } && backend.cursor_shape_manager != unsafe { nil }
+		&& backend.cursor_shape_device != unsafe { nil }
+}
+
+fn (backend &WaylandBackend) has_server_side_decorated_window() bool {
+	if !backend.started {
+		return true
+	}
+	mut has_server_side := false
+	for record in backend.windows {
+		if record.has_client_side_decoration() {
+			return false
+		}
+		if record.has_server_side_decoration() {
+			has_server_side = true
+		}
+	}
+	return has_server_side
+}
+
+fn (backend &WaylandBackend) window_native_decorations(id WindowId) !bool {
+	index := backend.window_record_index(id) or { return error(err_window_not_found) }
+	return backend.windows[index].has_server_side_decoration()
+}
+
+fn (record &WaylandWindowRecord) has_server_side_decoration() bool {
+	return record.toplevel_decoration != unsafe { nil } && record.toplevel_decoration_configured
+		&& record.toplevel_decoration_mode == wayland_xdg_toplevel_decoration_mode_server_side
+}
+
+fn (record &WaylandWindowRecord) has_client_side_decoration() bool {
+	return record.toplevel_decoration == unsafe { nil }
+		|| (record.toplevel_decoration_configured
+		&& record.toplevel_decoration_mode == wayland_xdg_toplevel_decoration_mode_client_side)
 }
 
 fn (mut backend WaylandBackend) start(require_renderer bool) ! {
@@ -1201,6 +1406,7 @@ fn (mut backend WaylandBackend) create_window(id WindowId, config WindowConfig) 
 			surface:      unsafe { voidptr(surface) }
 			xdg_surface:  unsafe { voidptr(xdg_surface) }
 			xdg_toplevel: unsafe { voidptr(xdg_toplevel) }
+			resizable:    config.resizable
 			width:        actual_size.width
 			height:       actual_size.height
 			min_width:    record_min_width
@@ -1216,6 +1422,20 @@ fn (mut backend WaylandBackend) create_window(id WindowId, config WindowConfig) 
 		}
 		C.v_multiwindow_wayland_xdg_toplevel_set_title(xdg_toplevel, &char(config.title.str))
 		C.v_multiwindow_wayland_xdg_toplevel_set_app_id(xdg_toplevel, c'v.x.multiwindow')
+		if !config.borderless && backend.decoration_manager != unsafe { nil } {
+			decoration := C.v_multiwindow_wayland_xdg_decoration_manager_get_toplevel_decoration(unsafe {
+				&C.zxdg_decoration_manager_v1(backend.decoration_manager)
+			}, xdg_toplevel)
+			if decoration != unsafe { nil } {
+				if C.v_multiwindow_wayland_add_xdg_toplevel_decoration_listener(decoration,
+					record.listener_data()) == 0 {
+					C.v_multiwindow_wayland_xdg_toplevel_decoration_set_server_side(decoration)
+					record.toplevel_decoration = unsafe { voidptr(decoration) }
+				} else {
+					C.v_multiwindow_wayland_xdg_toplevel_decoration_destroy(decoration)
+				}
+			}
+		}
 		if config.min_width > 0 || config.min_height > 0 {
 			C.v_multiwindow_wayland_xdg_toplevel_set_min_size(xdg_toplevel, i32(config.min_width),
 				i32(config.min_height))
@@ -1242,6 +1462,19 @@ fn (mut backend WaylandBackend) create_window(id WindowId, config WindowConfig) 
 			backend.destroy_window_record(record)
 			_ = backend.destroy_removed_wm_base_if_unused()
 			return error(err_wayland_dispatch_failed)
+		}
+		if !backend.renderer_ready() {
+			index := backend.window_record_index(id) or {
+				backend.destroy_window_record(record)
+				_ = backend.destroy_removed_wm_base_if_unused()
+				return error(err_window_not_found)
+			}
+			backend.ensure_lifecycle_buffer(index) or {
+				backend.remove_window_record(id)
+				backend.destroy_window_record(record)
+				_ = backend.destroy_removed_wm_base_if_unused()
+				return err
+			}
 		}
 		return WindowSize{
 			width:  record.width
@@ -1313,6 +1546,115 @@ fn (mut backend WaylandBackend) resize_window(id WindowId, width int, height int
 	}
 }
 
+fn (mut backend WaylandBackend) set_window_cursor(id WindowId, shape CursorShape) ! {
+	$if linux && sokol_wayland ? {
+		backend.window_record_index(id) or { return error(err_window_not_found) }
+		if !backend.started || backend.display == unsafe { nil } {
+			return error(err_wayland_connect_failed)
+		}
+		if !backend.can_set_cursor_shapes() || !backend.pointer_focused
+			|| backend.pointer_focus != id || !backend.pointer_enter_serial_valid {
+			return error(err_capability_unsupported)
+		}
+		C.v_multiwindow_wayland_cursor_shape_device_set_shape(unsafe {
+			&C.wp_cursor_shape_device_v1(backend.cursor_shape_device)
+		}, backend.pointer_enter_serial, wayland_cursor_shape_for_shape(shape))
+		display := unsafe { &C.wl_display(backend.display) }
+		if C.wl_display_flush(display) < 0 {
+			return error(err_wayland_flush_failed)
+		}
+		return
+	} $else {
+		_ = id
+		_ = shape
+		return error(err_backend_unsupported)
+	}
+}
+
+fn wayland_cursor_shape_for_shape(shape CursorShape) u32 {
+	return match shape {
+		.default { wayland_cursor_shape_default }
+		.pointer { wayland_cursor_shape_pointer }
+		.move { wayland_cursor_shape_move }
+		.n_resize { wayland_cursor_shape_n_resize }
+		.s_resize { wayland_cursor_shape_s_resize }
+		.e_resize { wayland_cursor_shape_e_resize }
+		.w_resize { wayland_cursor_shape_w_resize }
+		.ne_resize { wayland_cursor_shape_ne_resize }
+		.nw_resize { wayland_cursor_shape_nw_resize }
+		.se_resize { wayland_cursor_shape_se_resize }
+		.sw_resize { wayland_cursor_shape_sw_resize }
+		.ew_resize { wayland_cursor_shape_ew_resize }
+		.ns_resize { wayland_cursor_shape_ns_resize }
+		.nesw_resize { wayland_cursor_shape_nesw_resize }
+		.nwse_resize { wayland_cursor_shape_nwse_resize }
+		.grab { wayland_cursor_shape_grab }
+		.grabbing { wayland_cursor_shape_grabbing }
+	}
+}
+
+fn (mut backend WaylandBackend) begin_window_move(id WindowId) ! {
+	$if linux && sokol_wayland ? {
+		index := backend.window_record_index(id) or { return error(err_window_not_found) }
+		if !backend.started || backend.display == unsafe { nil } {
+			return error(err_wayland_connect_failed)
+		}
+		if backend.seat == unsafe { nil } {
+			return error(err_capability_unsupported)
+		}
+		if backend.windows[index].xdg_toplevel == unsafe { nil } {
+			return error(err_window_not_found)
+		}
+		serial := backend.windows[index].take_user_action_serial(backend.poll_generation) or {
+			return error(err_capability_unsupported)
+		}
+		C.v_multiwindow_wayland_xdg_toplevel_move(unsafe {
+			&C.xdg_toplevel(backend.windows[index].xdg_toplevel)
+		}, unsafe { &C.wl_seat(backend.seat) }, serial)
+		display := unsafe { &C.wl_display(backend.display) }
+		if C.wl_display_flush(display) < 0 {
+			return error(err_wayland_flush_failed)
+		}
+		return
+	} $else {
+		_ = id
+		return error(err_backend_unsupported)
+	}
+}
+
+fn (mut backend WaylandBackend) begin_window_resize(id WindowId, edge WindowResizeEdge) ! {
+	$if linux && sokol_wayland ? {
+		index := backend.window_record_index(id) or { return error(err_window_not_found) }
+		if !backend.started || backend.display == unsafe { nil } {
+			return error(err_wayland_connect_failed)
+		}
+		if backend.seat == unsafe { nil } {
+			return error(err_capability_unsupported)
+		}
+		if !backend.windows[index].resizable {
+			return error(err_capability_unsupported)
+		}
+		if backend.windows[index].xdg_toplevel == unsafe { nil } {
+			return error(err_window_not_found)
+		}
+		serial := backend.windows[index].take_user_action_serial(backend.poll_generation) or {
+			return error(err_capability_unsupported)
+		}
+		C.v_multiwindow_wayland_xdg_toplevel_resize(unsafe {
+			&C.xdg_toplevel(backend.windows[index].xdg_toplevel)
+		}, unsafe { &C.wl_seat(backend.seat) }, serial, wayland_resize_edge(edge))
+		display := unsafe { &C.wl_display(backend.display) }
+		if C.wl_display_flush(display) < 0 {
+			return error(err_wayland_flush_failed)
+		}
+		return
+	} $else {
+		_ = id
+		_ = edge
+		return error(err_backend_unsupported)
+	}
+}
+
 fn (mut backend WaylandBackend) poll_events() ![]Event {
 	queued_events := backend.poll_queued_events()!
 	mut events := []Event{cap: queued_events.len}
@@ -1330,7 +1672,12 @@ fn (mut backend WaylandBackend) poll_queued_events() ![]QueuedEvent {
 		if !backend.started || backend.display == unsafe { nil } {
 			return []QueuedEvent{}
 		}
+		backend.poll_generation++
+		backend.expire_user_action_serials()
 		backend.dispatch_pending_nonblocking()!
+		if !backend.renderer_ready() {
+			backend.ensure_lifecycle_buffers()!
+		}
 		backend.drain_pending_data_offer_drop()
 		for _, mut record in backend.windows {
 			for native_event in record.pending_events {
@@ -1351,6 +1698,36 @@ fn (mut record WaylandWindowRecord) enqueue_native_event(sequence u64, event Que
 	record.pending_events << WaylandNativeQueuedEvent{
 		sequence: sequence
 		event:    event
+	}
+}
+
+fn (mut record WaylandWindowRecord) store_user_action_serial(serial u32, poll_generation u64) {
+	record.user_action_serial = serial
+	record.user_action_poll = poll_generation
+	record.user_action_serial_valid = true
+}
+
+fn (mut record WaylandWindowRecord) clear_user_action_serial() {
+	record.user_action_serial = 0
+	record.user_action_poll = 0
+	record.user_action_serial_valid = false
+}
+
+fn (mut record WaylandWindowRecord) take_user_action_serial(poll_generation u64) ?u32 {
+	if !record.user_action_serial_valid || record.user_action_poll != poll_generation {
+		record.clear_user_action_serial()
+		return none
+	}
+	serial := record.user_action_serial
+	record.clear_user_action_serial()
+	return serial
+}
+
+fn (mut backend WaylandBackend) expire_user_action_serials() {
+	for _, mut record in backend.windows {
+		if record.user_action_serial_valid && record.user_action_poll != backend.poll_generation {
+			record.clear_user_action_serial()
+		}
 	}
 }
 
@@ -1533,6 +1910,19 @@ fn (backend &WaylandBackend) keyboard_focus_record_index() ?int {
 
 fn (backend &WaylandBackend) event_modifiers() u32 {
 	return backend.modifiers | backend.pointer_buttons
+}
+
+fn wayland_resize_edge(edge WindowResizeEdge) u32 {
+	return match edge {
+		.top { wayland_xdg_toplevel_resize_edge_top }
+		.bottom { wayland_xdg_toplevel_resize_edge_bottom }
+		.left { wayland_xdg_toplevel_resize_edge_left }
+		.right { wayland_xdg_toplevel_resize_edge_right }
+		.top_left { wayland_xdg_toplevel_resize_edge_top_left }
+		.top_right { wayland_xdg_toplevel_resize_edge_top_right }
+		.bottom_left { wayland_xdg_toplevel_resize_edge_bottom_left }
+		.bottom_right { wayland_xdg_toplevel_resize_edge_bottom_right }
+	}
 }
 
 fn wayland_is_clipboard_paste(key_code int, modifiers u32) bool {
@@ -2052,6 +2442,62 @@ fn safe_wayland_extent(value int) int {
 	return 1
 }
 
+fn (mut backend WaylandBackend) ensure_lifecycle_buffers() ! {
+	$if linux && sokol_wayland ? {
+		for i in 0 .. backend.windows.len {
+			backend.ensure_lifecycle_buffer(i)!
+		}
+		return
+	}
+	return error(err_backend_unsupported)
+}
+
+fn (mut backend WaylandBackend) ensure_lifecycle_buffer(index int) ! {
+	$if linux && sokol_wayland ? {
+		if backend.renderer_ready() {
+			return
+		}
+		if backend.shm == unsafe { nil } {
+			return error(err_wayland_buffer_failed)
+		}
+		if index < 0 || index >= backend.windows.len {
+			return error(err_window_not_found)
+		}
+		record := backend.windows[index]
+		if record.surface == unsafe { nil } {
+			return error(err_window_not_found)
+		}
+		if !record.configured {
+			return error(err_wayland_surface_not_configured)
+		}
+		width := safe_wayland_extent(record.width)
+		height := safe_wayland_extent(record.height)
+		if record.fallback_buffer_width == width && record.fallback_buffer_height == height
+			&& record.fallback_buffers.len > 0 {
+			return
+		}
+		buffer := C.v_multiwindow_wayland_create_shm_buffer(unsafe { &C.wl_shm(backend.shm) },
+			width, height)
+		if buffer == unsafe { nil } {
+			return error(err_wayland_buffer_failed)
+		}
+		C.v_multiwindow_wayland_attach_buffer(unsafe { &C.wl_surface(record.surface) },
+			unsafe { &C.wl_buffer(buffer) }, width, height)
+		backend.windows[index].fallback_buffers << buffer
+		backend.windows[index].fallback_buffer_width = width
+		backend.windows[index].fallback_buffer_height = height
+		if backend.display != unsafe { nil } {
+			display := unsafe { &C.wl_display(backend.display) }
+			if C.wl_display_flush(display) < 0 {
+				return error(err_wayland_flush_failed)
+			}
+		}
+		return
+	}
+	_ = index
+	return error(err_backend_unsupported)
+}
+
 fn (mut backend WaylandBackend) close_connection() {
 	$if linux && sokol_wayland ? {
 		for backend.windows.len > 0 {
@@ -2062,8 +2508,13 @@ fn (mut backend WaylandBackend) close_connection() {
 		_ = backend.destroy_removed_wm_base_if_unused()
 		backend.destroy_seat_devices()
 		backend.destroy_data_device_manager()
+		backend.destroy_xdg_decoration_manager()
+		backend.destroy_cursor_shape_manager()
 		backend.shutdown_renderer()
 		backend.destroy_xkb()
+		if backend.shm != unsafe { nil } {
+			C.v_multiwindow_wayland_shm_destroy(unsafe { &C.wl_shm(backend.shm) })
+		}
 		if backend.wm_base != unsafe { nil } {
 			C.v_multiwindow_wayland_xdg_wm_base_destroy(unsafe { &C.xdg_wm_base(backend.wm_base) })
 		}
@@ -2088,14 +2539,22 @@ fn (mut backend WaylandBackend) close_connection() {
 		backend.compositor_version = 0
 		backend.seat = unsafe { nil }
 		backend.seat_name = 0
+		backend.cursor_shape_manager = unsafe { nil }
+		backend.cursor_shape_manager_name = 0
+		backend.cursor_shape_device = unsafe { nil }
 		backend.data_device_manager = unsafe { nil }
 		backend.data_device_manager_name = 0
 		backend.data_device = unsafe { nil }
+		backend.shm = unsafe { nil }
+		backend.shm_name = 0
 		backend.data_offer = unsafe { nil }
 		backend.data_offer_has_uri_list = false
 		backend.data_offer_window_valid = false
 		backend.wm_base = unsafe { nil }
 		backend.wm_base_name = 0
+		backend.decoration_manager = unsafe { nil }
+		backend.decoration_manager_name = 0
+		backend.pointer_enter_serial_valid = false
 		backend.started = false
 	}
 }
@@ -2138,6 +2597,57 @@ fn (mut backend WaylandBackend) destroy_xkb() {
 	}
 }
 
+fn (mut backend WaylandBackend) destroy_xdg_decoration_manager() {
+	$if linux && sokol_wayland ? {
+		if backend.decoration_manager != unsafe { nil } {
+			C.v_multiwindow_wayland_xdg_decoration_manager_destroy(unsafe {
+				&C.zxdg_decoration_manager_v1(backend.decoration_manager)
+			})
+		}
+		backend.decoration_manager = unsafe { nil }
+		backend.decoration_manager_name = 0
+	}
+}
+
+fn (mut backend WaylandBackend) ensure_cursor_shape_device() {
+	$if linux && sokol_wayland ? {
+		if backend.cursor_shape_device != unsafe { nil }
+			|| backend.cursor_shape_manager == unsafe { nil } || backend.pointer == unsafe { nil } {
+			return
+		}
+		device := C.v_multiwindow_wayland_cursor_shape_manager_get_pointer(unsafe {
+			&C.wp_cursor_shape_manager_v1(backend.cursor_shape_manager)
+		}, unsafe { &C.wl_pointer(backend.pointer) })
+		if device != unsafe { nil } {
+			backend.cursor_shape_device = device
+		}
+	}
+}
+
+fn (mut backend WaylandBackend) destroy_cursor_shape_device() {
+	$if linux && sokol_wayland ? {
+		if backend.cursor_shape_device != unsafe { nil } {
+			C.v_multiwindow_wayland_cursor_shape_device_destroy(unsafe {
+				&C.wp_cursor_shape_device_v1(backend.cursor_shape_device)
+			})
+		}
+		backend.cursor_shape_device = unsafe { nil }
+	}
+}
+
+fn (mut backend WaylandBackend) destroy_cursor_shape_manager() {
+	$if linux && sokol_wayland ? {
+		backend.destroy_cursor_shape_device()
+		if backend.cursor_shape_manager != unsafe { nil } {
+			C.v_multiwindow_wayland_cursor_shape_manager_destroy(unsafe {
+				&C.wp_cursor_shape_manager_v1(backend.cursor_shape_manager)
+			})
+		}
+		backend.cursor_shape_manager = unsafe { nil }
+		backend.cursor_shape_manager_name = 0
+	}
+}
+
 fn (mut backend WaylandBackend) destroy_removed_wm_base_if_unused() bool {
 	$if linux && sokol_wayland ? {
 		if backend.wm_base_name != 0 || backend.wm_base == unsafe { nil }
@@ -2154,6 +2664,7 @@ fn (mut backend WaylandBackend) destroy_removed_wm_base_if_unused() bool {
 fn (mut backend WaylandBackend) destroy_seat_devices() {
 	$if linux && sokol_wayland ? {
 		backend.destroy_data_device()
+		backend.destroy_cursor_shape_device()
 		if backend.pointer != unsafe { nil } {
 			C.v_multiwindow_wayland_pointer_destroy(unsafe { &C.wl_pointer(backend.pointer) })
 		}
@@ -2167,6 +2678,7 @@ fn (mut backend WaylandBackend) destroy_seat_devices() {
 		backend.keyboard = unsafe { nil }
 		backend.touch = unsafe { nil }
 		backend.pointer_focused = false
+		backend.pointer_enter_serial_valid = false
 		backend.keyboard_focused = false
 		backend.pointer_buttons = 0
 		backend.modifiers = 0
@@ -2180,6 +2692,7 @@ fn (mut backend WaylandBackend) destroy_window_record(record &WaylandWindowRecor
 	$if linux && sokol_wayland ? {
 		if backend.pointer_focused && backend.pointer_focus == record.id {
 			backend.pointer_focused = false
+			backend.pointer_enter_serial_valid = false
 		}
 		if backend.keyboard_focused && backend.keyboard_focus == record.id {
 			backend.keyboard_focused = false
@@ -2199,6 +2712,16 @@ fn (mut backend WaylandBackend) destroy_window_record(record &WaylandWindowRecor
 		}
 		if record.wl_egl_window != unsafe { nil } {
 			C.v_multiwindow_wayland_egl_destroy_window(record.wl_egl_window)
+		}
+		for buffer in record.fallback_buffers {
+			if buffer != unsafe { nil } {
+				C.v_multiwindow_wayland_buffer_destroy(unsafe { &C.wl_buffer(buffer) })
+			}
+		}
+		if record.toplevel_decoration != unsafe { nil } {
+			C.v_multiwindow_wayland_xdg_toplevel_decoration_destroy(unsafe {
+				&C.zxdg_toplevel_decoration_v1(record.toplevel_decoration)
+			})
 		}
 		if record.xdg_toplevel != unsafe { nil } {
 			C.v_multiwindow_wayland_xdg_toplevel_destroy(unsafe {
@@ -2304,6 +2827,7 @@ fn (mut backend WaylandBackend) begin_pending_data_offer_drop() bool {
 		backend.pending_drop_source_actions = backend.data_offer_source_actions
 		backend.pending_drop_selected_action = backend.data_offer_selected_action
 		backend.pending_drop_action_received = backend.data_offer_action_received
+		backend.pending_drop_poll_cycles = 0
 		backend.pending_drop_buffer = []u8{cap: wayland_uri_list_buffer_size}
 		return true
 	}
@@ -2329,13 +2853,23 @@ fn (mut backend WaylandBackend) clear_pending_data_offer_drop(destroy bool) {
 		backend.pending_drop_source_actions = wayland_dnd_action_none
 		backend.pending_drop_selected_action = wayland_dnd_action_none
 		backend.pending_drop_action_received = false
+		backend.pending_drop_poll_cycles = 0
 		backend.pending_drop_buffer = []u8{}
 	}
+}
+
+fn (mut backend WaylandBackend) pending_drop_poll_cycle_expired() bool {
+	backend.pending_drop_poll_cycles++
+	return backend.pending_drop_poll_cycles > wayland_data_offer_max_pending_poll_cycles
 }
 
 fn (mut backend WaylandBackend) drain_pending_data_offer_drop() {
 	$if linux && sokol_wayland ? {
 		if backend.pending_drop_offer == unsafe { nil } || backend.pending_drop_fd < 0 {
+			return
+		}
+		if backend.pending_drop_poll_cycle_expired() {
+			backend.clear_data_offer(true)
 			return
 		}
 		mut poll_fd := C.pollfd{

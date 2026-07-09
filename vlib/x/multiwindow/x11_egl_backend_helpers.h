@@ -3,9 +3,11 @@
 
 #include <stdint.h>
 #include <locale.h>
+#include <stdlib.h>
 #include <string.h>
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
+#include <X11/cursorfont.h>
 #include <X11/keysym.h>
 #include <X11/XKBlib.h>
 #include <X11/Xutil.h>
@@ -27,6 +29,31 @@
 #ifndef MWM_HINTS_DECORATIONS
 #define MWM_HINTS_DECORATIONS (1L << 1)
 #endif
+
+#ifndef V_MULTIWINDOW_X11_XIM_STACK_BYTES
+#define V_MULTIWINDOW_X11_XIM_STACK_BYTES 128
+#endif
+#ifndef V_MULTIWINDOW_X11_XIM_MAX_BYTES
+#define V_MULTIWINDOW_X11_XIM_MAX_BYTES 32768
+#endif
+
+#define V_MULTIWINDOW_CURSOR_SHAPE_DEFAULT 0
+#define V_MULTIWINDOW_CURSOR_SHAPE_POINTER 1
+#define V_MULTIWINDOW_CURSOR_SHAPE_MOVE 2
+#define V_MULTIWINDOW_CURSOR_SHAPE_N_RESIZE 3
+#define V_MULTIWINDOW_CURSOR_SHAPE_S_RESIZE 4
+#define V_MULTIWINDOW_CURSOR_SHAPE_E_RESIZE 5
+#define V_MULTIWINDOW_CURSOR_SHAPE_W_RESIZE 6
+#define V_MULTIWINDOW_CURSOR_SHAPE_NE_RESIZE 7
+#define V_MULTIWINDOW_CURSOR_SHAPE_NW_RESIZE 8
+#define V_MULTIWINDOW_CURSOR_SHAPE_SE_RESIZE 9
+#define V_MULTIWINDOW_CURSOR_SHAPE_SW_RESIZE 10
+#define V_MULTIWINDOW_CURSOR_SHAPE_EW_RESIZE 11
+#define V_MULTIWINDOW_CURSOR_SHAPE_NS_RESIZE 12
+#define V_MULTIWINDOW_CURSOR_SHAPE_NESW_RESIZE 13
+#define V_MULTIWINDOW_CURSOR_SHAPE_NWSE_RESIZE 14
+#define V_MULTIWINDOW_CURSOR_SHAPE_GRAB 15
+#define V_MULTIWINDOW_CURSOR_SHAPE_GRABBING 16
 
 typedef struct {
 	unsigned long flags;
@@ -226,6 +253,50 @@ static inline int v_multiwindow_x11_button_modifier_bit(int mouse_button) {
 	default:
 		return 0;
 	}
+}
+
+static inline unsigned int v_multiwindow_x11_cursor_font_shape(int shape) {
+	switch (shape) {
+	case V_MULTIWINDOW_CURSOR_SHAPE_POINTER:
+		return XC_hand2;
+	case V_MULTIWINDOW_CURSOR_SHAPE_MOVE:
+	case V_MULTIWINDOW_CURSOR_SHAPE_GRAB:
+	case V_MULTIWINDOW_CURSOR_SHAPE_GRABBING:
+		return XC_fleur;
+	case V_MULTIWINDOW_CURSOR_SHAPE_N_RESIZE:
+		return XC_top_side;
+	case V_MULTIWINDOW_CURSOR_SHAPE_S_RESIZE:
+		return XC_bottom_side;
+	case V_MULTIWINDOW_CURSOR_SHAPE_E_RESIZE:
+		return XC_right_side;
+	case V_MULTIWINDOW_CURSOR_SHAPE_W_RESIZE:
+		return XC_left_side;
+	case V_MULTIWINDOW_CURSOR_SHAPE_NE_RESIZE:
+		return XC_top_right_corner;
+	case V_MULTIWINDOW_CURSOR_SHAPE_NW_RESIZE:
+		return XC_top_left_corner;
+	case V_MULTIWINDOW_CURSOR_SHAPE_SE_RESIZE:
+		return XC_bottom_right_corner;
+	case V_MULTIWINDOW_CURSOR_SHAPE_SW_RESIZE:
+		return XC_bottom_left_corner;
+	case V_MULTIWINDOW_CURSOR_SHAPE_EW_RESIZE:
+		return XC_sb_h_double_arrow;
+	case V_MULTIWINDOW_CURSOR_SHAPE_NS_RESIZE:
+		return XC_sb_v_double_arrow;
+	case V_MULTIWINDOW_CURSOR_SHAPE_NESW_RESIZE:
+		return XC_top_right_corner;
+	case V_MULTIWINDOW_CURSOR_SHAPE_NWSE_RESIZE:
+		return XC_top_left_corner;
+	default:
+		return XC_left_ptr;
+	}
+}
+
+static inline unsigned long v_multiwindow_x11_create_cursor_for_shape(Display *display, int shape) {
+	if (display == NULL) {
+		return 0;
+	}
+	return (unsigned long)XCreateFontCursor(display, v_multiwindow_x11_cursor_font_shape(shape));
 }
 
 static inline XIM v_multiwindow_x11_open_im(Display *display) {
@@ -710,17 +781,7 @@ static inline int v_multiwindow_x11_utf8_decode_next(const char *buf, int count,
 	return 1;
 }
 
-static inline int v_multiwindow_x11_char_codes(XIC ic, XEvent *event, unsigned int *codes, int codes_len) {
-	if (ic == NULL || event == NULL || event->type != KeyPress || codes == NULL || codes_len <= 0) {
-		return 0;
-	}
-	char buf[128];
-	KeySym keysym = NoSymbol;
-	Status status = 0;
-	int count = Xutf8LookupString(ic, &event->xkey, buf, (int)sizeof(buf), &keysym, &status);
-	if (status == XBufferOverflow || (status != XLookupChars && status != XLookupBoth) || count <= 0 || count > (int)sizeof(buf)) {
-		return 0;
-	}
+static inline int v_multiwindow_x11_decode_utf8_codes(const char *buf, int count, unsigned int *codes, int codes_len) {
 	int offset = 0;
 	int out_count = 0;
 	while (offset < count && out_count < codes_len) {
@@ -728,6 +789,41 @@ static inline int v_multiwindow_x11_char_codes(XIC ic, XEvent *event, unsigned i
 		if (v_multiwindow_x11_utf8_decode_next(buf, count, &offset, &codepoint) && codepoint != 0) {
 			codes[out_count++] = codepoint;
 		}
+	}
+	return out_count;
+}
+
+static inline int v_multiwindow_x11_char_codes(XIC ic, XEvent *event, unsigned int *codes, int codes_len) {
+	if (ic == NULL || event == NULL || event->type != KeyPress || codes == NULL || codes_len <= 0) {
+		return 0;
+	}
+	char stack_buf[V_MULTIWINDOW_X11_XIM_STACK_BYTES];
+	char *buf = stack_buf;
+	int buf_len = (int)sizeof(stack_buf);
+	KeySym keysym = NoSymbol;
+	Status status = 0;
+	int count = Xutf8LookupString(ic, &event->xkey, buf, buf_len, &keysym, &status);
+	if (status == XBufferOverflow) {
+		if (count <= 0 || count > V_MULTIWINDOW_X11_XIM_MAX_BYTES) {
+			return 0;
+		}
+		buf = (char *)malloc((size_t)count);
+		if (buf == NULL) {
+			return 0;
+		}
+		buf_len = count;
+		status = 0;
+		count = Xutf8LookupString(ic, &event->xkey, buf, buf_len, &keysym, &status);
+	}
+	if ((status != XLookupChars && status != XLookupBoth) || count <= 0 || count > buf_len) {
+		if (buf != stack_buf) {
+			free(buf);
+		}
+		return 0;
+	}
+	int out_count = v_multiwindow_x11_decode_utf8_codes(buf, count, codes, codes_len);
+	if (buf != stack_buf) {
+		free(buf);
 	}
 	return out_count;
 }

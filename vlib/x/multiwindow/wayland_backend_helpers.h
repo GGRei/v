@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <EGL/egl.h>
 #include <wayland-client.h>
@@ -28,6 +31,7 @@ void v_multiwindow_wayland_xdg_wm_base_ping(void *data, void *wm_base, uint32_t 
 void v_multiwindow_wayland_xdg_surface_configure(void *data, void *xdg_surface, uint32_t serial);
 void v_multiwindow_wayland_xdg_toplevel_configure(void *data, void *toplevel, int width, int height, struct wl_array *states);
 void v_multiwindow_wayland_xdg_toplevel_close(void *data, void *toplevel);
+void v_multiwindow_wayland_xdg_toplevel_decoration_configure(void *data, void *decoration, uint32_t mode);
 void v_multiwindow_wayland_seat_capabilities(void *data, void *seat, uint32_t caps);
 void v_multiwindow_wayland_seat_name(void *data, void *seat, char *name);
 void v_multiwindow_wayland_pointer_enter(void *data, void *pointer, uint32_t serial, void *surface, double x, double y);
@@ -109,9 +113,87 @@ struct xdg_toplevel_listener {
 #ifndef XDG_TOPLEVEL_SET_FULLSCREEN
 #define XDG_TOPLEVEL_SET_FULLSCREEN 11
 #endif
+#ifndef XDG_TOPLEVEL_MOVE
+#define XDG_TOPLEVEL_MOVE 5
+#endif
+#ifndef XDG_TOPLEVEL_RESIZE
+#define XDG_TOPLEVEL_RESIZE 6
+#endif
+#ifndef XDG_TOPLEVEL_RESIZE_EDGE_TOP
+#define XDG_TOPLEVEL_RESIZE_EDGE_TOP 1
+#endif
+#ifndef XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM
+#define XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM 2
+#endif
+#ifndef XDG_TOPLEVEL_RESIZE_EDGE_LEFT
+#define XDG_TOPLEVEL_RESIZE_EDGE_LEFT 4
+#endif
+#ifndef XDG_TOPLEVEL_RESIZE_EDGE_TOP_LEFT
+#define XDG_TOPLEVEL_RESIZE_EDGE_TOP_LEFT 5
+#endif
+#ifndef XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_LEFT
+#define XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_LEFT 6
+#endif
+#ifndef XDG_TOPLEVEL_RESIZE_EDGE_RIGHT
+#define XDG_TOPLEVEL_RESIZE_EDGE_RIGHT 8
+#endif
+#ifndef XDG_TOPLEVEL_RESIZE_EDGE_TOP_RIGHT
+#define XDG_TOPLEVEL_RESIZE_EDGE_TOP_RIGHT 9
+#endif
+#ifndef XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_RIGHT
+#define XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_RIGHT 10
+#endif
 extern const struct wl_interface v_multiwindow_xdg_wm_base_interface;
 extern const struct wl_interface v_multiwindow_xdg_surface_interface;
 extern const struct wl_interface v_multiwindow_xdg_toplevel_interface;
+
+#if !defined(XDG_DECORATION_UNSTABLE_V1_CLIENT_PROTOCOL_H)
+struct zxdg_decoration_manager_v1;
+struct zxdg_toplevel_decoration_v1;
+
+struct zxdg_toplevel_decoration_v1_listener {
+	void (*configure)(void *data, struct zxdg_toplevel_decoration_v1 *decoration, uint32_t mode);
+};
+#endif
+
+#ifndef ZXDG_DECORATION_MANAGER_V1_DESTROY
+#define ZXDG_DECORATION_MANAGER_V1_DESTROY 0
+#endif
+#ifndef ZXDG_DECORATION_MANAGER_V1_GET_TOPLEVEL_DECORATION
+#define ZXDG_DECORATION_MANAGER_V1_GET_TOPLEVEL_DECORATION 1
+#endif
+#ifndef ZXDG_TOPLEVEL_DECORATION_V1_DESTROY
+#define ZXDG_TOPLEVEL_DECORATION_V1_DESTROY 0
+#endif
+#ifndef ZXDG_TOPLEVEL_DECORATION_V1_SET_MODE
+#define ZXDG_TOPLEVEL_DECORATION_V1_SET_MODE 1
+#endif
+#ifndef ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
+#define ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE 1
+#endif
+#ifndef ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+#define ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE 2
+#endif
+extern const struct wl_interface v_multiwindow_zxdg_decoration_manager_v1_interface;
+extern const struct wl_interface v_multiwindow_zxdg_toplevel_decoration_v1_interface;
+
+struct wp_cursor_shape_manager_v1;
+struct wp_cursor_shape_device_v1;
+
+#ifndef WP_CURSOR_SHAPE_MANAGER_V1_DESTROY
+#define WP_CURSOR_SHAPE_MANAGER_V1_DESTROY 0
+#endif
+#ifndef WP_CURSOR_SHAPE_MANAGER_V1_GET_POINTER
+#define WP_CURSOR_SHAPE_MANAGER_V1_GET_POINTER 1
+#endif
+#ifndef WP_CURSOR_SHAPE_DEVICE_V1_DESTROY
+#define WP_CURSOR_SHAPE_DEVICE_V1_DESTROY 0
+#endif
+#ifndef WP_CURSOR_SHAPE_DEVICE_V1_SET_SHAPE
+#define WP_CURSOR_SHAPE_DEVICE_V1_SET_SHAPE 1
+#endif
+extern const struct wl_interface v_multiwindow_wp_cursor_shape_manager_v1_interface;
+extern const struct wl_interface v_multiwindow_wp_cursor_shape_device_v1_interface;
 
 static void v_multiwindow_wayland_registry_handle_global_trampoline(void *data, struct wl_registry *registry, uint32_t name, const char *iface, uint32_t version) {
 	v_multiwindow_wayland_registry_handle_global(data, registry, name, (char *)iface, version);
@@ -290,6 +372,10 @@ static void v_multiwindow_wayland_data_device_selection_trampoline(void *data, s
 	v_multiwindow_wayland_data_device_selection(data, (void *)device, (void *)offer);
 }
 
+static void v_multiwindow_wayland_xdg_toplevel_decoration_configure_trampoline(void *data, struct zxdg_toplevel_decoration_v1 *decoration, uint32_t mode) {
+	v_multiwindow_wayland_xdg_toplevel_decoration_configure(data, (void *)decoration, mode);
+}
+
 static const struct wl_registry_listener v_multiwindow_wayland_registry_listener = {
 	v_multiwindow_wayland_registry_handle_global_trampoline,
 	v_multiwindow_wayland_registry_handle_global_remove_trampoline,
@@ -359,6 +445,10 @@ static const struct wl_data_device_listener v_multiwindow_wayland_data_device_li
 	v_multiwindow_wayland_data_device_selection_trampoline,
 };
 
+static const struct zxdg_toplevel_decoration_v1_listener v_multiwindow_wayland_xdg_toplevel_decoration_listener = {
+	v_multiwindow_wayland_xdg_toplevel_decoration_configure_trampoline,
+};
+
 static inline uint32_t v_multiwindow_wayland_compositor_bind_version(uint32_t version) {
 	return version < 4 ? version : 4;
 }
@@ -380,6 +470,20 @@ static inline void *v_multiwindow_wayland_bind_xdg_wm_base(struct wl_registry *r
 	return wl_registry_bind(registry, name, &v_multiwindow_xdg_wm_base_interface, 1);
 }
 
+static inline void *v_multiwindow_wayland_bind_xdg_decoration_manager(struct wl_registry *registry, uint32_t name, uint32_t version) {
+	if (version < 1) {
+		return NULL;
+	}
+	return wl_registry_bind(registry, name, &v_multiwindow_zxdg_decoration_manager_v1_interface, 1);
+}
+
+static inline void *v_multiwindow_wayland_bind_cursor_shape_manager(struct wl_registry *registry, uint32_t name, uint32_t version) {
+	if (version < 1) {
+		return NULL;
+	}
+	return wl_registry_bind(registry, name, &v_multiwindow_wp_cursor_shape_manager_v1_interface, 1);
+}
+
 static inline void *v_multiwindow_wayland_bind_seat(struct wl_registry *registry, uint32_t name, uint32_t version) {
 	return wl_registry_bind(registry, name, &wl_seat_interface, v_multiwindow_wayland_seat_bind_version(version));
 }
@@ -389,6 +493,10 @@ static inline void *v_multiwindow_wayland_bind_data_device_manager(struct wl_reg
 		return NULL;
 	}
 	return wl_registry_bind(registry, name, &wl_data_device_manager_interface, 3);
+}
+
+static inline void *v_multiwindow_wayland_bind_shm(struct wl_registry *registry, uint32_t name) {
+	return wl_registry_bind(registry, name, &wl_shm_interface, 1);
 }
 
 static inline int v_multiwindow_wayland_add_registry_listener(struct wl_registry *registry, void *data) {
@@ -405,6 +513,10 @@ static inline int v_multiwindow_wayland_add_xdg_surface_listener(struct xdg_surf
 
 static inline int v_multiwindow_wayland_add_xdg_toplevel_listener(struct xdg_toplevel *toplevel, void *data) {
 	return wl_proxy_add_listener((struct wl_proxy *)toplevel, (void (**)(void))&v_multiwindow_wayland_xdg_toplevel_listener, data);
+}
+
+static inline int v_multiwindow_wayland_add_xdg_toplevel_decoration_listener(struct zxdg_toplevel_decoration_v1 *decoration, void *data) {
+	return wl_proxy_add_listener((struct wl_proxy *)decoration, (void (**)(void))&v_multiwindow_wayland_xdg_toplevel_decoration_listener, data);
 }
 
 static inline int v_multiwindow_wayland_add_seat_listener(struct wl_seat *seat, void *data) {
@@ -425,6 +537,27 @@ static inline void *v_multiwindow_wayland_seat_get_touch(struct wl_seat *seat) {
 
 static inline void *v_multiwindow_wayland_data_device_manager_get_data_device(struct wl_data_device_manager *manager, struct wl_seat *seat) {
 	return (void *)wl_data_device_manager_get_data_device(manager, seat);
+}
+
+static inline void *v_multiwindow_wayland_cursor_shape_manager_get_pointer(struct wp_cursor_shape_manager_v1 *manager, struct wl_pointer *pointer) {
+	struct wl_proxy *id = wl_proxy_marshal_flags((struct wl_proxy *)manager, WP_CURSOR_SHAPE_MANAGER_V1_GET_POINTER, &v_multiwindow_wp_cursor_shape_device_v1_interface, wl_proxy_get_version((struct wl_proxy *)manager), 0, NULL, pointer);
+	return (void *)id;
+}
+
+static inline void v_multiwindow_wayland_cursor_shape_device_set_shape(struct wp_cursor_shape_device_v1 *device, uint32_t serial, uint32_t shape) {
+	wl_proxy_marshal_flags((struct wl_proxy *)device, WP_CURSOR_SHAPE_DEVICE_V1_SET_SHAPE, NULL, wl_proxy_get_version((struct wl_proxy *)device), 0, serial, shape);
+}
+
+static inline void v_multiwindow_wayland_cursor_shape_device_destroy(struct wp_cursor_shape_device_v1 *device) {
+	if (device != NULL) {
+		wl_proxy_marshal_flags((struct wl_proxy *)device, WP_CURSOR_SHAPE_DEVICE_V1_DESTROY, NULL, wl_proxy_get_version((struct wl_proxy *)device), WL_MARSHAL_FLAG_DESTROY);
+	}
+}
+
+static inline void v_multiwindow_wayland_cursor_shape_manager_destroy(struct wp_cursor_shape_manager_v1 *manager) {
+	if (manager != NULL) {
+		wl_proxy_marshal_flags((struct wl_proxy *)manager, WP_CURSOR_SHAPE_MANAGER_V1_DESTROY, NULL, wl_proxy_get_version((struct wl_proxy *)manager), WL_MARSHAL_FLAG_DESTROY);
+	}
 }
 
 static inline int v_multiwindow_wayland_add_pointer_listener(struct wl_pointer *pointer, void *data) {
@@ -490,6 +623,87 @@ static inline void v_multiwindow_wayland_data_device_destroy(struct wl_data_devi
 static inline void v_multiwindow_wayland_data_device_manager_destroy(struct wl_data_device_manager *manager) {
 	if (manager != NULL) {
 		wl_data_device_manager_destroy(manager);
+	}
+}
+
+static inline void v_multiwindow_wayland_shm_destroy(struct wl_shm *shm) {
+	if (shm != NULL) {
+		wl_shm_destroy(shm);
+	}
+}
+
+static inline int v_multiwindow_wayland_create_tmpfile(size_t size) {
+	const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+	char template_path[PATH_MAX];
+	int written = -1;
+	if (runtime_dir != NULL && runtime_dir[0] != '\0') {
+		written = snprintf(template_path, sizeof(template_path), "%s/v-multiwindow-shm-XXXXXX", runtime_dir);
+	}
+	if (written < 0 || (size_t)written >= sizeof(template_path)) {
+		written = snprintf(template_path, sizeof(template_path), "/tmp/v-multiwindow-shm-XXXXXX");
+	}
+	if (written < 0 || (size_t)written >= sizeof(template_path)) {
+		return -1;
+	}
+	int fd = mkstemp(template_path);
+	if (fd < 0) {
+		return -1;
+	}
+	unlink(template_path);
+	if (ftruncate(fd, (off_t)size) < 0) {
+		close(fd);
+		return -1;
+	}
+	return fd;
+}
+
+static inline void *v_multiwindow_wayland_create_shm_buffer(struct wl_shm *shm, int width, int height) {
+	if (shm == NULL || width <= 0 || height <= 0) {
+		return NULL;
+	}
+	size_t stride = (size_t)width * 4;
+	size_t size = stride * (size_t)height;
+	if (stride == 0 || size == 0 || size / stride != (size_t)height) {
+		return NULL;
+	}
+	int fd = v_multiwindow_wayland_create_tmpfile(size);
+	if (fd < 0) {
+		return NULL;
+	}
+	void *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (data == MAP_FAILED) {
+		close(fd);
+		return NULL;
+	}
+	uint32_t *pixels = (uint32_t *)data;
+	size_t pixel_count = (size_t)width * (size_t)height;
+	for (size_t i = 0; i < pixel_count; i++) {
+		pixels[i] = 0xff202020u;
+	}
+	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)size);
+	if (pool == NULL) {
+		munmap(data, size);
+		close(fd);
+		return NULL;
+	}
+	struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, width, height, (int32_t)stride, WL_SHM_FORMAT_XRGB8888);
+	wl_shm_pool_destroy(pool);
+	munmap(data, size);
+	close(fd);
+	return buffer == NULL ? NULL : (void *)buffer;
+}
+
+static inline void v_multiwindow_wayland_attach_buffer(struct wl_surface *surface, struct wl_buffer *buffer, int width, int height) {
+	if (surface != NULL && buffer != NULL) {
+		wl_surface_attach(surface, buffer, 0, 0);
+		wl_surface_damage(surface, 0, 0, width, height);
+		wl_surface_commit(surface);
+	}
+}
+
+static inline void v_multiwindow_wayland_buffer_destroy(struct wl_buffer *buffer) {
+	if (buffer != NULL) {
+		wl_buffer_destroy(buffer);
 	}
 }
 
@@ -597,6 +811,35 @@ static inline void v_multiwindow_wayland_xdg_toplevel_set_max_size(struct xdg_to
 
 static inline void v_multiwindow_wayland_xdg_toplevel_set_fullscreen(struct xdg_toplevel *toplevel, struct wl_output *output) {
 	wl_proxy_marshal_flags((struct wl_proxy *)toplevel, XDG_TOPLEVEL_SET_FULLSCREEN, NULL, wl_proxy_get_version((struct wl_proxy *)toplevel), 0, output);
+}
+
+static inline void v_multiwindow_wayland_xdg_toplevel_move(struct xdg_toplevel *toplevel, struct wl_seat *seat, uint32_t serial) {
+	wl_proxy_marshal_flags((struct wl_proxy *)toplevel, XDG_TOPLEVEL_MOVE, NULL, wl_proxy_get_version((struct wl_proxy *)toplevel), 0, seat, serial);
+}
+
+static inline void v_multiwindow_wayland_xdg_toplevel_resize(struct xdg_toplevel *toplevel, struct wl_seat *seat, uint32_t serial, uint32_t edges) {
+	wl_proxy_marshal_flags((struct wl_proxy *)toplevel, XDG_TOPLEVEL_RESIZE, NULL, wl_proxy_get_version((struct wl_proxy *)toplevel), 0, seat, serial, edges);
+}
+
+static inline struct zxdg_toplevel_decoration_v1 *v_multiwindow_wayland_xdg_decoration_manager_get_toplevel_decoration(struct zxdg_decoration_manager_v1 *manager, struct xdg_toplevel *toplevel) {
+	struct wl_proxy *id = wl_proxy_marshal_flags((struct wl_proxy *)manager, ZXDG_DECORATION_MANAGER_V1_GET_TOPLEVEL_DECORATION, &v_multiwindow_zxdg_toplevel_decoration_v1_interface, wl_proxy_get_version((struct wl_proxy *)manager), 0, NULL, toplevel);
+	return (struct zxdg_toplevel_decoration_v1 *)id;
+}
+
+static inline void v_multiwindow_wayland_xdg_toplevel_decoration_set_server_side(struct zxdg_toplevel_decoration_v1 *decoration) {
+	wl_proxy_marshal_flags((struct wl_proxy *)decoration, ZXDG_TOPLEVEL_DECORATION_V1_SET_MODE, NULL, wl_proxy_get_version((struct wl_proxy *)decoration), 0, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+}
+
+static inline void v_multiwindow_wayland_xdg_toplevel_decoration_destroy(struct zxdg_toplevel_decoration_v1 *decoration) {
+	if (decoration != NULL) {
+		wl_proxy_marshal_flags((struct wl_proxy *)decoration, ZXDG_TOPLEVEL_DECORATION_V1_DESTROY, NULL, wl_proxy_get_version((struct wl_proxy *)decoration), WL_MARSHAL_FLAG_DESTROY);
+	}
+}
+
+static inline void v_multiwindow_wayland_xdg_decoration_manager_destroy(struct zxdg_decoration_manager_v1 *manager) {
+	if (manager != NULL) {
+		wl_proxy_marshal_flags((struct wl_proxy *)manager, ZXDG_DECORATION_MANAGER_V1_DESTROY, NULL, wl_proxy_get_version((struct wl_proxy *)manager), WL_MARSHAL_FLAG_DESTROY);
+	}
 }
 
 static inline void v_multiwindow_wayland_xdg_toplevel_destroy(struct xdg_toplevel *toplevel) {
