@@ -58,6 +58,7 @@ void v_multiwindow_wayland_data_device_leave(void *data, void *device);
 void v_multiwindow_wayland_data_device_motion(void *data, void *device, uint32_t time, double x, double y);
 void v_multiwindow_wayland_data_device_drop(void *data, void *device);
 void v_multiwindow_wayland_data_device_selection(void *data, void *device, void *offer);
+void v_multiwindow_wayland_buffer_release(void *data, void *buffer);
 
 #if !defined(XDG_SHELL_CLIENT_PROTOCOL_H)
 struct xdg_wm_base;
@@ -374,6 +375,10 @@ static void v_multiwindow_wayland_xdg_toplevel_decoration_configure_trampoline(v
 	v_multiwindow_wayland_xdg_toplevel_decoration_configure(data, (void *)decoration, mode);
 }
 
+static void v_multiwindow_wayland_buffer_release_trampoline(void *data, struct wl_buffer *buffer) {
+	v_multiwindow_wayland_buffer_release(data, (void *)buffer);
+}
+
 static const struct wl_registry_listener v_multiwindow_wayland_registry_listener = {
 	v_multiwindow_wayland_registry_handle_global_trampoline,
 	v_multiwindow_wayland_registry_handle_global_remove_trampoline,
@@ -441,6 +446,10 @@ static const struct wl_data_device_listener v_multiwindow_wayland_data_device_li
 	v_multiwindow_wayland_data_device_motion_trampoline,
 	v_multiwindow_wayland_data_device_drop_trampoline,
 	v_multiwindow_wayland_data_device_selection_trampoline,
+};
+
+static const struct wl_buffer_listener v_multiwindow_wayland_buffer_listener = {
+	v_multiwindow_wayland_buffer_release_trampoline,
 };
 
 static const struct zxdg_toplevel_decoration_v1_listener v_multiwindow_wayland_xdg_toplevel_decoration_listener = {
@@ -689,6 +698,13 @@ static inline void *v_multiwindow_wayland_create_shm_buffer(struct wl_shm *shm, 
 	munmap(data, size);
 	close(fd);
 	return buffer == NULL ? NULL : (void *)buffer;
+}
+
+static inline int v_multiwindow_wayland_add_buffer_listener(struct wl_buffer *buffer, void *data) {
+	if (buffer == NULL) {
+		return -1;
+	}
+	return wl_buffer_add_listener(buffer, &v_multiwindow_wayland_buffer_listener, data);
 }
 
 static inline void v_multiwindow_wayland_attach_buffer(struct wl_surface *surface, struct wl_buffer *buffer, int width, int height) {

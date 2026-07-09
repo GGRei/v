@@ -235,8 +235,9 @@ Current native input support is intentionally capability-scoped:
   never closes the transfer fd are rejected and cleaned up after a bounded
   number of owner poll cycles.
   Wayland text follows the existing `sapp` `xkb_state_key_get_utf8` model for
-  key presses; full IME/composed text is not implemented. Wayland key-repeat
-  timers and pointer frame batching are not synthesized yet; event callbacks are
+  key presses; full IME/composed text is not implemented. Wayland synthesizes
+  key-repeat from compositor repeat_info/xkb; pointer frame batching is not
+  synthesized yet; event callbacks are
   routed as the compositor delivers them.
 - Native drop and touch input are false unless a backend explicitly reports the
   corresponding capability. Clipboard paste is an input signal; clipboard

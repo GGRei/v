@@ -43,6 +43,9 @@ const x11_modifier_alt = u32(4)
 const x11_modifier_super = u32(8)
 const x11_key_v = 86
 const x11_xdnd_version = 5
+const x11_xdnd_max_payload_bytes = 1024 * 1024
+const x11_xdnd_max_payload_units = (x11_xdnd_max_payload_bytes + 3) / 4
+const x11_xdnd_max_type_atoms = 64
 const x11_max_char_codes = 32768
 
 $if x32 {
@@ -697,6 +700,7 @@ fn (mut backend X11Backend) poll_queued_events() ![]QueuedEvent {
 					}
 					index := backend.window_record_index_for_event(&event) or { continue }
 					C.v_multiwindow_x11_unset_ic_focus(backend.windows[index].xic)
+					backend.clear_input_state(index)
 					events << queued_input_event(backend.input_event_from_record(backend.windows[index],
 						.unfocused))
 				}
@@ -787,6 +791,13 @@ fn (backend &X11Backend) input_files_dropped_event(record X11WindowRecord, files
 }
 
 $if linux && x_multiwindow_x11 ? {
+	fn (mut backend X11Backend) clear_input_state(index int) {
+		backend.windows[index].mouse_buttons = 0
+		for i in 0 .. 256 {
+			backend.windows[index].key_repeat[i] = false
+		}
+	}
+
 	fn (mut backend X11Backend) queued_key_press_event(index int, event &C.XEvent) []QueuedEvent {
 		mut events := []QueuedEvent{}
 		key_code := C.v_multiwindow_x11_key_code(event, &backend.keycodes[0], 256)
@@ -1054,11 +1065,21 @@ $if linux && x_multiwindow_x11 ? {
 		mut item_count := X11NativeULong(0)
 		mut bytes_after := X11NativeULong(0)
 		mut data := &u8(unsafe { nil })
-		C.XGetWindowProperty(backend.display, requestor, property, X11NativeLong(0),
-			X11NativeLong(0x7fffffff), 1, backend.text_uri_list, &actual_type, &actual_format,
-			&item_count, &bytes_after, &&u8(&data))
-		valid_payload := actual_type == backend.text_uri_list && actual_format == 8
-		payload := if valid_payload && data != unsafe { nil } && item_count > X11NativeULong(0) {
+		status := C.XGetWindowProperty(backend.display, requestor, property, X11NativeLong(0),
+			X11NativeLong(x11_xdnd_max_payload_units), 1, backend.text_uri_list, &actual_type,
+			&actual_format, &item_count, &bytes_after, &&u8(&data))
+		valid_payload := status == x11_success && actual_type == backend.text_uri_list
+			&& actual_format == 8 && bytes_after == X11NativeULong(0)
+			&& item_count <= X11NativeULong(x11_xdnd_max_payload_bytes)
+		if !valid_payload {
+			if data != unsafe { nil } {
+				C.XFree(data)
+			}
+			backend.send_xdnd_finished(requestor, false)
+			backend.clear_xdnd_state()
+			return events
+		}
+		payload := if data != unsafe { nil } && item_count > X11NativeULong(0) {
 			unsafe { tos(data, int(item_count)).clone() }
 		} else {
 			''
@@ -1085,19 +1106,27 @@ $if linux && x_multiwindow_x11 ? {
 		mut item_count := X11NativeULong(0)
 		mut bytes_after := X11NativeULong(0)
 		mut formats := &X11NativeAtom(unsafe { nil })
-		C.XGetWindowProperty(backend.display, backend.xdnd_source, backend.xdnd_type_list,
-			X11NativeLong(0), X11NativeLong(0x7fffffff), 0, X11NativeAtom(4), &actual_type,
-			&actual_format, &item_count, &bytes_after, unsafe { &&u8(&formats) })
-		mut result := X11NativeAtom(0)
-		if formats != unsafe { nil } {
-			for i in 0 .. int(item_count) {
-				if unsafe { formats[i] } == backend.text_uri_list {
-					result = backend.text_uri_list
-					break
-				}
+		status := C.XGetWindowProperty(backend.display, backend.xdnd_source,
+			backend.xdnd_type_list, X11NativeLong(0), X11NativeLong(x11_xdnd_max_type_atoms), 0,
+			X11NativeAtom(4), &actual_type, &actual_format, &item_count, &bytes_after,
+			unsafe { &&u8(&formats) })
+		valid_type_list := status == x11_success && actual_type == X11NativeAtom(4)
+			&& actual_format == 32 && bytes_after == X11NativeULong(0) && formats != unsafe { nil }
+			&& item_count <= X11NativeULong(x11_xdnd_max_type_atoms)
+		if !valid_type_list {
+			if formats != unsafe { nil } {
+				C.XFree(formats)
 			}
-			C.XFree(formats)
+			return X11NativeAtom(0)
 		}
+		mut result := X11NativeAtom(0)
+		for i in 0 .. int(item_count) {
+			if unsafe { formats[i] } == backend.text_uri_list {
+				result = backend.text_uri_list
+				break
+			}
+		}
+		C.XFree(formats)
 		return result
 	}
 

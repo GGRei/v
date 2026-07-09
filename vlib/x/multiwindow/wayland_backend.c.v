@@ -90,6 +90,7 @@ const wayland_uri_list_buffer_size = 65536
 const wayland_data_offer_drain_chunk_size = 4096
 const wayland_data_offer_max_read_chunks = 16
 const wayland_data_offer_max_pending_poll_cycles = 300
+const wayland_max_fallback_buffers = 3
 const wayland_nsec_per_sec = u64(1_000_000_000)
 const wayland_nsec_per_msec = u64(1_000_000)
 const wayland_dnd_action_none = u32(0)
@@ -141,6 +142,7 @@ mut:
 	mouse_dy                       f32
 	mouse_pos_valid                bool
 	fallback_buffers               []voidptr
+	fallback_current_buffer        voidptr
 	fallback_buffer_width          int
 	fallback_buffer_height         int
 	wl_egl_window                  voidptr
@@ -216,7 +218,6 @@ mut:
 	keyboard_repeat_active       bool
 	keyboard_repeat_raw_key      u32
 	keyboard_repeat_key_code     int
-	keyboard_repeat_char_code    u32
 	keyboard_repeat_window       WindowId
 	keyboard_repeat_next_ns      u64
 	keyboard_repeat_interval_ns  u64
@@ -356,6 +357,7 @@ $if linux && sokol_wayland ? {
 	fn C.v_multiwindow_wayland_shm_destroy(shm &C.wl_shm)
 	fn C.v_multiwindow_wayland_create_shm_buffer(shm &C.wl_shm, width int, height int) voidptr
 	fn C.v_multiwindow_wayland_attach_buffer(surface &C.wl_surface, buffer &C.wl_buffer, width int, height int)
+	fn C.v_multiwindow_wayland_add_buffer_listener(buffer &C.wl_buffer, data voidptr) int
 	fn C.v_multiwindow_wayland_buffer_destroy(buffer &C.wl_buffer)
 	fn C.v_multiwindow_wayland_pointer_destroy(pointer &C.wl_pointer)
 	fn C.v_multiwindow_wayland_keyboard_destroy(keyboard &C.wl_keyboard)
@@ -677,6 +679,16 @@ $if linux && sokol_wayland ? {
 		_ = name
 	}
 
+	@[export: 'v_multiwindow_wayland_buffer_release']
+	@[markused]
+	fn wayland_buffer_release(data voidptr, buffer voidptr) {
+		if data == unsafe { nil } || buffer == unsafe { nil } {
+			return
+		}
+		mut record := unsafe { &WaylandWindowRecord(data) }
+		record.release_fallback_buffer(buffer)
+	}
+
 	@[export: 'v_multiwindow_wayland_pointer_enter']
 	@[markused]
 	fn wayland_pointer_enter(data voidptr, pointer voidptr, serial u32, surface voidptr, x f64, y f64) {
@@ -913,7 +925,7 @@ $if linux && sokol_wayland ? {
 				backend.keys_down[key_index] = true
 			}
 			backend.update_modifier_for_key(key_code, true)
-			backend.start_key_repeat(backend.windows[index], raw_key, key_code, char_code)
+			backend.start_key_repeat(backend.windows[index], raw_key, key_code)
 		} else if state == wayland_keyboard_key_state_released {
 			backend.stop_key_repeat_for_key(raw_key)
 			if key_index > 0 {
@@ -1822,7 +1834,7 @@ fn (record &WaylandWindowRecord) input_char_event(char_code u32, key_repeat bool
 	}
 }
 
-fn (mut backend WaylandBackend) start_key_repeat(record &WaylandWindowRecord, raw_key u32, key_code int, char_code u32) {
+fn (mut backend WaylandBackend) start_key_repeat(record &WaylandWindowRecord, raw_key u32, key_code int) {
 	$if linux && sokol_wayland ? {
 		if key_code == 0 {
 			return
@@ -1840,7 +1852,6 @@ fn (mut backend WaylandBackend) start_key_repeat(record &WaylandWindowRecord, ra
 		backend.keyboard_repeat_active = true
 		backend.keyboard_repeat_raw_key = raw_key
 		backend.keyboard_repeat_key_code = key_code
-		backend.keyboard_repeat_char_code = char_code
 		backend.keyboard_repeat_window = record.id
 		backend.keyboard_repeat_interval_ns = interval_ns
 		backend.keyboard_repeat_next_ns = vtime.sys_mono_now() +
@@ -1849,7 +1860,6 @@ fn (mut backend WaylandBackend) start_key_repeat(record &WaylandWindowRecord, ra
 		_ = record
 		_ = raw_key
 		_ = key_code
-		_ = char_code
 	}
 }
 
@@ -1857,7 +1867,6 @@ fn (mut backend WaylandBackend) stop_key_repeat() {
 	backend.keyboard_repeat_active = false
 	backend.keyboard_repeat_raw_key = 0
 	backend.keyboard_repeat_key_code = 0
-	backend.keyboard_repeat_char_code = 0
 	backend.keyboard_repeat_window = WindowId{}
 	backend.keyboard_repeat_next_ns = 0
 	backend.keyboard_repeat_interval_ns = 0
@@ -1905,9 +1914,9 @@ fn (mut backend WaylandBackend) enqueue_due_key_repeats() {
 			backend.keyboard_repeat_key_code, true, wayland_invalid_mouse_button, 0, 0)
 		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
 			queued_input_event(input))
-		if backend.keyboard_repeat_char_code != 0 {
-			char_input := record.input_char_event(backend.keyboard_repeat_char_code, true,
-				modifiers)
+		char_code := backend.char_code_for_key(backend.keyboard_repeat_raw_key)
+		if char_code != 0 {
+			char_input := record.input_char_event(char_code, true, modifiers)
 			record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
 				queued_input_event(char_input))
 		}
@@ -1964,12 +1973,13 @@ fn (backend &WaylandBackend) touch_event_for_record(record &WaylandWindowRecord,
 		}
 		count++
 	}
+	mouse_x, mouse_y := backend.touch_mouse_position_for_record(record, changed_slot)
 	return InputEvent{
 		kind:               kind
 		window_id:          record.id
 		modifiers:          backend.event_modifiers()
-		mouse_x:            record.mouse_x
-		mouse_y:            record.mouse_y
+		mouse_x:            mouse_x
+		mouse_y:            mouse_y
 		num_touches:        count
 		touches:            touches
 		window_width:       record.width
@@ -1995,12 +2005,13 @@ fn (backend &WaylandBackend) touch_cancel_event_for_record(record &WaylandWindow
 		}
 		count++
 	}
+	mouse_x, mouse_y := backend.touch_mouse_position_for_record(record, -1)
 	return InputEvent{
 		kind:               .touches_cancelled
 		window_id:          record.id
 		modifiers:          backend.event_modifiers()
-		mouse_x:            record.mouse_x
-		mouse_y:            record.mouse_y
+		mouse_x:            mouse_x
+		mouse_y:            mouse_y
 		num_touches:        count
 		touches:            touches
 		window_width:       record.width
@@ -2008,6 +2019,21 @@ fn (backend &WaylandBackend) touch_cancel_event_for_record(record &WaylandWindow
 		framebuffer_width:  record.width
 		framebuffer_height: record.height
 	}
+}
+
+fn (backend &WaylandBackend) touch_mouse_position_for_record(record &WaylandWindowRecord, changed_slot int) (f32, f32) {
+	if changed_slot >= 0 && changed_slot < backend.touches.len {
+		touch := backend.touches[changed_slot]
+		if touch.active && touch.window_id == record.id {
+			return touch.x, touch.y
+		}
+	}
+	for touch in backend.touches {
+		if touch.active && touch.window_id == record.id {
+			return touch.x, touch.y
+		}
+	}
+	return record.mouse_x, record.mouse_y
 }
 
 fn (mut record WaylandWindowRecord) update_mouse_position(x f32, y f32, clear_delta bool) {
@@ -2623,8 +2649,10 @@ fn (mut backend WaylandBackend) ensure_lifecycle_buffer(index int) ! {
 		}
 		width := safe_wayland_extent(record.width)
 		height := safe_wayland_extent(record.height)
-		if record.fallback_buffer_width == width && record.fallback_buffer_height == height
-			&& record.fallback_buffers.len > 0 {
+		if record.fallback_buffer_width == width && record.fallback_buffer_height == height {
+			return
+		}
+		if record.fallback_buffers.len >= wayland_max_fallback_buffers {
 			return
 		}
 		buffer := C.v_multiwindow_wayland_create_shm_buffer(unsafe { &C.wl_shm(backend.shm) },
@@ -2632,9 +2660,15 @@ fn (mut backend WaylandBackend) ensure_lifecycle_buffer(index int) ! {
 		if buffer == unsafe { nil } {
 			return error(err_wayland_buffer_failed)
 		}
+		if C.v_multiwindow_wayland_add_buffer_listener(unsafe { &C.wl_buffer(buffer) },
+			record.listener_data()) != 0 {
+			C.v_multiwindow_wayland_buffer_destroy(unsafe { &C.wl_buffer(buffer) })
+			return error(err_wayland_buffer_failed)
+		}
 		C.v_multiwindow_wayland_attach_buffer(unsafe { &C.wl_surface(record.surface) },
 			unsafe { &C.wl_buffer(buffer) }, width, height)
 		backend.windows[index].fallback_buffers << buffer
+		backend.windows[index].fallback_current_buffer = buffer
 		backend.windows[index].fallback_buffer_width = width
 		backend.windows[index].fallback_buffer_height = height
 		if backend.display != unsafe { nil } {
@@ -2647,6 +2681,24 @@ fn (mut backend WaylandBackend) ensure_lifecycle_buffer(index int) ! {
 	}
 	_ = index
 	return error(err_backend_unsupported)
+}
+
+fn (mut record WaylandWindowRecord) release_fallback_buffer(buffer voidptr) {
+	$if linux && sokol_wayland ? {
+		for i, fallback_buffer in record.fallback_buffers {
+			if fallback_buffer != buffer {
+				continue
+			}
+			if record.fallback_current_buffer == buffer {
+				record.fallback_current_buffer = unsafe { nil }
+			}
+			C.v_multiwindow_wayland_buffer_destroy(unsafe { &C.wl_buffer(buffer) })
+			record.fallback_buffers.delete(i)
+			return
+		}
+	} $else {
+		_ = buffer
+	}
 }
 
 fn (mut backend WaylandBackend) close_connection() {
@@ -2845,6 +2897,7 @@ fn (mut backend WaylandBackend) destroy_window_record(record &WaylandWindowRecor
 		if backend.pointer_focused && backend.pointer_focus == record.id {
 			backend.pointer_focused = false
 			backend.pointer_enter_serial_valid = false
+			backend.pointer_buttons = 0
 		}
 		if backend.keyboard_focused && backend.keyboard_focus == record.id {
 			backend.keyboard_focused = false

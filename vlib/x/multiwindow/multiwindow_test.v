@@ -2216,7 +2216,9 @@ fn test_x11_input_support_queues_key_char_and_focus_source_guard() {
 	assert x11_backend_source.contains('send_xdnd_finished')
 	assert x11_backend_source.contains('.files_dropped')
 	assert x11_backend_source.contains('dropped_files_from_uri_list(payload)')
-	assert x11_backend_source.contains('valid_payload := actual_type == backend.text_uri_list && actual_format == 8')
+	assert x11_backend_source.contains('const x11_xdnd_max_payload_bytes = 1024 * 1024')
+	assert x11_backend_source.contains('const x11_xdnd_max_payload_units = (x11_xdnd_max_payload_bytes + 3) / 4')
+	assert x11_backend_source.contains('const x11_xdnd_max_type_atoms = 64')
 	assert x11_backend_source.contains('fn (mut backend X11Backend) poll_queued_events')
 	assert x11_backend_source.contains('queued_input_event')
 	assert x11_backend_source.contains('C.v_multiwindow_x11_is_notify_grab_or_ungrab')
@@ -2241,11 +2243,54 @@ fn test_x11_input_support_queues_key_char_and_focus_source_guard() {
 	assert x11_backend_source.contains('fn x11_xdnd_position_coords(value X11NativeLong) (int, int)')
 	assert x11_backend_source.contains('return x11_signed_16(packed >> 16), x11_signed_16(packed)')
 	assert x11_backend_source.contains('fn x11_signed_16(value u32) int')
+	xdnd_selection_body :=
+		x11_backend_source.all_after('fn (mut backend X11Backend) queued_xdnd_selection_events').all_before('fn (mut backend X11Backend) xdnd_format_from_type_list')
+	xdnd_reject_body :=
+		xdnd_selection_body.all_after('if !valid_payload {').all_before('payload :=')
+	assert xdnd_selection_body.contains('status := C.XGetWindowProperty')
+	assert xdnd_selection_body.contains('X11NativeLong(x11_xdnd_max_payload_units)')
+	assert !xdnd_selection_body.contains('X11NativeLong(0x7fffffff)')
+	assert xdnd_selection_body.contains('status == x11_success')
+	assert xdnd_selection_body.contains('actual_type == backend.text_uri_list')
+	assert xdnd_selection_body.contains('actual_format == 8')
+	assert xdnd_selection_body.contains('bytes_after == X11NativeULong(0)')
+	assert xdnd_selection_body.contains('item_count <= X11NativeULong(x11_xdnd_max_payload_bytes)')
+	assert xdnd_reject_body.contains('C.XFree(data)')
+	assert xdnd_reject_body.contains('backend.send_xdnd_finished(requestor, false)')
+	assert xdnd_reject_body.contains('backend.clear_xdnd_state()')
+	assert xdnd_reject_body.contains('return events')
+	assert_source_order(xdnd_selection_body, 'if !valid_payload {',
+		'dropped_files_from_uri_list(payload)')
+	xdnd_type_list_body :=
+		x11_backend_source.all_after('fn (mut backend X11Backend) xdnd_format_from_type_list').all_before('fn (backend &X11Backend) send_xdnd_status')
+	xdnd_type_list_reject_body :=
+		xdnd_type_list_body.all_after('if !valid_type_list {').all_before('mut result := X11NativeAtom(0)')
+	assert xdnd_type_list_body.contains('status := C.XGetWindowProperty')
+	assert xdnd_type_list_body.contains('X11NativeLong(x11_xdnd_max_type_atoms)')
+	assert !xdnd_type_list_body.contains('X11NativeLong(0x7fffffff)')
+	assert xdnd_type_list_body.contains('status == x11_success')
+	assert xdnd_type_list_body.contains('actual_type == X11NativeAtom(4)')
+	assert xdnd_type_list_body.contains('actual_format == 32')
+	assert xdnd_type_list_body.contains('bytes_after == X11NativeULong(0)')
+	assert xdnd_type_list_body.contains('formats != unsafe { nil }')
+	assert xdnd_type_list_body.contains('item_count <= X11NativeULong(x11_xdnd_max_type_atoms)')
+	assert xdnd_type_list_reject_body.contains('C.XFree(formats)')
+	assert xdnd_type_list_reject_body.contains('return X11NativeAtom(0)')
 	key_press_body :=
 		x11_backend_source.all_after('fn (mut backend X11Backend) queued_key_press_event').all_before('fn (mut backend X11Backend) queued_key_release_event')
 	assert !key_press_body.contains('if key_code == 0 {\n\t\t\treturn events\n\t\t}')
 	assert key_press_body.contains('if key_code != 0 {')
 	assert key_press_body.contains('for i in 0 .. char_count')
+	focus_out_body :=
+		x11_backend_source.all_after('x11_focus_out {').all_before('x11_property_notify {')
+	clear_input_state_body :=
+		x11_backend_source.all_after('fn (mut backend X11Backend) clear_input_state').all_before('fn (mut backend X11Backend) queued_key_press_event')
+	assert focus_out_body.contains('backend.clear_input_state(index)')
+	assert_source_order(focus_out_body, 'C.v_multiwindow_x11_unset_ic_focus',
+		'backend.clear_input_state(index)')
+	assert_source_order(focus_out_body, 'backend.clear_input_state(index)', '.unfocused')
+	assert clear_input_state_body.contains('backend.windows[index].mouse_buttons = 0')
+	assert clear_input_state_body.contains('backend.windows[index].key_repeat[i] = false')
 	assert_source_order(x11_backend_source, 'events << queued_input_event(input)',
 		'.clipboard_pasted')
 	assert_source_order(x11_backend_source, '.clipboard_pasted',
@@ -2426,22 +2471,40 @@ fn test_wayland_lifecycle_windows_attach_shm_buffer_source_guard() {
 		wayland_source.all_after('fn (mut backend WaylandBackend) poll_queued_events').all_before('fn (mut record WaylandWindowRecord) enqueue_native_event')
 	lifecycle_buffer_body :=
 		wayland_source.all_after('fn (mut backend WaylandBackend) ensure_lifecycle_buffer').all_before('fn (mut backend WaylandBackend) close_connection')
+	release_buffer_body :=
+		wayland_source.all_after('fn (mut record WaylandWindowRecord) release_fallback_buffer').all_before('fn (mut backend WaylandBackend) close_connection')
 
 	assert wayland_source.contains('shm                          voidptr')
 	assert wayland_source.contains('fallback_buffers')
+	assert wayland_source.contains('fallback_current_buffer')
+	assert wayland_source.contains('const wayland_max_fallback_buffers = 3')
 	assert wayland_source.contains('C.v_multiwindow_wayland_bind_shm')
 	assert wayland_source.contains('fn (mut backend WaylandBackend) ensure_lifecycle_buffer')
 	assert wayland_source.contains('C.v_multiwindow_wayland_create_shm_buffer')
 	assert wayland_source.contains('C.v_multiwindow_wayland_attach_buffer')
+	assert wayland_source.contains('C.v_multiwindow_wayland_add_buffer_listener')
 	assert wayland_source.contains('C.v_multiwindow_wayland_buffer_destroy')
+	assert wayland_source.contains("@[export: 'v_multiwindow_wayland_buffer_release']")
+	assert wayland_source.contains('fn (mut record WaylandWindowRecord) release_fallback_buffer')
 	assert lifecycle_buffer_body.contains('record := backend.windows[index]')
+	assert lifecycle_buffer_body.contains('if record.fallback_buffer_width == width && record.fallback_buffer_height == height {')
+	assert !lifecycle_buffer_body.contains('&& record.fallback_current_buffer != unsafe { nil }')
+	assert lifecycle_buffer_body.contains('record.fallback_buffers.len >= wayland_max_fallback_buffers')
+	assert lifecycle_buffer_body.contains('C.v_multiwindow_wayland_add_buffer_listener')
 	assert lifecycle_buffer_body.contains('backend.windows[index].fallback_buffers << buffer')
+	assert lifecycle_buffer_body.contains('backend.windows[index].fallback_current_buffer = buffer')
 	assert lifecycle_buffer_body.contains('backend.windows[index].fallback_buffer_width = width')
 	assert lifecycle_buffer_body.contains('backend.windows[index].fallback_buffer_height = height')
 	assert !lifecycle_buffer_body.contains('mut record := backend.windows[index]')
 	assert !lifecycle_buffer_body.contains('record.fallback_buffers << buffer')
 	assert !lifecycle_buffer_body.contains('record.fallback_buffer_width = width')
 	assert !lifecycle_buffer_body.contains('record.fallback_buffer_height = height')
+	assert lifecycle_buffer_body.contains('record.fallback_buffers.delete(i)')
+	assert release_buffer_body.contains('record.fallback_current_buffer = unsafe { nil }')
+	assert !release_buffer_body.contains('record.fallback_buffer_width = 0')
+	assert !release_buffer_body.contains('record.fallback_buffer_height = 0')
+	assert_source_order(lifecycle_buffer_body, 'C.v_multiwindow_wayland_add_buffer_listener',
+		'C.v_multiwindow_wayland_attach_buffer')
 	assert create_window_body.contains('if !backend.renderer_ready()')
 	assert create_window_body.contains('backend.ensure_lifecycle_buffer(index) or {')
 	assert_source_order(create_window_body, 'C.wl_display_roundtrip(display)',
@@ -2456,8 +2519,10 @@ fn test_wayland_lifecycle_windows_attach_shm_buffer_source_guard() {
 
 	for required_helper in ['v_multiwindow_wayland_create_shm_buffer', 'wl_shm_create_pool',
 		'wl_shm_pool_create_buffer', 'WL_SHM_FORMAT_XRGB8888', 'v_multiwindow_wayland_attach_buffer',
-		'wl_surface_attach', 'wl_surface_damage', 'wl_surface_commit',
-		'v_multiwindow_wayland_buffer_destroy'] {
+		'wl_buffer_listener', 'wl_buffer_add_listener',
+		'v_multiwindow_wayland_buffer_release_trampoline',
+		'v_multiwindow_wayland_add_buffer_listener', 'wl_surface_attach', 'wl_surface_damage',
+		'wl_surface_commit', 'v_multiwindow_wayland_buffer_destroy'] {
 		assert wayland_helper_source.contains(required_helper)
 	}
 }
@@ -2822,24 +2887,30 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 		wayland_source.all_after('fn (mut backend WaylandBackend) destroy_window_record').all_before('fn (mut backend WaylandBackend) destroy_data_offer')
 	repeat_trampoline_body :=
 		wayland_helper_source.all_after('v_multiwindow_wayland_keyboard_repeat_info_trampoline').all_before('static void v_multiwindow_wayland_touch_down_trampoline')
+	touch_event_body :=
+		wayland_source.all_after('fn (backend &WaylandBackend) touch_event_for_record').all_before('fn (backend &WaylandBackend) touch_cancel_event_for_record')
+	touch_cancel_body :=
+		wayland_source.all_after('fn (backend &WaylandBackend) touch_cancel_event_for_record').all_before('fn (backend &WaylandBackend) touch_mouse_position_for_record')
+	touch_mouse_position_body :=
+		wayland_source.all_after('fn (backend &WaylandBackend) touch_mouse_position_for_record').all_before('fn (mut record WaylandWindowRecord) update_mouse_position')
 	assert keyboard_key_body.contains('backend.windows[index].input_char_event')
 	assert wayland_helper_source.contains('void v_multiwindow_wayland_keyboard_repeat_info(void *data, void *keyboard, int32_t rate, int32_t delay);')
 	assert repeat_trampoline_body.contains('v_multiwindow_wayland_keyboard_repeat_info(data, (void *)keyboard, rate, delay);')
 	assert wayland_source.contains("@[export: 'v_multiwindow_wayland_keyboard_repeat_info']")
 	for repeat_field in ['keyboard_repeat_rate         int', 'keyboard_repeat_delay        int',
 		'keyboard_repeat_active       bool', 'keyboard_repeat_raw_key      u32',
-		'keyboard_repeat_key_code     int', 'keyboard_repeat_char_code    u32',
-		'keyboard_repeat_window       WindowId', 'keyboard_repeat_next_ns      u64',
-		'keyboard_repeat_interval_ns  u64'] {
+		'keyboard_repeat_key_code     int', 'keyboard_repeat_window       WindowId',
+		'keyboard_repeat_next_ns      u64', 'keyboard_repeat_interval_ns  u64'] {
 		assert wayland_source.contains(repeat_field)
 	}
 	assert !wayland_source.contains('keyboard_repeat_modifiers')
+	assert !wayland_source.contains('keyboard_repeat_char_code')
 	assert repeat_info_body.contains('backend.keyboard_repeat_rate = if rate > 0 { rate } else { 0 }')
 	assert repeat_info_body.contains('backend.keyboard_repeat_delay = if delay > 0 { delay } else { 0 }')
 	assert repeat_info_body.contains('if backend.keyboard_repeat_rate == 0 {')
 	assert repeat_info_body.contains('backend.stop_key_repeat()')
 	assert keyboard_key_body.contains('raw_key := key + 8')
-	assert keyboard_key_body.contains('backend.start_key_repeat(backend.windows[index], raw_key, key_code, char_code)')
+	assert keyboard_key_body.contains('backend.start_key_repeat(backend.windows[index], raw_key, key_code)')
 	assert keyboard_key_body.contains('backend.stop_key_repeat_for_key(raw_key)')
 	assert poll_body.contains('backend.enqueue_due_key_repeats()')
 	assert repeat_handler_body.contains('now := vtime.sys_mono_now()')
@@ -2847,7 +2918,8 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 	assert repeat_handler_body.contains('modifiers := backend.event_modifiers()')
 	assert repeat_handler_body.contains('record.input_event_with_payload(.key_down')
 	assert repeat_handler_body.contains('backend.keyboard_repeat_key_code, true')
-	assert repeat_handler_body.contains('record.input_char_event(backend.keyboard_repeat_char_code, true')
+	assert repeat_handler_body.contains('char_code := backend.char_code_for_key(backend.keyboard_repeat_raw_key)')
+	assert repeat_handler_body.contains('record.input_char_event(char_code, true')
 	assert repeat_handler_body.contains('backend.keyboard_repeat_next_ns += backend.keyboard_repeat_interval_ns')
 	assert repeat_handler_body.contains('if backend.keyboard_repeat_next_ns <= now {')
 	assert repeat_handler_body.contains('skipped_intervals')
@@ -2856,6 +2928,9 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 	assert clear_keys_down_body.contains('backend.stop_key_repeat()')
 	assert destroy_seat_body.contains('backend.clear_key_repeat_info()')
 	assert destroy_window_body.contains('backend.stop_key_repeat_for_window(record.id)')
+	assert destroy_window_body.contains('backend.pointer_buttons = 0')
+	assert_source_order(destroy_window_body, 'backend.pointer_enter_serial_valid = false',
+		'backend.pointer_buttons = 0')
 	assert wayland_source.contains('.clipboard_pasted')
 	assert wayland_source.contains('wayland_is_clipboard_paste')
 	assert wayland_source.contains('const wayland_key_v = 86')
@@ -2997,6 +3072,17 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 	assert wayland_source.contains('touch_slot_for_id')
 	assert wayland_source.contains('touch_event_for_record')
 	assert wayland_source.contains('touch_cancel_event_for_record')
+	assert wayland_source.contains('touch_mouse_position_for_record')
+	assert touch_event_body.contains('mouse_x, mouse_y := backend.touch_mouse_position_for_record(record, changed_slot)')
+	assert touch_event_body.contains('mouse_x:            mouse_x')
+	assert touch_event_body.contains('mouse_y:            mouse_y')
+	assert touch_cancel_body.contains('mouse_x, mouse_y := backend.touch_mouse_position_for_record(record, -1)')
+	assert touch_cancel_body.contains('mouse_x:            mouse_x')
+	assert touch_cancel_body.contains('mouse_y:            mouse_y')
+	assert touch_mouse_position_body.contains('changed_slot >= 0')
+	assert touch_mouse_position_body.contains('touch.active && touch.window_id == record.id')
+	assert touch_mouse_position_body.contains('return touch.x, touch.y')
+	assert touch_mouse_position_body.contains('return record.mouse_x, record.mouse_y')
 	assert wayland_source.contains('.touches_began')
 	assert wayland_source.contains('.touches_moved')
 	assert wayland_source.contains('.touches_ended')
