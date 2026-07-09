@@ -68,10 +68,11 @@ jobs:
         run: |
           set -euo pipefail
           workflow_backup_dir="$(mktemp -d)"
-          restored_workflows=()
-          backed_up_workflows=()
+          workflow_names="gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc"
+          restored_workflows=""
+          backed_up_workflows=""
           restore_disabled_workflows() {
-            for workflow in gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc; do
+            for workflow in $workflow_names; do
               source=".github/workflows/${workflow}.yml.disabled"
               target=".github/workflows/${workflow}.yml"
               if [ ! -f "$source" ]; then
@@ -80,18 +81,18 @@ jobs:
               fi
               if [ -f "$target" ]; then
                 cp "$target" "$workflow_backup_dir/${workflow}.yml"
-                backed_up_workflows+=("$workflow")
+                backed_up_workflows="${backed_up_workflows} ${workflow}"
               else
-                restored_workflows+=("$target")
+                restored_workflows="${restored_workflows} ${target}"
               fi
               cp "$source" "$target"
             done
           }
           cleanup_disabled_workflows() {
-            for workflow in "${backed_up_workflows[@]}"; do
+            for workflow in $backed_up_workflows; do
               cp "$workflow_backup_dir/${workflow}.yml" ".github/workflows/${workflow}.yml"
             done
-            for target in "${restored_workflows[@]}"; do
+            for target in $restored_workflows; do
               rm -f "$target"
             done
             rm -rf "$workflow_backup_dir"
@@ -104,10 +105,11 @@ jobs:
         run: |
           set -euo pipefail
           workflow_backup_dir="$(mktemp -d)"
-          restored_workflows=()
-          backed_up_workflows=()
+          workflow_names="gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc"
+          restored_workflows=""
+          backed_up_workflows=""
           restore_disabled_workflows() {
-            for workflow in gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc; do
+            for workflow in $workflow_names; do
               source=".github/workflows/${workflow}.yml.disabled"
               target=".github/workflows/${workflow}.yml"
               if [ ! -f "$source" ]; then
@@ -116,18 +118,18 @@ jobs:
               fi
               if [ -f "$target" ]; then
                 cp "$target" "$workflow_backup_dir/${workflow}.yml"
-                backed_up_workflows+=("$workflow")
+                backed_up_workflows="${backed_up_workflows} ${workflow}"
               else
-                restored_workflows+=("$target")
+                restored_workflows="${restored_workflows} ${target}"
               fi
               cp "$source" "$target"
             done
           }
           cleanup_disabled_workflows() {
-            for workflow in "${backed_up_workflows[@]}"; do
+            for workflow in $backed_up_workflows; do
               cp "$workflow_backup_dir/${workflow}.yml" ".github/workflows/${workflow}.yml"
             done
-            for target in "${restored_workflows[@]}"; do
+            for target in $restored_workflows; do
               rm -f "$target"
             done
             rm -rf "$workflow_backup_dir"
@@ -140,10 +142,11 @@ jobs:
         run: |
           set -euo pipefail
           workflow_backup_dir="$(mktemp -d)"
-          restored_workflows=()
-          backed_up_workflows=()
+          workflow_names="gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc"
+          restored_workflows=""
+          backed_up_workflows=""
           restore_disabled_workflows() {
-            for workflow in gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc; do
+            for workflow in $workflow_names; do
               source=".github/workflows/${workflow}.yml.disabled"
               target=".github/workflows/${workflow}.yml"
               if [ ! -f "$source" ]; then
@@ -152,18 +155,18 @@ jobs:
               fi
               if [ -f "$target" ]; then
                 cp "$target" "$workflow_backup_dir/${workflow}.yml"
-                backed_up_workflows+=("$workflow")
+                backed_up_workflows="${backed_up_workflows} ${workflow}"
               else
-                restored_workflows+=("$target")
+                restored_workflows="${restored_workflows} ${target}"
               fi
               cp "$source" "$target"
             done
           }
           cleanup_disabled_workflows() {
-            for workflow in "${backed_up_workflows[@]}"; do
+            for workflow in $backed_up_workflows; do
               cp "$workflow_backup_dir/${workflow}.yml" ".github/workflows/${workflow}.yml"
             done
-            for target in "${restored_workflows[@]}"; do
+            for target in $restored_workflows; do
               rm -f "$target"
             done
             rm -rf "$workflow_backup_dir"
@@ -379,25 +382,20 @@ jobs:
         shell: msys2 {0}
         run: |
           set +e
-          tests=(
-            test_multiwindow_enabled_and_disabled_renderer_capability_signatures_match
-            test_multiwindow_plain_capability_probe_does_not_start_native_app_source_guard
-            test_legacy_import_gg_does_not_pull_multiwindow_core
-            test_missing_gg_multiwindow_flag_reports_clear_error_without_native_deps
-            test_multiwindow_api_without_define_reports_opt_in_error
-          )
-          failures=()
-          for test in "${tests[@]}"; do
+          tests="test_multiwindow_enabled_and_disabled_renderer_capability_signatures_match test_multiwindow_plain_capability_probe_does_not_start_native_app_source_guard test_legacy_import_gg_does_not_pull_multiwindow_core test_missing_gg_multiwindow_flag_reports_clear_error_without_native_deps test_multiwindow_api_without_define_reports_opt_in_error"
+          failures=""
+          for test in $tests; do
             echo "::group::GCC -run-only ${test}"
             ./v.exe -cc gcc test -run-only "${test}" vlib/gg/legacy_import_multiwindow_isolation_test.v
             status=$?
             echo "::endgroup::"
             if [ "$status" -ne 0 ]; then
-              failures+=("${test} exited with ${status}")
+              failures="${failures}${test} exited with ${status}
+"
             fi
           done
-          if [ "${#failures[@]}" -ne 0 ]; then
-            printf '%s\n' "${failures[@]}" >&2
+          if [ -n "$failures" ]; then
+            printf '%s' "$failures" >&2
             exit 1
           fi
 
@@ -490,10 +488,11 @@ jobs:
         run: |
           set -euo pipefail
           workflow_backup_dir="$(mktemp -d)"
-          restored_workflows=()
-          backed_up_workflows=()
+          workflow_names="gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc"
+          restored_workflows=""
+          backed_up_workflows=""
           restore_disabled_workflows() {
-            for workflow in gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc; do
+            for workflow in $workflow_names; do
               source=".github/workflows/${workflow}.yml.disabled"
               target=".github/workflows/${workflow}.yml"
               if [ ! -f "$source" ]; then
@@ -502,18 +501,18 @@ jobs:
               fi
               if [ -f "$target" ]; then
                 cp "$target" "$workflow_backup_dir/${workflow}.yml"
-                backed_up_workflows+=("$workflow")
+                backed_up_workflows="${backed_up_workflows} ${workflow}"
               else
-                restored_workflows+=("$target")
+                restored_workflows="${restored_workflows} ${target}"
               fi
               cp "$source" "$target"
             done
           }
           cleanup_disabled_workflows() {
-            for workflow in "${backed_up_workflows[@]}"; do
+            for workflow in $backed_up_workflows; do
               cp "$workflow_backup_dir/${workflow}.yml" ".github/workflows/${workflow}.yml"
             done
-            for target in "${restored_workflows[@]}"; do
+            for target in $restored_workflows; do
               rm -f "$target"
             done
             rm -rf "$workflow_backup_dir"
@@ -548,10 +547,11 @@ jobs:
         run: |
           set -euo pipefail
           workflow_backup_dir="$(mktemp -d)"
-          restored_workflows=()
-          backed_up_workflows=()
+          workflow_names="gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc"
+          restored_workflows=""
+          backed_up_workflows=""
           restore_disabled_workflows() {
-            for workflow in gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc; do
+            for workflow in $workflow_names; do
               source=".github/workflows/${workflow}.yml.disabled"
               target=".github/workflows/${workflow}.yml"
               if [ ! -f "$source" ]; then
@@ -560,18 +560,18 @@ jobs:
               fi
               if [ -f "$target" ]; then
                 cp "$target" "$workflow_backup_dir/${workflow}.yml"
-                backed_up_workflows+=("$workflow")
+                backed_up_workflows="${backed_up_workflows} ${workflow}"
               else
-                restored_workflows+=("$target")
+                restored_workflows="${restored_workflows} ${target}"
               fi
               cp "$source" "$target"
             done
           }
           cleanup_disabled_workflows() {
-            for workflow in "${backed_up_workflows[@]}"; do
+            for workflow in $backed_up_workflows; do
               cp "$workflow_backup_dir/${workflow}.yml" ".github/workflows/${workflow}.yml"
             done
-            for target in "${restored_workflows[@]}"; do
+            for target in $restored_workflows; do
               rm -f "$target"
             done
             rm -rf "$workflow_backup_dir"
