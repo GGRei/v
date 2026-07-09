@@ -169,7 +169,7 @@ $if windows {
 				if mouse_button == 256 {
 					return
 				}
-				record.update_mouse_position(mouse_x, mouse_y, true)
+				record.update_mouse_position(mouse_x, mouse_y, false)
 				input = InputEvent{
 					kind:               input_kind
 					window_id:          record.id
@@ -235,7 +235,22 @@ $if windows {
 				}
 			}
 			.focused, .unfocused {}
-			.clipboard_pasted {}
+			.clipboard_pasted {
+				input = InputEvent{
+					kind:               input_kind
+					window_id:          record.id
+					modifiers:          modifiers
+					mouse_x:            record.mouse_x
+					mouse_y:            record.mouse_y
+					mouse_dx:           record.mouse_dx
+					mouse_dy:           record.mouse_dy
+					window_width:       record.width
+					window_height:      record.height
+					framebuffer_width:  record.width
+					framebuffer_height: record.height
+					mouse_button:       256
+				}
+			}
 			.iconified {
 				if record.iconified {
 					return

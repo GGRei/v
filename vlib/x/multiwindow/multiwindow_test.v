@@ -1468,6 +1468,19 @@ fn test_win32_input_events_are_queued_and_capability_scoped_source_guard() {
 	assert win32_backend_source.contains('13 { InputEventKind.restored }')
 	assert win32_backend_source.contains('if record.iconified')
 	assert win32_backend_source.contains('if !record.iconified')
+	win32_mouse_button_body :=
+		win32_backend_source.all_after('.mouse_down, .mouse_up {').all_before('.mouse_move {')
+	assert win32_mouse_button_body.contains('record.update_mouse_position(mouse_x, mouse_y, false)')
+	assert !win32_mouse_button_body.contains('record.update_mouse_position(mouse_x, mouse_y, true)')
+	assert win32_mouse_button_body.contains('mouse_dx:           record.mouse_dx')
+	assert win32_mouse_button_body.contains('mouse_dy:           record.mouse_dy')
+	win32_clipboard_pasted_body :=
+		win32_backend_source.all_after('.clipboard_pasted {').all_before('.iconified {')
+	assert win32_clipboard_pasted_body.contains('input = InputEvent{')
+	assert win32_clipboard_pasted_body.contains('kind:               input_kind')
+	assert win32_clipboard_pasted_body.contains('window_id:          record.id')
+	assert win32_clipboard_pasted_body.contains('modifiers:          modifiers')
+	assert win32_clipboard_pasted_body.contains('mouse_button:       256')
 
 	assert win32_helper_source.contains('GWLP_USERDATA')
 	assert win32_helper_source.contains('v_multiwindow_win32_next_event_sequence')
@@ -1499,6 +1512,24 @@ fn test_win32_input_events_are_queued_and_capability_scoped_source_guard() {
 	assert win32_helper_source.contains('v_multiwindow_win32_key_code')
 	assert win32_helper_source.contains('v_multiwindow_win32_modifiers')
 	assert win32_helper_source.contains('GetAsyncKeyState(VK_LBUTTON)')
+	win32_keydown_start := win32_helper_source.index('case WM_KEYDOWN:') or {
+		assert false, 'Win32 helper does not handle WM_KEYDOWN'
+		0
+	}
+	win32_syskeydown_start := win32_helper_source.index('case WM_SYSKEYDOWN:') or {
+		assert false, 'Win32 helper does not handle WM_SYSKEYDOWN'
+		0
+	}
+	win32_keydown_body := win32_helper_source[win32_keydown_start..win32_syskeydown_start]
+	assert win32_keydown_body.contains('uint32_t modifiers = v_multiwindow_win32_modifiers();')
+	assert win32_keydown_body.contains('V_MULTIWINDOW_WIN32_INPUT_KEY_DOWN, key_code, 0, v_multiwindow_win32_key_repeat(lparam), modifiers')
+	assert win32_keydown_body.contains('V_MULTIWINDOW_WIN32_INPUT_CLIPBOARD_PASTED, 0, 0, 0, modifiers')
+	assert_source_order(win32_keydown_body,
+		'uint32_t modifiers = v_multiwindow_win32_modifiers();',
+		'V_MULTIWINDOW_WIN32_INPUT_KEY_DOWN')
+	assert_source_order(win32_keydown_body,
+		'uint32_t modifiers = v_multiwindow_win32_modifiers();',
+		'V_MULTIWINDOW_WIN32_INPUT_CLIPBOARD_PASTED')
 	assert win32_helper_source.contains('V_MULTIWINDOW_WIN32_MODIFIER_LMB 0x100')
 	assert win32_helper_source.contains('V_MULTIWINDOW_WIN32_MODIFIER_RMB 0x200')
 	assert win32_helper_source.contains('V_MULTIWINDOW_WIN32_MODIFIER_MMB 0x400')
