@@ -2012,10 +2012,32 @@ fn test_multiwindow_checked_in_example_capabilities_and_input_summary_source_gua
 	assert source.contains('update_client_chrome_cursor(event, mut app, state.caps, native_decorations)')
 	assert source.contains('maybe_begin_client_chrome_action(event, mut app, state.caps,')
 	assert source.contains('app.set_window_cursor(event.window, shape)!')
-	assert !source.contains('return gg.WindowResizeEdge.top\n')
 	assert !source.contains('x.multiwindow')
 	assert !source.contains('enqueue_mock_input_for_test')
 	assert !source.contains('input marker:')
+
+	resize_edge_source :=
+		source.all_after('fn resize_edge_at').all_before('fn resize_or_ignore_unsupported')
+	top_left_index := resize_edge_source.index('return gg.WindowResizeEdge.top_left') or { -1 }
+	top_right_index := resize_edge_source.index('return gg.WindowResizeEdge.top_right') or { -1 }
+	top_index := resize_edge_source.index('return gg.WindowResizeEdge.top\n') or { -1 }
+	bottom_index := resize_edge_source.index('return gg.WindowResizeEdge.bottom\n') or { -1 }
+	left_index := resize_edge_source.index('return gg.WindowResizeEdge.left\n') or { -1 }
+	right_index := resize_edge_source.index('return gg.WindowResizeEdge.right\n') or { -1 }
+	assert top_left_index >= 0
+	assert top_right_index >= 0
+	assert top_index > top_left_index
+	assert top_index > top_right_index
+	assert top_index < bottom_index
+	assert top_index < left_index
+	assert top_index < right_index
+
+	client_chrome_action_source :=
+		source.all_after('fn maybe_begin_client_chrome_action').all_before('fn update_client_chrome_cursor')
+	resize_action_index := client_chrome_action_source.index('if edge := resize_edge_at') or { -1 }
+	move_action_index := client_chrome_action_source.index('if move_hit_at') or { -1 }
+	assert resize_action_index >= 0
+	assert move_action_index > resize_action_index
 
 	chrome_draw_source :=
 		source.all_after('fn draw_client_chrome_zones').all_before('fn draw_client_chrome_close_button')

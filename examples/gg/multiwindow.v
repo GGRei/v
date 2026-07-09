@@ -1064,6 +1064,9 @@ fn resize_edge_at(x f32, y f32, width int, height int) ?gg.WindowResizeEdge {
 	if near_top && near_right {
 		return gg.WindowResizeEdge.top_right
 	}
+	if near_top {
+		return gg.WindowResizeEdge.top
+	}
 	if near_bottom && near_left {
 		return gg.WindowResizeEdge.bottom_left
 	}
