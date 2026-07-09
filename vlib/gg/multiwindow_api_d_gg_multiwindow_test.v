@@ -259,6 +259,7 @@ fn test_multiwindow_linux_ci_covers_multiwindow_workflows_source_guard() {
 	assert checks_body.contains('run_headless_example "gg multiwindow headless mock" /tmp/gg_multiwindow_default')
 	assert checks_body.contains('run_headless_example "gg multiwindow Wayland-build headless mock" /tmp/gg_multiwindow_wayland')
 	assert checks_body.contains('run_x11_example "gg multiwindow Xvfb/X11" /tmp/gg_multiwindow_x11')
+	assert checks_body.contains('timeout 12s stdbuf -oL -eL "$binary" >"$stdout" 2>"$stderr"')
 	assert checks_body.contains('grep -Fq "capability families:" "$stdout"')
 	assert !checks_body.contains('gg_regressions_ci.yml')
 }
