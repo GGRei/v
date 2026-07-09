@@ -390,8 +390,7 @@ jobs:
             status=$?
             echo "::endgroup::"
             if [ "$status" -ne 0 ]; then
-              failures="${failures}${test} exited with ${status}
-"
+              failures="${failures}${test} exited with ${status}; "
             fi
           done
           if [ -n "$failures" ]; then
