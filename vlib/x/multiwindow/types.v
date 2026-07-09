@@ -66,6 +66,8 @@ pub enum QueuedEventKind {
 	input
 }
 
+const input_event_invalid_mouse_button = 256
+
 // WindowResizeEdge identifies the edge or corner used for an interactive,
 // user-driven native resize operation.
 pub enum WindowResizeEdge {
@@ -219,7 +221,7 @@ pub:
 	char_code          u32
 	key_repeat         bool
 	modifiers          u32
-	mouse_button       int
+	mouse_button       int = input_event_invalid_mouse_button
 	mouse_x            f32
 	mouse_y            f32
 	mouse_dx           f32

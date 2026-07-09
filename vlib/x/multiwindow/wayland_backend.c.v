@@ -5,6 +5,10 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 }
 
 $if linux && sokol_wayland ? {
+	import time as vtime
+}
+
+$if linux && sokol_wayland ? {
 	#flag linux -lwayland-client
 	#flag linux -lwayland-egl
 	#flag linux -lxkbcommon
@@ -86,6 +90,8 @@ const wayland_uri_list_buffer_size = 65536
 const wayland_data_offer_drain_chunk_size = 4096
 const wayland_data_offer_max_read_chunks = 16
 const wayland_data_offer_max_pending_poll_cycles = 300
+const wayland_nsec_per_sec = u64(1_000_000_000)
+const wayland_nsec_per_msec = u64(1_000_000)
 const wayland_dnd_action_none = u32(0)
 const wayland_dnd_action_copy = u32(1)
 const wayland_dnd_action_move = u32(2)
@@ -205,6 +211,15 @@ mut:
 	pointer_enter_serial_valid   bool
 	keyboard_focus               WindowId
 	keyboard_focused             bool
+	keyboard_repeat_rate         int
+	keyboard_repeat_delay        int
+	keyboard_repeat_active       bool
+	keyboard_repeat_raw_key      u32
+	keyboard_repeat_key_code     int
+	keyboard_repeat_char_code    u32
+	keyboard_repeat_window       WindowId
+	keyboard_repeat_next_ns      u64
+	keyboard_repeat_interval_ns  u64
 	poll_generation              u64
 	pointer_buttons              u32
 	modifiers                    u32
@@ -632,6 +647,7 @@ $if linux && sokol_wayland ? {
 			backend.keyboard = unsafe { nil }
 			backend.keyboard_focused = false
 			backend.modifiers = 0
+			backend.clear_key_repeat_info()
 			backend.clear_keys_down()
 			backend.destroy_xkb_keymap_state()
 		}
@@ -810,6 +826,7 @@ $if linux && sokol_wayland ? {
 		if backend.keyboard_focused && backend.keyboard_focus == record.id {
 			backend.keyboard_focused = false
 		}
+		backend.stop_key_repeat()
 		backend.modifiers = 0
 		backend.clear_keys_down()
 	}
@@ -848,10 +865,26 @@ $if linux && sokol_wayland ? {
 			C.xkb_keymap_unref(keymap)
 			return
 		}
+		backend.stop_key_repeat()
 		backend.destroy_xkb_keymap_state()
 		backend.xkb_keymap = unsafe { voidptr(keymap) }
 		backend.xkb_state = unsafe { voidptr(state) }
 		backend.modifiers = backend.xkb_modifiers()
+	}
+
+	@[export: 'v_multiwindow_wayland_keyboard_repeat_info']
+	@[markused]
+	fn wayland_keyboard_repeat_info(data voidptr, keyboard voidptr, rate int, delay int) {
+		_ = keyboard
+		if data == unsafe { nil } {
+			return
+		}
+		mut backend := unsafe { &WaylandBackend(data) }
+		backend.keyboard_repeat_rate = if rate > 0 { rate } else { 0 }
+		backend.keyboard_repeat_delay = if delay > 0 { delay } else { 0 }
+		if backend.keyboard_repeat_rate == 0 {
+			backend.stop_key_repeat()
+		}
 	}
 
 	@[export: 'v_multiwindow_wayland_keyboard_key']
@@ -864,17 +897,25 @@ $if linux && sokol_wayland ? {
 		}
 		mut backend := unsafe { &WaylandBackend(data) }
 		index := backend.keyboard_focus_record_index() or { return }
+		raw_key := key + 8
 		key_code := wayland_key_code(key)
 		key_index := if key_code >= 0 && key_code < 512 { key_code } else { 0 }
 		key_repeat := state == wayland_keyboard_key_state_pressed && key_index > 0
 			&& backend.keys_down[key_index]
+		char_code := if state == wayland_keyboard_key_state_pressed {
+			backend.char_code_for_key(raw_key)
+		} else {
+			u32(0)
+		}
 		if state == wayland_keyboard_key_state_pressed {
 			backend.windows[index].store_user_action_serial(serial, backend.poll_generation)
 			if key_index > 0 {
 				backend.keys_down[key_index] = true
 			}
 			backend.update_modifier_for_key(key_code, true)
+			backend.start_key_repeat(backend.windows[index], raw_key, key_code, char_code)
 		} else if state == wayland_keyboard_key_state_released {
+			backend.stop_key_repeat_for_key(raw_key)
 			if key_index > 0 {
 				backend.keys_down[key_index] = false
 			}
@@ -901,7 +942,6 @@ $if linux && sokol_wayland ? {
 			}
 		}
 		if state == wayland_keyboard_key_state_pressed {
-			char_code := backend.char_code_for_key(key + 8)
 			if char_code != 0 {
 				char_input := backend.windows[index].input_char_event(char_code, key_repeat,
 					backend.event_modifiers())
@@ -1679,6 +1719,7 @@ fn (mut backend WaylandBackend) poll_queued_events() ![]QueuedEvent {
 			backend.ensure_lifecycle_buffers()!
 		}
 		backend.drain_pending_data_offer_drop()
+		backend.enqueue_due_key_repeats()
 		for _, mut record in backend.windows {
 			for native_event in record.pending_events {
 				native_events << native_event
@@ -1779,6 +1820,115 @@ fn (record &WaylandWindowRecord) input_char_event(char_code u32, key_repeat bool
 		framebuffer_width:  record.width
 		framebuffer_height: record.height
 	}
+}
+
+fn (mut backend WaylandBackend) start_key_repeat(record &WaylandWindowRecord, raw_key u32, key_code int, char_code u32) {
+	$if linux && sokol_wayland ? {
+		if key_code == 0 {
+			return
+		}
+		if backend.keyboard_repeat_rate <= 0 || !backend.keyboard_focused
+			|| backend.keyboard_focus != record.id {
+			backend.stop_key_repeat()
+			return
+		}
+		interval_ns := wayland_key_repeat_interval_ns(backend.keyboard_repeat_rate)
+		if interval_ns == 0 {
+			backend.stop_key_repeat()
+			return
+		}
+		backend.keyboard_repeat_active = true
+		backend.keyboard_repeat_raw_key = raw_key
+		backend.keyboard_repeat_key_code = key_code
+		backend.keyboard_repeat_char_code = char_code
+		backend.keyboard_repeat_window = record.id
+		backend.keyboard_repeat_interval_ns = interval_ns
+		backend.keyboard_repeat_next_ns = vtime.sys_mono_now() +
+			u64(backend.keyboard_repeat_delay) * wayland_nsec_per_msec
+	} $else {
+		_ = record
+		_ = raw_key
+		_ = key_code
+		_ = char_code
+	}
+}
+
+fn (mut backend WaylandBackend) stop_key_repeat() {
+	backend.keyboard_repeat_active = false
+	backend.keyboard_repeat_raw_key = 0
+	backend.keyboard_repeat_key_code = 0
+	backend.keyboard_repeat_char_code = 0
+	backend.keyboard_repeat_window = WindowId{}
+	backend.keyboard_repeat_next_ns = 0
+	backend.keyboard_repeat_interval_ns = 0
+}
+
+fn (mut backend WaylandBackend) stop_key_repeat_for_key(raw_key u32) {
+	if backend.keyboard_repeat_active && backend.keyboard_repeat_raw_key == raw_key {
+		backend.stop_key_repeat()
+	}
+}
+
+fn (mut backend WaylandBackend) stop_key_repeat_for_window(id WindowId) {
+	if backend.keyboard_repeat_active && backend.keyboard_repeat_window == id {
+		backend.stop_key_repeat()
+	}
+}
+
+fn (mut backend WaylandBackend) clear_key_repeat_info() {
+	backend.stop_key_repeat()
+	backend.keyboard_repeat_rate = 0
+	backend.keyboard_repeat_delay = 0
+}
+
+fn (mut backend WaylandBackend) enqueue_due_key_repeats() {
+	$if linux && sokol_wayland ? {
+		if !backend.keyboard_repeat_active {
+			return
+		}
+		if backend.keyboard_repeat_interval_ns == 0 || !backend.keyboard_focused
+			|| backend.keyboard_focus != backend.keyboard_repeat_window {
+			backend.stop_key_repeat()
+			return
+		}
+		index := backend.window_record_index(backend.keyboard_repeat_window) or {
+			backend.stop_key_repeat()
+			return
+		}
+		now := vtime.sys_mono_now()
+		if now < backend.keyboard_repeat_next_ns {
+			return
+		}
+		mut record := backend.windows[index]
+		modifiers := backend.event_modifiers()
+		input := record.input_event_with_payload(.key_down, modifiers,
+			backend.keyboard_repeat_key_code, true, wayland_invalid_mouse_button, 0, 0)
+		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
+			queued_input_event(input))
+		if backend.keyboard_repeat_char_code != 0 {
+			char_input := record.input_char_event(backend.keyboard_repeat_char_code, true,
+				modifiers)
+			record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
+				queued_input_event(char_input))
+		}
+		backend.keyboard_repeat_next_ns += backend.keyboard_repeat_interval_ns
+		if backend.keyboard_repeat_next_ns <= now {
+			skipped_intervals :=
+				((now - backend.keyboard_repeat_next_ns) / backend.keyboard_repeat_interval_ns) + 1
+			backend.keyboard_repeat_next_ns += skipped_intervals * backend.keyboard_repeat_interval_ns
+		}
+	}
+}
+
+fn wayland_key_repeat_interval_ns(rate int) u64 {
+	if rate <= 0 {
+		return 0
+	}
+	interval_ns := wayland_nsec_per_sec / u64(rate)
+	if interval_ns == 0 {
+		return 1
+	}
+	return interval_ns
 }
 
 fn (record &WaylandWindowRecord) input_files_dropped_event(files []string) InputEvent {
@@ -1926,7 +2076,7 @@ fn wayland_resize_edge(edge WindowResizeEdge) u32 {
 }
 
 fn wayland_is_clipboard_paste(key_code int, modifiers u32) bool {
-	return key_code == wayland_key_v && (modifiers & wayland_modifier_ctrl) != 0
+	return key_code == wayland_key_v && modifiers == wayland_modifier_ctrl
 }
 
 fn (backend &WaylandBackend) char_code_for_key(key u32) u32 {
@@ -2029,6 +2179,7 @@ fn (mut backend WaylandBackend) update_modifier_for_key(key_code int, down bool)
 }
 
 fn (mut backend WaylandBackend) clear_keys_down() {
+	backend.stop_key_repeat()
 	for i in 0 .. backend.keys_down.len {
 		backend.keys_down[i] = false
 	}
@@ -2682,6 +2833,7 @@ fn (mut backend WaylandBackend) destroy_seat_devices() {
 		backend.keyboard_focused = false
 		backend.pointer_buttons = 0
 		backend.modifiers = 0
+		backend.clear_key_repeat_info()
 		backend.clear_keys_down()
 		backend.clear_touches()
 		backend.destroy_xkb_keymap_state()
@@ -2698,6 +2850,7 @@ fn (mut backend WaylandBackend) destroy_window_record(record &WaylandWindowRecor
 			backend.keyboard_focused = false
 			backend.clear_keys_down()
 		}
+		backend.stop_key_repeat_for_window(record.id)
 		for i, touch in backend.touches {
 			if touch.active && touch.window_id == record.id {
 				backend.touches[i] = WaylandTouchPoint{}

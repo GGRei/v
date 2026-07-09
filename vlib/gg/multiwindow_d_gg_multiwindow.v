@@ -107,17 +107,17 @@ pub:
 // WindowInfo is a snapshot of a live gg.App window.
 pub struct WindowInfo {
 pub:
-	id         WindowId
-	title      string
-	width      int
-	height     int
-	min_width  int
-	min_height int
-	resizable  bool
-	visible    bool
-	high_dpi   bool
-	borderless bool
-	fullscreen bool
+	id                 WindowId
+	title              string
+	width              int
+	height             int
+	min_width          int
+	min_height         int
+	resizable          bool
+	visible            bool
+	high_dpi           bool
+	borderless         bool
+	fullscreen         bool
 	native_decorations bool
 }
 

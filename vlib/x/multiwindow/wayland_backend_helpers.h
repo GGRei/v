@@ -44,6 +44,7 @@ void v_multiwindow_wayland_keyboard_enter(void *data, void *keyboard, uint32_t s
 void v_multiwindow_wayland_keyboard_leave(void *data, void *keyboard, uint32_t serial, void *surface);
 void v_multiwindow_wayland_keyboard_key(void *data, void *keyboard, uint32_t serial, uint32_t time, uint32_t key, uint32_t state);
 void v_multiwindow_wayland_keyboard_modifiers(void *data, void *keyboard, uint32_t serial, uint32_t mods_depressed, uint32_t mods_latched, uint32_t mods_locked, uint32_t group);
+void v_multiwindow_wayland_keyboard_repeat_info(void *data, void *keyboard, int32_t rate, int32_t delay);
 void v_multiwindow_wayland_touch_down(void *data, void *touch, uint32_t serial, uint32_t time, void *surface, int32_t id, double x, double y);
 void v_multiwindow_wayland_touch_up(void *data, void *touch, uint32_t serial, uint32_t time, int32_t id);
 void v_multiwindow_wayland_touch_motion(void *data, void *touch, uint32_t time, int32_t id, double x, double y);
@@ -294,10 +295,7 @@ static void v_multiwindow_wayland_keyboard_modifiers_trampoline(void *data, stru
 }
 
 static void v_multiwindow_wayland_keyboard_repeat_info_trampoline(void *data, struct wl_keyboard *keyboard, int32_t rate, int32_t delay) {
-	(void)data;
-	(void)keyboard;
-	(void)rate;
-	(void)delay;
+	v_multiwindow_wayland_keyboard_repeat_info(data, (void *)keyboard, rate, delay);
 }
 
 static void v_multiwindow_wayland_touch_down_trampoline(void *data, struct wl_touch *touch, uint32_t serial, uint32_t time, struct wl_surface *surface, int32_t id, wl_fixed_t x, wl_fixed_t y) {

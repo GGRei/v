@@ -184,6 +184,31 @@ static inline int v_multiwindow_x11_is_notify_grab_or_ungrab(int mode) {
 	return mode == NotifyGrab || mode == NotifyUngrab;
 }
 
+static inline int v_multiwindow_x11_enable_detectable_auto_repeat(Display *display) {
+	if (display == NULL) {
+		return 0;
+	}
+	Bool supported = False;
+	if (XkbSetDetectableAutoRepeat(display, True, &supported) != True) {
+		return 0;
+	}
+	return supported ? 1 : 0;
+}
+
+static inline int v_multiwindow_x11_is_auto_repeat_release(Display *display, XEvent *event) {
+	if (display == NULL || event == NULL || event->type != KeyRelease || XPending(display) <= 0) {
+		return 0;
+	}
+	XEvent next;
+	XPeekEvent(display, &next);
+	if (next.type != KeyPress) {
+		return 0;
+	}
+	return next.xkey.window == event->xkey.window &&
+		next.xkey.keycode == event->xkey.keycode &&
+		next.xkey.time == event->xkey.time;
+}
+
 static inline int v_multiwindow_x11_modifiers(unsigned int state) {
 	int modifiers = 0;
 	if (state & ShiftMask) {

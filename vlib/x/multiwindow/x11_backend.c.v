@@ -37,7 +37,10 @@ const x11_property_new_value = 0
 const x11_prop_mode_replace = 0
 const x11_normal_state = 1
 const x11_iconic_state = 3
+const x11_modifier_shift = u32(1)
 const x11_modifier_ctrl = u32(2)
+const x11_modifier_alt = u32(4)
+const x11_modifier_super = u32(8)
 const x11_key_v = 86
 const x11_xdnd_version = 5
 const x11_max_char_codes = 32768
@@ -158,6 +161,7 @@ $if linux && x_multiwindow_x11 ? {
 	fn C.XChangeProperty(display &C.Display, window X11NativeWindow, property X11NativeAtom, @type X11NativeAtom, format int, mode int, data &u8, nelements int) int
 	fn C.XConvertSelection(display &C.Display, selection X11NativeAtom, target X11NativeAtom, property X11NativeAtom, requestor X11NativeWindow, time X11NativeULong) int
 	fn C.XSendEvent(display &C.Display, window X11NativeWindow, propagate int, event_mask X11NativeLong, event_send &C.XEvent) int
+	fn C.XTranslateCoordinates(display &C.Display, src_w X11NativeWindow, dest_w X11NativeWindow, src_x int, src_y int, dest_x_return &int, dest_y_return &int, child_return &X11NativeWindow) int
 	fn C.XFilterEvent(event &C.XEvent, window X11NativeWindow) int
 	fn C.XFree(data voidptr) int
 	fn C.v_multiwindow_x11_event_mask() X11NativeLong
@@ -171,6 +175,8 @@ $if linux && x_multiwindow_x11 ? {
 	fn C.v_multiwindow_x11_property_state(event &C.XEvent) int
 	fn C.v_multiwindow_x11_focus_mode(event &C.XEvent) int
 	fn C.v_multiwindow_x11_is_notify_grab_or_ungrab(mode int) int
+	fn C.v_multiwindow_x11_enable_detectable_auto_repeat(display &C.Display) int
+	fn C.v_multiwindow_x11_is_auto_repeat_release(display &C.Display, event &C.XEvent) int
 	fn C.v_multiwindow_x11_modifiers(state u32) int
 	fn C.v_multiwindow_x11_key_modifier_bit(key_code int) int
 	fn C.v_multiwindow_x11_mouse_button(button u32) int
@@ -320,6 +326,7 @@ fn (mut backend X11Backend) start(require_renderer bool) ! {
 		backend.text_uri_list = C.XInternAtom(display, c'text/uri-list', 0)
 		backend.xim = C.v_multiwindow_x11_open_im(display)
 		C.v_multiwindow_x11_init_keycodes(display, &backend.keycodes[0], 256)
+		C.v_multiwindow_x11_enable_detectable_auto_repeat(display)
 		if require_renderer {
 			backend.init_renderer() or {
 				if backend.xim != unsafe { nil } {
@@ -645,6 +652,9 @@ fn (mut backend X11Backend) poll_queued_events() ![]QueuedEvent {
 					events << backend.queued_key_press_event(index, &event)
 				}
 				x11_key_release {
+					if C.v_multiwindow_x11_is_auto_repeat_release(backend.display, &event) != 0 {
+						continue
+					}
 					index := backend.window_record_index_for_event(&event) or { continue }
 					events << backend.queued_key_release_event(index, &event)
 				}
@@ -985,6 +995,7 @@ $if linux && x_multiwindow_x11 ? {
 			return
 		}
 		backend.xdnd_target = unsafe { event.xclient.window }
+		backend.update_xdnd_mouse_position(event)
 		backend.send_xdnd_status(backend.xdnd_format != X11NativeAtom(0))
 	}
 
@@ -1005,6 +1016,20 @@ $if linux && x_multiwindow_x11 ? {
 		}
 		C.XConvertSelection(backend.display, backend.xdnd_selection, backend.xdnd_format,
 			backend.xdnd_selection, backend.xdnd_target, time)
+	}
+
+	fn (mut backend X11Backend) update_xdnd_mouse_position(event &C.XEvent) {
+		index := backend.window_record_index_for_native(backend.xdnd_target) or { return }
+		root_x, root_y := x11_xdnd_position_coords(unsafe { event.xclient.data.l[2] })
+		mut window_x := root_x
+		mut window_y := root_y
+		mut child := X11NativeWindow(0)
+		if backend.root != X11NativeWindow(0)
+			&& C.XTranslateCoordinates(backend.display, backend.root, backend.xdnd_target, root_x, root_y, &window_x, &window_y, &child) != 0 {
+			backend.update_mouse_position(index, window_x, window_y, false)
+			return
+		}
+		backend.update_mouse_position(index, root_x, root_y, false)
 	}
 
 	fn (mut backend X11Backend) queued_xdnd_selection_events(event &C.XEvent) []QueuedEvent {
@@ -1124,6 +1149,19 @@ $if linux && x_multiwindow_x11 ? {
 		backend.xdnd_format = X11NativeAtom(0)
 		backend.xdnd_version = X11NativeLong(0)
 	}
+}
+
+fn x11_xdnd_position_coords(value X11NativeLong) (int, int) {
+	packed := u32(value)
+	return x11_signed_16(packed >> 16), x11_signed_16(packed)
+}
+
+fn x11_signed_16(value u32) int {
+	mut result := int(value & u32(0xffff))
+	if result >= 0x8000 {
+		result -= 0x10000
+	}
+	return result
 }
 
 fn (mut backend X11Backend) stop() ! {
@@ -1398,5 +1436,5 @@ fn x11_bool_to_int(value bool) int {
 }
 
 fn x11_is_clipboard_paste(key_code int, modifiers u32) bool {
-	return key_code == x11_key_v && (modifiers & x11_modifier_ctrl) != 0
+	return key_code == x11_key_v && modifiers == x11_modifier_ctrl
 }

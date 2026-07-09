@@ -380,6 +380,14 @@ fn test_mock_input_roundtrip_covers_all_input_event_kinds() {
 	app.stop()!
 }
 
+fn test_input_event_default_mouse_button_is_invalid() {
+	event := InputEvent{}
+	assert event.mouse_button == input_event_invalid_mouse_button
+	source := multiwindow_source_file('types.v')
+	assert source.contains('const input_event_invalid_mouse_button = 256')
+	assert source.contains('mouse_button       int = input_event_invalid_mouse_button')
+}
+
 fn test_drain_input_events_does_not_consume_lifecycle_events() {
 	mut app := new_app()!
 	win := app.create_window(title: 'Lifecycle remains')!
@@ -2180,6 +2188,15 @@ fn test_x11_input_support_queues_key_char_and_focus_source_guard() {
 	assert x11_backend_source.contains('x11_is_clipboard_paste')
 	assert x11_backend_source.contains('const x11_modifier_ctrl = u32(2)')
 	assert x11_backend_source.contains('const x11_key_v = 86')
+	assert x11_helper_source.contains('XkbSetDetectableAutoRepeat')
+	assert x11_helper_source.contains('v_multiwindow_x11_is_auto_repeat_release')
+	assert x11_helper_source.contains('XPeekEvent(display, &next)')
+	assert x11_backend_source.contains('C.v_multiwindow_x11_enable_detectable_auto_repeat(display)')
+	assert x11_backend_source.contains('C.v_multiwindow_x11_is_auto_repeat_release(backend.display, &event) != 0')
+	x11_paste_body :=
+		x11_backend_source.all_after('fn x11_is_clipboard_paste').all_before('$if linux && x_multiwindow_x11 ?')
+	assert x11_paste_body.contains('return key_code == x11_key_v && modifiers == x11_modifier_ctrl')
+	assert !x11_paste_body.contains('keyboard_modifiers')
 	for required_xdnd in ['XdndAware', 'XdndEnter', 'XdndPosition', 'XdndStatus', 'XdndActionCopy',
 		'XdndDrop', 'XdndLeave', 'XdndFinished', 'XdndSelection', 'XdndTypeList', 'text/uri-list'] {
 		assert x11_backend_source.contains(required_xdnd)
@@ -2212,6 +2229,18 @@ fn test_x11_input_support_queues_key_char_and_focus_source_guard() {
 	assert x11_backend_source.contains('const x11_max_char_codes = 32768')
 	assert x11_backend_source.contains('mut char_codes := []u32{len: x11_max_char_codes}')
 	assert x11_backend_source.contains('unsafe { &char_codes[0] }')
+	handle_xdnd_position_body :=
+		x11_backend_source.all_after('fn (mut backend X11Backend) handle_xdnd_position').all_before('fn (mut backend X11Backend) handle_xdnd_drop')
+	update_xdnd_mouse_position_body :=
+		x11_backend_source.all_after('fn (mut backend X11Backend) update_xdnd_mouse_position').all_before('fn (mut backend X11Backend) queued_xdnd_selection_events')
+	assert handle_xdnd_position_body.contains('backend.update_xdnd_mouse_position(event)')
+	assert_source_order(handle_xdnd_position_body, 'backend.update_xdnd_mouse_position(event)',
+		'backend.send_xdnd_status')
+	assert update_xdnd_mouse_position_body.contains('root_x, root_y := x11_xdnd_position_coords(unsafe { event.xclient.data.l[2] })')
+	assert update_xdnd_mouse_position_body.contains('C.XTranslateCoordinates')
+	assert x11_backend_source.contains('fn x11_xdnd_position_coords(value X11NativeLong) (int, int)')
+	assert x11_backend_source.contains('return x11_signed_16(packed >> 16), x11_signed_16(packed)')
+	assert x11_backend_source.contains('fn x11_signed_16(value u32) int')
 	key_press_body :=
 		x11_backend_source.all_after('fn (mut backend X11Backend) queued_key_press_event').all_before('fn (mut backend X11Backend) queued_key_release_event')
 	assert !key_press_body.contains('if key_code == 0 {\n\t\t\treturn events\n\t\t}')
@@ -2777,10 +2806,63 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 	assert wayland_source.contains('wayland_keyboard_keymap')
 	keyboard_key_body :=
 		wayland_source.all_after("@[export: 'v_multiwindow_wayland_keyboard_key']").all_before("@[export: 'v_multiwindow_wayland_keyboard_modifiers']")
+	repeat_info_body :=
+		wayland_source.all_after("@[export: 'v_multiwindow_wayland_keyboard_repeat_info']").all_before("@[export: 'v_multiwindow_wayland_keyboard_key']")
+	repeat_handler_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) enqueue_due_key_repeats()').all_before('fn wayland_key_repeat_interval_ns')
+	poll_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) poll_queued_events() ![]QueuedEvent').all_before('fn (mut record WaylandWindowRecord) enqueue_native_event')
+	keyboard_leave_body :=
+		wayland_source.all_after("@[export: 'v_multiwindow_wayland_keyboard_leave']").all_before("@[export: 'v_multiwindow_wayland_keyboard_keymap']")
+	clear_keys_down_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) clear_keys_down()').all_before('fn wayland_utf8_decode')
+	destroy_seat_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) destroy_seat_devices()').all_before('fn (mut backend WaylandBackend) destroy_window_record')
+	destroy_window_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) destroy_window_record').all_before('fn (mut backend WaylandBackend) destroy_data_offer')
+	repeat_trampoline_body :=
+		wayland_helper_source.all_after('v_multiwindow_wayland_keyboard_repeat_info_trampoline').all_before('static void v_multiwindow_wayland_touch_down_trampoline')
 	assert keyboard_key_body.contains('backend.windows[index].input_char_event')
+	assert wayland_helper_source.contains('void v_multiwindow_wayland_keyboard_repeat_info(void *data, void *keyboard, int32_t rate, int32_t delay);')
+	assert repeat_trampoline_body.contains('v_multiwindow_wayland_keyboard_repeat_info(data, (void *)keyboard, rate, delay);')
+	assert wayland_source.contains("@[export: 'v_multiwindow_wayland_keyboard_repeat_info']")
+	for repeat_field in ['keyboard_repeat_rate         int', 'keyboard_repeat_delay        int',
+		'keyboard_repeat_active       bool', 'keyboard_repeat_raw_key      u32',
+		'keyboard_repeat_key_code     int', 'keyboard_repeat_char_code    u32',
+		'keyboard_repeat_window       WindowId', 'keyboard_repeat_next_ns      u64',
+		'keyboard_repeat_interval_ns  u64'] {
+		assert wayland_source.contains(repeat_field)
+	}
+	assert !wayland_source.contains('keyboard_repeat_modifiers')
+	assert repeat_info_body.contains('backend.keyboard_repeat_rate = if rate > 0 { rate } else { 0 }')
+	assert repeat_info_body.contains('backend.keyboard_repeat_delay = if delay > 0 { delay } else { 0 }')
+	assert repeat_info_body.contains('if backend.keyboard_repeat_rate == 0 {')
+	assert repeat_info_body.contains('backend.stop_key_repeat()')
+	assert keyboard_key_body.contains('raw_key := key + 8')
+	assert keyboard_key_body.contains('backend.start_key_repeat(backend.windows[index], raw_key, key_code, char_code)')
+	assert keyboard_key_body.contains('backend.stop_key_repeat_for_key(raw_key)')
+	assert poll_body.contains('backend.enqueue_due_key_repeats()')
+	assert repeat_handler_body.contains('now := vtime.sys_mono_now()')
+	assert repeat_handler_body.contains('if now < backend.keyboard_repeat_next_ns {')
+	assert repeat_handler_body.contains('modifiers := backend.event_modifiers()')
+	assert repeat_handler_body.contains('record.input_event_with_payload(.key_down')
+	assert repeat_handler_body.contains('backend.keyboard_repeat_key_code, true')
+	assert repeat_handler_body.contains('record.input_char_event(backend.keyboard_repeat_char_code, true')
+	assert repeat_handler_body.contains('backend.keyboard_repeat_next_ns += backend.keyboard_repeat_interval_ns')
+	assert repeat_handler_body.contains('if backend.keyboard_repeat_next_ns <= now {')
+	assert repeat_handler_body.contains('skipped_intervals')
+	assert keyboard_key_body.contains('backend.stop_key_repeat_for_key(raw_key)')
+	assert keyboard_leave_body.contains('backend.stop_key_repeat()')
+	assert clear_keys_down_body.contains('backend.stop_key_repeat()')
+	assert destroy_seat_body.contains('backend.clear_key_repeat_info()')
+	assert destroy_window_body.contains('backend.stop_key_repeat_for_window(record.id)')
 	assert wayland_source.contains('.clipboard_pasted')
 	assert wayland_source.contains('wayland_is_clipboard_paste')
 	assert wayland_source.contains('const wayland_key_v = 86')
+	wayland_paste_body :=
+		wayland_source.all_after('fn wayland_is_clipboard_paste').all_before('fn (backend &WaylandBackend) char_code_for_key')
+	assert wayland_paste_body.contains('return key_code == wayland_key_v && modifiers == wayland_modifier_ctrl')
+	assert !wayland_paste_body.contains('keyboard_modifiers')
 	assert_source_order(keyboard_key_body, 'queued_input_event(input))', '.clipboard_pasted')
 	assert_source_order(keyboard_key_body, '.clipboard_pasted',
 		'backend.windows[index].input_char_event')
