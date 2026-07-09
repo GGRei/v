@@ -1885,6 +1885,8 @@ fn test_appkit_input_events_are_queued_and_capability_scoped_source_guard() {
 		0
 	}
 	flags_changed_body := appkit_impl_source[flags_changed_start..].all_before('@end')
+	key_down_body :=
+		appkit_impl_source.all_after('- (void)keyDown:(NSEvent *)event').all_before('- (BOOL)performKeyEquivalent:(NSEvent *)event')
 	assert flags_changed_body.contains('uint32_t oldFlags = state.flagsChangedStore;')
 	assert flags_changed_body.contains('uint32_t newFlags = (uint32_t)event.modifierFlags;')
 	assert flags_changed_body.contains('state.flagsChangedStore = newFlags;')
@@ -1898,6 +1900,17 @@ fn test_appkit_input_events_are_queued_and_capability_scoped_source_guard() {
 	assert !flags_changed_body.contains('v_multiwindow_appkit_key_code_is_sided_modifier')
 	assert appkit_impl_source.contains('event.isARepeat')
 	assert appkit_impl_source.contains('event.characters')
+	assert key_down_body.contains('[state queueKeyEvent:V_MULTIWINDOW_APPKIT_INPUT_KEY_DOWN')
+	assert key_down_body.contains('if ((modifiers & 8u) == 0) {')
+	assert key_down_body.contains('[state queueCharEventsFromString:event.characters')
+	assert key_down_body.contains('if (modifiers == 8 && keyCode == 86) {')
+	assert key_down_body.contains('V_MULTIWINDOW_APPKIT_INPUT_CLIPBOARD_PASTED')
+	assert_source_order(key_down_body, '[state queueKeyEvent:V_MULTIWINDOW_APPKIT_INPUT_KEY_DOWN',
+		'if ((modifiers & 8u) == 0) {')
+	assert_source_order(key_down_body, 'if ((modifiers & 8u) == 0) {',
+		'[state queueCharEventsFromString:event.characters')
+	assert_source_order(key_down_body, '[state queueCharEventsFromString:event.characters',
+		'if (modifiers == 8 && keyCode == 86) {')
 	assert appkit_impl_source.contains('v_multiwindow_appkit_keycodes')
 	assert !appkit_impl_source.contains('nextKeyDownStateForKeyCode')
 }
@@ -2258,10 +2271,14 @@ fn test_x11_input_support_queues_key_char_and_focus_source_guard() {
 	assert_source_order(x11_backend_source, 'events << queued_input_event(input)',
 		'events << queued_input_event(backend.input_char_event')
 	assert x11_backend_source.contains('fn (backend &X11Backend) input_char_event')
-	assert x11_backend_source.contains('C.v_multiwindow_x11_char_codes(backend.windows[index].xic, event,')
-	assert x11_backend_source.contains('const x11_max_char_codes = 32768')
-	assert x11_backend_source.contains('mut char_codes := []u32{len: x11_max_char_codes}')
-	assert x11_backend_source.contains('unsafe { &char_codes[0] }')
+	assert x11_backend_source.contains('const x11_inline_char_codes = 8')
+	assert x11_backend_source.contains('fn (backend &X11Backend) append_key_press_char_events')
+	assert x11_backend_source.contains('required_codes &int')
+	assert !x11_backend_source.contains('const x11_max_char_codes = 32768')
+	assert !x11_backend_source.contains('[]u32{len: x11_max_char_codes}')
+	assert x11_helper_source.contains('required_codes != NULL')
+	assert x11_helper_source.contains('*required_codes = total_count')
+	assert x11_helper_source.contains('out_count < codes_len')
 	handle_xdnd_position_body :=
 		x11_backend_source.all_after('fn (mut backend X11Backend) handle_xdnd_position').all_before('fn (mut backend X11Backend) handle_xdnd_drop')
 	update_xdnd_mouse_position_body :=
@@ -2311,6 +2328,11 @@ fn test_x11_input_support_queues_key_char_and_focus_source_guard() {
 		x11_backend_source.all_after('fn (mut backend X11Backend) queued_key_press_event').all_before('fn (mut backend X11Backend) queued_key_release_event')
 	assert !key_press_body.contains('if key_code == 0 {\n\t\t\treturn events\n\t\t}')
 	assert key_press_body.contains('if key_code != 0 {')
+	assert key_press_body.contains('mut inline_char_codes := [x11_inline_char_codes]u32{}')
+	assert key_press_body.contains('mut required_char_codes := 0')
+	assert key_press_body.contains('required_char_codes > x11_inline_char_codes')
+	assert key_press_body.contains('mut char_codes := []u32{len: required_char_codes}')
+	assert key_press_body.contains('C.v_multiwindow_x11_char_codes(record.xic, event,')
 	assert key_press_body.contains('for i in 0 .. char_count')
 	focus_out_body :=
 		x11_backend_source.all_after('x11_focus_out {').all_before('x11_property_notify {')
@@ -2896,6 +2918,7 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 	assert wayland_source.contains('return backend.seat != unsafe { nil } && backend.wm_base != unsafe { nil }')
 	assert wayland_source.contains('xkb_context_new')
 	assert wayland_source.contains('xkb_keymap_new_from_string')
+	assert wayland_source.contains('xkb_keymap_key_repeats')
 	assert wayland_source.contains('xkb_state_new')
 	assert wayland_source.contains('xkb_state_update_mask')
 	assert wayland_source.contains('xkb_state_key_get_utf8')
@@ -2906,6 +2929,8 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 		wayland_source.all_after("@[export: 'v_multiwindow_wayland_keyboard_repeat_info']").all_before("@[export: 'v_multiwindow_wayland_keyboard_key']")
 	repeat_handler_body :=
 		wayland_source.all_after('fn (mut backend WaylandBackend) enqueue_due_key_repeats()').all_before('fn wayland_key_repeat_interval_ns')
+	start_repeat_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) start_key_repeat').all_before('fn (mut backend WaylandBackend) stop_key_repeat')
 	poll_body :=
 		wayland_source.all_after('fn (mut backend WaylandBackend) poll_queued_events() ![]QueuedEvent').all_before('fn (mut record WaylandWindowRecord) enqueue_native_event')
 	keyboard_leave_body :=
@@ -2924,10 +2949,16 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 		wayland_source.all_after('fn (backend &WaylandBackend) touch_cancel_event_for_record').all_before('fn (backend &WaylandBackend) touch_mouse_position_for_record')
 	touch_mouse_position_body :=
 		wayland_source.all_after('fn (backend &WaylandBackend) touch_mouse_position_for_record').all_before('fn (mut record WaylandWindowRecord) update_mouse_position')
+	key_repeats_body :=
+		wayland_source.all_after('fn (backend &WaylandBackend) key_repeats(raw_key u32) bool').all_before('fn (backend &WaylandBackend) char_code_for_key')
 	assert keyboard_key_body.contains('backend.windows[index].input_char_event')
 	assert wayland_helper_source.contains('void v_multiwindow_wayland_keyboard_repeat_info(void *data, void *keyboard, int32_t rate, int32_t delay);')
 	assert repeat_trampoline_body.contains('v_multiwindow_wayland_keyboard_repeat_info(data, (void *)keyboard, rate, delay);')
 	assert wayland_source.contains("@[export: 'v_multiwindow_wayland_keyboard_repeat_info']")
+	assert wayland_source.contains('fn C.xkb_keymap_key_repeats(keymap &C.xkb_keymap, key u32) int')
+	assert key_repeats_body.contains('if backend.xkb_keymap == unsafe { nil }')
+	assert key_repeats_body.contains('C.xkb_keymap_key_repeats(unsafe { &C.xkb_keymap(backend.xkb_keymap) }')
+	assert key_repeats_body.contains('raw_key) != 0')
 	for repeat_field in ['keyboard_repeat_rate         int', 'keyboard_repeat_delay        int',
 		'keyboard_repeat_active       bool', 'keyboard_repeat_raw_key      u32',
 		'keyboard_repeat_key_code     int', 'keyboard_repeat_window       WindowId',
@@ -2943,14 +2974,23 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 	assert keyboard_key_body.contains('raw_key := key + 8')
 	assert keyboard_key_body.contains('backend.start_key_repeat(backend.windows[index], raw_key, key_code)')
 	assert keyboard_key_body.contains('backend.stop_key_repeat_for_key(raw_key)')
+	assert start_repeat_body.contains('if !backend.key_repeats(raw_key) {')
+	non_repeatable_body :=
+		start_repeat_body.all_after('if !backend.key_repeats(raw_key) {').all_before('if backend.keyboard_repeat_rate <= 0')
+	assert non_repeatable_body.contains('return')
+	assert !non_repeatable_body.contains('backend.stop_key_repeat()')
+	assert_source_order(start_repeat_body, 'if !backend.key_repeats(raw_key) {',
+		'backend.keyboard_repeat_active = true')
 	assert poll_body.contains('backend.enqueue_due_key_repeats()')
 	assert repeat_handler_body.contains('now := vtime.sys_mono_now()')
 	assert repeat_handler_body.contains('if now < backend.keyboard_repeat_next_ns {')
 	assert repeat_handler_body.contains('modifiers := backend.event_modifiers()')
-	assert repeat_handler_body.contains('record.input_event_with_payload(.key_down')
+	assert !repeat_handler_body.contains('mut record := backend.windows[index]')
+	assert repeat_handler_body.contains('backend.windows[index].input_event_with_payload(.key_down')
 	assert repeat_handler_body.contains('backend.keyboard_repeat_key_code, true')
+	assert repeat_handler_body.contains('backend.windows[index].enqueue_native_event')
 	assert repeat_handler_body.contains('char_code := backend.char_code_for_key(backend.keyboard_repeat_raw_key)')
-	assert repeat_handler_body.contains('record.input_char_event(char_code, true')
+	assert repeat_handler_body.contains('backend.windows[index].input_char_event(char_code, true')
 	assert repeat_handler_body.contains('backend.keyboard_repeat_next_ns += backend.keyboard_repeat_interval_ns')
 	assert repeat_handler_body.contains('if backend.keyboard_repeat_next_ns <= now {')
 	assert repeat_handler_body.contains('skipped_intervals')

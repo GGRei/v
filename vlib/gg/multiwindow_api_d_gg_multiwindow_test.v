@@ -1206,6 +1206,23 @@ fn test_multiwindow_run_input_callback_preserves_input_lifecycle_input_order() {
 	assert seen.order == ['input-enter', 'lifecycle-close', 'input-char']
 }
 
+fn test_multiwindow_run_input_only_handles_close_requested_without_event_callback() {
+	mut app := new_app(backend: .mock, queue_size: 2)!
+	win := app.create_window(title: 'Input-only close target')!
+	app.core.enqueue_mock_close_requested_for_test(win.core)!
+
+	app.run(
+		input_fn: fn (event WindowInputEvent, mut app App) ! {
+			_ = event
+			_ = app
+			assert false, 'input-only close test should not receive lifecycle as input'
+		}
+	)!
+
+	assert !app.window_exists(win)
+	assert app.core.status() == multiwindow.AppStatus.stopped
+}
+
 fn test_multiwindow_event_only_run_idles_when_idle_source_guard() {
 	source := multiwindow_facade_source()
 	run_source :=
@@ -1220,7 +1237,14 @@ fn test_multiwindow_event_only_run_idles_when_idle_source_guard() {
 	assert run_source.contains('} else if polled_events == 0 && drained_jobs == 0 && dispatched_events == 0 {\n\t\t\ttime.sleep(multiwindow_event_idle_sleep)\n\t\t}')
 	assert dispatch_source.contains('events := app.core.drain_queued_events()!')
 	assert dispatch_source.contains('if event_fn != unsafe { nil }')
+	assert dispatch_source.contains('app.dispatch_lifecycle_without_event_callback(window_event)!')
 	assert dispatch_source.contains('if input_fn != unsafe { nil }')
+	assert dispatch_source.contains('fn (mut app App) dispatch_lifecycle_without_event_callback')
+	assert dispatch_source.contains('.window_close_requested')
+	assert dispatch_source.contains('app.destroy_window(event.window)!')
+	assert dispatch_source.contains('.window_destroyed')
+	assert dispatch_source.contains('fn (mut app App) stop_if_no_windows() !')
+	assert dispatch_source.contains('app.core.status() == .running && app.window_ids()!.len == 0')
 	assert !source.contains('event_idle_sleeps')
 	assert !source.contains('stop_after_idle_sleeps')
 }

@@ -312,6 +312,7 @@ $if linux && sokol_wayland ? {
 	fn C.xkb_context_unref(ctx &C.xkb_context)
 	fn C.xkb_keymap_new_from_string(ctx &C.xkb_context, str &char, format int, flags int) &C.xkb_keymap
 	fn C.xkb_keymap_unref(keymap &C.xkb_keymap)
+	fn C.xkb_keymap_key_repeats(keymap &C.xkb_keymap, key u32) int
 	fn C.xkb_state_new(keymap &C.xkb_keymap) &C.xkb_state
 	fn C.xkb_state_unref(state &C.xkb_state)
 	fn C.xkb_state_key_get_utf8(state &C.xkb_state, key u32, buf &char, size usize) int
@@ -1839,6 +1840,9 @@ fn (mut backend WaylandBackend) start_key_repeat(record &WaylandWindowRecord, ra
 		if key_code == 0 {
 			return
 		}
+		if !backend.key_repeats(raw_key) {
+			return
+		}
 		if backend.keyboard_repeat_rate <= 0 || !backend.keyboard_focused
 			|| backend.keyboard_focus != record.id {
 			backend.stop_key_repeat()
@@ -1908,16 +1912,15 @@ fn (mut backend WaylandBackend) enqueue_due_key_repeats() {
 		if now < backend.keyboard_repeat_next_ns {
 			return
 		}
-		mut record := backend.windows[index]
 		modifiers := backend.event_modifiers()
-		input := record.input_event_with_payload(.key_down, modifiers,
+		input := backend.windows[index].input_event_with_payload(.key_down, modifiers,
 			backend.keyboard_repeat_key_code, true, wayland_invalid_mouse_button, 0, 0)
-		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
+		backend.windows[index].enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
 			queued_input_event(input))
 		char_code := backend.char_code_for_key(backend.keyboard_repeat_raw_key)
 		if char_code != 0 {
-			char_input := record.input_char_event(char_code, true, modifiers)
-			record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
+			char_input := backend.windows[index].input_char_event(char_code, true, modifiers)
+			backend.windows[index].enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(),
 				queued_input_event(char_input))
 		}
 		backend.keyboard_repeat_next_ns += backend.keyboard_repeat_interval_ns
@@ -2103,6 +2106,17 @@ fn wayland_resize_edge(edge WindowResizeEdge) u32 {
 
 fn wayland_is_clipboard_paste(key_code int, modifiers u32) bool {
 	return key_code == wayland_key_v && modifiers == wayland_modifier_ctrl
+}
+
+fn (backend &WaylandBackend) key_repeats(raw_key u32) bool {
+	$if linux && sokol_wayland ? {
+		if backend.xkb_keymap == unsafe { nil } {
+			return false
+		}
+		return C.xkb_keymap_key_repeats(unsafe { &C.xkb_keymap(backend.xkb_keymap) }, raw_key) != 0
+	}
+	_ = raw_key
+	return false
 }
 
 fn (backend &WaylandBackend) char_code_for_key(key u32) u32 {

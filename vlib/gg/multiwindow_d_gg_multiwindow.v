@@ -461,6 +461,8 @@ fn (mut app App) dispatch_run_events(event_fn AppEventFn, input_fn AppInputFn) !
 				}
 				if event_fn != unsafe { nil } {
 					event_fn(window_event, mut app)!
+				} else {
+					app.dispatch_lifecycle_without_event_callback(window_event)!
 				}
 			}
 			.input {
@@ -476,6 +478,27 @@ fn (mut app App) dispatch_run_events(event_fn AppEventFn, input_fn AppInputFn) !
 		}
 	}
 	return dispatched
+}
+
+fn (mut app App) dispatch_lifecycle_without_event_callback(event WindowEvent) ! {
+	match event.kind {
+		.window_close_requested {
+			if app.window_exists(event.window) {
+				app.destroy_window(event.window)!
+			}
+			app.stop_if_no_windows()!
+		}
+		.window_destroyed {
+			app.stop_if_no_windows()!
+		}
+		else {}
+	}
+}
+
+fn (mut app App) stop_if_no_windows() ! {
+	if app.core.status() == .running && app.window_ids()!.len == 0 {
+		app.stop()!
+	}
 }
 
 // draw_window renders one live window through its WindowContext.

@@ -46,7 +46,7 @@ const x11_xdnd_version = 5
 const x11_xdnd_max_payload_bytes = 1024 * 1024
 const x11_xdnd_max_payload_units = (x11_xdnd_max_payload_bytes + 3) / 4
 const x11_xdnd_max_type_atoms = 64
-const x11_max_char_codes = 32768
+const x11_inline_char_codes = 8
 
 $if x32 {
 	type X11NativeLong = int
@@ -192,7 +192,7 @@ $if linux && x_multiwindow_x11 ? {
 	fn C.v_multiwindow_x11_unset_ic_focus(ic voidptr)
 	fn C.v_multiwindow_x11_init_keycodes(display &C.Display, keycodes &int, keycodes_len int)
 	fn C.v_multiwindow_x11_key_code(event &C.XEvent, keycodes &int, keycodes_len int) int
-	fn C.v_multiwindow_x11_char_codes(ic voidptr, event &C.XEvent, codes &u32, codes_len int) int
+	fn C.v_multiwindow_x11_char_codes(ic voidptr, event &C.XEvent, codes &u32, codes_len int, required_codes &int) int
 	fn C.v_multiwindow_x11_create_cursor_for_shape(display &C.Display, shape int) X11NativeCursor
 	fn C.v_multiwindow_x11_apply_config_hints(display &C.Display, window X11NativeWindow, width int, height int, min_width int, min_height int, resizable int, borderless int, fullscreen int) int
 	fn C.v_multiwindow_x11_get_window_size(display &C.Display, window X11NativeWindow, out_width &int, out_height &int) int
@@ -818,14 +818,30 @@ $if linux && x_multiwindow_x11 ? {
 					.clipboard_pasted, 0, false, modifiers, x11_invalid_mouse_button, 0, 0))
 			}
 		}
-		mut char_codes := []u32{len: x11_max_char_codes}
-		char_count := C.v_multiwindow_x11_char_codes(backend.windows[index].xic, event,
-			unsafe { &char_codes[0] }, x11_max_char_codes)
-		for i in 0 .. char_count {
-			events << queued_input_event(backend.input_char_event(backend.windows[index],
-				char_codes[i], repeat, modifiers))
-		}
+		backend.append_key_press_char_events(mut events, backend.windows[index], event, repeat,
+			modifiers)
 		return events
+	}
+
+	fn (backend &X11Backend) append_key_press_char_events(mut events []QueuedEvent, record X11WindowRecord, event &C.XEvent, repeat bool, modifiers u32) {
+		mut inline_char_codes := [x11_inline_char_codes]u32{}
+		mut required_char_codes := 0
+		mut char_count := C.v_multiwindow_x11_char_codes(record.xic, event,
+			unsafe { &inline_char_codes[0] }, x11_inline_char_codes, &required_char_codes)
+		if required_char_codes > x11_inline_char_codes {
+			mut char_codes := []u32{len: required_char_codes}
+			char_count = C.v_multiwindow_x11_char_codes(record.xic, event,
+				unsafe { &char_codes[0] }, required_char_codes, &required_char_codes)
+			for i in 0 .. char_count {
+				events << queued_input_event(backend.input_char_event(record, char_codes[i],
+					repeat, modifiers))
+			}
+			return
+		}
+		for i in 0 .. char_count {
+			events << queued_input_event(backend.input_char_event(record, inline_char_codes[i],
+				repeat, modifiers))
+		}
 	}
 
 	fn (mut backend X11Backend) queued_key_release_event(index int, event &C.XEvent) []QueuedEvent {

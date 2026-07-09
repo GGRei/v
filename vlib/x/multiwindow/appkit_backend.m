@@ -992,7 +992,9 @@ static void v_multiwindow_appkit_fill_touch_point(VMultiwindowAppKitWindowState 
 	uint32_t modifiers = v_multiwindow_appkit_modifiers(event);
 	int keyCode = v_multiwindow_appkit_key_code(event.keyCode);
 	[state queueKeyEvent:V_MULTIWINDOW_APPKIT_INPUT_KEY_DOWN keyCode:keyCode repeat:event.isARepeat modifiers:modifiers];
-	[state queueCharEventsFromString:event.characters repeat:event.isARepeat modifiers:modifiers];
+	if ((modifiers & 8u) == 0) {
+		[state queueCharEventsFromString:event.characters repeat:event.isARepeat modifiers:modifiers];
+	}
 	if (modifiers == 8 && keyCode == 86) {
 		VMultiwindowAppKitQueuedEvent queued = v_multiwindow_appkit_zero_event();
 		queued.input_kind = V_MULTIWINDOW_APPKIT_INPUT_CLIPBOARD_PASTED;

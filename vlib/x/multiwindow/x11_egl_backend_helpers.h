@@ -806,19 +806,32 @@ static inline int v_multiwindow_x11_utf8_decode_next(const char *buf, int count,
 	return 1;
 }
 
-static inline int v_multiwindow_x11_decode_utf8_codes(const char *buf, int count, unsigned int *codes, int codes_len) {
+static inline int v_multiwindow_x11_decode_utf8_codes(const char *buf, int count, unsigned int *codes, int codes_len, int *required_codes) {
 	int offset = 0;
 	int out_count = 0;
-	while (offset < count && out_count < codes_len) {
+	int total_count = 0;
+	if (required_codes != NULL) {
+		*required_codes = 0;
+	}
+	while (offset < count) {
 		unsigned int codepoint = 0;
 		if (v_multiwindow_x11_utf8_decode_next(buf, count, &offset, &codepoint) && codepoint != 0) {
-			codes[out_count++] = codepoint;
+			if (out_count < codes_len) {
+				codes[out_count++] = codepoint;
+			}
+			total_count++;
 		}
+	}
+	if (required_codes != NULL) {
+		*required_codes = total_count;
 	}
 	return out_count;
 }
 
-static inline int v_multiwindow_x11_char_codes(XIC ic, XEvent *event, unsigned int *codes, int codes_len) {
+static inline int v_multiwindow_x11_char_codes(XIC ic, XEvent *event, unsigned int *codes, int codes_len, int *required_codes) {
+	if (required_codes != NULL) {
+		*required_codes = 0;
+	}
 	if (ic == NULL || event == NULL || event->type != KeyPress || codes == NULL || codes_len <= 0) {
 		return 0;
 	}
@@ -846,7 +859,7 @@ static inline int v_multiwindow_x11_char_codes(XIC ic, XEvent *event, unsigned i
 		}
 		return 0;
 	}
-	int out_count = v_multiwindow_x11_decode_utf8_codes(buf, count, codes, codes_len);
+	int out_count = v_multiwindow_x11_decode_utf8_codes(buf, count, codes, codes_len, required_codes);
 	if (buf != stack_buf) {
 		free(buf);
 	}
