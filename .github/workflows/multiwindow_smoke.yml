@@ -10,12 +10,19 @@ on:
       - 'vlib/x/multiwindow/**'
       - 'vlib/gg/*multiwindow*.v'
       - 'vlib/gg/gg.c.v'
+      - 'vlib/gg/draw.c.v'
       - 'vlib/gg/frame_pacing_test.v'
       - 'vlib/gg/draw_fns_api_test.v'
+      - 'vlib/gg/draw_rect_empty_test.v'
       - 'vlib/gg/README.md'
       - 'examples/gg/multiwindow.v'
       - '.github/workflows/multiwindow_smoke.yml'
       - '.github/workflows/gg_regressions_ci.yml.disabled'
+      - '.github/workflows/linux_ci.yml.disabled'
+      - '.github/workflows/macos_ci.yml.disabled'
+      - '.github/workflows/windows_ci_msvc.yml.disabled'
+      - '.github/workflows/windows_ci_gcc.yml.disabled'
+      - '.github/workflows/windows_ci_tcc.yml.disabled'
 
 permissions:
   contents: read
@@ -60,23 +67,110 @@ jobs:
       - name: Test default/mock policy
         run: |
           set -euo pipefail
-          cp .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
-          trap 'rm -f .github/workflows/gg_regressions_ci.yml' EXIT
-          env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ./v -d gg_multiwindow test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+          workflow_backup_dir="$(mktemp -d)"
+          restored_workflows=()
+          backed_up_workflows=()
+          restore_disabled_workflows() {
+            for workflow in gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc; do
+              source=".github/workflows/${workflow}.yml.disabled"
+              target=".github/workflows/${workflow}.yml"
+              if [ ! -f "$source" ]; then
+                echo "Missing disabled workflow source: $source" >&2
+                exit 1
+              fi
+              if [ -f "$target" ]; then
+                cp "$target" "$workflow_backup_dir/${workflow}.yml"
+                backed_up_workflows+=("$workflow")
+              else
+                restored_workflows+=("$target")
+              fi
+              cp "$source" "$target"
+            done
+          }
+          cleanup_disabled_workflows() {
+            for workflow in "${backed_up_workflows[@]}"; do
+              cp "$workflow_backup_dir/${workflow}.yml" ".github/workflows/${workflow}.yml"
+            done
+            for target in "${restored_workflows[@]}"; do
+              rm -f "$target"
+            done
+            rm -rf "$workflow_backup_dir"
+          }
+          trap cleanup_disabled_workflows EXIT
+          restore_disabled_workflows
+          env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ./v -d gg_multiwindow test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v vlib/gg/draw_rect_empty_test.v
 
       - name: Test Wayland compile path
         run: |
           set -euo pipefail
-          cp .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
-          trap 'rm -f .github/workflows/gg_regressions_ci.yml' EXIT
-          env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ./v -d gg_multiwindow -d sokol_wayland test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+          workflow_backup_dir="$(mktemp -d)"
+          restored_workflows=()
+          backed_up_workflows=()
+          restore_disabled_workflows() {
+            for workflow in gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc; do
+              source=".github/workflows/${workflow}.yml.disabled"
+              target=".github/workflows/${workflow}.yml"
+              if [ ! -f "$source" ]; then
+                echo "Missing disabled workflow source: $source" >&2
+                exit 1
+              fi
+              if [ -f "$target" ]; then
+                cp "$target" "$workflow_backup_dir/${workflow}.yml"
+                backed_up_workflows+=("$workflow")
+              else
+                restored_workflows+=("$target")
+              fi
+              cp "$source" "$target"
+            done
+          }
+          cleanup_disabled_workflows() {
+            for workflow in "${backed_up_workflows[@]}"; do
+              cp "$workflow_backup_dir/${workflow}.yml" ".github/workflows/${workflow}.yml"
+            done
+            for target in "${restored_workflows[@]}"; do
+              rm -f "$target"
+            done
+            rm -rf "$workflow_backup_dir"
+          }
+          trap cleanup_disabled_workflows EXIT
+          restore_disabled_workflows
+          env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ./v -d gg_multiwindow -d sokol_wayland test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v vlib/gg/draw_rect_empty_test.v
 
       - name: Test X11/EGL under Xvfb
         run: |
           set -euo pipefail
-          cp .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
-          trap 'rm -f .github/workflows/gg_regressions_ci.yml' EXIT
-          xvfb-run -a -s "-screen 0 1280x1024x24" env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true ./v -d gg_multiwindow -d x_multiwindow_x11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+          workflow_backup_dir="$(mktemp -d)"
+          restored_workflows=()
+          backed_up_workflows=()
+          restore_disabled_workflows() {
+            for workflow in gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc; do
+              source=".github/workflows/${workflow}.yml.disabled"
+              target=".github/workflows/${workflow}.yml"
+              if [ ! -f "$source" ]; then
+                echo "Missing disabled workflow source: $source" >&2
+                exit 1
+              fi
+              if [ -f "$target" ]; then
+                cp "$target" "$workflow_backup_dir/${workflow}.yml"
+                backed_up_workflows+=("$workflow")
+              else
+                restored_workflows+=("$target")
+              fi
+              cp "$source" "$target"
+            done
+          }
+          cleanup_disabled_workflows() {
+            for workflow in "${backed_up_workflows[@]}"; do
+              cp "$workflow_backup_dir/${workflow}.yml" ".github/workflows/${workflow}.yml"
+            done
+            for target in "${restored_workflows[@]}"; do
+              rm -f "$target"
+            done
+            rm -rf "$workflow_backup_dir"
+          }
+          trap cleanup_disabled_workflows EXIT
+          restore_disabled_workflows
+          xvfb-run -a -s "-screen 0 1280x1024x24" env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true ./v -d gg_multiwindow -d x_multiwindow_x11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v vlib/gg/draw_rect_empty_test.v
 
       - name: Compile gg multiwindow examples
         run: |
@@ -351,13 +445,42 @@ jobs:
         if: ${{ matrix.ccompiler == 'msvc' }}
         shell: pwsh
         run: |
-          Copy-Item -Force .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
+          $workflowBackupDir = Join-Path ([System.IO.Path]::GetTempPath()) ("multiwindow-smoke-" + [guid]::NewGuid().ToString())
+          New-Item -ItemType Directory -Path $workflowBackupDir | Out-Null
+          $script:restoredWorkflows = @()
+          $script:backedUpWorkflows = @()
+          function Restore-SmokeWorkflowSources {
+            foreach ($workflow in @('gg_regressions_ci', 'linux_ci', 'macos_ci', 'windows_ci_msvc', 'windows_ci_gcc', 'windows_ci_tcc')) {
+              $source = ".github/workflows/$workflow.yml.disabled"
+              $target = ".github/workflows/$workflow.yml"
+              if (!(Test-Path $source)) {
+                throw "Missing disabled workflow source: $source"
+              }
+              if (Test-Path $target) {
+                Copy-Item -Force $target (Join-Path $workflowBackupDir "$workflow.yml")
+                $script:backedUpWorkflows += $workflow
+              } else {
+                $script:restoredWorkflows += $target
+              }
+              Copy-Item -Force $source $target
+            }
+          }
+          function Remove-SmokeWorkflowSources {
+            foreach ($workflow in $script:backedUpWorkflows) {
+              Copy-Item -Force (Join-Path $workflowBackupDir "$workflow.yml") ".github/workflows/$workflow.yml"
+            }
+            foreach ($target in $script:restoredWorkflows) {
+              Remove-Item -Force $target -ErrorAction SilentlyContinue
+            }
+            Remove-Item -Recurse -Force $workflowBackupDir -ErrorAction SilentlyContinue
+          }
           $status = 0
           try {
-            .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+            Restore-SmokeWorkflowSources
+            .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v vlib/gg/draw_rect_empty_test.v
             $status = $LASTEXITCODE
           } finally {
-            Remove-Item -Force .github/workflows/gg_regressions_ci.yml -ErrorAction SilentlyContinue
+            Remove-SmokeWorkflowSources
           }
           exit $status
 
@@ -366,9 +489,38 @@ jobs:
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          cp .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
-          trap 'rm -f .github/workflows/gg_regressions_ci.yml' EXIT
-          ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+          workflow_backup_dir="$(mktemp -d)"
+          restored_workflows=()
+          backed_up_workflows=()
+          restore_disabled_workflows() {
+            for workflow in gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc; do
+              source=".github/workflows/${workflow}.yml.disabled"
+              target=".github/workflows/${workflow}.yml"
+              if [ ! -f "$source" ]; then
+                echo "Missing disabled workflow source: $source" >&2
+                exit 1
+              fi
+              if [ -f "$target" ]; then
+                cp "$target" "$workflow_backup_dir/${workflow}.yml"
+                backed_up_workflows+=("$workflow")
+              else
+                restored_workflows+=("$target")
+              fi
+              cp "$source" "$target"
+            done
+          }
+          cleanup_disabled_workflows() {
+            for workflow in "${backed_up_workflows[@]}"; do
+              cp "$workflow_backup_dir/${workflow}.yml" ".github/workflows/${workflow}.yml"
+            done
+            for target in "${restored_workflows[@]}"; do
+              rm -f "$target"
+            done
+            rm -rf "$workflow_backup_dir"
+          }
+          trap cleanup_disabled_workflows EXIT
+          restore_disabled_workflows
+          ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v vlib/gg/draw_rect_empty_test.v
 
       - name: Compile gg multiwindow example with MSVC
         if: ${{ matrix.ccompiler == 'msvc' }}
@@ -395,9 +547,38 @@ jobs:
       - name: Test multiwindow Metal path
         run: |
           set -euo pipefail
-          cp .github/workflows/gg_regressions_ci.yml.disabled .github/workflows/gg_regressions_ci.yml
-          trap 'rm -f .github/workflows/gg_regressions_ci.yml' EXIT
-          ./v -d gg_multiwindow -d sokol_metal test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v
+          workflow_backup_dir="$(mktemp -d)"
+          restored_workflows=()
+          backed_up_workflows=()
+          restore_disabled_workflows() {
+            for workflow in gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc; do
+              source=".github/workflows/${workflow}.yml.disabled"
+              target=".github/workflows/${workflow}.yml"
+              if [ ! -f "$source" ]; then
+                echo "Missing disabled workflow source: $source" >&2
+                exit 1
+              fi
+              if [ -f "$target" ]; then
+                cp "$target" "$workflow_backup_dir/${workflow}.yml"
+                backed_up_workflows+=("$workflow")
+              else
+                restored_workflows+=("$target")
+              fi
+              cp "$source" "$target"
+            done
+          }
+          cleanup_disabled_workflows() {
+            for workflow in "${backed_up_workflows[@]}"; do
+              cp "$workflow_backup_dir/${workflow}.yml" ".github/workflows/${workflow}.yml"
+            done
+            for target in "${restored_workflows[@]}"; do
+              rm -f "$target"
+            done
+            rm -rf "$workflow_backup_dir"
+          }
+          trap cleanup_disabled_workflows EXIT
+          restore_disabled_workflows
+          ./v -d gg_multiwindow -d sokol_metal test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v vlib/gg/draw_rect_empty_test.v
 
       - name: Test AppKit GLCore rejection guard
         run: ./v -d gg_multiwindow -d darwin_sokol_glcore33 test vlib/x/multiwindow/multiwindow_test.v
