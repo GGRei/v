@@ -251,6 +251,8 @@ fn test_multiwindow_linux_ci_covers_multiwindow_workflows_source_guard() {
 	assert checks_body.contains('vlib/gg/multiwindow_api_d_gg_multiwindow_test.v')
 	assert checks_body.contains('vlib/gg/frame_pacing_test.v')
 	assert checks_body.contains('vlib/gg/draw_fns_api_test.v')
+	assert checks_body.contains('vlib/gg/draw_rect_empty_test.v')
+	assert checks_body.count('vlib/gg/draw_rect_empty_test.v') >= 3
 	assert checks_body.contains('./v -d gg_multiwindow -o /tmp/gg_multiwindow_default examples/gg/multiwindow.v')
 	assert checks_body.contains('./v -d gg_multiwindow -d x_multiwindow_x11 -o /tmp/gg_multiwindow_x11 examples/gg/multiwindow.v')
 	assert checks_body.contains('./v -d gg_multiwindow -d sokol_wayland -o /tmp/gg_multiwindow_wayland examples/gg/multiwindow.v')
@@ -259,6 +261,24 @@ fn test_multiwindow_linux_ci_covers_multiwindow_workflows_source_guard() {
 	assert checks_body.contains('run_x11_example "gg multiwindow Xvfb/X11" /tmp/gg_multiwindow_x11')
 	assert checks_body.contains('grep -Fq "capability families:" "$stdout"')
 	assert !checks_body.contains('gg_regressions_ci.yml')
+}
+
+fn test_multiwindow_ci_covers_draw_rect_empty_test_source_guard() {
+	linux_source := multiwindow_linux_workflow_source()
+	gg_regressions_source := multiwindow_workflow_source('gg_regressions_ci.yml')
+	macos_source := multiwindow_workflow_source('macos_ci.yml')
+	windows_msvc_source := multiwindow_workflow_source('windows_ci_msvc.yml')
+	windows_gcc_source := multiwindow_workflow_source('windows_ci_gcc.yml')
+	draw_tests := 'vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v vlib/gg/draw_rect_empty_test.v'
+
+	assert linux_source.count('vlib/gg/draw_rect_empty_test.v') >= 3
+	assert gg_regressions_source.count(draw_tests) == 3
+	assert macos_source.contains(draw_tests)
+	assert windows_msvc_source.contains(draw_tests)
+	assert windows_gcc_source.contains(draw_tests)
+
+	assert gg_regressions_source.contains("      - 'vlib/**'")
+	assert gg_regressions_source.contains("      - '!vlib/v3/**'")
 }
 
 fn test_multiwindow_auto_capabilities_match_new_app_lifecycle_policy() {
@@ -2053,12 +2073,7 @@ fn multiwindow_disabled_facade_source() string {
 }
 
 fn multiwindow_linux_workflow_source() string {
-	vlib_dir := os.dir(@DIR)
-	workflow_path := os.join_path(vlib_dir, '..', '.github', 'workflows', 'linux_ci.yml')
-	return os.read_file(workflow_path) or {
-		assert false, 'expected business Linux workflow at ${workflow_path}: ${err.msg()}'
-		return ''
-	}
+	return multiwindow_workflow_source('linux_ci.yml')
 }
 
 fn multiwindow_linux_ci_script_source() string {
@@ -2066,6 +2081,15 @@ fn multiwindow_linux_ci_script_source() string {
 	script_path := os.join_path(vlib_dir, '..', 'ci', 'linux_ci.vsh')
 	return os.read_file(script_path) or {
 		assert false, 'expected business Linux CI script at ${script_path}: ${err.msg()}'
+		return ''
+	}
+}
+
+fn multiwindow_workflow_source(workflow_name string) string {
+	vlib_dir := os.dir(@DIR)
+	workflow_path := os.join_path(vlib_dir, '..', '.github', 'workflows', workflow_name)
+	return os.read_file(workflow_path) or {
+		assert false, 'expected business workflow at ${workflow_path}: ${err.msg()}'
 		return ''
 	}
 }
