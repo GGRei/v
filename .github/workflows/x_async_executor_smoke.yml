@@ -1,0 +1,345 @@
+name: x.async/x.executor smoke
+
+"on":
+  workflow_dispatch:
+  push:
+    branches:
+      - smoke/x-async-executor-ci-20260708
+
+concurrency:
+  group: x-async-executor-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUSINESS_SHA: e574543b8aaada0f5c85d5c88d0da45a23c68e96
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.compiler }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          - gcc
+          - clang
+          - tcc
+    env:
+      VJOBS: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Verify pinned business source
+        run: |
+          set -euo pipefail
+          parent=$(git rev-parse HEAD^)
+          if [ "$parent" != "$BUSINESS_SHA" ]; then
+            echo "unexpected parent: $parent (expected $BUSINESS_SHA)" >&2
+            exit 1
+          fi
+          if ! unexpected_paths=$(git diff --name-only "$BUSINESS_SHA" HEAD -- . \
+            ':(exclude).github/workflows/**' \
+            ':(exclude).github/workflows_disabled/**'); then
+            echo "failed to compare HEAD with $BUSINESS_SHA" >&2
+            exit 1
+          fi
+          if [ -n "$unexpected_paths" ]; then
+            echo "unexpected paths outside smoke workflow scope:" >&2
+            printf '%s\n' "$unexpected_paths" >&2
+            exit 1
+          fi
+          verify_blob() {
+            path=$1
+            expected=$2
+            actual=$(git rev-parse "HEAD:$path")
+            if [ "$actual" != "$expected" ]; then
+              echo "unexpected blob for $path: $actual (expected $expected)" >&2
+              exit 1
+            fi
+          }
+          verify_blob vlib/x/async/pool_test.v fd1a70311e090c9528224bd953c3c3fb04fb111b
+          verify_blob vlib/x/executor/admission_test.v 773a842880a61c8d148bf9fbfd8de70ec34f20e0
+          verify_blob vlib/x/executor/lifecycle_test.v 72a491ea67e386cb65fc150a631cd5796ea2c405
+          verify_blob vlib/x/executor/stress_test.v dede34c14d2f82e74cf0cc397bfc513f6721f324
+          verify_blob vlib/x/executor/sync_call_test.v c1b1add3114f054a2bd419ca873291418c6cd110
+      - name: Build V
+        run: make -j4
+      - name: Probe requested compiler
+        run: |
+          set -euo pipefail
+          echo "Requested compiler: ${{ matrix.compiler }}"
+          ./v -cc "${{ matrix.compiler }}" -no-retry-compilation -no-parallel -showcc \
+            -o "${RUNNER_TEMP}/x_async_executor_cc_probe" examples/hello_world.v
+      - name: Targeted dev tests (3 strict passes)
+        run: |
+          set -euo pipefail
+          for pass in 1 2 3; do
+            echo "Targeted dev pass ${pass}/3"
+            ./v -cc "${{ matrix.compiler }}" -no-retry-compilation -no-parallel test \
+              vlib/x/async/pool_test.v \
+              vlib/x/executor/admission_test.v \
+              vlib/x/executor/lifecycle_test.v \
+              vlib/x/executor/stress_test.v \
+              vlib/x/executor/sync_call_test.v
+          done
+      - name: Targeted prod tests
+        run: |
+          set -euo pipefail
+          ./v -cc "${{ matrix.compiler }}" -no-retry-compilation -prod -no-parallel test \
+            vlib/x/async/pool_test.v \
+            vlib/x/executor/admission_test.v \
+            vlib/x/executor/lifecycle_test.v \
+            vlib/x/executor/stress_test.v \
+            vlib/x/executor/sync_call_test.v
+      - name: Full x.async and x.executor dev tests
+        run: ./v -cc "${{ matrix.compiler }}" -no-retry-compilation -no-parallel test vlib/x/async vlib/x/executor
+      - name: Full x.async and x.executor prod tests
+        run: ./v -cc "${{ matrix.compiler }}" -no-retry-compilation -prod -no-parallel test vlib/x/async vlib/x/executor
+      - name: Full vlib/sync dev tests
+        run: ./v -cc "${{ matrix.compiler }}" -no-retry-compilation -no-parallel test vlib/sync
+      - name: Full vlib/sync prod tests
+        run: ./v -cc "${{ matrix.compiler }}" -no-retry-compilation -prod -no-parallel test vlib/sync
+
+  macos:
+    name: macOS ${{ matrix.compiler }}
+    runs-on: macos-14
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          - clang
+    env:
+      VJOBS: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Verify pinned business source
+        run: |
+          set -euo pipefail
+          parent=$(git rev-parse HEAD^)
+          if [ "$parent" != "$BUSINESS_SHA" ]; then
+            echo "unexpected parent: $parent (expected $BUSINESS_SHA)" >&2
+            exit 1
+          fi
+          if ! unexpected_paths=$(git diff --name-only "$BUSINESS_SHA" HEAD -- . \
+            ':(exclude).github/workflows/**' \
+            ':(exclude).github/workflows_disabled/**'); then
+            echo "failed to compare HEAD with $BUSINESS_SHA" >&2
+            exit 1
+          fi
+          if [ -n "$unexpected_paths" ]; then
+            echo "unexpected paths outside smoke workflow scope:" >&2
+            printf '%s\n' "$unexpected_paths" >&2
+            exit 1
+          fi
+          verify_blob() {
+            path=$1
+            expected=$2
+            actual=$(git rev-parse "HEAD:$path")
+            if [ "$actual" != "$expected" ]; then
+              echo "unexpected blob for $path: $actual (expected $expected)" >&2
+              exit 1
+            fi
+          }
+          verify_blob vlib/x/async/pool_test.v fd1a70311e090c9528224bd953c3c3fb04fb111b
+          verify_blob vlib/x/executor/admission_test.v 773a842880a61c8d148bf9fbfd8de70ec34f20e0
+          verify_blob vlib/x/executor/lifecycle_test.v 72a491ea67e386cb65fc150a631cd5796ea2c405
+          verify_blob vlib/x/executor/stress_test.v dede34c14d2f82e74cf0cc397bfc513f6721f324
+          verify_blob vlib/x/executor/sync_call_test.v c1b1add3114f054a2bd419ca873291418c6cd110
+      - name: Build V
+        run: make -j4
+      - name: Probe requested compiler
+        run: |
+          set -euo pipefail
+          echo "Requested compiler: ${{ matrix.compiler }}"
+          ./v -cc "${{ matrix.compiler }}" -no-retry-compilation -no-parallel -showcc \
+            -o "${RUNNER_TEMP}/x_async_executor_cc_probe" examples/hello_world.v
+      - name: Targeted dev tests (3 strict passes)
+        run: |
+          set -euo pipefail
+          for pass in 1 2 3; do
+            echo "Targeted dev pass ${pass}/3"
+            ./v -cc "${{ matrix.compiler }}" -no-retry-compilation -no-parallel test \
+              vlib/x/async/pool_test.v \
+              vlib/x/executor/admission_test.v \
+              vlib/x/executor/lifecycle_test.v \
+              vlib/x/executor/stress_test.v \
+              vlib/x/executor/sync_call_test.v
+          done
+      - name: Targeted prod tests
+        run: |
+          set -euo pipefail
+          ./v -cc "${{ matrix.compiler }}" -no-retry-compilation -prod -no-parallel test \
+            vlib/x/async/pool_test.v \
+            vlib/x/executor/admission_test.v \
+            vlib/x/executor/lifecycle_test.v \
+            vlib/x/executor/stress_test.v \
+            vlib/x/executor/sync_call_test.v
+      - name: Full x.async and x.executor dev tests
+        run: ./v -cc "${{ matrix.compiler }}" -no-retry-compilation -no-parallel test vlib/x/async vlib/x/executor
+      - name: Full x.async and x.executor prod tests
+        run: ./v -cc "${{ matrix.compiler }}" -no-retry-compilation -prod -no-parallel test vlib/x/async vlib/x/executor
+      - name: Full vlib/sync dev tests
+        run: ./v -cc "${{ matrix.compiler }}" -no-retry-compilation -no-parallel test vlib/sync
+      - name: Full vlib/sync prod tests
+        run: ./v -cc "${{ matrix.compiler }}" -no-retry-compilation -prod -no-parallel test vlib/sync
+
+  windows:
+    name: Windows ${{ matrix.compiler }}
+    runs-on: windows-2025
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: gcc
+            make_arg: -gcc
+          - compiler: msvc
+            make_arg: -msvc
+          - compiler: tcc
+            make_arg: -tcc
+    env:
+      VJOBS: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Verify pinned business source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Invoke-Git {
+            param([Parameter(ValueFromRemainingArguments = $true)][string[]] $Arguments)
+            $output = & git @Arguments
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) {
+              throw "git $($Arguments -join ' ') failed with exit code $exitCode"
+            }
+            return ($output | Out-String).Trim()
+          }
+          function Assert-Blob {
+            param([string] $Path, [string] $Expected)
+            $actual = Invoke-Git rev-parse "HEAD:$Path"
+            if ($actual -ne $Expected) {
+              throw "unexpected blob for ${Path}: $actual (expected $Expected)"
+            }
+          }
+          $parent = Invoke-Git rev-parse 'HEAD^'
+          if ($parent -ne $env:BUSINESS_SHA) {
+            throw "unexpected parent: $parent (expected $env:BUSINESS_SHA)"
+          }
+          $unexpectedPaths = Invoke-Git diff --name-only $env:BUSINESS_SHA HEAD -- . ':(exclude).github/workflows/**' ':(exclude).github/workflows_disabled/**'
+          if ($unexpectedPaths -ne '') {
+            [Console]::Error.WriteLine('unexpected paths outside smoke workflow scope:')
+            [Console]::Error.WriteLine($unexpectedPaths)
+            throw 'HEAD contains changes outside the allowed smoke workflow paths'
+          }
+          Assert-Blob vlib/x/async/pool_test.v fd1a70311e090c9528224bd953c3c3fb04fb111b
+          Assert-Blob vlib/x/executor/admission_test.v 773a842880a61c8d148bf9fbfd8de70ec34f20e0
+          Assert-Blob vlib/x/executor/lifecycle_test.v 72a491ea67e386cb65fc150a631cd5796ea2c405
+          Assert-Blob vlib/x/executor/stress_test.v dede34c14d2f82e74cf0cc397bfc513f6721f324
+          Assert-Blob vlib/x/executor/sync_call_test.v c1b1add3114f054a2bd419ca873291418c6cd110
+      - name: Set up MSVC
+        if: matrix.compiler == 'msvc'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build V
+        shell: pwsh
+        run: |
+          & .\makev.bat ${{ matrix.make_arg }}
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            exit $exitCode
+          }
+      - name: Probe requested compiler
+        shell: pwsh
+        run: |
+          Write-Host 'Requested compiler: ${{ matrix.compiler }}'
+          & .\v.exe -cc '${{ matrix.compiler }}' -no-retry-compilation -no-parallel -showcc `
+            -o "$env:RUNNER_TEMP\x_async_executor_cc_probe.exe" examples\hello_world.v
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            exit $exitCode
+          }
+      - name: Targeted dev tests (5 strict passes)
+        shell: pwsh
+        run: |
+          foreach ($pass in 1..5) {
+            Write-Host "Targeted dev pass ${pass}/5"
+            & .\v.exe -cc '${{ matrix.compiler }}' -no-retry-compilation -no-parallel test `
+              vlib/x/async/pool_test.v `
+              vlib/x/executor/admission_test.v `
+              vlib/x/executor/lifecycle_test.v `
+              vlib/x/executor/stress_test.v `
+              vlib/x/executor/sync_call_test.v
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) {
+              exit $exitCode
+            }
+          }
+      - name: Targeted prod tests
+        shell: pwsh
+        run: |
+          & .\v.exe -cc '${{ matrix.compiler }}' -no-retry-compilation -prod -no-parallel test `
+            vlib/x/async/pool_test.v `
+            vlib/x/executor/admission_test.v `
+            vlib/x/executor/lifecycle_test.v `
+            vlib/x/executor/stress_test.v `
+            vlib/x/executor/sync_call_test.v
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            exit $exitCode
+          }
+      - name: Full x.async and x.executor dev tests
+        shell: pwsh
+        run: |
+          & .\v.exe -cc '${{ matrix.compiler }}' -no-retry-compilation -no-parallel test vlib/x/async vlib/x/executor
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            exit $exitCode
+          }
+      - name: Full x.async and x.executor prod tests
+        shell: pwsh
+        run: |
+          & .\v.exe -cc '${{ matrix.compiler }}' -no-retry-compilation -prod -no-parallel test vlib/x/async vlib/x/executor
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            exit $exitCode
+          }
+      - name: Targeted vlib/sync Windows semaphore dev test
+        shell: pwsh
+        run: |
+          & .\v.exe -cc '${{ matrix.compiler }}' -no-retry-compilation -no-parallel test vlib/sync/semaphore_windows_test.v
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            exit $exitCode
+          }
+      - name: Targeted vlib/sync Windows semaphore prod test
+        shell: pwsh
+        run: |
+          & .\v.exe -cc '${{ matrix.compiler }}' -no-retry-compilation -prod -no-parallel test vlib/sync/semaphore_windows_test.v
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            exit $exitCode
+          }
+      - name: Full vlib/sync dev tests
+        shell: pwsh
+        run: |
+          & .\v.exe -cc '${{ matrix.compiler }}' -no-retry-compilation -no-parallel test vlib/sync
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            exit $exitCode
+          }
+      - name: Full vlib/sync prod tests
+        shell: pwsh
+        run: |
+          & .\v.exe -cc '${{ matrix.compiler }}' -no-retry-compilation -prod -no-parallel test vlib/sync
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            exit $exitCode
+          }
