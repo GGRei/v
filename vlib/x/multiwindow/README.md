@@ -2,7 +2,7 @@
 
 `x.multiwindow` is the low-level multi-window layer used by the experimental
 `gg` multi-window facade. It owns native window lifetimes, backend selection,
-per-window events, owner-thread dispatch, and explicit render swapchains.
+per-window events, owner-thread dispatch, and optional render scheduling.
 
 Most application code should use `gg` with `-d gg_multiwindow`. This module is
 intended for the `gg` facade, backend work, and callers that need direct control
@@ -18,7 +18,7 @@ The module provides:
 - lifecycle events routed to a specific window;
 - backend-neutral input events routed to a specific window;
 - an owner-thread job queue for cross-thread work;
-- explicit swapchain handoff for `sokol.gfx` rendering.
+- an opt-in render scheduler and opaque transaction declarations.
 
 It does not provide layout, widgets, text rendering, high-level input semantics,
 or a default event loop. The `gg` facade supplies the higher-level loop, `gg.Event`
@@ -81,7 +81,8 @@ the display server, graphics device, or platform API is unavailable.
 
 - `multi_window`: backend can manage more than one window;
 - `owner_queue`: the owner-thread queue is available;
-- `explicit_swapchain`: render calls can return a `gfx.Swapchain`;
+- `explicit_swapchain`: the backend can participate in managed explicit-target
+  rendering; it does not expose a public `gfx.Swapchain`;
 - `mock`, `native`, `x11`, `wayland`, `win32`: selected platform flags;
 - `gl`, `metal`, `d3d11`: active renderer API flags;
 - `input_events`, `mouse_events`, `keyboard_events`, `text_events`,
@@ -131,7 +132,7 @@ Backend notes:
   rendering is required.
 - Win32 is Windows-only and supports native lifecycle and min-size enforcement.
   D3D11 rendering requires a Windows build with `-d sokol_d3d11`; without that
-  flag, lifecycle works but renderer/swapchain calls are unsupported. Renderer
+  flag, lifecycle works but managed renderer calls are unsupported. Renderer
   startup can still fail if D3D11 device or swapchain creation is unavailable,
   and DXGI occlusion during present is treated as a skipped frame.
 
@@ -252,31 +253,43 @@ cross-family ordering is not needed.
 
 ## Rendering
 
-Rendering is explicit and optional. The render-facing API is compiled when the
-program uses the `gg` facade with `-d gg_multiwindow`, or when direct
-`x.multiwindow` callers opt in with `-d x_multiwindow_render`. Plain lifecycle
-and `.mock` imports remain dependency-light and do not pull `sokol.gfx`, X11,
-EGL, or OpenGL by default.
+Rendering is optional. The render-facing source is selected by
+`-d gg_multiwindow` or `-d x_multiwindow_render`; plain lifecycle and `.mock`
+imports remain the no-flag isolation case.
 
-Backends that have initialized a renderer set `Capabilities.explicit_swapchain`
-and implement:
+The corrective package-1 contract does not expose `gfx.Environment`,
+`gfx.Swapchain`, native drawables, command buffers, `RenderFrame`, or present
+authority. It defines owner-thread opaque batch and target leases, backend-issued
+ready credits, immutable metrics/target snapshots, late target acquisition, one
+global commit, ordered finalization, and a private recovery anchor. These sources
+are under integration. Until the app-integrated scheduler, backend, failure, and
+runtime-probe gates pass, this README makes no direct-caller runtime guarantee
+for the new transaction surface.
 
-- `render_environment(window)` for the `gfx.setup()` environment;
-- `begin_render(window)` to make the window current and return a `RenderFrame`;
-- `end_render(frame)` to present the frame;
-- `abort_render(frame)` for error paths before presentation.
+The checked-in gate definitions now require each acquired target and its stored
+slot to share a nonzero per-window lease epoch, reject zero/mismatched epochs,
+and reject copied leases after that epoch rotates or expires. They also include
+deterministic teardown-stage fault cases and an exhaustive one-shot fault-plan
+matrix. These are test specifications, not recorded passing results; renderer
+fault behavior still requires the selected native backend lanes.
 
-The low-level module does not call `gfx.setup()`, does not build passes, and does
-not draw. A direct caller is responsible for using `RenderFrame.swapchain` in a
-`gfx.Pass`, committing the frame, and then calling `end_render()`. The `gg`
-facade handles this for normal gg applications.
+The normative graphics references are the V-vendored Sokol API and matching
+pinned upstream [sokol_gfx.h](https://raw.githubusercontent.com/floooh/sokol/c0e0563/sokol_gfx.h).
+Backend lifetime and sequencing must also follow
+[DXGI Present](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-present),
+[DXGI ResizeBuffers](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-resizebuffers),
+[D3D11 threading](https://learn.microsoft.com/en-us/windows/win32/direct3d11/overviews-direct3d-11-render-multi-thread-intro),
+[CAMetalLayer](https://developer.apple.com/documentation/quartzcore/cametallayer),
+[EGL make-current](https://registry.khronos.org/EGL/sdk/docs/man/html/eglMakeCurrent.xhtml),
+and [EGL swap](https://registry.khronos.org/EGL/sdk/docs/man/html/eglSwapBuffers.xhtml)
+contracts. Local precedent does not override those lifetime and threading rules.
 
 ## Relationship With gg
 
 `gg.App` is the user-facing multi-window facade and is enabled with
-`-d gg_multiwindow`. It maps `gg` types to `x.multiwindow`, owns the
-`sokol.gfx` and `sokol.sgl` setup, maintains per-window draw contexts, runs the
-event/frame loop, and exposes `draw_window()` and `run()`.
+`-d gg_multiwindow`. It maps `gg` types to `x.multiwindow` and declares the
+managed `sokol.gfx`/`sokol.sgl` surface. The corrective renderer lifecycle
+remains subject to the proof gates described above.
 
 The checked-in example is:
 
@@ -307,7 +320,7 @@ programmatic resize.
 - X11 programmatic resize is rejected for non-resizable windows.
 - Native app creation can still fail even when plain capabilities report that a
   backend is supported, for example when a display cannot be opened.
-- The mock backend is not a renderer and cannot produce swapchains.
+- The mock backend is not a renderer and cannot produce render targets.
 - The module has no layout, widget, text rendering, or drawing abstraction.
 
 ## Validation
@@ -316,6 +329,12 @@ Useful checks while working on this module:
 
 ```sh
 ./v test vlib/x/multiwindow/multiwindow_test.v
-./v -d gg_multiwindow test vlib/x/multiwindow
-./v -d gg_multiwindow -d x_multiwindow_x11 test vlib/x/multiwindow
+./v test vlib/x/multiwindow/render_scheduler_test.v
+./v test vlib/x/multiwindow/teardown_contract_test.v
+./v test vlib/x/multiwindow/internal_fault_matrix_test.v
+./v -d x_multiwindow_render test vlib/x/multiwindow/render_target_lease_test.v
+./v -d gg_multiwindow test vlib/gg/multiwindow_render_runtime_contract_test.v
+./v -d gg_multiwindow test vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v
 ```
+
+These are requested gates, not recorded passing results.

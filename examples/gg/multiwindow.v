@@ -9,7 +9,9 @@
 module main
 
 import gg
+import os
 
+const unattended_environment = 'VGG_MULTIWINDOW_EXAMPLE_UNATTENDED'
 const visible_last_event_limit = 4
 const visible_title_limit = 220
 const visual_margin = 18
@@ -30,6 +32,7 @@ mut:
 	live               bool
 	width              int
 	height             int
+	created            bool
 	lifecycle          int
 	inputs             int
 	key                int
@@ -49,12 +52,14 @@ mut:
 
 struct EventState {
 	mock        bool
+	unattended  bool
 	input_limit int = 12
 mut:
-	caps           gg.Capabilities
-	resized        int
-	printed_inputs int
-	windows        []WindowDashboard
+	caps                  gg.Capabilities
+	resized               int
+	printed_inputs        int
+	unattended_close_sent bool
+	windows               []WindowDashboard
 }
 
 fn main() {
@@ -71,14 +76,59 @@ fn new_app_prefer_renderer() !&gg.App {
 	}
 }
 
+fn requested_unattended_backend() !string {
+	backend := os.getenv(unattended_environment)
+	if backend == '' {
+		return ''
+	}
+	if backend !in ['mock', 'x11', 'wayland', 'appkit', 'win32'] {
+		return error('${unattended_environment} must select mock, x11, wayland, appkit, or win32')
+	}
+	return backend
+}
+
 fn run_example() ! {
 	mut app := new_app_prefer_renderer()!
-	defer {
-		app.stop() or {}
+	mut failures := []string{}
+	mut cleanup_needed := false
+	run_example_session(mut app) or {
+		failures << err.msg()
+		cleanup_needed = true
 	}
+	live_windows := app.window_ids() or {
+		failures << 'cleanup inspection failed: ${err.msg()}'
+		cleanup_needed = true
+		[]gg.WindowId{}
+	}
+	if live_windows.len > 0 {
+		cleanup_needed = true
+	}
+	if cleanup_needed {
+		app.stop() or { failures << 'cleanup failed: ${err.msg()}' }
+	}
+	remaining_windows := app.window_ids() or {
+		failures << 'cleanup validation failed: ${err.msg()}'
+		[]gg.WindowId{}
+	}
+	if remaining_windows.len > 0 {
+		failures << 'cleanup incomplete: ${remaining_windows.len} live window(s) remain'
+	}
+	if failures.len > 0 {
+		return error(failures.join('; '))
+	}
+	println('{"example":"multiwindow","status":"PASS","cleanup":"complete"}')
+}
 
+fn run_example_session(mut app gg.App) ! {
+	unattended_backend := requested_unattended_backend()!
 	mut caps := app.capabilities()
+	if unattended_backend != '' && '${caps.backend}' != unattended_backend {
+		return error('unattended multi-window example expected backend `${unattended_backend}`, got `${caps.backend}`')
+	}
 	println('gg multi-window backend: ${caps.backend}')
+	if unattended_backend != '' {
+		println('unattended lifecycle enabled for backend: ${unattended_backend}')
+	}
 	print_capability_families(caps)
 	if caps.mock {
 		println('render dashboard fallback: explicit swapchain unavailable')
@@ -110,8 +160,9 @@ fn run_example() ! {
 	resize_or_ignore_unsupported(mut app, tools_window, 360, 260)!
 
 	mut state := &EventState{
-		mock: caps.mock
-		caps: caps
+		mock:       caps.mock
+		unattended: unattended_backend != ''
+		caps:       caps
 	}
 	state.track_window(main_window, 'Main', 720, 420)
 	state.track_window(tools_window, 'Tools', 360, 260)
@@ -176,11 +227,12 @@ fn handle_window_event(event gg.WindowEvent, mut app gg.App, mut state EventStat
 	match event.kind {
 		.window_created {
 			println('window created: ${event.window}')
+			state.schedule_unattended_close(mut app)!
 		}
 		.window_resized {
 			state.resized++
 			println('window resized: ${event.window} -> ${event.width}x${event.height}')
-			if state.mock && state.resized >= 2 {
+			if state.mock && !state.unattended && state.resized >= 2 {
 				app.stop()!
 			}
 		}
@@ -197,6 +249,23 @@ fn handle_window_event(event gg.WindowEvent, mut app gg.App, mut state EventStat
 			}
 		}
 	}
+}
+
+fn (mut state EventState) schedule_unattended_close(mut app gg.App) ! {
+	if !state.unattended || state.unattended_close_sent {
+		return
+	}
+	for dashboard in state.windows {
+		if !dashboard.created {
+			return
+		}
+	}
+	state.unattended_close_sent = true
+	app.post(fn (mut app gg.App) ! {
+		for window in app.window_ids()! {
+			app.destroy_window(window)!
+		}
+	})!
 }
 
 fn handle_input_event(event gg.WindowInputEvent, mut app gg.App, mut state EventState) ! {
@@ -299,6 +368,7 @@ fn (mut state EventState) note_lifecycle(event gg.WindowEvent) {
 	match event.kind {
 		.window_created {
 			dashboard.live = true
+			dashboard.created = true
 			dashboard.width = event.width
 			dashboard.height = event.height
 			dashboard.add_last_event('created ${event.width}x${event.height}', 'window')

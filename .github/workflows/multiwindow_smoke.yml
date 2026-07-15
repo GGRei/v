@@ -1,4 +1,4 @@
-name: Multiwindow Smoke
+name: Multiwindow Final Smoke
 
 on:
   workflow_dispatch:
@@ -9,15 +9,14 @@ on:
     paths:
       - 'vlib/x/multiwindow/**'
       - 'vlib/gg/*multiwindow*.v'
-      - 'vlib/gg/gg.c.v'
-      - 'vlib/gg/draw.c.v'
+      - 'vlib/gg/gfx_render_owner.v'
       - 'vlib/gg/frame_pacing_test.v'
       - 'vlib/gg/draw_fns_api_test.v'
       - 'vlib/gg/draw_rect_empty_test.v'
-      - 'vlib/gg/README.md'
-      - 'examples/gg/multiwindow.v'
+      - 'vlib/gg/testdata/multiwindow*.v'
+      - 'vlib/gg/testdata/multiwindow*/**'
+      - 'examples/gg/multiwindow*.v'
       - '.github/workflows/multiwindow_smoke.yml'
-      - '.github/workflows/gg_regressions_ci.yml.disabled'
       - '.github/workflows/linux_ci.yml.disabled'
       - '.github/workflows/macos_ci.yml.disabled'
       - '.github/workflows/windows_ci_msvc.yml.disabled'
@@ -33,234 +32,343 @@ concurrency:
 
 jobs:
   linux:
+    name: Linux GCC mock, X11 and Wayland
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 90
     steps:
       - name: Checkout V
         uses: actions/checkout@v7
 
-      - name: Install minimal graphics dependencies
+      - name: Install native backend dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             git \
-            libx11-dev \
-            libxi-dev \
-            libxcursor-dev \
-            libxrandr-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
+            libegl1-mesa-dev \
             libgl1-mesa-dev \
             libgl1-mesa-dri \
-            libegl1-mesa-dev \
             libwayland-dev \
-            wayland-protocols \
+            libx11-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxrandr-dev \
+            weston \
+            xauth \
             xvfb
 
       - name: Build local V
         run: make -j2
 
-      - name: Test legacy gg import multiwindow isolation
-        run: env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ./v test vlib/gg/legacy_import_multiwindow_isolation_test.v
-
-      - name: Test default/mock policy
+      - name: Prepare process-tree watchdog and headless Wayland command
         run: |
           set -euo pipefail
-          workflow_backup_dir="$(mktemp -d)"
-          workflow_names="gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc"
-          restored_workflows=""
-          backed_up_workflows=""
-          restore_disabled_workflows() {
-            for workflow in $workflow_names; do
-              source=".github/workflows/${workflow}.yml.disabled"
-              target=".github/workflows/${workflow}.yml"
-              if [ ! -f "$source" ]; then
-                echo "Missing disabled workflow source: $source" >&2
-                exit 1
-              fi
-              if [ -f "$target" ]; then
-                cp "$target" "$workflow_backup_dir/${workflow}.yml"
-                backed_up_workflows="${backed_up_workflows} ${workflow}"
-              else
-                restored_workflows="${restored_workflows} ${target}"
-              fi
-              cp "$source" "$target"
-            done
-          }
-          cleanup_disabled_workflows() {
-            for workflow in $backed_up_workflows; do
-              cp "$workflow_backup_dir/${workflow}.yml" ".github/workflows/${workflow}.yml"
-            done
-            for target in $restored_workflows; do
-              rm -f "$target"
-            done
-            rm -rf "$workflow_backup_dir"
-          }
-          trap cleanup_disabled_workflows EXIT
-          restore_disabled_workflows
-          env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ./v -d gg_multiwindow test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v vlib/gg/draw_rect_empty_test.v
+          cat > "$RUNNER_TEMP/multiwindow_ci_watchdog.v" <<'EOF'
+          module main
 
-      - name: Test Wayland compile path
-        run: |
+          import gg.testdata.multiwindow_probe_watchdog
+          import os
+          import time
+
+          fn main() {
+              run_ci_watchdog() or {
+                  eprintln(err.msg())
+                  exit(1)
+              }
+          }
+
+          fn run_ci_watchdog() ! {
+              if os.args.len < 4 {
+                  return error('usage: multiwindow_ci_watchdog timeout-seconds expected-final-line executable [args...]')
+              }
+              timeout_seconds := os.args[1].int()
+              if timeout_seconds <= 0 {
+                  return error('multiwindow CI watchdog timeout must be positive')
+              }
+              expected_final_line := os.args[2]
+              gate_path := os.join_path(os.temp_dir(), 'multiwindow_ci_gate_${os.getpid()}_${time.now().unix_nano()}')
+              defer {
+                  os.rm(gate_path) or {}
+              }
+              result := multiwindow_probe_watchdog.run(
+                  executable: os.args[3]
+                  args:       os.args[4..]
+                  timeout:    timeout_seconds * time.second
+                  start_file: gate_path
+              )!
+              if result.stdout != '' {
+                  print(result.stdout)
+              }
+              if result.stderr != '' {
+                  eprint(result.stderr)
+              }
+              if result.timed_out {
+                  return error('multiwindow CI child timed out after ${timeout_seconds} seconds')
+              }
+              if !result.reaped {
+                  return error('multiwindow CI child leader was not reaped')
+              }
+              if !result.confinement_empty {
+                  return error('multiwindow CI child process confinement is not empty')
+              }
+              if result.forced_cleanup {
+                  return error('multiwindow CI child required forced cleanup')
+              }
+              if result.exit_code != 0 {
+                  return error('multiwindow CI child exited with ${result.exit_code}')
+              }
+              if expected_final_line == '-' {
+                  return
+              }
+              mut actual_final_line := ''
+              for line in result.stdout.split_into_lines() {
+                  if line.trim_space() != '' {
+                      actual_final_line = line.trim_space()
+                  }
+              }
+              if actual_final_line != expected_final_line {
+                  return error('multiwindow CI final record mismatch')
+              }
+          }
+          EOF
+          ./v -cc gcc -o "$RUNNER_TEMP/multiwindow_ci_watchdog" "$RUNNER_TEMP/multiwindow_ci_watchdog.v"
+
+          cat > "$RUNNER_TEMP/multiwindow_weston_command.sh" <<'EOF'
+          #!/usr/bin/env bash
           set -euo pipefail
-          workflow_backup_dir="$(mktemp -d)"
-          workflow_names="gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc"
-          restored_workflows=""
-          backed_up_workflows=""
-          restore_disabled_workflows() {
-            for workflow in $workflow_names; do
-              source=".github/workflows/${workflow}.yml.disabled"
-              target=".github/workflows/${workflow}.yml"
-              if [ ! -f "$source" ]; then
-                echo "Missing disabled workflow source: $source" >&2
-                exit 1
-              fi
-              if [ -f "$target" ]; then
-                cp "$target" "$workflow_backup_dir/${workflow}.yml"
-                backed_up_workflows="${backed_up_workflows} ${workflow}"
-              else
-                restored_workflows="${restored_workflows} ${target}"
-              fi
-              cp "$source" "$target"
-            done
-          }
-          cleanup_disabled_workflows() {
-            for workflow in $backed_up_workflows; do
-              cp "$workflow_backup_dir/${workflow}.yml" ".github/workflows/${workflow}.yml"
-            done
-            for target in $restored_workflows; do
-              rm -f "$target"
-            done
-            rm -rf "$workflow_backup_dir"
-          }
-          trap cleanup_disabled_workflows EXIT
-          restore_disabled_workflows
-          env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ./v -d gg_multiwindow -d sokol_wayland test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v vlib/gg/draw_rect_empty_test.v
 
-      - name: Test X11/EGL under Xvfb
-        run: |
-          set -euo pipefail
-          workflow_backup_dir="$(mktemp -d)"
-          workflow_names="gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc"
-          restored_workflows=""
-          backed_up_workflows=""
-          restore_disabled_workflows() {
-            for workflow in $workflow_names; do
-              source=".github/workflows/${workflow}.yml.disabled"
-              target=".github/workflows/${workflow}.yml"
-              if [ ! -f "$source" ]; then
-                echo "Missing disabled workflow source: $source" >&2
-                exit 1
-              fi
-              if [ -f "$target" ]; then
-                cp "$target" "$workflow_backup_dir/${workflow}.yml"
-                backed_up_workflows="${backed_up_workflows} ${workflow}"
-              else
-                restored_workflows="${restored_workflows} ${target}"
-              fi
-              cp "$source" "$target"
-            done
-          }
-          cleanup_disabled_workflows() {
-            for workflow in $backed_up_workflows; do
-              cp "$workflow_backup_dir/${workflow}.yml" ".github/workflows/${workflow}.yml"
-            done
-            for target in $restored_workflows; do
-              rm -f "$target"
-            done
-            rm -rf "$workflow_backup_dir"
-          }
-          trap cleanup_disabled_workflows EXIT
-          restore_disabled_workflows
-          xvfb-run -a -s "-screen 0 1280x1024x24" env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true ./v -d gg_multiwindow -d x_multiwindow_x11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v vlib/gg/draw_rect_empty_test.v
+          gate_path="${V_MULTIWINDOW_PROBE_WATCHDOG_GATE:?missing watchdog start gate}"
+          for _ in {1..400}; do
+            if [ -f "$gate_path" ]; then
+              break
+            fi
+            sleep 0.01
+          done
+          if [ ! -f "$gate_path" ]; then
+            echo "parent watchdog did not release $gate_path" >&2
+            exit 1
+          fi
 
-      - name: Compile gg multiwindow examples
-        run: |
-          ./v -d gg_multiwindow -o /tmp/gg_multiwindow_default examples/gg/multiwindow.v
-          ./v -d gg_multiwindow -d x_multiwindow_x11 -o /tmp/gg_multiwindow_x11 examples/gg/multiwindow.v
-          ./v -d gg_multiwindow -d sokol_wayland -o /tmp/gg_multiwindow_wayland examples/gg/multiwindow.v
+          runtime_dir="$(mktemp -d)"
+          chmod 700 "$runtime_dir"
+          weston_log="$runtime_dir/weston.log"
+          export XDG_RUNTIME_DIR="$runtime_dir"
+          export WAYLAND_DISPLAY=wayland-multiwindow-smoke
+          export XDG_SESSION_TYPE=wayland
+          export LIBGL_ALWAYS_SOFTWARE=true
+          unset DISPLAY
 
-      - name: Run gg multiwindow example headless mock
-        run: |
-          set -euo pipefail
-          stdout="$(mktemp)"
-          stderr="$(mktemp)"
-          set +e
-          env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE \
-            timeout 20s stdbuf -oL -eL /tmp/gg_multiwindow_default >"$stdout" 2>"$stderr"
-          status=$?
-          set -e
-          echo "::group::gg multiwindow headless stdout"
-          cat "$stdout"
-          echo "::endgroup::"
-          echo "::group::gg multiwindow headless stderr"
-          cat "$stderr"
-          echo "::endgroup::"
-          grep -Fq "gg multi-window backend:" "$stdout"
-          grep -Fq "mock backend selected; stopping after initial lifecycle events" "$stdout"
-          grep -Fq "live windows:" "$stdout"
-          grep -Fq "window created:" "$stdout"
-          if [ "$status" -ne 0 ]; then
-            echo "Headless/mock example failed with status $status."
+          weston --backend=headless-backend.so --renderer=gl \
+            --socket="$WAYLAND_DISPLAY" --idle-time=0 >"$weston_log" 2>&1 &
+          weston_pid=$!
+
+          cleanup_weston() {
+            status=$?
+            trap - EXIT INT TERM
+            if kill -0 "$weston_pid" 2>/dev/null; then
+              kill -TERM "$weston_pid" 2>/dev/null || true
+              for _ in {1..500}; do
+                if ! kill -0 "$weston_pid" 2>/dev/null; then
+                  break
+                fi
+                sleep 0.01
+              done
+            fi
+            if kill -0 "$weston_pid" 2>/dev/null; then
+              kill -KILL "$weston_pid" 2>/dev/null || true
+            fi
+            wait "$weston_pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              cat "$weston_log" >&2 || true
+            fi
+            rm -rf "$runtime_dir"
             exit "$status"
-          fi
+          }
+          trap cleanup_weston EXIT INT TERM
 
-      - name: Run gg multiwindow Wayland build headless mock
+          ready=0
+          for _ in {1..1000}; do
+            if [ -S "$runtime_dir/$WAYLAND_DISPLAY" ]; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "$weston_pid" 2>/dev/null; then
+              break
+            fi
+            sleep 0.01
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "headless Weston did not publish its socket" >&2
+            exit 1
+          fi
+          "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/multiwindow_weston_command.sh"
+
+      - name: Run dedicated Linux matrix
         run: |
           set -euo pipefail
-          stdout="$(mktemp)"
-          stderr="$(mktemp)"
-          set +e
-          env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE \
-            timeout 20s stdbuf -oL -eL /tmp/gg_multiwindow_wayland >"$stdout" 2>"$stderr"
-          status=$?
-          set -e
-          echo "::group::gg multiwindow Wayland-build headless stdout"
-          cat "$stdout"
-          echo "::endgroup::"
-          echo "::group::gg multiwindow Wayland-build headless stderr"
-          cat "$stderr"
-          echo "::endgroup::"
-          grep -Fq "gg multi-window backend:" "$stdout"
-          grep -Fq "mock backend selected; stopping after initial lifecycle events" "$stdout"
-          grep -Fq "live windows:" "$stdout"
-          grep -Fq "window created:" "$stdout"
-          if [ "$status" -ne 0 ]; then
-            echo "Wayland-build headless/mock example failed with status $status."
-            exit "$status"
-          fi
+          cp .github/workflows/linux_ci.yml.disabled .github/workflows/linux_ci.yml
+          trap 'rm -f .github/workflows/linux_ci.yml' EXIT
 
-      - name: Run gg multiwindow example under Xvfb/X11
+          renderer_tests=(
+            test_renderer_anchor_create_fault_drives_start_renderer_retry_and_cleanup
+            test_renderer_environment_fault_drives_start_renderer_retry_and_cleanup
+            test_renderer_setup_fault_drives_start_renderer_retry_and_cleanup
+            test_renderer_batch_begin_fault_is_recoverable_before_scheduler_commit
+            test_renderer_target_acquire_fault_is_recoverable_before_claim_commit
+            test_renderer_pass_begin_fault_preserves_prepared_target_for_retry
+            test_renderer_anchor_begin_fault_terminalizes_before_anchor_sokol_call
+            test_renderer_precommit_fault_terminalizes_after_anchor_pass_before_commit
+            test_renderer_submission_finalize_fault_terminalizes_after_one_native_submission
+          )
+          for renderer_test in "${renderer_tests[@]}"; do
+            echo "::group::$renderer_test"
+            if ! VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
+              VGG_MULTIWINDOW_RUNTIME_BACKEND=wayland \
+              V_MULTIWINDOW_PROBE_BACKEND=wayland \
+              VTEST_SHOW_START=1 \
+              VJOBS=1 \
+              WAYLAND_DEBUG=1 \
+              EGL_LOG_LEVEL=debug \
+              LIBGL_DEBUG=verbose \
+              MESA_DEBUG=1 \
+              LIBGL_ALWAYS_SOFTWARE=true \
+              "$RUNNER_TEMP/multiwindow_ci_watchdog" 60 - \
+                "$RUNNER_TEMP/multiwindow_weston_command.sh" \
+                ./v -cc gcc -d gg_multiwindow -d sokol_wayland test \
+                  -run-only "$renderer_test" \
+                  vlib/x/multiwindow/internal_fault_matrix_test.v; then
+              echo "::endgroup::"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+
+  macos:
+    name: macOS clang Metal/AppKit
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - name: Checkout V
+        uses: actions/checkout@v7
+
+      - name: Build local V
+        run: make -j3
+
+      - name: Prepare process-tree watchdog
         run: |
           set -euo pipefail
-          stdout="$(mktemp)"
-          stderr="$(mktemp)"
-          set +e
-          xvfb-run -a -s "-screen 0 1280x1024x24" \
-            env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true \
-            timeout 12s stdbuf -oL -eL /tmp/gg_multiwindow_x11 >"$stdout" 2>"$stderr"
-          status=$?
-          set -e
-          echo "::group::gg multiwindow Xvfb stdout"
-          cat "$stdout"
-          echo "::endgroup::"
-          echo "::group::gg multiwindow Xvfb stderr"
-          cat "$stderr"
-          echo "::endgroup::"
-          grep -Fq "gg multi-window backend:" "$stdout"
-          grep -Fq "live windows:" "$stdout"
-          grep -Fq "window created:" "$stdout"
-          if [ "$status" -eq 124 ]; then
-            echo "X11 example reached the controlled timeout after producing expected launch logs."
-            exit 0
-          fi
-          exit "$status"
+          cat > "$RUNNER_TEMP/multiwindow_ci_watchdog.v" <<'EOF'
+          module main
+
+          import gg.testdata.multiwindow_probe_watchdog
+          import os
+          import time
+
+          fn main() {
+              run_ci_watchdog() or {
+                  eprintln(err.msg())
+                  exit(1)
+              }
+          }
+
+          fn run_ci_watchdog() ! {
+              if os.args.len < 4 {
+                  return error('usage: multiwindow_ci_watchdog timeout-seconds expected-final-line executable [args...]')
+              }
+              timeout_seconds := os.args[1].int()
+              if timeout_seconds <= 0 {
+                  return error('multiwindow CI watchdog timeout must be positive')
+              }
+              expected_final_line := os.args[2]
+              gate_path := os.join_path(os.temp_dir(), 'multiwindow_ci_gate_${os.getpid()}_${time.now().unix_nano()}')
+              defer {
+                  os.rm(gate_path) or {}
+              }
+              result := multiwindow_probe_watchdog.run(
+                  executable: os.args[3]
+                  args:       os.args[4..]
+                  timeout:    timeout_seconds * time.second
+                  start_file: gate_path
+              )!
+              if result.stdout != '' {
+                  print(result.stdout)
+              }
+              if result.stderr != '' {
+                  eprint(result.stderr)
+              }
+              if result.timed_out {
+                  return error('multiwindow CI child timed out after ${timeout_seconds} seconds')
+              }
+              if !result.reaped {
+                  return error('multiwindow CI child leader was not reaped')
+              }
+              if !result.confinement_empty {
+                  return error('multiwindow CI child process confinement is not empty')
+              }
+              if result.forced_cleanup {
+                  return error('multiwindow CI child required forced cleanup')
+              }
+              if result.exit_code != 0 {
+                  return error('multiwindow CI child exited with ${result.exit_code}')
+              }
+              if expected_final_line == '-' {
+                  return
+              }
+              mut actual_final_line := ''
+              for line in result.stdout.split_into_lines() {
+                  if line.trim_space() != '' {
+                      actual_final_line = line.trim_space()
+                  }
+              }
+              if actual_final_line != expected_final_line {
+                  return error('multiwindow CI final record mismatch')
+              }
+          }
+          EOF
+          ./v -cc clang -o "$RUNNER_TEMP/multiwindow_ci_watchdog" "$RUNNER_TEMP/multiwindow_ci_watchdog.v"
+
+      - name: Run dedicated Metal/AppKit matrix
+        run: |
+          set -euo pipefail
+          cp .github/workflows/macos_ci.yml.disabled .github/workflows/macos_ci.yml
+          trap 'rm -f .github/workflows/macos_ci.yml' EXIT
+
+          renderer_tests=(
+            test_renderer_anchor_create_fault_drives_start_renderer_retry_and_cleanup
+            test_renderer_environment_fault_drives_start_renderer_retry_and_cleanup
+            test_renderer_setup_fault_drives_start_renderer_retry_and_cleanup
+            test_renderer_batch_begin_fault_is_recoverable_before_scheduler_commit
+            test_renderer_target_acquire_fault_is_recoverable_before_claim_commit
+            test_renderer_pass_begin_fault_preserves_prepared_target_for_retry
+            test_renderer_anchor_begin_fault_terminalizes_before_anchor_sokol_call
+            test_renderer_precommit_fault_terminalizes_after_anchor_pass_before_commit
+            test_renderer_submission_finalize_fault_terminalizes_after_one_native_submission
+          )
+          for renderer_test in "${renderer_tests[@]}"; do
+            echo "::group::$renderer_test"
+            if ! VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
+              VGG_MULTIWINDOW_RUNTIME_BACKEND=appkit \
+              V_MULTIWINDOW_PROBE_BACKEND=appkit \
+              VTEST_SHOW_START=1 \
+              VJOBS=1 \
+              "$RUNNER_TEMP/multiwindow_ci_watchdog" 60 - \
+                ./v -cc clang -d gg_multiwindow -d sokol_metal test \
+                  -run-only "$renderer_test" \
+                  vlib/x/multiwindow/internal_fault_matrix_test.v; then
+              echo "::endgroup::"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
 
   windows:
-    name: windows (${{ matrix.ccompiler }})
+    name: Windows ${{ matrix.ccompiler }}
     runs-on: windows-2025
-    timeout-minutes: 25
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -273,22 +381,10 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup MSVC x64
-        if: ${{ matrix.ccompiler == 'msvc' }}
+        if: ${{ matrix.ccompiler == 'msvc' || matrix.ccompiler == 'tcc' }}
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-
-      - name: Verify MSVC and Windows SDK
-        if: ${{ matrix.ccompiler == 'msvc' }}
-        shell: pwsh
-        run: |
-          where.exe cl.exe
-          where.exe link.exe
-          $headers = @($env:INCLUDE -split ';' | Where-Object { $_ -and $_.Trim().Length -gt 0 } | ForEach-Object { Join-Path $_ 'd3d11.h' } | Where-Object { Test-Path $_ })
-          if ($headers.Count -eq 0) {
-            throw 'd3d11.h not found in INCLUDE; Windows SDK is not visible to the D3D11 smoke lane'
-          }
-          Write-Host "Found d3d11.h at $($headers[0])"
 
       - name: Setup MinGW-w64 GCC
         if: ${{ matrix.ccompiler == 'gcc' }}
@@ -300,15 +396,13 @@ jobs:
             git
             mingw-w64-ucrt-x86_64-gcc
 
-      - name: Verify MinGW-w64 D3D11 headers and import libraries
+      - name: Verify MinGW D3D11 dependencies
         if: ${{ matrix.ccompiler == 'gcc' }}
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          which gcc
-          gcc --version
-          d3d11_header=""
-          dxgi_header=""
+          d3d11_header=''
+          dxgi_header=''
           for include_dir in /ucrt64/include /ucrt64/x86_64-w64-mingw32/include; do
             if [ -f "$include_dir/d3d11.h" ] && [ -z "$d3d11_header" ]; then
               d3d11_header="$include_dir/d3d11.h"
@@ -317,22 +411,10 @@ jobs:
               dxgi_header="$include_dir/dxgi.h"
             fi
           done
-          if [ -z "$d3d11_header" ]; then
-            echo "d3d11.h not found in /ucrt64/include or /ucrt64/x86_64-w64-mingw32/include" >&2
-            exit 1
-          fi
-          if [ -z "$dxgi_header" ]; then
-            echo "dxgi.h not found in /ucrt64/include or /ucrt64/x86_64-w64-mingw32/include" >&2
-            exit 1
-          fi
+          test -n "$d3d11_header"
+          test -n "$dxgi_header"
           test -f /ucrt64/lib/libd3d11.a
           test -f /ucrt64/lib/libdxgi.a
-          echo "Found $d3d11_header"
-          echo "Found $dxgi_header"
-          echo "Found /ucrt64/lib/libd3d11.a"
-          echo "Found /ucrt64/lib/libdxgi.a"
-          printf '#include <d3d11.h>\n#include <dxgi.h>\nint main(void) { return 0; }\n' > /tmp/d3d11_probe.c
-          gcc /tmp/d3d11_probe.c -ld3d11 -ldxgi -o /tmp/d3d11_probe.exe
 
       - name: Build local V with MSVC
         if: ${{ matrix.ccompiler == 'msvc' }}
@@ -349,274 +431,250 @@ jobs:
         if: ${{ matrix.ccompiler == 'tcc' }}
         run: .\makev.bat -tcc
 
-      - name: Diagnose legacy gg import multiwindow isolation functions with MSVC
-        if: ${{ matrix.ccompiler == 'msvc' }}
-        continue-on-error: true
+      - name: Prepare Windows watchdog with MSVC or TCC
+        if: ${{ matrix.ccompiler != 'gcc' }}
         shell: pwsh
         run: |
-          $tests = @(
-            'test_multiwindow_enabled_and_disabled_renderer_capability_signatures_match',
-            'test_multiwindow_plain_capability_probe_does_not_start_native_app_source_guard',
-            'test_legacy_import_gg_does_not_pull_multiwindow_core',
-            'test_missing_gg_multiwindow_flag_reports_clear_error_without_native_deps',
-            'test_multiwindow_api_without_define_reports_opt_in_error'
-          )
-          $failed = @()
-          foreach ($test in $tests) {
-            Write-Host "::group::MSVC -run-only $test"
-            .\v.exe -cc msvc test -run-only $test vlib/gg/legacy_import_multiwindow_isolation_test.v
-            $status = $LASTEXITCODE
-            Write-Host "::endgroup::"
-            if ($status -ne 0) {
-              $failed += "$test exited with $status"
-            }
-          }
-          if ($failed.Count -gt 0) {
-            $failed | ForEach-Object { Write-Error $_ }
-            exit 1
+          $source = Join-Path $env:RUNNER_TEMP 'multiwindow_ci_watchdog.v'
+          $runner = Join-Path $env:RUNNER_TEMP 'multiwindow_ci_watchdog.exe'
+          @'
+          module main
+
+          import gg.testdata.multiwindow_probe_watchdog
+          import os
+          import time
+
+          fn main() {
+              run_ci_watchdog() or {
+                  eprintln(err.msg())
+                  exit(1)
+              }
           }
 
-      - name: Diagnose legacy gg import multiwindow isolation functions with GCC
+          fn run_ci_watchdog() ! {
+              if os.args.len < 4 {
+                  return error('usage: multiwindow_ci_watchdog timeout-seconds expected-final-line executable [args...]')
+              }
+              timeout_seconds := os.args[1].int()
+              if timeout_seconds <= 0 {
+                  return error('multiwindow CI watchdog timeout must be positive')
+              }
+              expected_final_line := os.args[2]
+              gate_path := os.join_path(os.temp_dir(), 'multiwindow_ci_gate_${os.getpid()}_${time.now().unix_nano()}')
+              defer {
+                  os.rm(gate_path) or {}
+              }
+              result := multiwindow_probe_watchdog.run(
+                  executable: os.args[3]
+                  args:       os.args[4..]
+                  timeout:    timeout_seconds * time.second
+                  start_file: gate_path
+              )!
+              if result.stdout != '' {
+                  print(result.stdout)
+              }
+              if result.stderr != '' {
+                  eprint(result.stderr)
+              }
+              if result.timed_out {
+                  return error('multiwindow CI child timed out after ${timeout_seconds} seconds')
+              }
+              if !result.reaped {
+                  return error('multiwindow CI child leader was not reaped')
+              }
+              if !result.confinement_empty {
+                  return error('multiwindow CI child process confinement is not empty')
+              }
+              if result.forced_cleanup {
+                  return error('multiwindow CI child required forced cleanup')
+              }
+              if result.exit_code != 0 {
+                  return error('multiwindow CI child exited with ${result.exit_code}')
+              }
+              if expected_final_line == '-' {
+                  return
+              }
+              mut actual_final_line := ''
+              for line in result.stdout.split_into_lines() {
+                  if line.trim_space() != '' {
+                      actual_final_line = line.trim_space()
+                  }
+              }
+              if actual_final_line != expected_final_line {
+                  return error('multiwindow CI final record mismatch')
+              }
+          }
+          '@ | Set-Content -Encoding utf8 $source
+          .\v.exe -cc msvc -o $runner $source
+          if ($LASTEXITCODE -ne 0) {
+            throw "multiwindow watchdog compile failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Prepare Windows watchdog with GCC
         if: ${{ matrix.ccompiler == 'gcc' }}
-        continue-on-error: true
         shell: msys2 {0}
         run: |
-          set +e
-          tests="test_multiwindow_enabled_and_disabled_renderer_capability_signatures_match test_multiwindow_plain_capability_probe_does_not_start_native_app_source_guard test_legacy_import_gg_does_not_pull_multiwindow_core test_missing_gg_multiwindow_flag_reports_clear_error_without_native_deps test_multiwindow_api_without_define_reports_opt_in_error"
-          failures=""
-          for test in $tests; do
-            echo "::group::GCC -run-only ${test}"
-            ./v.exe -cc gcc test -run-only "${test}" vlib/gg/legacy_import_multiwindow_isolation_test.v
-            status=$?
-            echo "::endgroup::"
-            if [ "$status" -ne 0 ]; then
-              failures="${failures}${test} exited with ${status}; "
-            fi
-          done
-          if [ -n "$failures" ]; then
-            printf '%s' "$failures" >&2
-            exit 1
-          fi
+          set -euo pipefail
+          runner_source=multiwindow_ci_watchdog_tmp.v
+          runner=multiwindow_ci_watchdog_tmp.exe
+          trap 'rm -f "$runner_source"' EXIT
+          cat > "$runner_source" <<'EOF'
+          module main
 
-      - name: Diagnose legacy gg import multiwindow isolation functions with TCC
+          import gg.testdata.multiwindow_probe_watchdog
+          import os
+          import time
+
+          fn main() {
+              run_ci_watchdog() or {
+                  eprintln(err.msg())
+                  exit(1)
+              }
+          }
+
+          fn run_ci_watchdog() ! {
+              if os.args.len < 4 {
+                  return error('usage: multiwindow_ci_watchdog timeout-seconds expected-final-line executable [args...]')
+              }
+              timeout_seconds := os.args[1].int()
+              if timeout_seconds <= 0 {
+                  return error('multiwindow CI watchdog timeout must be positive')
+              }
+              expected_final_line := os.args[2]
+              gate_path := os.join_path(os.temp_dir(), 'multiwindow_ci_gate_${os.getpid()}_${time.now().unix_nano()}')
+              defer {
+                  os.rm(gate_path) or {}
+              }
+              result := multiwindow_probe_watchdog.run(
+                  executable: os.args[3]
+                  args:       os.args[4..]
+                  timeout:    timeout_seconds * time.second
+                  start_file: gate_path
+              )!
+              if result.stdout != '' {
+                  print(result.stdout)
+              }
+              if result.stderr != '' {
+                  eprint(result.stderr)
+              }
+              if result.timed_out {
+                  return error('multiwindow CI child timed out after ${timeout_seconds} seconds')
+              }
+              if !result.reaped {
+                  return error('multiwindow CI child leader was not reaped')
+              }
+              if !result.confinement_empty {
+                  return error('multiwindow CI child process confinement is not empty')
+              }
+              if result.forced_cleanup {
+                  return error('multiwindow CI child required forced cleanup')
+              }
+              if result.exit_code != 0 {
+                  return error('multiwindow CI child exited with ${result.exit_code}')
+              }
+              if expected_final_line == '-' {
+                  return
+              }
+              mut actual_final_line := ''
+              for line in result.stdout.split_into_lines() {
+                  if line.trim_space() != '' {
+                      actual_final_line = line.trim_space()
+                  }
+              }
+              if actual_final_line != expected_final_line {
+                  return error('multiwindow CI final record mismatch')
+              }
+          }
+          EOF
+          ./v.exe -cc gcc -o "$runner" "$runner_source"
+
+      - name: Run no-flag TCC mock and isolation matrix
         if: ${{ matrix.ccompiler == 'tcc' }}
-        continue-on-error: true
         shell: pwsh
         run: |
-          $tests = @(
-            'test_multiwindow_enabled_and_disabled_renderer_capability_signatures_match',
-            'test_multiwindow_plain_capability_probe_does_not_start_native_app_source_guard',
-            'test_legacy_import_gg_does_not_pull_multiwindow_core',
-            'test_missing_gg_multiwindow_flag_reports_clear_error_without_native_deps',
-            'test_multiwindow_api_without_define_reports_opt_in_error'
-          )
-          $failed = @()
-          foreach ($test in $tests) {
-            Write-Host "::group::TCC -run-only $test"
-            .\v.exe test -run-only $test vlib/gg/legacy_import_multiwindow_isolation_test.v
-            $status = $LASTEXITCODE
-            Write-Host "::endgroup::"
-            if ($status -ne 0) {
-              $failed += "$test exited with $status"
-            }
-          }
-          if ($failed.Count -gt 0) {
-            $failed | ForEach-Object { Write-Error $_ }
-            exit 1
+          $runner = Join-Path $env:RUNNER_TEMP 'multiwindow_ci_watchdog.exe'
+          $vexe = (Resolve-Path .\v.exe).Path
+          $test = 'vlib/x/multiwindow/native_operation_proof_test.v'
+          & $runner 300 '-' $vexe '-cc' 'tcc' '-show-c-output' 'test' $test
+          if ($LASTEXITCODE -ne 0) {
+            throw "TCC native proof test '$test' failed with exit code $LASTEXITCODE"
           }
 
-      - name: Test legacy gg import multiwindow isolation with MSVC
-        if: ${{ matrix.ccompiler == 'msvc' }}
-        run: .\v.exe -cc msvc test vlib/gg/legacy_import_multiwindow_isolation_test.v
-
-      - name: Test legacy gg import multiwindow isolation with GCC
-        if: ${{ matrix.ccompiler == 'gcc' }}
-        shell: msys2 {0}
-        run: ./v.exe -cc gcc test vlib/gg/legacy_import_multiwindow_isolation_test.v
-
-      - name: Test legacy gg import multiwindow isolation with TCC
-        if: ${{ matrix.ccompiler == 'tcc' }}
-        run: .\v.exe test vlib/gg/legacy_import_multiwindow_isolation_test.v
-
-      - name: Test multiwindow D3D11 path with MSVC
+      - name: Run MSVC D3D11 WARP matrix
         if: ${{ matrix.ccompiler == 'msvc' }}
         shell: pwsh
+        env:
+          VFLAGS: -cc msvc -d gg_multiwindow_d3d11_warp
+          VGG_MULTIWINDOW_RUNTIME_PROBES: '1'
+          VGG_MULTIWINDOW_RUNTIME_BACKEND: win32
+          VGG_MULTIWINDOW_EXAMPLE_UNATTENDED: win32
+          V_MULTIWINDOW_PROBE_BACKEND: win32
+          VTEST_SHOW_START: '1'
         run: |
-          $workflowBackupDir = Join-Path ([System.IO.Path]::GetTempPath()) ("multiwindow-smoke-" + [guid]::NewGuid().ToString())
-          New-Item -ItemType Directory -Path $workflowBackupDir | Out-Null
-          $script:restoredWorkflows = @()
-          $script:backedUpWorkflows = @()
-          function Restore-SmokeWorkflowSources {
-            foreach ($workflow in @('gg_regressions_ci', 'linux_ci', 'macos_ci', 'windows_ci_msvc', 'windows_ci_gcc', 'windows_ci_tcc')) {
-              $source = ".github/workflows/$workflow.yml.disabled"
-              $target = ".github/workflows/$workflow.yml"
-              if (!(Test-Path $source)) {
-                throw "Missing disabled workflow source: $source"
-              }
-              if (Test-Path $target) {
-                Copy-Item -Force $target (Join-Path $workflowBackupDir "$workflow.yml")
-                $script:backedUpWorkflows += $workflow
-              } else {
-                $script:restoredWorkflows += $target
-              }
-              Copy-Item -Force $source $target
-            }
-          }
-          function Remove-SmokeWorkflowSources {
-            foreach ($workflow in $script:backedUpWorkflows) {
-              Copy-Item -Force (Join-Path $workflowBackupDir "$workflow.yml") ".github/workflows/$workflow.yml"
-            }
-            foreach ($target in $script:restoredWorkflows) {
-              Remove-Item -Force $target -ErrorAction SilentlyContinue
-            }
-            Remove-Item -Recurse -Force $workflowBackupDir -ErrorAction SilentlyContinue
-          }
-          $status = 0
+          $runner = Join-Path $env:RUNNER_TEMP 'multiwindow_ci_watchdog.exe'
+          $vexe = (Resolve-Path .\v.exe).Path
+          $workflow = '.github/workflows/windows_ci_msvc.yml'
+          Copy-Item -Force "${workflow}.disabled" $workflow
           try {
-            Restore-SmokeWorkflowSources
-            .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v vlib/gg/draw_rect_empty_test.v
-            $status = $LASTEXITCODE
+            $rendererTests = @(
+              'test_renderer_anchor_create_fault_drives_start_renderer_retry_and_cleanup',
+              'test_renderer_environment_fault_drives_start_renderer_retry_and_cleanup',
+              'test_renderer_setup_fault_drives_start_renderer_retry_and_cleanup',
+              'test_renderer_batch_begin_fault_is_recoverable_before_scheduler_commit',
+              'test_renderer_target_acquire_fault_is_recoverable_before_claim_commit',
+              'test_renderer_pass_begin_fault_preserves_prepared_target_for_retry',
+              'test_renderer_anchor_begin_fault_terminalizes_before_anchor_sokol_call',
+              'test_renderer_precommit_fault_terminalizes_after_anchor_pass_before_commit',
+              'test_renderer_submission_finalize_fault_terminalizes_after_one_native_submission'
+            )
+            foreach ($rendererTest in $rendererTests) {
+              Write-Host "::group::$rendererTest"
+              & $runner 60 '-' $vexe '-cc' 'msvc' '-d' 'gg_multiwindow' '-d' 'sokol_d3d11' '-d' 'gg_multiwindow_d3d11_warp' 'test' '-run-only' $rendererTest 'vlib/x/multiwindow/internal_fault_matrix_test.v'
+              $exitCode = $LASTEXITCODE
+              Write-Host '::endgroup::'
+              if ($exitCode -ne 0) {
+                throw "MSVC D3D11 WARP test '$rendererTest' failed with exit code $exitCode"
+              }
+            }
           } finally {
-            Remove-SmokeWorkflowSources
+            Remove-Item -Force $workflow -ErrorAction SilentlyContinue
           }
-          exit $status
 
-      - name: Test multiwindow D3D11 path with GCC
+      - name: Run MinGW GCC D3D11 WARP matrix
         if: ${{ matrix.ccompiler == 'gcc' }}
         shell: msys2 {0}
+        env:
+          VFLAGS: -cc gcc -d gg_multiwindow_d3d11_warp
+          VGG_MULTIWINDOW_RUNTIME_PROBES: '1'
+          VGG_MULTIWINDOW_RUNTIME_BACKEND: win32
+          VGG_MULTIWINDOW_EXAMPLE_UNATTENDED: win32
+          V_MULTIWINDOW_PROBE_BACKEND: win32
+          VTEST_SHOW_START: '1'
         run: |
           set -euo pipefail
-          workflow_backup_dir="$(mktemp -d)"
-          workflow_names="gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc"
-          restored_workflows=""
-          backed_up_workflows=""
-          restore_disabled_workflows() {
-            for workflow in $workflow_names; do
-              source=".github/workflows/${workflow}.yml.disabled"
-              target=".github/workflows/${workflow}.yml"
-              if [ ! -f "$source" ]; then
-                echo "Missing disabled workflow source: $source" >&2
-                exit 1
-              fi
-              if [ -f "$target" ]; then
-                cp "$target" "$workflow_backup_dir/${workflow}.yml"
-                backed_up_workflows="${backed_up_workflows} ${workflow}"
-              else
-                restored_workflows="${restored_workflows} ${target}"
-              fi
-              cp "$source" "$target"
-            done
-          }
-          cleanup_disabled_workflows() {
-            for workflow in $backed_up_workflows; do
-              cp "$workflow_backup_dir/${workflow}.yml" ".github/workflows/${workflow}.yml"
-            done
-            for target in $restored_workflows; do
-              rm -f "$target"
-            done
-            rm -rf "$workflow_backup_dir"
-          }
-          trap cleanup_disabled_workflows EXIT
-          restore_disabled_workflows
-          ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v vlib/gg/draw_rect_empty_test.v
+          runner=./multiwindow_ci_watchdog_tmp.exe
+          workflow=.github/workflows/windows_ci_gcc.yml
+          cp "$workflow.disabled" "$workflow"
+          trap 'rm -f .github/workflows/windows_ci_gcc.yml multiwindow_ci_watchdog_tmp.exe gg_multiwindow_gcc.exe gg_multiwindow_render_runtime_gcc.exe' EXIT
 
-      - name: Compile gg multiwindow example with MSVC
-        if: ${{ matrix.ccompiler == 'msvc' }}
-        run: .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 -o "$env:TEMP\gg_multiwindow.exe" examples/gg/multiwindow.v
-
-      - name: Compile gg multiwindow example with GCC
-        if: ${{ matrix.ccompiler == 'gcc' }}
-        shell: msys2 {0}
-        run: ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 -o gg_multiwindow_gcc.exe examples/gg/multiwindow.v
-
-  macos:
-    runs-on: macos-14
-    timeout-minutes: 25
-    steps:
-      - name: Checkout V
-        uses: actions/checkout@v7
-
-      - name: Build local V
-        run: make -j3
-
-      - name: Test legacy gg import multiwindow isolation
-        run: ./v test vlib/gg/legacy_import_multiwindow_isolation_test.v
-
-      - name: Test multiwindow Metal path
-        run: |
-          set -euo pipefail
-          workflow_backup_dir="$(mktemp -d)"
-          workflow_names="gg_regressions_ci linux_ci macos_ci windows_ci_msvc windows_ci_gcc windows_ci_tcc"
-          restored_workflows=""
-          backed_up_workflows=""
-          restore_disabled_workflows() {
-            for workflow in $workflow_names; do
-              source=".github/workflows/${workflow}.yml.disabled"
-              target=".github/workflows/${workflow}.yml"
-              if [ ! -f "$source" ]; then
-                echo "Missing disabled workflow source: $source" >&2
-                exit 1
-              fi
-              if [ -f "$target" ]; then
-                cp "$target" "$workflow_backup_dir/${workflow}.yml"
-                backed_up_workflows="${backed_up_workflows} ${workflow}"
-              else
-                restored_workflows="${restored_workflows} ${target}"
-              fi
-              cp "$source" "$target"
-            done
-          }
-          cleanup_disabled_workflows() {
-            for workflow in $backed_up_workflows; do
-              cp "$workflow_backup_dir/${workflow}.yml" ".github/workflows/${workflow}.yml"
-            done
-            for target in $restored_workflows; do
-              rm -f "$target"
-            done
-            rm -rf "$workflow_backup_dir"
-          }
-          trap cleanup_disabled_workflows EXIT
-          restore_disabled_workflows
-          ./v -d gg_multiwindow -d sokol_metal test vlib/x/multiwindow vlib/gg/multiwindow_api_d_gg_multiwindow_test.v vlib/gg/frame_pacing_test.v vlib/gg/draw_fns_api_test.v vlib/gg/draw_rect_empty_test.v
-
-      - name: Test AppKit GLCore rejection guard
-        run: ./v -d gg_multiwindow -d darwin_sokol_glcore33 test vlib/x/multiwindow/multiwindow_test.v
-
-      - name: Compile gg multiwindow example
-        run: ./v -d gg_multiwindow -d sokol_metal -o /tmp/gg_multiwindow_metal examples/gg/multiwindow.v
-
-      - name: Run gg multiwindow Metal example
-        run: |
-          python3 - <<'PY'
-          import subprocess
-          import sys
-
-          proc = subprocess.Popen(['/tmp/gg_multiwindow_metal'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-          timed_out = False
-          try:
-              stdout, stderr = proc.communicate(timeout=12)
-          except subprocess.TimeoutExpired:
-              timed_out = True
-              proc.kill()
-              stdout, stderr = proc.communicate()
-
-          print('::group::gg multiwindow Metal stdout')
-          print(stdout, end='')
-          print('::endgroup::')
-          print('::group::gg multiwindow Metal stderr')
-          print(stderr, end='')
-          print('::endgroup::')
-
-          for marker in ['gg multi-window backend:', 'live windows:', 'window created:']:
-              if marker not in stdout:
-                  print(f'Missing expected output marker: {marker}', file=sys.stderr)
-                  sys.exit(1)
-
-          if timed_out:
-              print('Metal example reached the controlled timeout after producing expected launch logs.')
-              sys.exit(0)
-
-          if proc.returncode != 0:
-              print(f'Metal example exited with {proc.returncode}.', file=sys.stderr)
-              sys.exit(proc.returncode)
-          PY
+          renderer_tests=(
+            test_renderer_anchor_create_fault_drives_start_renderer_retry_and_cleanup
+            test_renderer_environment_fault_drives_start_renderer_retry_and_cleanup
+            test_renderer_setup_fault_drives_start_renderer_retry_and_cleanup
+            test_renderer_batch_begin_fault_is_recoverable_before_scheduler_commit
+            test_renderer_target_acquire_fault_is_recoverable_before_claim_commit
+            test_renderer_pass_begin_fault_preserves_prepared_target_for_retry
+            test_renderer_anchor_begin_fault_terminalizes_before_anchor_sokol_call
+            test_renderer_precommit_fault_terminalizes_after_anchor_pass_before_commit
+            test_renderer_submission_finalize_fault_terminalizes_after_one_native_submission
+          )
+          for renderer_test in "${renderer_tests[@]}"; do
+            echo "::group::$renderer_test"
+            if ! "$runner" 60 - ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 \
+              -d gg_multiwindow_d3d11_warp test -run-only "$renderer_test" \
+              vlib/x/multiwindow/internal_fault_matrix_test.v; then
+              echo "::endgroup::"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done

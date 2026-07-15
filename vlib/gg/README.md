@@ -101,9 +101,10 @@ Lifecycle-only applications can run with just `event_fn`; they do not require a
 renderer. `frame_fn` and `draw_window()` require an already render-capable app;
 they do not re-run `.auto` backend selection. Programs that plan to render
 should use `gg.new_app(require_renderer: true)` or verify
-`app.capabilities().explicit_swapchain` before rendering. Each `draw_window()`
-call records and commits work for that window while its native surface is
-current. Linux X11 rendering, including under Xvfb, needs both flags:
+`app.capabilities().explicit_swapchain` before rendering. The corrective managed
+render transaction is still under integration and is not documented as passed
+runtime behavior here. Linux X11 rendering, including under Xvfb, needs both
+flags:
 
 ```sh
 xvfb-run -a v -d gg_multiwindow -d x_multiwindow_x11 run examples/gg/multiwindow.v
@@ -186,6 +187,38 @@ schedule owner-side work with `app.post()` or `app.try_post()` and let the run
 loop drain it. A `gg.App` render owner cannot coexist with an active legacy
 `gg.Context` renderer owner in the same process, but the legacy `gg.Context` API
 remains available for normal single-window programs.
+
+### Per-Window Render API Status
+
+The shared source declares the frozen package-1 per-window render surface so its
+enabled and disabled forms can be checked for exact source parity. This includes
+the additional `WindowConfig` fields, metrics and frame-info snapshots, bounded
+callback context types, app/window-scoped managed resource IDs, pass methods,
+the app-resource frame callback, and the recording subset of
+`WindowSglContext`.
+
+These declarations and their compile-only consumers are not runtime evidence.
+Callback execution, resource ownership, readback, recovery, and cleanup behavior
+remain intentionally undocumented until their app-integrated tests and
+real-runtime probes pass.
+
+The test sources define a canonical declaration comparison, a complete consumer
+for both modes, cross-target no-flag generated-C isolation checks, a checked-in
+example compilation gate, a process-tree watchdog self-test, and self-contained
+generic dynamic-texture and retained-UI probes. The runtime probes require an
+explicit environment opt-in and emit their final structured PASS record only
+after cleanup checks. The probe definitions assert two-window one-commit and
+recovery traces, copied-lease expiry, callback-reentrant teardown, and atomic
+resource-graph replacement ordering. Same-module tests enumerate every private
+managed-renderer fault stage and verify deterministic one-shot selection. Their
+presence is not a passed runtime result, and backend fault-path coverage remains
+pending until every selected native lane runs. A normal legacy `gg.Context`
+import must continue to avoid
+`x.multiwindow` and native multi-window backend dependencies. The implementation
+is reviewed against the V-vendored Sokol revision and matching pinned
+[sokol_gfx.h](https://raw.githubusercontent.com/floooh/sokol/c0e0563/sokol_gfx.h)
+and [sokol_gl.h](https://raw.githubusercontent.com/floooh/sokol/c0e0563/util/sokol_gl.h)
+contracts.
 
 ## Troubleshooting
 
