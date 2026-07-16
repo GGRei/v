@@ -40,10 +40,7 @@ const x11_property_new_value = 0
 const x11_prop_mode_replace = 0
 const x11_normal_state = 1
 const x11_iconic_state = 3
-const x11_modifier_shift = u32(1)
 const x11_modifier_ctrl = u32(2)
-const x11_modifier_alt = u32(4)
-const x11_modifier_super = u32(8)
 const x11_key_v = 86
 const x11_xdnd_version = 5
 const x11_xdnd_max_payload_bytes = 1024 * 1024
@@ -1388,19 +1385,6 @@ fn (backend &X11Backend) window_id_for_native(window X11NativeWindow) ?WindowId 
 	for record in backend.windows {
 		if record.window == window {
 			return record.id
-		}
-	}
-	return none
-}
-
-fn (mut backend X11Backend) remove_native_window(window X11NativeWindow) ?WindowId {
-	for i in 0 .. backend.windows.len {
-		if backend.windows[i].window == window {
-			mut record := &backend.windows[i]
-			id := record.id
-			backend.release_window_record_resources(mut record, false) or { return none }
-			backend.windows.delete(i)
-			return id
 		}
 	}
 	return none

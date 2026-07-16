@@ -571,6 +571,137 @@ jobs:
           EOF
           ./v -cc gcc -o "$RUNNER_TEMP/multiwindow_ci_watchdog" "$RUNNER_TEMP/multiwindow_ci_watchdog.v"
 
+          cat > "$RUNNER_TEMP/multiwindow_x11_command.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          gate_path="${V_MULTIWINDOW_PROBE_WATCHDOG_GATE:?missing watchdog start gate}"
+          for _ in {1..400}; do
+            if [ -f "$gate_path" ]; then
+              break
+            fi
+            sleep 0.01
+          done
+          if [ ! -f "$gate_path" ]; then
+            echo "parent watchdog did not release $gate_path" >&2
+            exit 1
+          fi
+
+          runtime_dir="$(mktemp -d)"
+          xvfb_pid=''
+          xvfb_log="$runtime_dir/xvfb.log"
+          display_file="$runtime_dir/xvfb-display"
+          cleanup_done=0
+
+          stop_xvfb() {
+            local pid="$1"
+            if [ -z "$pid" ]; then
+              return 0
+            fi
+            if kill -0 "$pid" 2>/dev/null; then
+              kill -TERM "$pid" 2>/dev/null || true
+              for _ in {1..500}; do
+                if ! kill -0 "$pid" 2>/dev/null; then
+                  break
+                fi
+                sleep 0.01
+              done
+            fi
+            if kill -0 "$pid" 2>/dev/null; then
+              kill -KILL "$pid" 2>/dev/null || true
+            fi
+            wait "$pid" 2>/dev/null || true
+            if kill -0 "$pid" 2>/dev/null; then
+              echo "Xvfb process $pid remains alive after cleanup" >&2
+              return 1
+            fi
+          }
+
+          cleanup_x11() {
+            local status="$1"
+            trap - EXIT INT TERM
+            if [ "$cleanup_done" -eq 1 ]; then
+              return 0
+            fi
+            cleanup_done=1
+            local cleanup_failed=0
+            stop_xvfb "$xvfb_pid" || cleanup_failed=1
+            if [ "$status" -ne 0 ] || [ "$cleanup_failed" -ne 0 ]; then
+              echo '----- Xvfb log -----' >&2
+              cat "$xvfb_log" >&2 || true
+            fi
+            if ! rm -rf "$runtime_dir"; then
+              cleanup_failed=1
+            fi
+            return "$cleanup_failed"
+          }
+
+          on_exit() {
+            local status="$?"
+            local cleanup_status=0
+            cleanup_x11 "$status" || cleanup_status=$?
+            if [ "$status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
+              status="$cleanup_status"
+            fi
+            exit "$status"
+          }
+
+          on_int() {
+            cleanup_x11 130 || true
+            exit 130
+          }
+
+          on_term() {
+            cleanup_x11 143 || true
+            exit 143
+          }
+
+          trap on_exit EXIT
+          trap on_int INT
+          trap on_term TERM
+
+          chmod 700 "$runtime_dir"
+          Xvfb -displayfd 1 -screen 0 1280x1024x24 -nolisten tcp >"$display_file" 2>"$xvfb_log" &
+          xvfb_pid=$!
+
+          display_ready=0
+          x_display=''
+          for _ in {1..1000}; do
+            if [ -s "$display_file" ]; then
+              display_number="$(tr -d '\r\n' <"$display_file")"
+              case "$display_number" in
+                ''|*[!0-9]*) ;;
+                *)
+                  x_display=":$display_number"
+                  display_ready=1
+                  break
+                  ;;
+              esac
+            fi
+            if ! kill -0 "$xvfb_pid" 2>/dev/null; then
+              break
+            fi
+            sleep 0.01
+          done
+          if [ "$display_ready" -ne 1 ]; then
+            echo 'Xvfb did not publish a display number' >&2
+            exit 1
+          fi
+
+          set +e
+          DISPLAY="$x_display" "$@"
+          command_status=$?
+          set -e
+          if ! kill -0 "$xvfb_pid" 2>/dev/null; then
+            echo 'Xvfb exited before the X11 command completed' >&2
+            if [ "$command_status" -eq 0 ]; then
+              command_status=1
+            fi
+          fi
+          exit "$command_status"
+          EOF
+          chmod +x "$RUNNER_TEMP/multiwindow_x11_command.sh"
+
           cat > "$RUNNER_TEMP/multiwindow_weston_command.sh" <<'EOF'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -763,20 +894,20 @@ jobs:
           )
           for test in "${tests[@]}"; do
             "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
-              xvfb-run -a -s '-screen 0 1280x1024x24' \
+              "$RUNNER_TEMP/multiwindow_x11_command.sh" \
               env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true \
               ./v -cc gcc -d gg_multiwindow -d x_multiwindow_x11 test "$test"
           done
 
           "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
             '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' \
-            xvfb-run -a -s '-screen 0 1280x1024x24' \
+            "$RUNNER_TEMP/multiwindow_x11_command.sh" \
             env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true \
             /tmp/gg_multiwindow_render_runtime_x11
 
           "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
             '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
-            xvfb-run -a -s '-screen 0 1280x1024x24' \
+            "$RUNNER_TEMP/multiwindow_x11_command.sh" \
             env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true \
             /tmp/gg_multiwindow_x11
       - name: Multiwindow Wayland native regressions

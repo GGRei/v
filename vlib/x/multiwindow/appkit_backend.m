@@ -119,8 +119,6 @@ static void v_multiwindow_appkit_side_effect_retire_root(uint64_t identity) {
 		 subject:(uint64_t)subject
 		 parentIdentity:(uint64_t)parentIdentity
 		 poolProbe:(BOOL)poolProbe;
-+ (instancetype)autoreleasedPoolProbeWithGeneration:(uint64_t)generation
-		 parentIdentity:(uint64_t)parentIdentity;
 @end
 
 @implementation VMultiwindowAppKitSideEffectProbe
@@ -137,14 +135,6 @@ static void v_multiwindow_appkit_side_effect_retire_root(uint64_t identity) {
 	}
 	return self;
 }
-
-+ (instancetype)autoreleasedPoolProbeWithGeneration:(uint64_t)generation
-		 parentIdentity:(uint64_t)parentIdentity {
-	return [[self alloc] initWithGeneration:generation
-		subject:V_MULTIWINDOW_APPKIT_SIDE_EFFECT_SUBJECT_POOL
-		parentIdentity:parentIdentity poolProbe:YES];
-}
-
 - (void)dealloc {
 	uint64_t identity = (uint64_t)(uintptr_t)(__bridge void *)self;
 	v_multiwindow_appkit_side_effect_append_generation(self.observerGeneration,
@@ -2243,11 +2233,11 @@ static void *v_multiwindow_appkit_begin_render_batch_raw(void) {
 			V_MULTIWINDOW_APPKIT_SIDE_EFFECT_POOL_PUSH,
 			V_MULTIWINDOW_APPKIT_SIDE_EFFECT_SUBJECT_POOL,
 			pool_identity, 0, 0, pool_identity, 0);
-		__unsafe_unretained VMultiwindowAppKitSideEffectProbe *probe =
-			[VMultiwindowAppKitSideEffectProbe
-				autoreleasedPoolProbeWithGeneration:
-					v_multiwindow_appkit_side_effect_active_generation
-				parentIdentity:pool_identity];
+		VMultiwindowAppKitSideEffectProbe *__autoreleasing probe =
+			[[VMultiwindowAppKitSideEffectProbe alloc]
+				initWithGeneration:v_multiwindow_appkit_side_effect_active_generation
+				subject:V_MULTIWINDOW_APPKIT_SIDE_EFFECT_SUBJECT_POOL
+				parentIdentity:pool_identity poolProbe:YES];
 		if (probe != nil) {
 			const uint64_t probe_identity =
 				(uint64_t)(uintptr_t)(__bridge void *)probe;

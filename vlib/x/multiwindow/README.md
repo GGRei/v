@@ -1,7 +1,7 @@
 # x.multiwindow
 
-`x.multiwindow` is the low-level multi-window layer used by the experimental
-`gg` multi-window facade. It owns native window lifetimes, backend selection,
+`x.multiwindow` is the low-level multi-window layer used by the `gg`
+multi-window facade. It owns native window lifetimes, backend selection,
 per-window events, owner-thread dispatch, and optional render scheduling.
 
 Most application code should use `gg` with `-d gg_multiwindow`. This module is
@@ -95,7 +95,8 @@ the display server, graphics device, or platform API is unavailable.
   when the running backend has the required handles and current user action;
 - `native_decorations`: native/server-side decorations are effective for the
   running backend;
-- `readback`: reserved for backends that expose readback support.
+- `readback`: whether the backend exposes readback support; it is false on the
+  current native backends.
 
 Plain capability probes do not necessarily connect to the display server, so
 runtime optional globals can be unknown before startup and most of those probes
@@ -257,21 +258,19 @@ Rendering is optional. The render-facing source is selected by
 `-d gg_multiwindow` or `-d x_multiwindow_render`; plain lifecycle and `.mock`
 imports remain the no-flag isolation case.
 
-The corrective package-1 contract does not expose `gfx.Environment`,
-`gfx.Swapchain`, native drawables, command buffers, `RenderFrame`, or present
-authority. It defines owner-thread opaque batch and target leases, backend-issued
-ready credits, immutable metrics/target snapshots, late target acquisition, one
-global commit, ordered finalization, and a private recovery anchor. These sources
-are under integration. Until the app-integrated scheduler, backend, failure, and
-runtime-probe gates pass, this README makes no direct-caller runtime guarantee
-for the new transaction surface.
+The render contract does not expose `gfx.Environment`, `gfx.Swapchain`, native
+drawables, command buffers, `RenderFrame`, or present authority. It provides
+owner-thread opaque batch and target leases, backend-issued ready credits,
+immutable metrics and target snapshots, late target acquisition, one global
+commit, ordered finalization, and a private recovery anchor. Each acquired target
+and its stored slot share a nonzero per-window lease epoch; zero, mismatched,
+rotated, copied, or expired epochs are rejected.
 
-The checked-in gate definitions now require each acquired target and its stored
-slot to share a nonzero per-window lease epoch, reject zero/mismatched epochs,
-and reject copied leases after that epoch rotates or expires. They also include
-deterministic teardown-stage fault cases and an exhaustive one-shot fault-plan
-matrix. These are test specifications, not recorded passing results; renderer
-fault behavior still requires the selected native backend lanes.
+Render-capable windows support exactly `sample_count: 1`; other sample counts
+are rejected. Current native backends report `Capabilities.readback == false`.
+The `gg` facade reports both window-capture and offscreen-image readback
+capabilities as false, and its readback request methods return
+`gg.multiwindow: requested readback is not supported`.
 
 The normative graphics references are the V-vendored Sokol API and matching
 pinned upstream [sokol_gfx.h](https://raw.githubusercontent.com/floooh/sokol/c0e0563/sokol_gfx.h).
@@ -288,10 +287,9 @@ contracts. Local precedent does not override those lifetime and threading rules.
 
 `gg.App` is the user-facing multi-window facade and is enabled with
 `-d gg_multiwindow`. It maps `gg` types to `x.multiwindow` and declares the
-managed `sokol.gfx`/`sokol.sgl` surface. The corrective renderer lifecycle
-remains subject to the proof gates described above.
+managed `sokol.gfx`/`sokol.sgl` surface.
 
-The checked-in example is:
+`examples/gg/multiwindow.v` is the interactive example:
 
 ```sh
 ./v -d gg_multiwindow run examples/gg/multiwindow.v
@@ -308,6 +306,15 @@ back to `.mock` when no enabled native backend is available. The example creates
 two gg windows, handles lifecycle events, and tolerates backends that reject
 programmatic resize.
 
+`examples/gg/multiwindow_render_runtime.v` is the unattended renderer probe used
+by CI. The backend lanes compile it with `-d gg_multiwindow` and the matching
+native flag (`-d x_multiwindow_x11`, `-d sokol_wayland`, `-d sokol_metal`, or
+`-d sokol_d3d11`), select the backend with `V_MULTIWINDOW_PROBE_BACKEND`, and
+launch it through the process-tree watchdog that owns its parent gate. The probe
+emits
+`{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}`
+only after renderer and window cleanup completes.
+
 ## Limitations
 
 - X11 support is compiled only with `-d x_multiwindow_x11`; without that flag,
@@ -321,20 +328,23 @@ programmatic resize.
 - Native app creation can still fail even when plain capabilities report that a
   backend is supported, for example when a display cannot be opened.
 - The mock backend is not a renderer and cannot produce render targets.
+- Multi-window render targets support only `sample_count: 1`.
+- Native backends report readback capabilities as false; readback requests made
+  through `gg.App` return an unsupported error.
 - The module has no layout, widget, text rendering, or drawing abstraction.
 
 ## Validation
 
-Useful checks while working on this module:
+The no-flag lifecycle/source check is:
 
 ```sh
 ./v test vlib/x/multiwindow/multiwindow_test.v
-./v test vlib/x/multiwindow/render_scheduler_test.v
-./v test vlib/x/multiwindow/teardown_contract_test.v
-./v test vlib/x/multiwindow/internal_fault_matrix_test.v
-./v -d x_multiwindow_render test vlib/x/multiwindow/render_target_lease_test.v
-./v -d gg_multiwindow test vlib/gg/multiwindow_render_runtime_contract_test.v
-./v -d gg_multiwindow test vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v
 ```
 
-These are requested gates, not recorded passing results.
+This command is a non-render isolation check; it does not establish native
+renderer behavior. Renderer proofs run in the dedicated X11, Wayland, AppKit,
+and Win32 CI lanes. Each lane sets `VGG_MULTIWINDOW_RUNTIME_PROBES=1`,
+`VGG_MULTIWINDOW_RUNTIME_BACKEND`, and `V_MULTIWINDOW_PROBE_BACKEND`, compiles
+with its native renderer flags, and executes each test and runtime probe through
+the process-tree watchdog. The watchdog supplies the private parent gate,
+enforces the deadline, reaps child processes, and checks the final cleanup JSON.

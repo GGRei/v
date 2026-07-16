@@ -364,11 +364,6 @@ fn (result NativeRenderResult) blocks_graphics() bool {
 	return result.disposition == .renderer_unavailable || result.disposition == .renderer_lost
 }
 
-fn (result NativeRenderResult) terminalizes_batch() bool {
-	return result.disposition == .batch_terminal || result.disposition == .operation_failed
-		|| result.blocks_graphics()
-}
-
 fn (health NativeRendererHealth) blocks_graphics() bool {
 	return health == .unavailable || health == .lost || health == .abandoned
 }

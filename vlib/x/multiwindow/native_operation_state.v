@@ -1001,26 +1001,6 @@ fn (mut authority NativeOperationAuthority) complete_claimed_lifetime_release(ti
 		err_render_native_renderer_unavailable)
 }
 
-fn (mut authority NativeOperationAuthority) cancel_claimed_lifetime_release(claim NativeLifetimeReleaseClaim) bool {
-	if !authority.owner_thread_is_current() || claim.registry_index < 0
-		|| claim.registry_index >= authority.lifetime_tickets.len {
-		return false
-	}
-	ticket := authority.lifetime_tickets[claim.registry_index]
-	if ticket.ticket_id != claim.ticket_id || ticket.state != .releasing
-		|| ticket.release_kind != claim.release_kind
-		|| ticket.app_identity != authority.app_identity
-		|| ticket.authority_scope != claim.authority_scope
-		|| ticket.authority_token != claim.authority_token
-		|| !authority.authority_scope_is_current(ticket.authority_scope, ticket.authority_token)
-		|| ticket.native_identity != claim.native_identity
-		|| ticket.required_parent_identity != claim.required_parent_identity {
-		return false
-	}
-	authority.lifetime_tickets[claim.registry_index].state = .bound
-	return true
-}
-
 fn (mut authority NativeOperationAuthority) complete_lifetime_release(claim NativeLifetimeReleaseClaim, raw C.VMultiwindowNativePrimitive, validation NativeLocalValidation, health NativeRendererHealth, error_text string) NativeRenderResult {
 	if !authority.owner_thread_is_current() {
 		return native_render_outcome(claim.context.domain, claim.context.operation,

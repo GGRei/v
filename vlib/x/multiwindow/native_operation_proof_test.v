@@ -62,7 +62,7 @@ $if linux {
 $if gg_multiwindow ? || x_multiwindow_render ? {
 	$if windows {
 		$if sokol_d3d11 ? {
-			#insert "@VMODROOT/vlib/x/multiwindow/testdata/native_win32_lifetime_oracle_helpers.h"
+			#preinclude "@VMODROOT/vlib/x/multiwindow/testdata/native_win32_lifetime_oracle_helpers.h"
 
 			@[typedef]
 			struct C.VMultiwindowTestWin32OracleRecord {
@@ -10131,6 +10131,16 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		authority                     NativeAuthorityProofSnapshot
 	}
 
+	@[heap]
+	struct NativeAppKitPhaseBExhaustionState {
+	mut:
+		live_pool_ticket     NativeLifetimeTicketProofSnapshot
+		live_drawable_ticket NativeLifetimeTicketProofSnapshot
+		live_depth_identity  u64
+		boundary_oracle      []NativeAppKitLifetimeOracleRecord
+		boundary_ownership   NativeAppKitBackendReplaySnapshot
+	}
+
 	struct NativeWrongThreadReleaseResult {
 		identity        u64
 		ticket          u64
@@ -14170,26 +14180,22 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			assert exhausted_app.backend.native_operations.arm_proof()
 			exhaustion_operation_start := native_appkit_lifetime_oracle_snapshot_for_test().len
 			sokol_generation := native_install_sokol_trace_for_test()!
-			mut boundary_oracle := []NativeAppKitLifetimeOracleRecord{}
-			mut boundary_ownership := NativeAppKitBackendReplaySnapshot{}
-			mut live_pool_ticket := NativeLifetimeTicketProofSnapshot{}
-			mut live_drawable_ticket := NativeLifetimeTicketProofSnapshot{}
-			mut live_depth_identity := u64(0)
-			outcome := exhausted_app.with_scheduled_render_batch(fn [mut exhausted_app, exhausted_window, exhaustion_operation_start, mut boundary_oracle, mut boundary_ownership, mut live_pool_ticket, mut live_drawable_ticket, mut live_depth_identity] (batch RenderBatchLease, candidates []RenderWindowSnapshot) ! {
+			mut state := &NativeAppKitPhaseBExhaustionState{}
+			outcome := exhausted_app.with_scheduled_render_batch(fn [mut exhausted_app, exhausted_window, exhaustion_operation_start, mut state] (batch RenderBatchLease, candidates []RenderWindowSnapshot) ! {
 				assert candidates.any(it.window == exhausted_window)
-				live_pool_ticket = native_appkit_assert_pool_ticket_context_for_test(&exhausted_app.backend.native_operations,
+				state.live_pool_ticket = native_appkit_assert_pool_ticket_context_for_test(&exhausted_app.backend.native_operations,
 					exhausted_app.backend.appkit.batch_autorelease_pool_ticket,
 					native_identity(exhausted_app.backend.appkit.batch_autorelease_pool), batch)
 				acquisition := exhausted_app.acquire_render_target(batch, exhausted_window)!
 				assert acquisition.status == .ready
 				target_generation := acquisition.snapshot.target.target_identity
-				exhausted_app.with_render_target_pass(acquisition.lease, gfx.PassAction{}, fn [mut exhausted_app, batch, acquisition, target_generation, exhaustion_operation_start, mut boundary_oracle, mut boundary_ownership, mut live_drawable_ticket, mut live_depth_identity] () ! {
+				exhausted_app.with_render_target_pass(acquisition.lease, gfx.PassAction{}, fn [mut exhausted_app, batch, acquisition, target_generation, exhaustion_operation_start, mut state] () ! {
 					index := native_appkit_window_record_index_for_test(exhausted_app,
 						acquisition.lease.window)!
 					record := exhausted_app.backend.appkit.windows[index]
 					drawable_identity := native_identity(record.active_drawable)
 					assert drawable_identity != 0
-					live_drawable_ticket = native_appkit_assert_window_drawable_ticket_context_for_test(&exhausted_app.backend.native_operations,
+					state.live_drawable_ticket = native_appkit_assert_window_drawable_ticket_context_for_test(&exhausted_app.backend.native_operations,
 						record.active_drawable_ticket, drawable_identity,
 						native_identity(record.state), target_generation, batch, acquisition.lease)
 					oracle := native_appkit_lifetime_oracle_snapshot_for_test()
@@ -14197,10 +14203,10 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 					assert oracle[exhaustion_operation_start].kind == 13
 					assert oracle[exhaustion_operation_start + 1].kind == 9
 					assert oracle[exhaustion_operation_start + 1].output_identity == drawable_identity
-					live_depth_identity = oracle[exhaustion_operation_start + 1].auxiliary_identity
-					assert live_depth_identity != 0
+					state.live_depth_identity = oracle[exhaustion_operation_start + 1].auxiliary_identity
+					assert state.live_depth_identity != 0
 					for ticket in exhausted_app.backend.native_operations.lifetime_tickets {
-						assert ticket.native_identity != live_depth_identity
+						assert ticket.native_identity != state.live_depth_identity
 					}
 					exhausted_app.backend.native_operations.next_ordinal = ~u64(0)
 					last :=
@@ -14210,8 +14216,8 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 					assert last.authority_scope == .renderer_attempt
 					assert exhausted_app.backend.native_operations.next_ordinal == 0
 					assert !exhausted_app.backend.native_operations.sequence_exhausted
-					boundary_oracle = native_appkit_lifetime_oracle_snapshot_for_test()
-					boundary_ownership =
+					state.boundary_oracle = native_appkit_lifetime_oracle_snapshot_for_test()
+					state.boundary_ownership =
 						native_appkit_backend_replay_snapshot_for_test(exhausted_app)
 				})!
 			})!
@@ -14222,18 +14228,18 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			assert exhausted_app.backend.native_operations.sequence_exhausted
 			assert exhausted_app.backend.native_operations.terminal_cause == .sequence_exhausted
 			assert exhausted_app.backend.native_operations.next_ordinal == 0
-			assert live_pool_ticket.ticket_id != 0
-			assert live_drawable_ticket.ticket_id != 0
-			assert live_depth_identity != 0
+			assert state.live_pool_ticket.ticket_id != 0
+			assert state.live_drawable_ticket.ticket_id != 0
+			assert state.live_depth_identity != 0
 			after_boundary_oracle := native_appkit_lifetime_oracle_snapshot_for_test()
-			native_appkit_oracle_assert_equal_for_test(boundary_oracle, after_boundary_oracle)
+			native_appkit_oracle_assert_equal_for_test(state.boundary_oracle, after_boundary_oracle)
 			after_boundary_ownership :=
 				native_appkit_backend_replay_snapshot_for_test(exhausted_app)
-			native_appkit_assert_owned_slots_equal_for_test(boundary_ownership,
+			native_appkit_assert_owned_slots_equal_for_test(state.boundary_ownership,
 				after_boundary_ownership)
-			assert boundary_ownership.render_health == .ready
+			assert state.boundary_ownership.render_health == .ready
 			assert after_boundary_ownership.render_health == .unavailable
-			assert !boundary_ownership.authority.sequence_exhausted
+			assert !state.boundary_ownership.authority.sequence_exhausted
 			assert after_boundary_ownership.authority.sequence_exhausted
 			assert after_boundary_ownership.authority.terminal_cause == .sequence_exhausted
 			native_assert_sokol_sequence_for_test(multiwindow_sokol_trace.typed_snapshot(), [
