@@ -148,12 +148,13 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 	@[heap]
 	struct RendererFaultTargetAcquireState {
 	mut:
-		failed_state         RenderWindowRuntime
-		submitted_lease      RenderTargetLease
-		x11_surface_before   RendererFaultX11SurfaceState
-		win32_target_before  RendererFaultWin32TargetState
-		batch_callback_calls int
-		pass_callback_calls  int
+		failed_state          RenderWindowRuntime
+		submitted_lease       RenderTargetLease
+		x11_surface_before    RendererFaultX11SurfaceState
+		wayland_target_before RendererFaultWaylandTargetState
+		win32_target_before   RendererFaultWin32TargetState
+		batch_callback_calls  int
+		pass_callback_calls   int
 	}
 
 	@[heap]
@@ -191,6 +192,18 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		ticket_context    NativeOperationContext
 	}
 
+	struct RendererFaultWaylandTargetState {
+		captured             bool
+		materialized         bool
+		pending_egl_resize   bool
+		target_generation    u64
+		native_surface       u64
+		display_identity     u64
+		egl_display_identity u64
+		wl_egl_window        RendererFaultLifetimeTeardownAuthority
+		egl_surface          RendererFaultLifetimeTeardownAuthority
+	}
+
 	struct RendererFaultWin32TargetState {
 		captured              bool
 		materialized          bool
@@ -222,12 +235,14 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 	@[heap]
 	struct RendererFaultSubmissionFinalizeState {
 	mut:
-		submitted_lease      RenderTargetLease
-		x11_surface_before   RendererFaultX11SurfaceState
-		win32_target_before  RendererFaultWin32TargetState
-		batch_callback_calls int
-		pass_callback_calls  int
-		second_calls         int
+		submitted_lease              RenderTargetLease
+		x11_surface_before           RendererFaultX11SurfaceState
+		wayland_target_before        RendererFaultWaylandTargetState
+		wayland_first_target_ordinal u64
+		win32_target_before          RendererFaultWin32TargetState
+		batch_callback_calls         int
+		pass_callback_calls          int
+		second_calls                 int
 	}
 
 	struct RendererFaultStateSnapshot {
@@ -1469,7 +1484,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert before.win32_anchor_depth_view_ticket == after.win32_anchor_depth_view_ticket
 	}
 
-	fn renderer_fault_assert_first_stop_terminal_state_for_test(prepared RendererFaultStateSnapshot, stopped RendererFaultStateSnapshot, message string) {
+	fn renderer_fault_assert_first_stop_state_for_test(prepared RendererFaultStateSnapshot, stopped RendererFaultStateSnapshot, expected_renderer_terminal string) {
 		assert prepared.app_status == .running
 		assert prepared.app_stopping
 		assert !prepared.admission_open
@@ -1510,7 +1525,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert stopped.runtime_next_teardown_sequence == prepared.runtime_next_teardown_sequence
 		assert stopped.runtime_active_batch_epoch == 0
 		assert !stopped.runtime_batch_active
-		assert stopped.runtime_renderer_terminal == '${err_render_terminal_aggregate}: ${message}'
+		assert stopped.runtime_renderer_terminal == expected_renderer_terminal
 		assert !stopped.renderer_exists
 		assert !stopped.renderer_started
 		assert !stopped.renderer_anchor_created
@@ -1647,6 +1662,32 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		evidence_context := proof.trace[start + 3].context
 		assert evidence_context.target_identity == display_identity
 		return next, context
+	}
+
+	fn renderer_fault_assert_wayland_roundtrip_segment_for_test(app &App, proof &NativeOperationProofState, expected_ordinal u64, display_identity u64) int {
+		assert app.backend.kind == .wayland
+		assert expected_ordinal != 0
+		assert display_identity != 0
+		assert proof.trace_len == 8
+		mut index := 0
+		mut context := NativeOperationContext{}
+		index, context = renderer_fault_assert_wayland_chain_at_for_test(app, proof, index,
+			.display_roundtrip, .display_transport, .renderer)
+		assert context.ordinal == expected_ordinal
+		assert context.presence_mask == native_context_has_target_identity
+		assert context.window == WindowId{}
+		assert context.target_generation == 0
+		assert context.target_identity == display_identity
+		assert context.batch_epoch == 0
+		assert context.window_lease_epoch == 0
+		assert context.target_lease_epoch == 0
+		assert proof.trace[3].context.target_identity == display_identity
+		actual := proof.trace[1].actual
+		assert actual.has(native_valid_return_value)
+		assert actual.return_value >= 0
+		assert index == 8
+		assert index == proof.trace_len
+		return index
 	}
 
 	fn renderer_fault_assert_wayland_harvest_dispatch_for_test(app &App, proof &NativeOperationProofState, start int, end int, ordinal u64, display_identity u64, release_expected bool, release_consumed bool, callback RendererFaultWaylandFrameCallbackState) (int, u64, bool, i64) {
@@ -1831,6 +1872,245 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		return expected_trace_len
 	}
 
+	fn renderer_fault_segmented_normal_stop_for_test(mut app App, window WindowId, before_stop RendererFaultStateSnapshot) ! {
+		assert app.backend.native_operations.proof != unsafe { nil }
+		assert app.status() == .running
+		renderer_fault_assert_idle_state_for_test(before_stop)
+		assert renderer_fault_native_submission_count_for_test(app) == 1
+		initial_capture := renderer_fault_native_proof_capture_for_test(app)
+		assert initial_capture.available
+		initial := initial_capture.snapshot
+		assert initial.trace_len > 0
+		assert !initial.trace_overflow
+		mut prepare_fresh := renderer_fault_clear_native_trace_for_test(mut app)
+		assert prepare_fresh.trace_len == 0
+		assert !prepare_fresh.trace_overflow
+		assert prepare_fresh.next_ordinal == initial.next_ordinal
+		assert renderer_fault_native_submission_count_for_test(app) == 0
+		mut normalized_before_stop := before_stop
+		if app.backend.kind == .wayland {
+			$if linux && sokol_wayland ? {
+				callback := renderer_fault_wayland_frame_callback_state_for_test(app, window)
+				renderer_fault_assert_wayland_frame_callback_state_for_test(app, window, callback)
+				assert callback.callback_identity != 0
+				assert callback.callback_ticket != 0
+				index := app.backend.wayland.window_record_index(window) or {
+					return error(err_window_not_found)
+				}
+				mut record := app.backend.wayland.windows[index]
+				assert native_identity(record.frame_callback) == callback.callback_identity
+				assert record.frame_callback_ticket == callback.callback_ticket
+				assert native_identity(record.surface) == callback.parent_identity
+				assert record.render_target_generation == callback.target_generation
+				assert !record.frame_ready
+				release := app.backend.wayland.destroy_frame_callback_lifetime(mut record)
+				release_succeeded := release.succeeded()
+				callback_cleared := record.frame_callback == unsafe { nil }
+					&& record.frame_callback_ticket == 0
+				assert release_succeeded
+				assert callback_cleared
+				if release_succeeded && callback_cleared {
+					record.frame_ready = true
+				}
+				assert record.frame_ready
+				released_callback := renderer_fault_wayland_frame_callback_state_for_test(app,
+					window)
+				renderer_fault_assert_wayland_frame_callback_state_for_test(app, window,
+					released_callback)
+				assert released_callback.target_generation == callback.target_generation
+				assert released_callback.parent_identity == callback.parent_identity
+				assert released_callback.callback_identity == 0
+				assert released_callback.callback_ticket == 0
+				release_capture := renderer_fault_native_proof_capture_for_test(app)
+				assert release_capture.available
+				release_proof := release_capture.snapshot
+				assert !release_proof.trace_overflow
+				assert release_proof.trace_len == 6
+				assert release_proof.next_ordinal == prepare_fresh.next_ordinal
+				assert release_proof.live_tickets + 1 == prepare_fresh.live_tickets
+				assert renderer_fault_native_submission_count_for_test(app) == 0
+				assert callback.ticket_context.authority_scope == .renderer_attempt
+				assert callback.ticket_context.authority_token == app.backend.native_operations.renderer_attempt_token
+				release_cursor := renderer_fault_assert_lifetime_release_chain_for_test(app,
+					app.backend.native_operations.proof, 0, .wayland, .surface_destroy,
+					.window_finalize, .window_target, .renderer_attempt,
+					callback.ticket_context.ordinal, callback.callback_identity)
+				assert app.backend.native_operations.proof.trace[0].context == callback.ticket_context
+				assert release_cursor == 6
+				assert release_cursor == release_proof.trace_len
+				roundtrip_fresh := renderer_fault_clear_native_trace_for_test(mut app)
+				assert roundtrip_fresh.trace_len == 0
+				assert !roundtrip_fresh.trace_overflow
+				assert roundtrip_fresh.next_ordinal == release_proof.next_ordinal
+				assert renderer_fault_native_submission_count_for_test(app) == 0
+
+				display_identity := before_stop.wayland_display_identity
+				assert display_identity != 0
+				assert native_identity(app.backend.wayland.display) == display_identity
+				assert app.backend.wayland.render_health == .ready
+				assert !app.backend.wayland.wayland_display_unavailable
+				roundtrip := app.backend.wayland.attempt_wayland_roundtrip(NativeOperationSeed{
+					call_site: .display_transport
+					scope:     .renderer
+				})
+				assert roundtrip.succeeded()
+				roundtrip_capture := renderer_fault_native_proof_capture_for_test(app)
+				assert roundtrip_capture.available
+				roundtrip_proof := roundtrip_capture.snapshot
+				assert !roundtrip_proof.trace_overflow
+				assert roundtrip_proof.trace_len == 8
+				assert roundtrip_proof.next_ordinal == roundtrip_fresh.next_ordinal + 2
+				assert renderer_fault_native_submission_count_for_test(app) == 0
+				roundtrip_cursor := renderer_fault_assert_wayland_roundtrip_segment_for_test(app,
+					app.backend.native_operations.proof, roundtrip_fresh.next_ordinal,
+					display_identity)
+				assert roundtrip_cursor == roundtrip_proof.trace_len
+				prepare_fresh = renderer_fault_clear_native_trace_for_test(mut app)
+				assert prepare_fresh.trace_len == 0
+				assert !prepare_fresh.trace_overflow
+				assert prepare_fresh.next_ordinal == roundtrip_proof.next_ordinal
+				assert renderer_fault_native_submission_count_for_test(app) == 0
+				normalized_before_stop = renderer_fault_state_snapshot_for_test(app, window)!
+				renderer_fault_assert_idle_state_for_test(normalized_before_stop)
+			} $else {
+				return error(err_backend_unsupported)
+			}
+		}
+
+		delivery_before := renderer_fault_delivery_state_snapshot_for_test(app)
+		callback_before := renderer_fault_wayland_frame_callback_state_for_test(app, window)
+		ticket := app.prepare_stop()!
+		prepared := renderer_fault_state_snapshot_for_test(app, window)!
+		harvested_capture := renderer_fault_native_proof_capture_for_test(app)
+		assert harvested_capture.available
+		harvested := harvested_capture.snapshot
+		assert !harvested.trace_overflow
+		assert renderer_fault_native_submission_count_for_test(app) == 0
+		delivery_suffix := renderer_fault_delivery_suffix_snapshot_for_test(delivery_before, app)
+		callback_after := renderer_fault_wayland_frame_callback_state_for_test(app, window)
+		window_teardown_authority := renderer_fault_window_teardown_authority_for_test(app, window)
+		renderer_fault_assert_prepared_stop_transition_for_test(normalized_before_stop, prepared,
+			ticket, delivery_suffix, app.backend.kind, callback_after)!
+		harvest_cursor := renderer_fault_assert_prepare_harvest_proof_for_test(app, window,
+			prepared, prepare_fresh, harvested, harvested, callback_before, callback_after)
+		assert harvest_cursor == harvested.trace_len
+		window_fresh := renderer_fault_clear_native_trace_for_test(mut app)
+		assert window_fresh.trace_len == 0
+		assert !window_fresh.trace_overflow
+		assert window_fresh.next_ordinal == harvested.next_ordinal
+		assert renderer_fault_native_submission_count_for_test(app) == 0
+
+		mut teardown_errors := []string{}
+		prepared_ticket := app.prepare_window_destroy_for_stop(window)!
+		prepared_tickets := app.prepared_window_tickets_for_stop()
+		assert prepared_tickets.len == 1
+		assert prepared_tickets[0] == prepared_ticket
+		for destroy_ticket in prepared_tickets {
+			app.seal_window_destroy(destroy_ticket) or {
+				teardown_errors << err.msg()
+				continue
+			}
+			app.finish_window_destroy(destroy_ticket, []string{}) or {
+				teardown_errors << err.msg()
+			}
+		}
+		assert teardown_errors.len == 0
+		assert app.sealed_window_tickets_for_stop().len == 0
+		assert app.live_window_ids_for_stop().len == 0
+		window_capture := renderer_fault_native_proof_capture_for_test(app)
+		assert window_capture.available
+		window_proof := window_capture.snapshot
+		assert !window_proof.trace_overflow
+		assert renderer_fault_native_submission_count_for_test(app) == 0
+		window_cursor, shutdown_ordinal := renderer_fault_assert_window_teardown_native_prefix_for_test(app,
+			prepared, window_teardown_authority, callback_after, 0, window_fresh.next_ordinal)
+		assert window_cursor == window_proof.trace_len
+		assert shutdown_ordinal == window_proof.next_ordinal
+		shutdown_fresh := renderer_fault_clear_native_trace_for_test(mut app)
+		assert shutdown_fresh.trace_len == 0
+		assert !shutdown_fresh.trace_overflow
+		assert shutdown_fresh.next_ordinal == window_proof.next_ordinal
+		assert renderer_fault_native_submission_count_for_test(app) == 0
+
+		app.shutdown_render_bridge_for_stop() or { teardown_errors << err.msg() }
+		assert teardown_errors.len == 0
+		bridge_capture := renderer_fault_native_proof_capture_for_test(app)
+		assert bridge_capture.available
+		bridge_proof := bridge_capture.snapshot
+		assert !bridge_proof.trace_overflow
+		assert renderer_fault_native_submission_count_for_test(app) == 0
+		renderer_fault_assert_shutdown_native_phase_for_test(app, bridge_proof, prepared, 0,
+			shutdown_fresh.next_ordinal, true)
+		mut backend_fresh := renderer_fault_clear_native_trace_for_test(mut app)
+		assert backend_fresh.trace_len == 0
+		assert !backend_fresh.trace_overflow
+		assert backend_fresh.next_ordinal == bridge_proof.next_ordinal
+		assert renderer_fault_native_submission_count_for_test(app) == 0
+		if app.backend.kind == .wayland {
+			$if linux && sokol_wayland ? {
+				display_identity := prepared.wayland_display_identity
+				assert display_identity != 0
+				assert native_identity(app.backend.wayland.display) == display_identity
+				assert app.backend.wayland.render_health == .ready
+				assert !app.backend.wayland.wayland_display_unavailable
+				roundtrip_start := backend_fresh.next_ordinal
+				roundtrip := app.backend.wayland.attempt_wayland_roundtrip(NativeOperationSeed{
+					call_site: .display_transport
+					scope:     .renderer
+				})
+				assert roundtrip.succeeded()
+				roundtrip_capture := renderer_fault_native_proof_capture_for_test(app)
+				assert roundtrip_capture.available
+				roundtrip_proof := roundtrip_capture.snapshot
+				assert !roundtrip_proof.trace_overflow
+				assert roundtrip_proof.trace_len == 8
+				assert roundtrip_proof.next_ordinal == roundtrip_start + 2
+				assert renderer_fault_native_submission_count_for_test(app) == 0
+				roundtrip_cursor := renderer_fault_assert_wayland_roundtrip_segment_for_test(app,
+					app.backend.native_operations.proof, roundtrip_start, display_identity)
+				assert roundtrip_cursor == roundtrip_proof.trace_len
+				backend_fresh = renderer_fault_clear_native_trace_for_test(mut app)
+				assert backend_fresh.trace_len == 0
+				assert !backend_fresh.trace_overflow
+				assert backend_fresh.next_ordinal == roundtrip_proof.next_ordinal
+				assert renderer_fault_native_submission_count_for_test(app) == 0
+			} $else {
+				return error(err_backend_unsupported)
+			}
+		}
+
+		mut first_stop_error := ''
+		app.finish_stop(ticket, teardown_errors) or { first_stop_error = err.msg() }
+		first_terminal := renderer_fault_state_snapshot_for_test(app, window)!
+		first_capture := renderer_fault_native_proof_capture_for_test(app)
+		assert first_capture.available
+		first_proof := first_capture.snapshot
+		assert !first_proof.trace_overflow
+		assert first_stop_error == ''
+		assert teardown_errors.len == 0
+		assert app.status() == .stopped
+		assert renderer_fault_native_submission_count_for_test(app) == 0
+		renderer_fault_assert_first_stop_state_for_test(prepared, first_terminal,
+			prepared.runtime_renderer_terminal)
+		renderer_fault_assert_first_stop_proof_for_test(backend_fresh, first_proof,
+			app.backend.kind)
+		renderer_fault_assert_shutdown_native_phase_for_test(app, first_proof, prepared, 0,
+			backend_fresh.next_ordinal, false)
+
+		mut replay_error := ''
+		app.stop() or { replay_error = err.msg() }
+		second_terminal := renderer_fault_state_snapshot_for_test(app, window)!
+		second_capture := renderer_fault_native_proof_capture_for_test(app)
+		assert second_capture.available
+		second_proof := second_capture.snapshot
+		assert !second_proof.trace_overflow
+		assert replay_error == first_stop_error
+		assert second_terminal == first_terminal
+		assert second_proof == first_proof
+		assert renderer_fault_native_submission_count_for_test(app) == 0
+		assert app.backend.native_operations.disarm_proof()
+	}
+
 	fn renderer_fault_exercise_batch_begin_for_test() ! {
 		mut app := renderer_fault_started_app_for_test()!
 		window := renderer_fault_window_or_fail_for_test(mut app, 'renderer batch begin fault') or {
@@ -1892,6 +2172,10 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			before := renderer_fault_window_runtime_for_test(app, window)!
 			if app.backend.kind == .x11 {
 				state.x11_surface_before = renderer_fault_x11_surface_state_for_test(app, window)
+			} else if app.backend.kind == .wayland {
+				state.wayland_target_before = renderer_fault_wayland_target_state_for_test(app,
+					window)
+				renderer_fault_assert_wayland_first_target_absent_for_test(state.wayland_target_before)
 			} else if app.backend.kind == .win32 {
 				state.win32_target_before = renderer_fault_win32_target_state_for_test(app, window)
 			}
@@ -1904,6 +2188,9 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			assert fault_error == message
 			state.failed_state = renderer_fault_window_runtime_for_test(app, window)!
 			assert state.failed_state == before
+			if app.backend.kind == .wayland {
+				assert renderer_fault_wayland_target_state_for_test(app, window) == state.wayland_target_before
+			}
 			renderer_fault_assert_zero_native_calls_for_test(app)
 			renderer_fault_assert_sokol_operations_for_test(multiwindow_sokol_trace.typed_snapshot(),
 				[])
@@ -1929,12 +2216,10 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			.commit,
 		])
 		renderer_fault_assert_target_acquire_native_delta_for_test(app, state.submitted_lease,
-			state.x11_surface_before, state.win32_target_before)
+			state.x11_surface_before, state.wayland_target_before, state.win32_target_before)
+		before_stop := renderer_fault_state_snapshot_for_test(app, window)!
 		multiwindow_sokol_trace.uninstall_generation(generation)!
-		app.stop()!
-		assert app.status() == .stopped
-		assert renderer_fault_native_submission_count_for_test(app) == 1
-		assert app.backend.native_operations.disarm_proof()
+		renderer_fault_segmented_normal_stop_for_test(mut app, window, before_stop)!
 	}
 
 	fn renderer_fault_exercise_pass_begin_for_test() ! {
@@ -2108,6 +2393,32 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			if app.backend.kind == .x11 {
 				state.x11_surface_before = renderer_fault_x11_surface_state_for_test(app, window)
 			}
+			if app.backend.kind == .wayland {
+				state.wayland_target_before = renderer_fault_wayland_target_state_for_test(app,
+					window)
+				renderer_fault_assert_wayland_first_target_absent_for_test(state.wayland_target_before)
+				anchor_capture := renderer_fault_native_proof_capture_for_test(app)
+				assert anchor_capture.available
+				anchor_snapshot := anchor_capture.snapshot
+				assert !anchor_snapshot.trace_overflow
+				assert anchor_snapshot.trace_len == 20
+				proof := renderer_fault_native_proof_for_test(app)
+				mut anchor_end := 0
+				mut anchor := NativeOperationContext{}
+				anchor_end, anchor = renderer_fault_assert_egl_binding_sequence_for_test(app,
+					proof, 0, .anchor_prepare, .anchor, RenderTargetLease{})
+				assert anchor.ordinal == anchor_snapshot.ordinal_floor
+				assert anchor_end == 20
+				assert anchor_end == proof.trace_len
+				for index in 0 .. anchor_end {
+					assert anchor_snapshot.trace[index] == proof.trace[index]
+				}
+				state.wayland_first_target_ordinal = anchor.ordinal + 5
+				assert anchor_snapshot.next_ordinal == state.wayland_first_target_ordinal
+				fresh := renderer_fault_clear_native_trace_for_test(mut app)
+				assert fresh.trace_len == 0
+				assert fresh.next_ordinal == state.wayland_first_target_ordinal
+			}
 			if app.backend.kind == .win32 {
 				state.win32_target_before = renderer_fault_win32_target_state_for_test(app, window)
 			}
@@ -2141,6 +2452,10 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		proof_trace_len := if app.backend.kind == .win32 {
 			renderer_fault_assert_win32_target_acquire_chain_for_test(app, state.submitted_lease,
 				state.win32_target_before)
+		} else if app.backend.kind == .wayland {
+			renderer_fault_assert_wayland_first_target_frame_delta_for_test(app,
+				state.submitted_lease, state.wayland_target_before,
+				state.wayland_first_target_ordinal)
 		} else {
 			renderer_fault_assert_frame_native_delta_for_test(app, state.submitted_lease, true,
 				state.x11_surface_before)
@@ -2155,15 +2470,11 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert app.backend.native_operations.proof.trace_len == proof_trace_len
 		renderer_fault_assert_sokol_snapshots_equal_for_test(first_trace,
 			multiwindow_sokol_trace.typed_snapshot())
-		_ = renderer_fault_clear_native_trace_for_test(mut app)
 		before_stop := renderer_fault_state_snapshot_for_test(app, window)!
 		assert before_stop == after_state
 		renderer_fault_assert_idle_state_for_test(before_stop)
 		multiwindow_sokol_trace.uninstall_generation(generation)!
-		app.stop()!
-		assert app.status() == .stopped
-		assert renderer_fault_native_submission_count_for_test(app) == 1
-		assert app.backend.native_operations.disarm_proof()
+		renderer_fault_segmented_normal_stop_for_test(mut app, window, before_stop)!
 	}
 
 	fn renderer_fault_exercise_submission_finalize_shutdown_replay_for_test() ! {
@@ -2307,7 +2618,8 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert !first_proof.trace_overflow, 'renderer/backend shutdown native proof overflowed after segmentation'
 		assert first_stop_error == ''
 		assert app.status() == .stopped
-		renderer_fault_assert_first_stop_terminal_state_for_test(prepared, first_terminal, message)
+		renderer_fault_assert_first_stop_state_for_test(prepared, first_terminal,
+			'${err_render_terminal_aggregate}: ${message}')
 		renderer_fault_assert_first_stop_proof_for_test(backend_fresh, first_proof,
 			app.backend.kind)
 		renderer_fault_assert_shutdown_native_phase_for_test(app, first_proof, prepared, 0,
@@ -2390,6 +2702,165 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			ticket_identity:   ticket_identity
 			ticket_context:    ticket_context
 		}
+	}
+
+	fn renderer_fault_wayland_target_state_for_test(app &App, window WindowId) RendererFaultWaylandTargetState {
+		assert app.backend.kind == .wayland
+		$if linux && sokol_wayland ? {
+			index := app.backend.wayland.window_record_index(window) or {
+				assert false, 'renderer Wayland target proof requires a live window record'
+				return RendererFaultWaylandTargetState{}
+			}
+			record := app.backend.wayland.windows[index]
+			native_surface := native_identity(record.surface)
+			display_identity := native_identity(app.backend.wayland.display)
+			egl_display_identity := native_identity(app.backend.wayland.egl_display)
+			wl_egl_window_identity := native_identity(record.wl_egl_window)
+			egl_surface_identity := native_identity(record.egl_surface)
+			fully_absent := wl_egl_window_identity == 0 && record.wl_egl_window_ticket == 0
+				&& egl_surface_identity == 0 && record.egl_surface_ticket == 0
+			fully_materialized := wl_egl_window_identity != 0 && record.wl_egl_window_ticket != 0
+				&& egl_surface_identity != 0 && record.egl_surface_ticket != 0
+			assert record.id == window
+			assert native_surface != 0
+			assert display_identity != 0
+			assert egl_display_identity != 0
+			assert record.render_target_generation != 0
+			assert fully_absent || fully_materialized
+			assert !(fully_absent && fully_materialized)
+			return RendererFaultWaylandTargetState{
+				captured:             true
+				materialized:         fully_materialized
+				pending_egl_resize:   record.pending_egl_resize
+				target_generation:    record.render_target_generation
+				native_surface:       native_surface
+				display_identity:     display_identity
+				egl_display_identity: egl_display_identity
+				wl_egl_window:        renderer_fault_lifetime_teardown_authority_for_test(app,
+					wl_egl_window_identity, record.wl_egl_window_ticket)
+				egl_surface:          renderer_fault_lifetime_teardown_authority_for_test(app,
+					egl_surface_identity, record.egl_surface_ticket)
+			}
+		} $else {
+			assert false, 'renderer Wayland target proof requires Linux Wayland support'
+			return RendererFaultWaylandTargetState{}
+		}
+	}
+
+	fn renderer_fault_assert_wayland_first_target_absent_for_test(state RendererFaultWaylandTargetState) {
+		assert state.captured
+		assert !state.materialized
+		assert state.target_generation != 0
+		assert state.native_surface != 0
+		assert state.display_identity != 0
+		assert state.egl_display_identity != 0
+		assert !state.wl_egl_window.captured
+		assert state.wl_egl_window.value_identity == 0
+		assert state.wl_egl_window.ticket_id == 0
+		assert !state.egl_surface.captured
+		assert state.egl_surface.value_identity == 0
+		assert state.egl_surface.ticket_id == 0
+	}
+
+	fn renderer_fault_assert_wayland_created_target_authority_for_test(app &App, authority RendererFaultLifetimeTeardownAuthority, lease RenderTargetLease, target_generation u64, expected_ticket u64, release_kind NativeLifetimeReleaseKind, identity u64, parent_identity u64, parent_scope NativeOperationAuthorityScope, proof_generation u64) {
+		expected_seed := NativeOperationSeed{
+			presence_mask:      native_context_window_target_fields
+			call_site:          .window_prepare
+			scope:              .window_target
+			window:             lease.window
+			target_generation:  target_generation
+			batch_epoch:        lease.batch_epoch
+			window_lease_epoch: lease.window_epoch
+			target_lease_epoch: lease.target_epoch
+		}
+		parent_token := if parent_scope == .app_lifetime {
+			app.backend.native_operations.app_lifetime_token
+		} else {
+			u64(0)
+		}
+		expected_context := NativeOperationContext{
+			authority_scope:        .app_lifetime
+			authority_token:        app.backend.native_operations.app_lifetime_token
+			renderer_attempt_token: 0
+			app_identity:           app.instance_id
+			presence_mask:          native_context_window_target_fields | native_context_has_target_identity
+			domain:                 native_lifetime_release_domain(release_kind)
+			operation:              native_lifetime_release_operation(release_kind)
+			call_site:              .window_prepare
+			scope:                  .window_target
+			window:                 lease.window
+			target_generation:      target_generation
+			target_identity:        identity
+			batch_epoch:            lease.batch_epoch
+			window_lease_epoch:     lease.window_epoch
+			target_lease_epoch:     lease.target_epoch
+			ordinal:                expected_ticket
+		}
+		assert authority.captured
+		assert authority.value_identity == identity
+		assert authority.ticket_id == expected_ticket
+		assert authority.app_identity == app.instance_id
+		assert authority.authority_scope == .app_lifetime
+		assert authority.authority_token == app.backend.native_operations.app_lifetime_token
+		assert authority.domain == native_lifetime_release_domain(release_kind)
+		assert authority.release_kind == release_kind
+		assert authority.owner_seed == expected_seed
+		assert authority.proof_generation == proof_generation
+		assert native_operation_contexts_identical(authority.context, expected_context)
+		assert authority.ticket_native_identity == identity
+		assert authority.required_parent_identity == parent_identity
+		assert authority.parent_authority_scope == parent_scope
+		assert authority.parent_authority_token == parent_token
+		assert authority.state == .bound
+	}
+
+	fn renderer_fault_assert_wayland_lazy_first_target_prefix_for_test(app &App, proof &NativeOperationProofState, lease RenderTargetLease, before RendererFaultWaylandTargetState, expected_first_ordinal u64) (int, RendererFaultWaylandTargetState) {
+		assert app.backend.kind == .wayland
+		renderer_fault_assert_target_lease_for_test(app, lease)
+		renderer_fault_assert_wayland_first_target_absent_for_test(before)
+		assert expected_first_ordinal != 0
+		assert proof.generation != 0
+		assert proof.trace_len >= 13
+		after := renderer_fault_wayland_target_state_for_test(app, lease.window)
+		assert after.captured
+		assert after.materialized
+		assert !after.pending_egl_resize
+		assert after.target_generation == before.target_generation
+		assert after.native_surface == before.native_surface
+		assert after.display_identity == before.display_identity
+		assert after.egl_display_identity == before.egl_display_identity
+
+		mut index := 0
+		mut wl_egl_create := NativeOperationContext{}
+		index, wl_egl_create = renderer_fault_assert_wayland_chain_at_for_test(app, proof, index,
+			.window_surface_create, .window_prepare, .window_target)
+		renderer_fault_assert_window_context_for_test(app, wl_egl_create, lease, true)
+		assert wl_egl_create.ordinal == expected_first_ordinal
+		assert wl_egl_create.target_generation == before.target_generation
+		assert wl_egl_create.target_identity == before.native_surface
+		assert proof.trace[1].actual.valid_mask == native_valid_handle
+		assert proof.trace[1].actual.handle == after.wl_egl_window.value_identity
+		assert proof.trace[3].context.target_identity == before.display_identity
+		assert index == 8
+		renderer_fault_assert_wayland_created_target_authority_for_test(app, after.wl_egl_window,
+			lease, before.target_generation, expected_first_ordinal + 2, .wayland_egl_window,
+			after.wl_egl_window.value_identity, before.native_surface, .none, proof.generation)
+
+		egl_create := renderer_fault_assert_native_chain_at_for_test(proof, index, .egl,
+			.window_surface_create, .window_prepare, .window_target)
+		renderer_fault_assert_window_context_for_test(app, egl_create, lease, true)
+		assert egl_create.ordinal == expected_first_ordinal + 3
+		assert egl_create.target_generation == before.target_generation
+		assert egl_create.target_identity == after.wl_egl_window.value_identity
+		assert proof.trace[index + 1].actual.has(native_valid_handle)
+		assert proof.trace[index + 1].actual.handle == after.egl_surface.value_identity
+		index += 5
+		assert index == 13
+		renderer_fault_assert_wayland_created_target_authority_for_test(app, after.egl_surface,
+			lease, before.target_generation, expected_first_ordinal + 5, .egl_surface,
+			after.egl_surface.value_identity, before.egl_display_identity, .app_lifetime,
+			proof.generation)
+		return index, after
 	}
 
 	fn renderer_fault_assert_win32_target_authority_for_test(app &App, authority RendererFaultLifetimeTeardownAuthority, window WindowId, target_generation u64) {
@@ -2606,6 +3077,88 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert native_operation_contexts_identical(actual.ticket_context, expected.ticket_context)
 	}
 
+	fn renderer_fault_assert_wayland_frame_suffix_for_test(app &App, proof &NativeOperationProofState, lease RenderTargetLease, target RendererFaultWaylandTargetState, start int, expected_activate_ordinal u64) int {
+		assert app.backend.kind == .wayland
+		assert target.captured
+		assert target.materialized
+		assert !target.pending_egl_resize
+		assert target.target_generation != 0
+		assert target.native_surface != 0
+		assert target.display_identity != 0
+		assert target.egl_surface.captured
+		assert target.egl_surface.value_identity != 0
+		assert start >= 0
+		assert expected_activate_ordinal != 0
+		mut index := start
+		mut activate := NativeOperationContext{}
+		index, activate = renderer_fault_assert_egl_binding_sequence_for_test(app, proof, index,
+			.window_activate, .window_target, lease)
+		assert activate.ordinal == expected_activate_ordinal
+		assert activate.target_generation == target.target_generation
+		assert activate.target_identity == target.egl_surface.value_identity
+		mut finalize := NativeOperationContext{}
+		index, finalize = renderer_fault_assert_egl_binding_sequence_for_test(app, proof, index,
+			.window_finalize, .window_target, lease)
+		assert finalize.ordinal == activate.ordinal + 5
+		assert finalize.target_generation == target.target_generation
+		assert finalize.target_identity == target.egl_surface.value_identity
+		frame_create_start := index
+		mut frame_create := NativeOperationContext{}
+		index, frame_create = renderer_fault_assert_wayland_chain_at_for_test(app, proof, index,
+			.frame_callback, .window_finalize, .window_target)
+		renderer_fault_assert_window_context_for_test(app, frame_create, lease, true)
+		assert frame_create.ordinal == finalize.ordinal + 5
+		assert frame_create.target_generation == target.target_generation
+		assert frame_create.target_identity == target.native_surface
+		assert proof.trace[frame_create_start + 3].context.target_identity == target.display_identity
+		frame_callback_identity := proof.trace[index - 7].actual.handle
+		assert frame_callback_identity != 0
+		listener_start := index
+		mut listener := NativeOperationContext{}
+		index, listener = renderer_fault_assert_wayland_chain_at_for_test(app, proof, index,
+			.frame_callback, .window_finalize, .window_target)
+		renderer_fault_assert_window_context_for_test(app, listener, lease, true)
+		assert listener.ordinal == frame_create.ordinal + 2
+		assert listener.target_generation == target.target_generation
+		assert listener.target_identity == frame_callback_identity
+		assert listener.target_identity != frame_create.target_identity
+		assert proof.trace[listener_start + 3].context.target_identity == target.display_identity
+		swap := renderer_fault_assert_native_chain_at_for_test(proof, index, .egl, .swap_buffers,
+			.window_finalize, .window_target)
+		renderer_fault_assert_window_context_for_test(app, swap, lease, true)
+		assert swap.target_generation == target.target_generation
+		assert swap.target_identity == target.egl_surface.value_identity
+		assert swap.ordinal == frame_create.ordinal + 5
+		assert proof.trace[index + 1].actual.has(native_valid_return_value)
+		assert proof.trace[index + 1].actual.return_value == 1
+		index += 5
+		flush_start := index
+		mut flush := NativeOperationContext{}
+		index, flush = renderer_fault_assert_wayland_chain_at_for_test(app, proof, index,
+			.display_flush, .window_finalize, .window_target)
+		renderer_fault_assert_window_context_for_test(app, flush, lease, true)
+		assert flush.ordinal == swap.ordinal + 2
+		assert flush.target_generation == target.target_generation
+		assert flush.target_identity == target.display_identity
+		assert proof.trace[flush_start + 3].context.target_identity == target.display_identity
+		return index
+	}
+
+	fn renderer_fault_assert_wayland_first_target_frame_delta_for_test(app &App, lease RenderTargetLease, before RendererFaultWaylandTargetState, expected_first_ordinal u64) int {
+		proof := renderer_fault_native_proof_for_test(app)
+		assert proof.trace_len == 82
+		mut index, target := renderer_fault_assert_wayland_lazy_first_target_prefix_for_test(app,
+			proof, lease, before, expected_first_ordinal)
+		assert index == 13
+		assert target.target_generation == before.target_generation
+		index = renderer_fault_assert_wayland_frame_suffix_for_test(app, proof, lease, target,
+			index, expected_first_ordinal + 6)
+		assert index == 82
+		assert index == proof.trace_len
+		assert renderer_fault_native_submission_count_for_test(app) == 1
+		return index
+	}
+
 	fn renderer_fault_assert_frame_native_delta_for_test(app &App, lease RenderTargetLease, include_batch_begin bool, x11_surface_before RendererFaultX11SurfaceState) int {
 		renderer_fault_assert_target_lease_for_test(app, lease)
 		if app.backend.kind == .x11 && include_batch_begin {
@@ -2658,42 +3211,9 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 					assert batch_anchor.ordinal == proof.ordinal_floor
 					expected_activate_ordinal = batch_anchor.ordinal + 5
 				}
-				mut activate := NativeOperationContext{}
-				index, activate = renderer_fault_assert_egl_binding_sequence_for_test(app, proof,
-					index, .window_activate, .window_target, lease)
-				assert activate.ordinal == expected_activate_ordinal
-				mut finalize := NativeOperationContext{}
-				index, finalize = renderer_fault_assert_egl_binding_sequence_for_test(app, proof,
-					index, .window_finalize, .window_target, lease)
-				assert finalize.ordinal == activate.ordinal + 5
-				mut frame_create := NativeOperationContext{}
-				index, frame_create = renderer_fault_assert_wayland_chain_at_for_test(app, proof,
-					index, .frame_callback, .window_finalize, .window_target)
-				renderer_fault_assert_window_context_for_test(app, frame_create, lease, true)
-				assert frame_create.ordinal == finalize.ordinal + 5
-				frame_callback_identity := proof.trace[index - 7].actual.handle
-				assert frame_callback_identity != 0
-				mut listener := NativeOperationContext{}
-				index, listener = renderer_fault_assert_wayland_chain_at_for_test(app, proof,
-					index, .frame_callback, .window_finalize, .window_target)
-				renderer_fault_assert_window_context_for_test(app, listener, lease, true)
-				assert listener.ordinal == frame_create.ordinal + 2
-				assert frame_callback_identity == listener.target_identity
-				assert listener.target_identity != frame_create.target_identity
-				swap := renderer_fault_assert_native_chain_at_for_test(proof, index, .egl,
-					.swap_buffers, .window_finalize, .window_target)
-				renderer_fault_assert_window_context_for_test(app, swap, lease, true)
-				assert swap.target_generation == finalize.target_generation
-				assert swap.target_identity == finalize.target_identity
-				assert swap.ordinal == frame_create.ordinal + 5
-				assert proof.trace[index + 1].actual.has(native_valid_return_value)
-				assert proof.trace[index + 1].actual.return_value == 1
-				index += 5
-				mut flush := NativeOperationContext{}
-				index, flush = renderer_fault_assert_wayland_chain_at_for_test(app, proof, index,
-					.display_flush, .window_finalize, .window_target)
-				renderer_fault_assert_window_context_for_test(app, flush, lease, true)
-				assert flush.ordinal == swap.ordinal + 2
+				target := renderer_fault_wayland_target_state_for_test(app, lease.window)
+				index = renderer_fault_assert_wayland_frame_suffix_for_test(app, proof, lease,
+					target, index, expected_activate_ordinal)
 			}
 			.appkit {
 				mut batch_begin := NativeOperationContext{}
@@ -3108,13 +3628,18 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		}
 	}
 
-	fn renderer_fault_assert_target_acquire_native_delta_for_test(app &App, lease RenderTargetLease, x11_surface_before RendererFaultX11SurfaceState, win32_target_before RendererFaultWin32TargetState) int {
+	fn renderer_fault_assert_target_acquire_native_delta_for_test(app &App, lease RenderTargetLease, x11_surface_before RendererFaultX11SurfaceState, wayland_target_before RendererFaultWaylandTargetState, win32_target_before RendererFaultWin32TargetState) int {
 		match app.backend.kind {
 			.x11 {
 				renderer_fault_assert_target_lease_for_test(app, lease)
 				proof := renderer_fault_native_proof_for_test(app)
 				return renderer_fault_assert_x11_window_chain_for_test(app, proof, lease,
 					x11_surface_before, 0, proof.ordinal_floor)
+			}
+			.wayland {
+				proof := renderer_fault_native_proof_for_test(app)
+				return renderer_fault_assert_wayland_first_target_frame_delta_for_test(app, lease,
+					wayland_target_before, proof.ordinal_floor)
 			}
 			.win32 {
 				return renderer_fault_assert_win32_target_acquire_chain_for_test(app, lease,
