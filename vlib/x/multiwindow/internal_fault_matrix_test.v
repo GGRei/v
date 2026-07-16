@@ -216,6 +216,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 	mut:
 		submitted_lease      RenderTargetLease
 		x11_surface_before   RendererFaultX11SurfaceState
+		win32_target_before  RendererFaultWin32TargetState
 		batch_callback_calls int
 		pass_callback_calls  int
 		second_calls         int
@@ -2077,6 +2078,9 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			if app.backend.kind == .x11 {
 				state.x11_surface_before = renderer_fault_x11_surface_state_for_test(app, window)
 			}
+			if app.backend.kind == .win32 {
+				state.win32_target_before = renderer_fault_win32_target_state_for_test(app, window)
+			}
 			acquisition := app.acquire_render_target(batch, window)!
 			assert acquisition.status == .ready
 			state.submitted_lease = acquisition.lease
@@ -2104,8 +2108,13 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert !app.renderer_is_usable()
 		renderer_fault_assert_finalize_terminal_transition_for_test(before_state, after_state,
 			message)
-		proof_trace_len := renderer_fault_assert_frame_native_delta_for_test(app,
-			state.submitted_lease, true, state.x11_surface_before)
+		proof_trace_len := if app.backend.kind == .win32 {
+			renderer_fault_assert_win32_target_acquire_chain_for_test(app, state.submitted_lease,
+				state.win32_target_before)
+		} else {
+			renderer_fault_assert_frame_native_delta_for_test(app, state.submitted_lease, true,
+				state.x11_surface_before)
+		}
 		mut second_error := ''
 		app.with_scheduled_render_batch(fn [mut state] (_ RenderBatchLease, _ []RenderWindowSnapshot) ! {
 			state.second_calls++
@@ -2779,11 +2788,13 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		return 0
 	}
 
-	fn renderer_fault_assert_win32_transient_backbuffer_release_for_test(app &App, proof &NativeOperationProofState, start int, lease RenderTargetLease, target_generation u64, expected_ordinal u64, identity u64) int {
-		assert start == 20
+	fn renderer_fault_assert_win32_object_release_for_test(app &App, proof &NativeOperationProofState, start int, seed NativeOperationSeed, authority_scope NativeOperationAuthorityScope, ticket_id u64, identity u64) int {
+		assert start >= 0
 		assert start + 6 <= proof.trace_len
-		assert expected_ordinal != 0
+		assert ticket_id != 0
 		assert identity != 0
+		assert seed.presence_mask & native_context_has_target_identity == 0
+		assert seed.target_identity == 0
 		expected_milestones := [
 			NativeOperationTraceMilestone.real_call,
 			.actual_primitive,
@@ -2793,14 +2804,20 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			.health_latched,
 		]
 		context := proof.trace[start].context
-		renderer_fault_assert_window_context_for_test(app, context, lease, true)
+		renderer_fault_assert_scoped_authority_context_for_test(app, context)
+		assert context.authority_scope == authority_scope
 		assert context.domain == .dxgi
 		assert context.operation == .object_release
-		assert context.call_site == .window_prepare
-		assert context.scope == .window_target
-		assert context.target_generation == target_generation
+		assert context.call_site == seed.call_site
+		assert context.scope == seed.scope
+		assert context.presence_mask == seed.presence_mask | native_context_has_target_identity
+		assert context.window == seed.window
+		assert context.target_generation == seed.target_generation
 		assert context.target_identity == identity
-		assert context.ordinal == expected_ordinal
+		assert context.batch_epoch == seed.batch_epoch
+		assert context.window_lease_epoch == seed.window_lease_epoch
+		assert context.target_lease_epoch == seed.target_lease_epoch
+		assert context.ordinal == ticket_id
 		for offset, milestone in expected_milestones {
 			entry := proof.trace[start + offset]
 			assert entry.milestone == milestone
@@ -2824,7 +2841,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		expected_result := NativeRenderResult{
 			domain:           .dxgi
 			operation:        .object_release
-			scope:            .window_target
+			scope:            context.scope
 			disposition:      .ok
 			context:          context
 			actual_primitive: actual_capture.actual
@@ -2842,6 +2859,22 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert health.result == NativeRenderResult{}
 		assert health.health == .ready
 		return start + 6
+	}
+
+	fn renderer_fault_assert_win32_transient_backbuffer_release_for_test(app &App, proof &NativeOperationProofState, start int, lease RenderTargetLease, target_generation u64, expected_ordinal u64, identity u64) int {
+		assert start == 20
+		seed := NativeOperationSeed{
+			presence_mask:      native_context_window_target_fields
+			call_site:          .window_prepare
+			scope:              .window_target
+			window:             lease.window
+			target_generation:  target_generation
+			batch_epoch:        lease.batch_epoch
+			window_lease_epoch: lease.window_epoch
+			target_lease_epoch: lease.target_epoch
+		}
+		return renderer_fault_assert_win32_object_release_for_test(app, proof, start, seed,
+			.renderer_attempt, expected_ordinal, identity)
 	}
 
 	fn renderer_fault_assert_win32_created_target_authority_for_test(app &App, authority RendererFaultLifetimeTeardownAuthority, lease RenderTargetLease, target_generation u64, expected_ticket u64, proof_generation u64) {
@@ -3169,6 +3202,17 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			.window_target, expected_authority_scope, authority.ticket_id, authority.value_identity)
 	}
 
+	fn renderer_fault_assert_win32_window_lifetime_release_for_test(app &App, proof &NativeOperationProofState, start int, window WindowId, target_generation u64, authority RendererFaultLifetimeTeardownAuthority) int {
+		assert app.backend.kind == .win32
+		renderer_fault_assert_win32_target_authority_for_test(app, authority, window,
+			target_generation)
+		assert start >= 0
+		assert start < proof.trace_len
+		assert native_operation_contexts_identical(authority.context, proof.trace[start].context)
+		return renderer_fault_assert_win32_object_release_for_test(app, proof, start,
+			authority.owner_seed, .app_lifetime, authority.ticket_id, authority.value_identity)
+	}
+
 	fn renderer_fault_assert_window_teardown_native_prefix_for_test(app &App, before_stop RendererFaultStateSnapshot, authority RendererFaultWindowTeardownAuthority, callback RendererFaultWaylandFrameCallbackState, start int, expected_first_ordinal u64) (int, u64) {
 		proof := renderer_fault_native_proof_for_test(app)
 		assert authority.captured
@@ -3255,9 +3299,8 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			.win32 {
 				assert authority.resources.len == 4
 				for resource in authority.resources {
-					index = renderer_fault_assert_window_lifetime_release_for_test(app, proof,
-						index, authority.window, resource, .dxgi, .com_reference, .window_prepare,
-						.app_lifetime, 0)
+					index = renderer_fault_assert_win32_window_lifetime_release_for_test(app,
+						proof, index, authority.window, authority.target_generation, resource)
 				}
 			}
 			else {
@@ -3364,19 +3407,25 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				anchor_tickets := [before_stop.win32_anchor_depth_view_ticket,
 					before_stop.win32_anchor_depth_ticket, before_stop.win32_anchor_render_view_ticket,
 					before_stop.win32_anchor_color_ticket]
+				anchor_seed := NativeOperationSeed{
+					call_site: .anchor_create
+					scope:     .anchor
+				}
 				for offset, identity in anchor_identities {
-					index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof,
-						index, .dxgi, .object_release, .anchor_create, .anchor, .renderer_attempt,
-						anchor_tickets[offset], identity)
+					index = renderer_fault_assert_win32_object_release_for_test(app, proof, index,
+						anchor_seed, .renderer_attempt, anchor_tickets[offset], identity)
 				}
 				renderer_identities := [before_stop.backend_factory_identity,
 					before_stop.backend_renderer_context_identity, before_stop.backend_renderer_device_identity]
 				renderer_tickets := [before_stop.backend_factory_ticket,
 					before_stop.backend_renderer_context_ticket, before_stop.backend_renderer_device_ticket]
+				renderer_seed := NativeOperationSeed{
+					call_site: .renderer_start
+					scope:     .renderer
+				}
 				for offset, identity in renderer_identities {
-					index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof,
-						index, .dxgi, .object_release, .renderer_start, .renderer, .app_lifetime,
-						renderer_tickets[offset], identity)
+					index = renderer_fault_assert_win32_object_release_for_test(app, proof, index,
+						renderer_seed, .app_lifetime, renderer_tickets[offset], identity)
 				}
 			}
 			else {
