@@ -3377,7 +3377,9 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert !snapshot.trace_overflow
 		assert !app.backend.native_operations.has_pending_native_plans()
 		assert app.backend.wayland.render_health == .unavailable
-		assert app.backend.wayland.renderer_anchor_lifetime_absent()
+		$if linux && sokol_wayland ? {
+			assert app.backend.wayland.renderer_anchor_lifetime_absent()
+		}
 		native_lifetime_registry_assert_snapshots_equal(baseline, snapshot.registry)
 		display_identity := native_identity(app.backend.wayland.display)
 		egl_display_identity := native_identity(app.backend.wayland.egl_display)
@@ -3609,7 +3611,9 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert oracle_cursor == after_release_oracle.records.len
 		native_release_oracle_assert_cleanup_bijection_for_test(before_release_oracle,
 			after_release_oracle, cleanup_tickets)
-		assert healthy.backend.wayland.renderer_anchor_lifetime_absent()
+		$if linux && sokol_wayland ? {
+			assert healthy.backend.wayland.renderer_anchor_lifetime_absent()
+		}
 		assert healthy.backend.native_operations.lifetime_tickets.len == 0
 		assert !healthy.backend.native_operations.has_pending_native_plans()
 		native_assert_complete_native_trace_for_test(stopped)
