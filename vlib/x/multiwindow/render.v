@@ -798,14 +798,14 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				errors << message
 				state.terminal = true
 				committed = false
-			} else {
-				gfx.commit()
-				app.sync_renderer_health(mut state)
-				if state.native_health.blocks_graphics() {
-					state.device_lost = true
-					state.terminal = true
-					state.shutdown_path = .logical_abandon
-				}
+			}
+			// A closed pass must be physically committed before native resources are aborted.
+			gfx.commit()
+			app.sync_renderer_health(mut state)
+			if state.native_health.blocks_graphics() {
+				state.device_lost = true
+				state.terminal = true
+				state.shutdown_path = .logical_abandon
 			}
 		}
 		mut finalized := 0

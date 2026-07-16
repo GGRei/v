@@ -143,6 +143,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		failed_state         RenderWindowRuntime
 		submitted_lease      RenderTargetLease
 		x11_surface_before   RendererFaultX11SurfaceState
+		win32_target_before  RendererFaultWin32TargetState
 		batch_callback_calls int
 		pass_callback_calls  int
 	}
@@ -180,6 +181,18 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		surface_ticket    u64
 		ticket_identity   u64
 		ticket_context    NativeOperationContext
+	}
+
+	struct RendererFaultWin32TargetState {
+		captured              bool
+		materialized          bool
+		render_resize_pending bool
+		window_identity       u64
+		target_generation     u64
+		swapchain             RendererFaultLifetimeTeardownAuthority
+		render_view           RendererFaultLifetimeTeardownAuthority
+		depth_texture         RendererFaultLifetimeTeardownAuthority
+		depth_view            RendererFaultLifetimeTeardownAuthority
 	}
 
 	struct RendererFaultWaylandFrameCallbackState {
@@ -1848,6 +1861,8 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			before := renderer_fault_window_runtime_for_test(app, window)!
 			if app.backend.kind == .x11 {
 				state.x11_surface_before = renderer_fault_x11_surface_state_for_test(app, window)
+			} else if app.backend.kind == .win32 {
+				state.win32_target_before = renderer_fault_win32_target_state_for_test(app, window)
 			}
 			assert app.backend.native_operations.arm_proof()
 			mut fault_error := ''
@@ -1883,7 +1898,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			.commit,
 		])
 		renderer_fault_assert_target_acquire_native_delta_for_test(app, state.submitted_lease,
-			state.x11_surface_before)
+			state.x11_surface_before, state.win32_target_before)
 		multiwindow_sokol_trace.uninstall_generation(generation)!
 		app.stop()!
 		assert app.status() == .stopped
@@ -2017,6 +2032,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		renderer_fault_assert_sokol_operations_for_test(first_trace, [
 			multiwindow_sokol_trace.Operation.begin_swapchain_pass,
 			.end_pass,
+			.commit,
 		])
 		assert outcome.error == '${err_render_terminal_aggregate}: ${message}'
 		assert !outcome.committed
@@ -2295,6 +2311,145 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			ticket_identity:   ticket_identity
 			ticket_context:    ticket_context
 		}
+	}
+
+	fn renderer_fault_assert_win32_target_authority_for_test(app &App, authority RendererFaultLifetimeTeardownAuthority, window WindowId, target_generation u64) {
+		assert authority.captured
+		assert authority.value_identity != 0
+		assert authority.ticket_id != 0
+		assert authority.app_identity == app.instance_id
+		assert authority.authority_scope == .app_lifetime
+		assert authority.authority_token == app.backend.native_operations.app_lifetime_token
+		assert authority.domain == .dxgi
+		assert authority.release_kind == .com_reference
+		assert authority.ticket_native_identity == authority.value_identity
+		assert authority.required_parent_identity == 0
+		assert authority.state == .bound
+		assert authority.owner_seed.presence_mask == native_context_window_target_fields
+		assert authority.owner_seed.call_site == .window_prepare
+		assert authority.owner_seed.scope == .window_target
+		assert authority.owner_seed.window == window
+		assert authority.owner_seed.target_generation == target_generation
+		assert authority.owner_seed.target_identity == 0
+		assert authority.owner_seed.batch_epoch != 0
+		assert authority.owner_seed.window_lease_epoch != 0
+		assert authority.owner_seed.target_lease_epoch != 0
+		context := authority.context
+		assert context.authority_scope == authority.authority_scope
+		assert context.authority_token == authority.authority_token
+		assert context.renderer_attempt_token == 0
+		assert context.app_identity == app.instance_id
+		assert context.presence_mask == native_context_window_target_fields | native_context_has_target_identity
+		assert context.domain == .dxgi
+		assert context.operation == .object_release
+		assert context.call_site == .window_prepare
+		assert context.scope == .window_target
+		assert context.window == window
+		assert context.target_generation == target_generation
+		assert context.target_identity == authority.value_identity
+		assert context.batch_epoch == authority.owner_seed.batch_epoch
+		assert context.window_lease_epoch == authority.owner_seed.window_lease_epoch
+		assert context.target_lease_epoch == authority.owner_seed.target_lease_epoch
+		assert context.ordinal == authority.ticket_id
+	}
+
+	fn renderer_fault_win32_target_state_for_test(app &App, window WindowId) RendererFaultWin32TargetState {
+		assert app.backend.kind == .win32
+		$if windows && sokol_d3d11 ? {
+			index := app.backend.win32.window_record_index(window) or {
+				assert false, 'renderer Win32 target proof requires a live window record'
+				return RendererFaultWin32TargetState{}
+			}
+			record := app.backend.win32.windows[index]
+			window_identity := native_identity(record.hwnd)
+			swapchain_identity := native_identity(record.swapchain)
+			pending_backbuffer_identity := native_identity(record.pending_backbuffer)
+			render_view_identity := native_identity(record.render_view)
+			depth_texture_identity := native_identity(record.depth_texture)
+			depth_view_identity := native_identity(record.depth_stencil_view)
+			assert record.id == window
+			assert window_identity != 0
+			assert record.render_target_generation != 0
+			fully_absent := swapchain_identity == 0 && record.swapchain_ticket == 0
+				&& pending_backbuffer_identity == 0 && record.pending_backbuffer_ticket == 0
+				&& render_view_identity == 0 && record.render_view_ticket == 0
+				&& depth_texture_identity == 0 && record.depth_texture_ticket == 0
+				&& depth_view_identity == 0 && record.depth_stencil_view_ticket == 0
+			fully_materialized := swapchain_identity != 0 && record.swapchain_ticket != 0
+				&& pending_backbuffer_identity == 0 && record.pending_backbuffer_ticket == 0
+				&& render_view_identity != 0 && record.render_view_ticket != 0
+				&& depth_texture_identity != 0 && record.depth_texture_ticket != 0
+				&& depth_view_identity != 0 && record.depth_stencil_view_ticket != 0
+				&& !record.render_resize_pending
+			assert fully_absent || fully_materialized
+			assert !(fully_absent && fully_materialized)
+			state := RendererFaultWin32TargetState{
+				captured:              true
+				materialized:          fully_materialized
+				render_resize_pending: record.render_resize_pending
+				window_identity:       window_identity
+				target_generation:     record.render_target_generation
+				swapchain:             renderer_fault_lifetime_teardown_authority_for_test(app,
+					swapchain_identity, record.swapchain_ticket)
+				render_view:           renderer_fault_lifetime_teardown_authority_for_test(app,
+					render_view_identity, record.render_view_ticket)
+				depth_texture:         renderer_fault_lifetime_teardown_authority_for_test(app,
+					depth_texture_identity, record.depth_texture_ticket)
+				depth_view:            renderer_fault_lifetime_teardown_authority_for_test(app,
+					depth_view_identity, record.depth_stencil_view_ticket)
+			}
+			if fully_materialized {
+				renderer_fault_assert_win32_target_authority_for_test(app, state.swapchain, window,
+					state.target_generation)
+				renderer_fault_assert_win32_target_authority_for_test(app, state.render_view,
+					window, state.target_generation)
+				renderer_fault_assert_win32_target_authority_for_test(app, state.depth_texture,
+					window, state.target_generation)
+				renderer_fault_assert_win32_target_authority_for_test(app, state.depth_view,
+					window, state.target_generation)
+			}
+			return state
+		} $else {
+			return RendererFaultWin32TargetState{}
+		}
+	}
+
+	fn renderer_fault_assert_win32_target_authority_unchanged_for_test(expected RendererFaultLifetimeTeardownAuthority, actual RendererFaultLifetimeTeardownAuthority) {
+		assert actual.captured == expected.captured
+		assert actual.value_identity == expected.value_identity
+		assert actual.ticket_id == expected.ticket_id
+		assert actual.app_identity == expected.app_identity
+		assert actual.authority_scope == expected.authority_scope
+		assert actual.authority_token == expected.authority_token
+		assert actual.domain == expected.domain
+		assert actual.release_kind == expected.release_kind
+		assert actual.owner_seed == expected.owner_seed
+		assert actual.proof_generation == expected.proof_generation
+		assert native_operation_contexts_identical(actual.context, expected.context)
+		assert actual.ticket_native_identity == expected.ticket_native_identity
+		assert actual.required_parent_identity == expected.required_parent_identity
+		assert actual.state == expected.state
+	}
+
+	fn renderer_fault_assert_win32_target_state_unchanged_for_test(app &App, window WindowId, expected RendererFaultWin32TargetState) RendererFaultWin32TargetState {
+		assert expected.captured
+		assert expected.materialized
+		assert !expected.render_resize_pending
+		actual := renderer_fault_win32_target_state_for_test(app, window)
+		assert actual.captured
+		assert actual.materialized
+		assert !actual.render_resize_pending
+		assert actual.window_identity == expected.window_identity
+		assert actual.target_generation == expected.target_generation
+		renderer_fault_assert_win32_target_authority_unchanged_for_test(expected.swapchain,
+			actual.swapchain)
+		renderer_fault_assert_win32_target_authority_unchanged_for_test(expected.render_view,
+			actual.render_view)
+		renderer_fault_assert_win32_target_authority_unchanged_for_test(expected.depth_texture,
+			actual.depth_texture)
+		renderer_fault_assert_win32_target_authority_unchanged_for_test(expected.depth_view,
+			actual.depth_view)
+		return actual
 	}
 
 	fn renderer_fault_wayland_frame_callback_state_for_test(app &App, window WindowId) RendererFaultWaylandFrameCallbackState {
@@ -2601,14 +2756,199 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		return index
 	}
 
-	fn renderer_fault_assert_target_acquire_native_delta_for_test(app &App, lease RenderTargetLease, x11_surface_before RendererFaultX11SurfaceState) int {
-		if app.backend.kind != .x11 {
-			return renderer_fault_assert_frame_native_delta_for_test(app, lease, false, RendererFaultX11SurfaceState{})
+	fn renderer_fault_assert_win32_success_evidence_for_test(proof &NativeOperationProofState, start int, has_handle bool) u64 {
+		actual := proof.trace[start + 1].actual
+		expected_mask := if has_handle {
+			native_valid_return_value | native_valid_handle
+		} else {
+			native_valid_return_value
 		}
+		assert actual.valid_mask == expected_mask
+		assert actual.return_value >= 0
+		if has_handle {
+			assert actual.handle != 0
+			return actual.handle
+		}
+		assert actual.handle == 0
+		return 0
+	}
+
+	fn renderer_fault_assert_win32_created_target_authority_for_test(app &App, authority RendererFaultLifetimeTeardownAuthority, lease RenderTargetLease, target_generation u64, expected_ticket u64, proof_generation u64) {
+		renderer_fault_assert_win32_target_authority_for_test(app, authority, lease.window,
+			target_generation)
+		assert authority.ticket_id == expected_ticket
+		assert authority.proof_generation == proof_generation
+		assert authority.owner_seed.batch_epoch == lease.batch_epoch
+		assert authority.owner_seed.window_lease_epoch == lease.window_epoch
+		assert authority.owner_seed.target_lease_epoch == lease.target_epoch
+	}
+
+	fn renderer_fault_assert_win32_target_acquire_chain_for_test(app &App, lease RenderTargetLease, before RendererFaultWin32TargetState) int {
+		assert app.backend.kind == .win32
+		assert before.captured
+		assert before.window_identity != 0
+		assert before.target_generation != 0
 		renderer_fault_assert_target_lease_for_test(app, lease)
 		proof := renderer_fault_native_proof_for_test(app)
-		return renderer_fault_assert_x11_window_chain_for_test(app, proof, lease,
-			x11_surface_before, 0, proof.ordinal_floor)
+		assert proof.ordinal_floor != 0
+		$if windows && sokol_d3d11 ? {
+			if before.materialized {
+				after := renderer_fault_assert_win32_target_state_unchanged_for_test(app,
+					lease.window, before)
+				present := renderer_fault_assert_native_chain_at_for_test(proof, 0, .dxgi,
+					.present, .window_finalize, .window_target)
+				renderer_fault_assert_window_context_for_test(app, present, lease, true)
+				assert present.target_generation == after.target_generation
+				assert present.target_identity == after.swapchain.value_identity
+				assert present.ordinal == proof.ordinal_floor
+				renderer_fault_assert_win32_success_evidence_for_test(proof, 0, false)
+				assert proof.trace_len == 5
+				assert renderer_fault_native_submission_count_for_test(app) == 1
+				return proof.trace_len
+			}
+
+			assert !before.swapchain.captured
+			assert !before.render_view.captured
+			assert !before.depth_texture.captured
+			assert !before.depth_view.captured
+			after := renderer_fault_win32_target_state_for_test(app, lease.window)
+			assert after.captured
+			assert after.materialized
+			assert !after.render_resize_pending
+			assert after.window_identity == before.window_identity
+			assert after.target_generation == before.target_generation
+			first_ordinal := proof.ordinal_floor
+			renderer_fault_assert_win32_created_target_authority_for_test(app, after.swapchain,
+				lease, after.target_generation, first_ordinal + 4, proof.generation)
+			renderer_fault_assert_win32_created_target_authority_for_test(app, after.render_view,
+				lease, after.target_generation, first_ordinal + 14, proof.generation)
+			renderer_fault_assert_win32_created_target_authority_for_test(app, after.depth_texture,
+				lease, after.target_generation, first_ordinal + 15, proof.generation)
+			renderer_fault_assert_win32_created_target_authority_for_test(app, after.depth_view,
+				lease, after.target_generation, first_ordinal + 16, proof.generation)
+
+			device_identity := native_identity(app.backend.win32.device)
+			factory_identity := native_identity(app.backend.win32.factory)
+			assert device_identity != 0
+			assert factory_identity != 0
+			mut index := 0
+			swapchain_create := renderer_fault_assert_native_chain_at_for_test(proof, index, .dxgi,
+				.swapchain_create, .window_prepare, .window_target)
+			renderer_fault_assert_window_context_for_test(app, swapchain_create, lease, true)
+			assert swapchain_create.target_generation == after.target_generation
+			assert swapchain_create.target_identity == after.window_identity
+			assert swapchain_create.ordinal == first_ordinal
+			swapchain_identity := renderer_fault_assert_win32_success_evidence_for_test(proof,
+				index, true)
+			assert swapchain_identity == after.swapchain.value_identity
+			index += 5
+
+			association := renderer_fault_assert_native_chain_at_for_test(proof, index, .dxgi,
+				.window_association, .window_prepare, .window_target)
+			renderer_fault_assert_window_context_for_test(app, association, lease, true)
+			assert association.target_generation == after.target_generation
+			assert association.target_identity == after.window_identity
+			assert association.ordinal == first_ordinal + 1
+			renderer_fault_assert_win32_success_evidence_for_test(proof, index, false)
+			index += 5
+
+			backbuffer_acquire := renderer_fault_assert_native_chain_at_for_test(proof, index,
+				.dxgi, .backbuffer_acquire, .window_prepare, .window_target)
+			renderer_fault_assert_window_context_for_test(app, backbuffer_acquire, lease, true)
+			assert backbuffer_acquire.target_generation == after.target_generation
+			assert backbuffer_acquire.target_identity == swapchain_identity
+			assert backbuffer_acquire.ordinal == first_ordinal + 5
+			backbuffer_identity := renderer_fault_assert_win32_success_evidence_for_test(proof,
+				index, true)
+			index += 5
+
+			render_view_create := renderer_fault_assert_native_chain_at_for_test(proof, index,
+				.dxgi, .render_view_create, .window_prepare, .window_target)
+			renderer_fault_assert_window_context_for_test(app, render_view_create, lease, true)
+			assert render_view_create.target_generation == after.target_generation
+			assert render_view_create.target_identity == backbuffer_identity
+			assert render_view_create.ordinal == first_ordinal + 6
+			render_view_identity := renderer_fault_assert_win32_success_evidence_for_test(proof,
+				index, true)
+			assert render_view_identity == after.render_view.value_identity
+			index += 5
+
+			backbuffer_release := proof.trace[index].context
+			renderer_fault_assert_window_context_for_test(app, backbuffer_release, lease, true)
+			assert backbuffer_release.domain == .dxgi
+			assert backbuffer_release.operation == .object_release
+			assert backbuffer_release.call_site == .window_prepare
+			assert backbuffer_release.scope == .window_target
+			assert backbuffer_release.target_generation == after.target_generation
+			assert backbuffer_release.target_identity == backbuffer_identity
+			assert backbuffer_release.ordinal == first_ordinal + 13
+			assert proof.trace[index + 1].actual.valid_mask == native_valid_observed_count
+			index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof, index, .dxgi,
+				.object_release, .window_prepare, .window_target, .renderer_attempt,
+
+				first_ordinal + 13, backbuffer_identity)
+
+			depth_texture_create := renderer_fault_assert_native_chain_at_for_test(proof, index,
+				.dxgi, .depth_texture_create, .window_prepare, .window_target)
+			renderer_fault_assert_window_context_for_test(app, depth_texture_create, lease, true)
+			assert depth_texture_create.target_generation == after.target_generation
+			assert depth_texture_create.target_identity == device_identity
+			assert depth_texture_create.ordinal == first_ordinal + 7
+			depth_texture_identity := renderer_fault_assert_win32_success_evidence_for_test(proof,
+				index, true)
+			assert depth_texture_identity == after.depth_texture.value_identity
+			index += 5
+
+			depth_view_create := renderer_fault_assert_native_chain_at_for_test(proof, index,
+				.dxgi, .depth_view_create, .window_prepare, .window_target)
+			renderer_fault_assert_window_context_for_test(app, depth_view_create, lease, true)
+			assert depth_view_create.target_generation == after.target_generation
+			assert depth_view_create.target_identity == depth_texture_identity
+			assert depth_view_create.ordinal == first_ordinal + 8
+			depth_view_identity := renderer_fault_assert_win32_success_evidence_for_test(proof,
+				index, true)
+			assert depth_view_identity == after.depth_view.value_identity
+			index += 5
+			assert index == 36
+
+			present := renderer_fault_assert_native_chain_at_for_test(proof, index, .dxgi,
+				.present, .window_finalize, .window_target)
+			renderer_fault_assert_window_context_for_test(app, present, lease, true)
+			assert present.target_generation == after.target_generation
+			assert present.target_identity == swapchain_identity
+			assert present.ordinal == first_ordinal + 17
+			renderer_fault_assert_win32_success_evidence_for_test(proof, index, false)
+			index += 5
+			assert index == 41
+			assert index == proof.trace_len
+			for ticket in app.backend.native_operations.lifetime_tickets {
+				assert ticket.ticket_id != first_ordinal + 13
+				assert ticket.native_identity != backbuffer_identity
+			}
+			assert renderer_fault_native_submission_count_for_test(app) == 1
+			return index
+		} $else {
+			assert false, 'renderer Win32 target proof requires Windows D3D11 support'
+			return 0
+		}
+	}
+
+	fn renderer_fault_assert_target_acquire_native_delta_for_test(app &App, lease RenderTargetLease, x11_surface_before RendererFaultX11SurfaceState, win32_target_before RendererFaultWin32TargetState) int {
+		match app.backend.kind {
+			.x11 {
+				renderer_fault_assert_target_lease_for_test(app, lease)
+				proof := renderer_fault_native_proof_for_test(app)
+				return renderer_fault_assert_x11_window_chain_for_test(app, proof, lease,
+					x11_surface_before, 0, proof.ordinal_floor)
+			}
+			.win32 {
+				return renderer_fault_assert_win32_target_acquire_chain_for_test(app, lease,
+					win32_target_before)
+			}
+			else {
+				return renderer_fault_assert_frame_native_delta_for_test(app, lease, false, RendererFaultX11SurfaceState{})
+			}
+		}
 	}
 
 	fn renderer_fault_assert_anchor_begin_native_delta_for_test(app &App, start int, batch_epoch u64) int {

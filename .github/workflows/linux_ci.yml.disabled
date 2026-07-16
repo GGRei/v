@@ -588,45 +588,87 @@ jobs:
           fi
 
           runtime_dir="$(mktemp -d)"
-          chmod 700 "$runtime_dir"
+          xvfb_pid=''
+          weston_pid=''
+          xvfb_log="$runtime_dir/xvfb.log"
           weston_log="$runtime_dir/weston.log"
-          export XDG_RUNTIME_DIR="$runtime_dir"
-          export WAYLAND_DISPLAY=wayland-multiwindow-ci
-          export XDG_SESSION_TYPE=wayland
-          export LIBGL_ALWAYS_SOFTWARE=true
-          unset DISPLAY
+          display_file="$runtime_dir/xvfb-display"
+          wayland_display=wayland-multiwindow-ci
 
-          weston --backend=headless-backend.so --renderer=gl \
-            --socket="$WAYLAND_DISPLAY" --idle-time=0 >"$weston_log" 2>&1 &
-          weston_pid=$!
-
-          cleanup_weston() {
-            status=$?
-            trap - EXIT INT TERM
-            if kill -0 "$weston_pid" 2>/dev/null; then
-              kill -TERM "$weston_pid" 2>/dev/null || true
+          stop_child() {
+            local pid="$1"
+            if [ -z "$pid" ]; then
+              return
+            fi
+            if kill -0 "$pid" 2>/dev/null; then
+              kill -TERM "$pid" 2>/dev/null || true
               for _ in {1..500}; do
-                if ! kill -0 "$weston_pid" 2>/dev/null; then
+                if ! kill -0 "$pid" 2>/dev/null; then
                   break
                 fi
                 sleep 0.01
               done
             fi
-            if kill -0 "$weston_pid" 2>/dev/null; then
-              kill -KILL "$weston_pid" 2>/dev/null || true
+            if kill -0 "$pid" 2>/dev/null; then
+              kill -KILL "$pid" 2>/dev/null || true
             fi
-            wait "$weston_pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+          }
+
+          cleanup_display_servers() {
+            local status="$1"
+            trap - EXIT INT TERM
+            stop_child "$weston_pid"
+            stop_child "$xvfb_pid"
             if [ "$status" -ne 0 ]; then
+              echo '----- Xvfb log -----' >&2
+              cat "$xvfb_log" >&2 || true
+              echo '----- Weston log -----' >&2
               cat "$weston_log" >&2 || true
             fi
-            rm -rf "$runtime_dir"
+            rm -rf "$runtime_dir" || true
             exit "$status"
           }
-          trap cleanup_weston EXIT INT TERM
+          trap 'cleanup_display_servers $?' EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          chmod 700 "$runtime_dir"
+          Xvfb -displayfd 1 -screen 0 1280x1024x24 >"$display_file" 2>"$xvfb_log" &
+          xvfb_pid=$!
+
+          display_ready=0
+          x_display=''
+          for _ in {1..1000}; do
+            if [ -s "$display_file" ]; then
+              display_number="$(tr -d '\r\n' <"$display_file")"
+              case "$display_number" in
+                ''|*[!0-9]*) ;;
+                *)
+                  x_display=":$display_number"
+                  display_ready=1
+                  break
+                  ;;
+              esac
+            fi
+            if ! kill -0 "$xvfb_pid" 2>/dev/null; then
+              break
+            fi
+            sleep 0.01
+          done
+          if [ "$display_ready" -ne 1 ]; then
+            echo 'Xvfb did not publish a display number' >&2
+            exit 1
+          fi
+
+          XDG_RUNTIME_DIR="$runtime_dir" DISPLAY="$x_display" LIBGL_ALWAYS_SOFTWARE=true \
+            weston --backend=x11-backend.so --renderer=gl \
+              --socket="$wayland_display" --idle-time=0 >"$weston_log" 2>&1 &
+          weston_pid=$!
 
           ready=0
           for _ in {1..1000}; do
-            if [ -S "$runtime_dir/$WAYLAND_DISPLAY" ]; then
+            if [ -S "$runtime_dir/$wayland_display" ]; then
               ready=1
               break
             fi
@@ -636,11 +678,16 @@ jobs:
             sleep 0.01
           done
           if [ "$ready" -ne 1 ]; then
-            echo "headless Weston did not publish $runtime_dir/$WAYLAND_DISPLAY" >&2
+            echo "Weston X11 did not publish $runtime_dir/$wayland_display" >&2
             exit 1
           fi
 
-          "$@"
+          env -u DISPLAY \
+            XDG_RUNTIME_DIR="$runtime_dir" \
+            WAYLAND_DISPLAY="$wayland_display" \
+            XDG_SESSION_TYPE=wayland \
+            LIBGL_ALWAYS_SOFTWARE=true \
+            "$@"
           EOF
           chmod +x "$RUNNER_TEMP/multiwindow_weston_command.sh"
       - name: Multiwindow portable and mock regressions
