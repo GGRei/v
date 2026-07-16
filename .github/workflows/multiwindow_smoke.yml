@@ -987,6 +987,21 @@ jobs:
             -o gg_multiwindow_render_runtime_gcc.exe examples/gg/multiwindow_render_runtime.v
 
           "$runner" 300 - ./v.exe -cc gcc test vlib/gg/legacy_import_multiwindow_isolation_test.v
+          native_cases=(
+            test_native_dxgi_null_success_and_direct_losses_forbid_fallback_and_release_outputs
+            test_native_dxgi_present_captures_operation_and_removal_before_release
+            test_native_dxgi_resize_invalid_call_propagates_and_clears_durable_slot
+            test_native_sokol_swapchain_attachment_matches_backend_authority
+            test_native_win32_phase_b_com_lifetimes_are_bijective_and_child_first
+            test_native_win32_phase_b_alias_null_burn_rejection_and_wrong_thread
+            test_native_win32_phase_b_exhaustion_overflow_and_stop_replay
+          )
+          for case in "${native_cases[@]}"; do
+            echo "BEGIN $case"
+            "$runner" 300 - ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 \
+              -d gg_multiwindow_d3d11_warp test -run-only "$case" \
+              vlib/x/multiwindow/native_operation_proof_test.v
+          done
           for test in "${tests[@]}"; do
             "$runner" 300 - ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 \
               -d gg_multiwindow_d3d11_warp test "$test"

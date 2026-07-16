@@ -3,6 +3,10 @@
 
 #if defined(SOKOL_TRACE_HOOKS) && defined(V_MULTIWINDOW_NATIVE_PROOF_TEST) && defined(SOKOL_D3D11)
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+
 #include <stdint.h>
 #include <string.h>
 #include <windows.h>

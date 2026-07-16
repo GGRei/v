@@ -2684,8 +2684,40 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert !bridge_proof.trace_overflow, 'renderer bridge shutdown native proof overflowed after segmentation'
 		renderer_fault_assert_shutdown_native_phase_for_test(app, bridge_proof, prepared, 0,
 			shutdown_ordinal, true)
-		backend_fresh := renderer_fault_clear_native_trace_for_test(mut app)
+		mut backend_fresh := renderer_fault_clear_native_trace_for_test(mut app)
 		assert backend_fresh.next_ordinal == bridge_proof.next_ordinal
+		if app.backend.kind == .wayland {
+			$if linux && sokol_wayland ? {
+				display_identity := prepared.wayland_display_identity
+				assert display_identity != 0
+				assert native_identity(app.backend.wayland.display) == display_identity
+				assert app.backend.wayland.render_health == .ready
+				assert !app.backend.wayland.wayland_display_unavailable
+				roundtrip_start := backend_fresh.next_ordinal
+				roundtrip := app.backend.wayland.attempt_wayland_roundtrip(NativeOperationSeed{
+					call_site: .display_transport
+					scope:     .renderer
+				})
+				assert roundtrip.succeeded()
+				roundtrip_capture := renderer_fault_native_proof_capture_for_test(app)
+				assert roundtrip_capture.available
+				roundtrip_proof := roundtrip_capture.snapshot
+				assert !roundtrip_proof.trace_overflow
+				assert roundtrip_proof.trace_len == 8
+				assert roundtrip_proof.next_ordinal == roundtrip_start + 2
+				assert renderer_fault_native_submission_count_for_test(app) == 0
+				roundtrip_cursor := renderer_fault_assert_wayland_roundtrip_segment_for_test(app,
+					app.backend.native_operations.proof, roundtrip_start, display_identity)
+				assert roundtrip_cursor == roundtrip_proof.trace_len
+				backend_fresh = renderer_fault_clear_native_trace_for_test(mut app)
+				assert backend_fresh.trace_len == 0
+				assert !backend_fresh.trace_overflow
+				assert backend_fresh.next_ordinal == roundtrip_proof.next_ordinal
+				assert renderer_fault_native_submission_count_for_test(app) == 0
+			} $else {
+				return error(err_backend_unsupported)
+			}
+		}
 
 		mut first_stop_error := ''
 		app.finish_stop(ticket, teardown_errors) or { first_stop_error = err.msg() }

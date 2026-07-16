@@ -12895,7 +12895,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			assert after_device_release.next_ordinal == before_device_release.next_ordinal
 			assert after_device_release.trace_len == before_device_release.trace_len + 6
 			for offset, milestone in [NativeOperationTraceMilestone.real_call, .actual_primitive,
-				.effective_primitive, .acceptance, .authority_release, .health_latched] {
+				.effective_primitive, .acceptance, .health_latched, .authority_release] {
 				entry := after_device_release.trace[before_device_release.trace_len + offset]
 				assert entry.milestone == milestone
 				assert native_operation_contexts_identical(entry.context, device_bound.context)
@@ -12903,7 +12903,10 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			assert after_device_release.trace[before_device_release.trace_len + 1].actual.object_identity_0 == device_probe.identity
 			assert after_device_release.trace[before_device_release.trace_len + 2].effective.object_identity_0 == 0
 			assert after_device_release.trace[before_device_release.trace_len + 3].result.disposition == .renderer_unavailable
-			assert after_device_release.trace[before_device_release.trace_len + 5].health == .unavailable
+			assert after_device_release.trace[before_device_release.trace_len + 4].health == .unavailable
+			assert native_proof_result_equal(after_device_release.trace[
+				before_device_release.trace_len + 5].result, after_device_release.trace[
+				before_device_release.trace_len + 3].result)
 			assert !authority.has_pending_native_plans()
 			assert backend.poll_error.count(err_appkit_metal_device_failed) == 1
 
@@ -12926,7 +12929,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			assert after_window_release.next_ordinal == before_window_release.next_ordinal
 			assert after_window_release.trace_len == before_window_release.trace_len + 6
 			for offset, milestone in [NativeOperationTraceMilestone.real_call, .actual_primitive,
-				.effective_primitive, .acceptance, .authority_release, .health_latched] {
+				.effective_primitive, .acceptance, .health_latched, .authority_release] {
 				entry := after_window_release.trace[before_window_release.trace_len + offset]
 				assert entry.milestone == milestone
 				assert native_operation_contexts_identical(entry.context, window_bound.context)
@@ -12934,7 +12937,10 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			assert after_window_release.trace[before_window_release.trace_len + 1].actual.object_identity_0 == window_probe.identity
 			assert after_window_release.trace[before_window_release.trace_len + 2].effective.object_identity_0 == 0
 			assert after_window_release.trace[before_window_release.trace_len + 3].result.disposition == .renderer_unavailable
-			assert after_window_release.trace[before_window_release.trace_len + 5].health == .unavailable
+			assert after_window_release.trace[before_window_release.trace_len + 4].health == .unavailable
+			assert native_proof_result_equal(after_window_release.trace[
+				before_window_release.trace_len + 5].result, after_window_release.trace[
+				before_window_release.trace_len + 3].result)
 			assert !authority.has_pending_native_plans()
 			assert backend.poll_error.count(err_appkit_metal_device_failed) == 1
 			assert backend.poll_error.count(err_appkit_destroy_window_failed) == 1
@@ -13245,11 +13251,49 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		}
 	}
 
-	fn native_appkit_assert_ticket_release_delta_with_temporary_pool_for_test(tickets []NativeLifetimeTicketProofSnapshot, records []NativeAppKitLifetimeOracleRecord, owner_thread u64) {
+	fn native_appkit_assert_one_window_cleanup_oracle_for_test(ownership NativeAppKitBackendReplaySnapshot, records []NativeAppKitLifetimeOracleRecord, owner_thread u64) {
 		assert owner_thread != 0
-		assert records.len >= 2
-		push := records[0]
-		pop := records[1]
+		assert ownership.windows.len == 1
+		window_identity := ownership.windows[0].state
+		anchor_identity := ownership.anchor_state
+		device_identity := ownership.device
+		assert window_identity != 0
+		assert anchor_identity != 0
+		assert device_identity != 0
+		assert window_identity != anchor_identity
+		assert window_identity != device_identity
+		assert anchor_identity != device_identity
+		assert ownership.batch_autorelease_pool == 0
+		assert records.len == 7
+		for index, record in records {
+			assert record.thread_identity == owner_thread
+			if index > 0 {
+				assert record.sequence == records[index - 1].sequence + 1
+			}
+		}
+
+		window_destroy := records[0]
+		assert window_destroy.kind == 5
+		assert window_destroy.identity == window_identity
+		assert window_destroy.parent_identity == 0
+		assert window_destroy.output_identity == 0
+		assert window_destroy.auxiliary_identity == 0
+		assert window_destroy.auxiliary_identity_1 == 0
+		assert window_destroy.auxiliary_identity_2 == 0
+		assert window_destroy.valid_mask == 0
+
+		window_release := records[1]
+		assert window_release.kind == 6
+		assert window_release.identity == window_identity
+		assert window_release.parent_identity == 0
+		assert window_release.output_identity == 0
+		assert window_release.auxiliary_identity == window_identity
+		assert window_release.auxiliary_identity_1 == 0
+		assert window_release.auxiliary_identity_2 == 0
+		assert window_release.valid_mask == native_valid_object_identity_0
+
+		push := records[2]
+		pop := records[3]
 		assert push.kind == 13
 		assert push.identity == 0
 		assert push.parent_identity == 0
@@ -13258,7 +13302,6 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert push.auxiliary_identity_1 == 0
 		assert push.auxiliary_identity_2 == 0
 		assert push.valid_mask == native_valid_handle
-		assert push.thread_identity == owner_thread
 		assert pop.sequence == push.sequence + 1
 		assert pop.kind == 14
 		assert pop.identity == push.output_identity
@@ -13268,8 +13311,46 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert pop.auxiliary_identity_1 == 0
 		assert pop.auxiliary_identity_2 == 0
 		assert pop.valid_mask == native_valid_object_identity_0
-		assert pop.thread_identity == owner_thread
-		native_appkit_assert_ticket_release_delta_for_test(tickets, records[2..])
+
+		anchor_destroy := records[4]
+		assert anchor_destroy.kind == 8
+		assert anchor_destroy.identity == anchor_identity
+		assert anchor_destroy.parent_identity == 0
+		assert anchor_destroy.output_identity == 0
+		assert anchor_destroy.auxiliary_identity == 0
+		assert anchor_destroy.auxiliary_identity_1 == 0
+		assert anchor_destroy.auxiliary_identity_2 == 0
+		assert anchor_destroy.valid_mask == 0
+
+		anchor_release := records[5]
+		assert anchor_release.kind == 6
+		assert anchor_release.identity == anchor_identity
+		assert anchor_release.parent_identity == 0
+		assert anchor_release.output_identity == 0
+		assert anchor_release.auxiliary_identity == anchor_identity
+		assert anchor_release.auxiliary_identity_1 == 0
+		assert anchor_release.auxiliary_identity_2 == 0
+		assert anchor_release.valid_mask == native_valid_object_identity_0
+
+		device_release := records[6]
+		assert device_release.kind == 2
+		assert device_release.identity == device_identity
+		assert device_release.parent_identity == 0
+		assert device_release.output_identity == 0
+		assert device_release.auxiliary_identity == device_identity
+		assert device_release.auxiliary_identity_1 == 0
+		assert device_release.auxiliary_identity_2 == 0
+		assert device_release.valid_mask == native_valid_object_identity_0
+	}
+
+	fn native_appkit_assert_ticket_release_delta_with_temporary_pool_for_test(tickets []NativeLifetimeTicketProofSnapshot, records []NativeAppKitLifetimeOracleRecord, ownership NativeAppKitBackendReplaySnapshot, owner_thread u64) {
+		native_appkit_assert_one_window_cleanup_oracle_for_test(ownership, records, owner_thread)
+		assert tickets.len == 3
+		native_appkit_assert_ticket_release_delta_for_test(tickets, [
+			records[1],
+			records[5],
+			records[6],
+		])
 	}
 
 	fn native_appkit_assert_cleanup_order_for_test(ownership NativeAppKitBackendReplaySnapshot, records []NativeAppKitLifetimeOracleRecord) {
@@ -14357,8 +14438,8 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			native_proof_assert_trace_equal(prefix, overflow_first.authority.trace)
 			assert overflow_first.authority.registry.tickets.len == 0
 			native_appkit_assert_ticket_release_delta_with_temporary_pool_for_test(overflow_tickets,
-				overflow_cleanup_oracle, overflow_first.authority.owner_thread_identity)
-			native_appkit_assert_cleanup_order_for_test(overflow_ownership, overflow_cleanup_oracle)
+				overflow_cleanup_oracle, overflow_ownership,
+				overflow_first.authority.owner_thread_identity)
 			overflow_first_side := native_appkit_assert_side_effect_operation_bijection_for_test(overflow_first.authority,
 				overflow_oracle, overflow_side_generation, [], false)
 			overflow_app.stop()!
