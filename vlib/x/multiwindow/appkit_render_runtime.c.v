@@ -398,12 +398,14 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				}
 			}
 			context := ordinals.materialize(backend.native_operations, .metal, .drawable_acquire, seed) or {
-				if !backend.native_operations.burn_lifetime_ticket(drawable_ticket) {
+				if backend.native_operations.burn_lifetime_ticket(drawable_ticket) {
+					drawable_ticket = 0
+				} else {
 					record.active_drawable = unsafe { nil }
 					record.active_drawable_ticket = drawable_ticket
-					_ = backend.release_window_drawable_lifetime(mut record,
-						err_render_target_stale)
 				}
+				_ = backend.release_window_drawable_lifetime(mut record, .close_frame,
+					err_render_target_stale)
 				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
 				return BackendFrameAttempt{
 					outcome: backend.record_metal_result(native_render_outcome(.metal,
@@ -426,7 +428,13 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			result := backend.accept_metal_result(context, raw, .none,
 				err_appkit_metal_drawable_failed)
 			if !result.succeeded() {
-				_ = backend.release_window_drawable_lifetime(mut record, err_render_target_stale)
+				mode := if backend.render_health.blocks_graphics() {
+					AppKitWindowDrawableReleaseMode.close_frame
+				} else {
+					AppKitWindowDrawableReleaseMode.preserve_for_abort
+				}
+				_ = backend.release_window_drawable_lifetime(mut record, mode,
+					err_render_target_stale)
 				return BackendFrameAttempt{
 					outcome: result
 				}
@@ -440,7 +448,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				|| frame.target.depth_format != int(gfx.PixelFormat.depth_stencil)
 				|| frame.target.sample_count != 1 {
 				released := backend.release_window_drawable_lifetime(mut record,
-					err_render_target_stale)
+					.preserve_for_abort, err_render_target_stale)
 				record.framebuffer_width = framebuffer_width
 				record.framebuffer_height = framebuffer_height
 				record.render_target_generation =

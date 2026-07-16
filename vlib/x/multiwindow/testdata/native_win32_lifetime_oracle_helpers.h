@@ -1,6 +1,8 @@
 #ifndef V_MULTIWINDOW_NATIVE_WIN32_LIFETIME_ORACLE_HELPERS_H
 #define V_MULTIWINDOW_NATIVE_WIN32_LIFETIME_ORACLE_HELPERS_H
 
+#if defined(SOKOL_TRACE_HOOKS) && defined(V_MULTIWINDOW_NATIVE_PROOF_TEST) && defined(SOKOL_D3D11)
+
 #include <stdint.h>
 #include <string.h>
 #include <windows.h>
@@ -494,5 +496,7 @@ v_multiwindow_test_win32_oracle_record_get(uint64_t index) {
 	}
 	return v_multiwindow_test_win32_oracle_records[index];
 }
+
+#endif
 
 #endif

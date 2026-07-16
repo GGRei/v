@@ -10,6 +10,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 }
 
 #flag -DSOKOL_TRACE_HOOKS
+#preinclude windows "@VMODROOT/vlib/x/multiwindow/testdata/native_win32_lifetime_oracle_helpers.h"
 
 $if gg_multiwindow ? || x_multiwindow_render ? {
 	#flag darwin -DV_MULTIWINDOW_NATIVE_PROOF_TEST
@@ -62,8 +63,6 @@ $if linux {
 $if gg_multiwindow ? || x_multiwindow_render ? {
 	$if windows {
 		$if sokol_d3d11 ? {
-			#preinclude "@VMODROOT/vlib/x/multiwindow/testdata/native_win32_lifetime_oracle_helpers.h"
-
 			@[typedef]
 			struct C.VMultiwindowTestWin32OracleRecord {
 				sequence           u64
@@ -10141,6 +10140,22 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		boundary_ownership   NativeAppKitBackendReplaySnapshot
 	}
 
+	@[heap]
+	struct NativeAppKitEffectiveRejectionState {
+	mut:
+		drawable_context    NativeOperationContext
+		drawable_pass_error string
+	}
+
+	@[heap]
+	struct NativeAppKitObservedDrawableState {
+	mut:
+		observed_drawable u64
+		observed_depth    u64
+		observed_ticket   u64
+		observed_parent   u64
+	}
+
 	struct NativeWrongThreadReleaseResult {
 		identity        u64
 		ticket          u64
@@ -12689,9 +12704,8 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				'phase-B effective-rejected AppKit drawable')!
 			assert drawable_app.backend.native_operations.arm_proof()
 			drawable_operation_start := native_appkit_lifetime_oracle_snapshot_for_test().len
-			mut drawable_context := NativeOperationContext{}
-			mut drawable_pass_error := ''
-			drawable_outcome := drawable_app.with_scheduled_render_batch(fn [mut drawable_app, drawable_window, mut drawable_context, mut drawable_pass_error] (batch RenderBatchLease, candidates []RenderWindowSnapshot) ! {
+			mut state := &NativeAppKitEffectiveRejectionState{}
+			drawable_outcome := drawable_app.with_scheduled_render_batch(fn [mut drawable_app, drawable_window, mut state] (batch RenderBatchLease, candidates []RenderWindowSnapshot) ! {
 				assert candidates.any(it.window == drawable_window)
 				_ = native_appkit_assert_pool_ticket_context_for_test(&drawable_app.backend.native_operations,
 					drawable_app.backend.appkit.batch_autorelease_pool_ticket,
@@ -12700,7 +12714,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				assert acquisition.status == .ready
 				index := native_appkit_window_record_index_for_test(drawable_app, drawable_window)!
 				record := drawable_app.backend.appkit.windows[index]
-				drawable_context = NativeOperationContext{
+				state.drawable_context = NativeOperationContext{
 					authority_scope:        .renderer_attempt
 					authority_token:        drawable_app.backend.native_operations.renderer_attempt_token
 					renderer_attempt_token: drawable_app.backend.native_operations.renderer_attempt_token
@@ -12718,22 +12732,22 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 					target_lease_epoch:     acquisition.lease.target_epoch
 					ordinal:                drawable_app.backend.native_operations.next_ordinal
 				}
-				assert drawable_app.backend.native_operations.arm(drawable_context, NativePrimitiveEvidence{
+				assert drawable_app.backend.native_operations.arm(state.drawable_context, NativePrimitiveEvidence{
 					valid_mask: native_valid_handle
 					handle:     0
 				})
 				drawable_app.with_render_target_pass(acquisition.lease, gfx.PassAction{},
-					fn () ! {}) or { drawable_pass_error = err.msg() }
-				assert drawable_pass_error != ''
+					fn () ! {}) or { state.drawable_pass_error = err.msg() }
+				assert state.drawable_pass_error != ''
 			})!
-			assert drawable_pass_error == err_appkit_metal_drawable_failed
+			assert state.drawable_pass_error == err_appkit_metal_drawable_failed
 			assert drawable_outcome.error == ''
 			assert !drawable_outcome.committed
 			assert drawable_outcome.completed_user_passes == 0
 			assert drawable_outcome.finalized_submissions == 0
 			drawable_proof := native_proof_snapshot(&drawable_app.backend.native_operations)
 			drawable_identity := native_appkit_assert_effective_rejected_nonnull_for_test(drawable_proof,
-				drawable_context, .transient, .ready)
+				state.drawable_context, .transient, .ready)
 			drawable_oracle_before_stop := native_appkit_lifetime_oracle_snapshot_for_test()
 			assert drawable_oracle_before_stop.len == drawable_operation_start + 4
 			assert drawable_oracle_before_stop[drawable_operation_start].kind == 13
@@ -13201,6 +13215,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				release_records << record
 			}
 		}
+		assert records.len == release_records.len
 		assert release_records.len == expected.len
 		mut consumed := []bool{len: release_records.len}
 		for ticket in expected {
@@ -13228,6 +13243,33 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		for matched in consumed {
 			assert matched
 		}
+	}
+
+	fn native_appkit_assert_ticket_release_delta_with_temporary_pool_for_test(tickets []NativeLifetimeTicketProofSnapshot, records []NativeAppKitLifetimeOracleRecord, owner_thread u64) {
+		assert owner_thread != 0
+		assert records.len >= 2
+		push := records[0]
+		pop := records[1]
+		assert push.kind == 13
+		assert push.identity == 0
+		assert push.parent_identity == 0
+		assert push.output_identity != 0
+		assert push.auxiliary_identity == 0
+		assert push.auxiliary_identity_1 == 0
+		assert push.auxiliary_identity_2 == 0
+		assert push.valid_mask == native_valid_handle
+		assert push.thread_identity == owner_thread
+		assert pop.sequence == push.sequence + 1
+		assert pop.kind == 14
+		assert pop.identity == push.output_identity
+		assert pop.parent_identity == 0
+		assert pop.output_identity == 0
+		assert pop.auxiliary_identity == push.output_identity
+		assert pop.auxiliary_identity_1 == 0
+		assert pop.auxiliary_identity_2 == 0
+		assert pop.valid_mask == native_valid_object_identity_0
+		assert pop.thread_identity == owner_thread
+		native_appkit_assert_ticket_release_delta_for_test(tickets, records[2..])
 	}
 
 	fn native_appkit_assert_cleanup_order_for_test(ownership NativeAppKitBackendReplaySnapshot, records []NativeAppKitLifetimeOracleRecord) {
@@ -13927,11 +13969,8 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			draw_window := native_runtime_new_window_for_test(mut draw_app,
 				'phase-B AppKit drawable lifetime')!
 			assert draw_app.backend.native_operations.arm_proof()
-			mut observed_drawable := u64(0)
-			mut observed_depth := u64(0)
-			mut observed_ticket := u64(0)
-			mut observed_parent := u64(0)
-			outcome := draw_app.with_scheduled_render_batch(fn [mut draw_app, draw_window, draw_side_generation, mut observed_drawable, mut observed_depth, mut observed_ticket, mut observed_parent] (batch RenderBatchLease, candidates []RenderWindowSnapshot) ! {
+			mut state := &NativeAppKitObservedDrawableState{}
+			outcome := draw_app.with_scheduled_render_batch(fn [mut draw_app, draw_window, draw_side_generation, mut state] (batch RenderBatchLease, candidates []RenderWindowSnapshot) ! {
 				assert candidates.any(it.window == draw_window)
 				_ = native_appkit_assert_pool_ticket_context_for_test(&draw_app.backend.native_operations,
 					draw_app.backend.appkit.batch_autorelease_pool_ticket,
@@ -13939,27 +13978,27 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				acquisition := draw_app.acquire_render_target(batch, draw_window)!
 				assert acquisition.status == .ready
 				target_generation := acquisition.snapshot.target.target_identity
-				draw_app.with_render_target_pass(acquisition.lease, gfx.PassAction{}, fn [mut draw_app, draw_window, draw_side_generation, batch, acquisition, target_generation, mut observed_drawable, mut observed_depth, mut observed_ticket, mut observed_parent] () ! {
+				draw_app.with_render_target_pass(acquisition.lease, gfx.PassAction{}, fn [mut draw_app, draw_window, draw_side_generation, batch, acquisition, target_generation, mut state] () ! {
 					index := native_appkit_window_record_index_for_test(draw_app, draw_window)!
 					record := draw_app.backend.appkit.windows[index]
-					observed_parent = native_identity(record.state)
-					assert observed_parent != 0
-					observed_drawable = native_identity(record.active_drawable)
-					observed_ticket = record.active_drawable_ticket
-					assert observed_drawable != 0
-					assert observed_ticket != 0
+					state.observed_parent = native_identity(record.state)
+					assert state.observed_parent != 0
+					state.observed_drawable = native_identity(record.active_drawable)
+					state.observed_ticket = record.active_drawable_ticket
+					assert state.observed_drawable != 0
+					assert state.observed_ticket != 0
 					oracle := native_appkit_lifetime_oracle_snapshot_for_test()
 					for oracle_index := oracle.len - 1; oracle_index >= 0; oracle_index-- {
 						if oracle[oracle_index].kind == 9
-							&& oracle[oracle_index].output_identity == observed_drawable {
-							observed_depth = oracle[oracle_index].auxiliary_identity
+							&& oracle[oracle_index].output_identity == state.observed_drawable {
+							state.observed_depth = oracle[oracle_index].auxiliary_identity
 							break
 						}
 					}
-					assert observed_depth != 0
+					assert state.observed_depth != 0
 					drawable_ticket := native_appkit_assert_window_drawable_ticket_context_for_test(&draw_app.backend.native_operations,
-						observed_ticket, observed_drawable, native_identity(record.state),
-						target_generation, batch, acquisition.lease)
+						state.observed_ticket, state.observed_drawable,
+						native_identity(record.state), target_generation, batch, acquisition.lease)
 					state_ticket := native_lifetime_ticket_snapshot_for_test(&draw_app.backend.native_operations,
 						record.state_ticket)!
 					assert drawable_ticket.parent_authority_scope == .app_lifetime
@@ -13973,7 +14012,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 						record.state_ticket, .appkit_state, 0, err_appkit_destroy_window_failed)
 					assert !blocked_parent.native_released
 					assert !blocked_parent.ticket_retired
-					assert native_identity(blocked_parent.value) == observed_parent
+					assert native_identity(blocked_parent.value) == state.observed_parent
 					assert blocked_parent.ticket_id == record.state_ticket
 					native_proof_assert_snapshots_equal(before_parent_release,
 						native_proof_snapshot(&draw_app.backend.native_operations))
@@ -13981,24 +14020,24 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 						native_appkit_lifetime_oracle_snapshot_for_test())
 					native_appkit_assert_side_effect_snapshots_equal_for_test(before_parent_side,
 						native_appkit_side_effect_snapshot_for_test(draw_side_generation))
-					assert native_identity(draw_app.backend.appkit.windows[index].state) == observed_parent
+					assert native_identity(draw_app.backend.appkit.windows[index].state) == state.observed_parent
 					assert draw_app.backend.appkit.windows[index].state_ticket == record.state_ticket
 					_ = native_phase_b_assert_bound_ticket_for_test(&draw_app.backend.native_operations,
-						record.state_ticket, .appkit_state, observed_parent, 0, .app_lifetime)
+						record.state_ticket, .appkit_state, state.observed_parent, 0, .app_lifetime)
 					for ticket in draw_app.backend.native_operations.lifetime_tickets {
-						assert ticket.native_identity != observed_depth
+						assert ticket.native_identity != state.observed_depth
 					}
 				})!
 			})!
 			assert outcome.error == ''
 			assert outcome.finalized_submissions == 1
-			assert observed_drawable != 0
-			assert observed_depth != 0
-			assert observed_parent != 0
+			assert state.observed_drawable != 0
+			assert state.observed_depth != 0
+			assert state.observed_parent != 0
 			assert native_lifetime_ticket_index_for_test(&draw_app.backend.native_operations,
-				observed_ticket) == -1
+				state.observed_ticket) == -1
 			draw_index := native_appkit_window_record_index_for_test(draw_app, draw_window)!
-			assert native_identity(draw_app.backend.appkit.windows[draw_index].state) == observed_parent
+			assert native_identity(draw_app.backend.appkit.windows[draw_index].state) == state.observed_parent
 			assert draw_app.backend.appkit.windows[draw_index].state_ticket != 0
 			assert draw_app.backend.appkit.windows[draw_index].active_drawable == unsafe { nil }
 			assert draw_app.backend.appkit.windows[draw_index].active_drawable_ticket == 0
@@ -14103,11 +14142,11 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			mut observed_parent_release := -1
 			mut observed_parent_release_count := 0
 			for index, record in draw_oracle {
-				if record.kind in [u64(10), 11, 12] && record.identity == observed_drawable {
+				if record.kind in [u64(10), 11, 12] && record.identity == state.observed_drawable {
 					observed_child_terminal = index
 					observed_child_terminal_count++
 				}
-				if record.kind == 6 && record.identity == observed_parent {
+				if record.kind == 6 && record.identity == state.observed_parent {
 					observed_parent_release = index
 					observed_parent_release_count++
 				}
@@ -14308,15 +14347,18 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				}, NativePrimitiveEvidence{}, NativePrimitiveEvidence{}, .none, NativeRenderResult{})
 			}
 			prefix := overflow_app.backend.native_operations.proof.trace
+			overflow_oracle_start := native_appkit_lifetime_oracle_snapshot_for_test().len
 			overflow_app.stop()!
 			overflow_first := native_appkit_backend_replay_snapshot_for_test(overflow_app)
 			overflow_oracle := native_appkit_lifetime_oracle_snapshot_for_test()
+			overflow_cleanup_oracle := overflow_oracle[overflow_oracle_start..]
 			assert overflow_first.authority.trace_len == native_operation_trace_capacity
 			assert overflow_first.authority.trace_overflow
 			native_proof_assert_trace_equal(prefix, overflow_first.authority.trace)
 			assert overflow_first.authority.registry.tickets.len == 0
-			native_appkit_assert_ticket_release_delta_for_test(overflow_tickets, overflow_oracle)
-			native_appkit_assert_cleanup_order_for_test(overflow_ownership, overflow_oracle)
+			native_appkit_assert_ticket_release_delta_with_temporary_pool_for_test(overflow_tickets,
+				overflow_cleanup_oracle, overflow_first.authority.owner_thread_identity)
+			native_appkit_assert_cleanup_order_for_test(overflow_ownership, overflow_cleanup_oracle)
 			overflow_first_side := native_appkit_assert_side_effect_operation_bijection_for_test(overflow_first.authority,
 				overflow_oracle, overflow_side_generation, [], false)
 			overflow_app.stop()!

@@ -96,6 +96,11 @@ mut:
 	transaction NativeLifetimeAcquisitionTransaction
 }
 
+enum AppKitWindowDrawableReleaseMode {
+	preserve_for_abort
+	close_frame
+}
+
 @[heap; markused]
 struct AppKitWindowRecord {
 	id WindowId
@@ -1519,10 +1524,12 @@ fn appkit_pending_start_device_is_empty(pending AppKitPendingStartDevice) bool {
 	return pending.value == unsafe { nil } && pending.transaction.ticket_id == 0
 }
 
-fn (mut backend AppKitBackend) release_window_drawable_lifetime(mut record &AppKitWindowRecord, error_text string) bool {
+fn (mut backend AppKitBackend) release_window_drawable_lifetime(mut record &AppKitWindowRecord, mode AppKitWindowDrawableReleaseMode, error_text string) bool {
 	if appkit_lifetime_pair_is_empty(record.active_drawable, record.active_drawable_ticket) {
-		record.frame_active = false
-		record.active_frame_lease = 0
+		if mode == .close_frame {
+			record.frame_active = false
+			record.active_frame_lease = 0
+		}
 		return true
 	}
 	if backend.native_operations == unsafe { nil }
@@ -1538,7 +1545,7 @@ fn (mut backend AppKitBackend) release_window_drawable_lifetime(mut record &AppK
 		record.active_drawable_ticket, .metal_drawable, parent_identity, error_text)
 	record.active_drawable = released.value
 	record.active_drawable_ticket = released.ticket_id
-	if released.native_released {
+	if released.native_released && mode == .close_frame {
 		record.frame_active = false
 		record.active_frame_lease = 0
 	}
@@ -1583,7 +1590,7 @@ fn (mut backend AppKitBackend) release_active_frames_lifetime() bool {
 		mut all_retired := true
 		for i in 0 .. backend.windows.len {
 			mut record := &backend.windows[i]
-			if !backend.release_window_drawable_lifetime(mut record,
+			if !backend.release_window_drawable_lifetime(mut record, .close_frame,
 				err_appkit_metal_drawable_failed) {
 				all_retired = false
 			}
@@ -1689,7 +1696,8 @@ fn (mut backend AppKitBackend) prepare_window_native_destroy(mut record &AppKitW
 
 fn (mut backend AppKitBackend) release_window_resources(mut record &AppKitWindowRecord, seed NativeOperationSeed) bool {
 	$if darwin {
-		if !backend.release_window_drawable_lifetime(mut record, err_appkit_metal_drawable_failed) {
+		if !backend.release_window_drawable_lifetime(mut record, .close_frame,
+			err_appkit_metal_drawable_failed) {
 			return false
 		}
 		if backend.has_active_frames()

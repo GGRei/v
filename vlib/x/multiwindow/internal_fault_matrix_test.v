@@ -2513,10 +2513,106 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		])
 		multiwindow_sokol_trace.uninstall_generation(generation)!
 		before_stop := renderer_fault_state_snapshot_for_test(app, window)!
-		delivery_before := renderer_fault_delivery_state_snapshot_for_test(app)
-		callback_before := renderer_fault_wayland_frame_callback_state_for_test(app, window)
 		proof_armed := app.backend.native_operations.arm_proof()
 		fresh_capture := renderer_fault_native_proof_capture_for_test(app)
+		mut fresh := fresh_capture.snapshot
+		if app.backend.kind == .wayland {
+			$if linux && sokol_wayland ? {
+				callback := renderer_fault_wayland_frame_callback_state_for_test(app, window)
+				renderer_fault_assert_wayland_frame_callback_state_for_test(app, window, callback)
+				assert callback.callback_identity != 0
+				assert callback.callback_ticket != 0
+				index := app.backend.wayland.window_record_index(window) or {
+					return error(err_window_not_found)
+				}
+				mut record := app.backend.wayland.windows[index]
+				assert native_identity(record.frame_callback) == callback.callback_identity
+				assert record.frame_callback_ticket == callback.callback_ticket
+				assert native_identity(record.surface) == callback.parent_identity
+				assert record.render_target_generation == callback.target_generation
+				assert !record.frame_ready
+				release := app.backend.wayland.destroy_frame_callback_lifetime(mut record)
+				release_succeeded := release.succeeded()
+				callback_cleared := record.frame_callback == unsafe { nil }
+					&& record.frame_callback_ticket == 0
+				assert release_succeeded
+				assert callback_cleared
+				if release_succeeded && callback_cleared {
+					record.frame_ready = true
+				}
+				assert record.frame_ready
+				released_callback := renderer_fault_wayland_frame_callback_state_for_test(app,
+					window)
+				renderer_fault_assert_wayland_frame_callback_state_for_test(app, window,
+					released_callback)
+				assert released_callback.target_generation == callback.target_generation
+				assert released_callback.parent_identity == callback.parent_identity
+				assert released_callback.callback_identity == 0
+				assert released_callback.callback_ticket == 0
+				release_capture := renderer_fault_native_proof_capture_for_test(app)
+				assert release_capture.available
+				release_proof := release_capture.snapshot
+				assert release_proof.generation == fresh.generation
+				assert !release_proof.trace_overflow
+				assert release_proof.trace_len == 6
+				assert release_proof.next_ordinal == fresh.next_ordinal
+				assert release_proof.live_tickets + 1 == fresh.live_tickets
+				assert callback.ticket_context.authority_scope == .renderer_attempt
+				assert callback.ticket_context.authority_token == app.backend.native_operations.renderer_attempt_token
+				release_cursor := renderer_fault_assert_lifetime_release_chain_for_test(app,
+					app.backend.native_operations.proof, 0, .wayland, .surface_destroy,
+					.window_finalize, .window_target, .renderer_attempt,
+					callback.ticket_context.ordinal, callback.callback_identity)
+				assert app.backend.native_operations.proof.trace[0].context == callback.ticket_context
+				assert release_cursor == 6
+				assert release_cursor == release_proof.trace_len
+
+				roundtrip_fresh := renderer_fault_clear_native_trace_for_test(mut app)
+				assert roundtrip_fresh.generation == release_proof.generation
+				assert roundtrip_fresh.trace_len == 0
+				assert !roundtrip_fresh.trace_overflow
+				assert roundtrip_fresh.next_ordinal == release_proof.next_ordinal
+				assert roundtrip_fresh.live_tickets == release_proof.live_tickets
+				display_identity := before_stop.wayland_display_identity
+				assert display_identity != 0
+				assert native_identity(app.backend.wayland.display) == display_identity
+				assert app.backend.wayland.render_health == .ready
+				assert !app.backend.wayland.wayland_display_unavailable
+				roundtrip := app.backend.wayland.attempt_wayland_roundtrip(NativeOperationSeed{
+					call_site: .display_transport
+					scope:     .renderer
+				})
+				assert roundtrip.succeeded()
+				roundtrip_capture := renderer_fault_native_proof_capture_for_test(app)
+				assert roundtrip_capture.available
+				roundtrip_proof := roundtrip_capture.snapshot
+				assert roundtrip_proof.generation == roundtrip_fresh.generation
+				assert !roundtrip_proof.trace_overflow
+				assert roundtrip_proof.trace_len == 8
+				assert roundtrip_proof.next_ordinal == roundtrip_fresh.next_ordinal + 2
+				assert roundtrip_proof.live_tickets == roundtrip_fresh.live_tickets
+				roundtrip_cursor := renderer_fault_assert_wayland_roundtrip_segment_for_test(app,
+					app.backend.native_operations.proof, roundtrip_fresh.next_ordinal,
+					display_identity)
+				assert roundtrip_cursor == roundtrip_proof.trace_len
+				fresh = renderer_fault_clear_native_trace_for_test(mut app)
+				assert fresh.generation == roundtrip_proof.generation
+				assert fresh.trace_len == 0
+				assert !fresh.trace_overflow
+				assert fresh.next_ordinal == roundtrip_proof.next_ordinal
+				assert fresh.live_tickets == roundtrip_proof.live_tickets
+			} $else {
+				return error(err_backend_unsupported)
+			}
+		}
+		delivery_before := renderer_fault_delivery_state_snapshot_for_test(app)
+		callback_before := renderer_fault_wayland_frame_callback_state_for_test(app, window)
+		if app.backend.kind == .wayland {
+			renderer_fault_assert_wayland_frame_callback_state_for_test(app, window,
+				callback_before)
+			assert callback_before.callback_identity == 0
+			assert callback_before.callback_ticket == 0
+		}
 
 		mut prepare_error := ''
 		ticket := app.prepare_stop() or {
@@ -2538,7 +2634,6 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert proof_armed
 		assert fresh_capture.available
 		assert harvested_capture.available
-		fresh := fresh_capture.snapshot
 		harvested_proof := harvested_capture.snapshot
 		assert fresh.generation != 0
 		assert fresh.ordinal_floor != 0

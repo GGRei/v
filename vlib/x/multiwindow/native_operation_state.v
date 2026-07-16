@@ -361,11 +361,25 @@ fn (authority &NativeOperationAuthority) has_live_lifetime_tickets() bool {
 
 fn (authority &NativeOperationAuthority) has_provisional_lifetime_acquisition() bool {
 	for ticket in authority.lifetime_tickets {
-		if ticket.state in [.acquiring, .provisional_bound] {
+		if ticket.state in [.acquiring, .provisional_bound]
+			|| (ticket.state in [.releasing, .native_released]
+			&& ticket.acquisition_context.ordinal != 0) {
 			return true
 		}
 	}
 	return false
+}
+
+fn (authority &NativeOperationAuthority) lifetime_ticket_index(ticket_id u64) ?int {
+	if ticket_id == 0 {
+		return none
+	}
+	for index, ticket in authority.lifetime_tickets {
+		if ticket.ticket_id == ticket_id {
+			return index
+		}
+	}
+	return none
 }
 
 fn (authority &NativeOperationAuthority) has_pending_native_plans() bool {
@@ -455,8 +469,8 @@ fn (authority &NativeOperationAuthority) lifetime_acquisition_proof_generation_i
 }
 
 fn (authority &NativeOperationAuthority) lifetime_acquisition_transaction_matches_ticket(ticket NativeLifetimeReleaseTicket, transaction NativeLifetimeAcquisitionTransaction, required_state NativeLifetimeTicketState) bool {
-	if !authority.owner_thread_is_current() || authority.lifetime_tickets.len != 1
-		|| ticket.state != required_state || ticket.ticket_id == 0 {
+	if !authority.owner_thread_is_current() || ticket.state != required_state
+		|| ticket.ticket_id == 0 {
 		return false
 	}
 	if ticket.ticket_id != transaction.ticket_id || ticket.ticket_id != ticket.context.ordinal
@@ -529,8 +543,8 @@ fn (authority &NativeOperationAuthority) lifetime_acquisition_transaction_matche
 }
 
 fn (authority &NativeOperationAuthority) lifetime_acquisition_claim_matches_ticket(ticket NativeLifetimeReleaseTicket, claim NativeLifetimeAcquisitionClaim, required_state NativeLifetimeTicketState) bool {
-	if !authority.owner_thread_is_current() || authority.lifetime_tickets.len != 1
-		|| ticket.state != required_state || ticket.ticket_id == 0 {
+	if !authority.owner_thread_is_current() || ticket.state != required_state
+		|| ticket.ticket_id == 0 {
 		return false
 	}
 	if ticket.ticket_id != claim.ticket_id || ticket.ticket_id != ticket.context.ordinal
@@ -588,7 +602,7 @@ fn (authority &NativeOperationAuthority) lifetime_acquisition_claim_matches_tick
 fn (mut authority NativeOperationAuthority) begin_lifetime_acquisition(acquisition_context NativeOperationContext, release_context NativeOperationContext, release_kind NativeLifetimeReleaseKind, required_parent_identity u64, owner_seed NativeOperationSeed) !NativeLifetimeAcquisitionTransaction {
 	seed := owner_seed.without_target_identity()
 	if !authority.owner_thread_is_current() || authority.app_identity == 0
-		|| authority.lifetime_tickets.len != 0 || release_kind != .metal_device
+		|| authority.has_provisional_lifetime_acquisition() || release_kind != .metal_device
 		|| required_parent_identity != 0 || acquisition_context.ordinal == 0
 		|| release_context.ordinal == 0
 		|| release_context.ordinal != acquisition_context.ordinal + 1
@@ -604,6 +618,9 @@ fn (mut authority NativeOperationAuthority) begin_lifetime_acquisition(acquisiti
 		|| release_context.renderer_attempt_token != 0 || release_context.domain != .metal
 		|| release_context.operation != .object_release
 		|| !native_operation_context_matches_seed(release_context, seed) {
+		return error(err_render_native_renderer_unavailable)
+	}
+	if _ := authority.lifetime_ticket_index(release_context.ordinal) {
 		return error(err_render_native_renderer_unavailable)
 	}
 	authority.lifetime_tickets << NativeLifetimeReleaseTicket{
@@ -635,16 +652,14 @@ fn (mut authority NativeOperationAuthority) begin_lifetime_acquisition(acquisiti
 }
 
 fn (mut authority NativeOperationAuthority) bind_lifetime_acquisition_actual(transaction NativeLifetimeAcquisitionTransaction, native_identity u64) ?NativeLifetimeAcquisitionTransaction {
-	if authority.lifetime_tickets.len != 1 {
-		return none
-	}
-	ticket := authority.lifetime_tickets[0]
+	index := authority.lifetime_ticket_index(transaction.ticket_id) or { return none }
+	ticket := authority.lifetime_tickets[index]
 	if !authority.lifetime_acquisition_transaction_matches_ticket(ticket, transaction, .acquiring) {
 		return none
 	}
 	if native_identity == 0 {
-		authority.lifetime_tickets[0].state = .burned
-		authority.lifetime_tickets.delete(0)
+		authority.lifetime_tickets[index].state = .burned
+		authority.lifetime_tickets.delete(index)
 		return NativeLifetimeAcquisitionTransaction{}
 	}
 	release_context := NativeOperationContext{
@@ -652,10 +667,10 @@ fn (mut authority NativeOperationAuthority) bind_lifetime_acquisition_actual(tra
 		presence_mask:   transaction.release_context.presence_mask | native_context_has_target_identity
 		target_identity: native_identity
 	}
-	authority.lifetime_tickets[0].native_identity = native_identity
-	authority.lifetime_tickets[0].context = release_context
-	authority.lifetime_tickets[0].release_evidence_recorded = false
-	authority.lifetime_tickets[0].state = .provisional_bound
+	authority.lifetime_tickets[index].native_identity = native_identity
+	authority.lifetime_tickets[index].context = release_context
+	authority.lifetime_tickets[index].release_evidence_recorded = false
+	authority.lifetime_tickets[index].state = .provisional_bound
 	return NativeLifetimeAcquisitionTransaction{
 		...transaction
 		release_context: release_context
@@ -664,50 +679,52 @@ fn (mut authority NativeOperationAuthority) bind_lifetime_acquisition_actual(tra
 }
 
 fn (mut authority NativeOperationAuthority) cancel_lifetime_acquisition(transaction NativeLifetimeAcquisitionTransaction) bool {
-	if authority.lifetime_tickets.len != 1
-		|| !authority.lifetime_acquisition_transaction_matches_ticket(authority.lifetime_tickets[0], transaction, .acquiring) {
+	index := authority.lifetime_ticket_index(transaction.ticket_id) or { return false }
+	if !authority.lifetime_acquisition_transaction_matches_ticket(authority.lifetime_tickets[index],
+		transaction, .acquiring) {
 		return false
 	}
-	authority.lifetime_tickets[0].state = .burned
-	authority.lifetime_tickets.delete(0)
+	authority.lifetime_tickets[index].state = .burned
+	authority.lifetime_tickets.delete(index)
 	return true
 }
 
 fn (mut authority NativeOperationAuthority) abandon_physically_released_lifetime_acquisition(transaction NativeLifetimeAcquisitionTransaction) bool {
-	if !authority.owner_thread_is_current() || authority.lifetime_tickets.len != 1
-		|| transaction.ticket_id == 0 || transaction.native_identity != 0
-		|| transaction.app_identity != authority.app_identity
+	if !authority.owner_thread_is_current() || transaction.ticket_id == 0
+		|| transaction.native_identity != 0 || transaction.app_identity != authority.app_identity
 		|| transaction.release_kind != .metal_device {
 		return false
 	}
-	ticket := authority.lifetime_tickets[0]
-	if ticket.ticket_id != transaction.ticket_id || ticket.app_identity != authority.app_identity
-		|| ticket.state != .acquiring || ticket.native_identity != 0 || ticket.domain != .metal
-		|| ticket.release_kind != .metal_device {
+	index := authority.lifetime_ticket_index(transaction.ticket_id) or { return false }
+	ticket := authority.lifetime_tickets[index]
+	if !authority.lifetime_acquisition_transaction_matches_ticket(ticket, transaction, .acquiring)
+		|| ticket.native_identity != 0 {
 		return false
 	}
-	authority.lifetime_tickets[0].state = .abandoned
-	authority.lifetime_tickets.delete(0)
+	authority.lifetime_tickets[index].state = .abandoned
+	authority.lifetime_tickets.delete(index)
 	return true
 }
 
 fn (mut authority NativeOperationAuthority) commit_lifetime_acquisition(transaction NativeLifetimeAcquisitionTransaction) bool {
-	if authority.lifetime_tickets.len != 1
-		|| !authority.lifetime_acquisition_transaction_matches_ticket(authority.lifetime_tickets[0], transaction, .provisional_bound) {
+	index := authority.lifetime_ticket_index(transaction.ticket_id) or { return false }
+	if !authority.lifetime_acquisition_transaction_matches_ticket(authority.lifetime_tickets[index],
+		transaction, .provisional_bound) {
 		return false
 	}
-	authority.lifetime_tickets[0].state = .bound
+	authority.lifetime_tickets[index].state = .bound
 	return true
 }
 
 fn (mut authority NativeOperationAuthority) claim_provisional_lifetime_release(transaction NativeLifetimeAcquisitionTransaction) ?NativeLifetimeAcquisitionClaim {
-	if authority.lifetime_tickets.len != 1
-		|| !authority.lifetime_acquisition_transaction_matches_ticket(authority.lifetime_tickets[0], transaction, .provisional_bound) {
+	index := authority.lifetime_ticket_index(transaction.ticket_id) or { return none }
+	if !authority.lifetime_acquisition_transaction_matches_ticket(authority.lifetime_tickets[index],
+		transaction, .provisional_bound) {
 		return none
 	}
-	ticket := authority.lifetime_tickets[0]
-	authority.lifetime_tickets[0].release_evidence_recorded = false
-	authority.lifetime_tickets[0].state = .releasing
+	ticket := authority.lifetime_tickets[index]
+	authority.lifetime_tickets[index].release_evidence_recorded = false
+	authority.lifetime_tickets[index].state = .releasing
 	return NativeLifetimeAcquisitionClaim{
 		ticket_id:       ticket.ticket_id
 		app_identity:    ticket.app_identity
@@ -720,35 +737,35 @@ fn (mut authority NativeOperationAuthority) claim_provisional_lifetime_release(t
 }
 
 fn (mut authority NativeOperationAuthority) mark_provisional_lifetime_native_released(claim NativeLifetimeAcquisitionClaim) bool {
-	if authority.lifetime_tickets.len != 1
-		|| !authority.lifetime_acquisition_claim_matches_ticket(authority.lifetime_tickets[0], claim, .releasing)
-		|| authority.lifetime_tickets[0].release_evidence_recorded {
+	index := authority.lifetime_ticket_index(claim.ticket_id) or { return false }
+	if !authority.lifetime_acquisition_claim_matches_ticket(authority.lifetime_tickets[index], claim, .releasing)
+		|| authority.lifetime_tickets[index].release_evidence_recorded {
 		return false
 	}
-	authority.lifetime_tickets[0].state = .native_released
+	authority.lifetime_tickets[index].state = .native_released
 	return true
 }
 
 fn (mut authority NativeOperationAuthority) record_provisional_lifetime_release_evidence(claim NativeLifetimeAcquisitionClaim, capture NativePrimitiveCapture, result NativeRenderResult) bool {
-	if authority.lifetime_tickets.len != 1
-		|| !authority.lifetime_acquisition_claim_matches_ticket(authority.lifetime_tickets[0], claim, .native_released)
-		|| authority.lifetime_tickets[0].release_evidence_recorded
+	index := authority.lifetime_ticket_index(claim.ticket_id) or { return false }
+	if !authority.lifetime_acquisition_claim_matches_ticket(authority.lifetime_tickets[index], claim, .native_released)
+		|| authority.lifetime_tickets[index].release_evidence_recorded
 		|| !native_operation_contexts_identical(result.context, claim.context) {
 		return false
 	}
 	authority.record_release(claim.context, capture, result)
-	authority.lifetime_tickets[0].release_evidence_recorded = true
+	authority.lifetime_tickets[index].release_evidence_recorded = true
 	return true
 }
 
 fn (mut authority NativeOperationAuthority) retire_provisional_lifetime_release(claim NativeLifetimeAcquisitionClaim) bool {
-	if authority.lifetime_tickets.len != 1
-		|| !authority.lifetime_acquisition_claim_matches_ticket(authority.lifetime_tickets[0], claim, .native_released)
-		|| !authority.lifetime_tickets[0].release_evidence_recorded {
+	index := authority.lifetime_ticket_index(claim.ticket_id) or { return false }
+	if !authority.lifetime_acquisition_claim_matches_ticket(authority.lifetime_tickets[index], claim, .native_released)
+		|| !authority.lifetime_tickets[index].release_evidence_recorded {
 		return false
 	}
-	authority.lifetime_tickets[0].state = .released
-	authority.lifetime_tickets.delete(0)
+	authority.lifetime_tickets[index].state = .released
+	authority.lifetime_tickets.delete(index)
 	return true
 }
 
