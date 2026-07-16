@@ -5,6 +5,7 @@
 #include <math.h>
 #if defined(SOKOL_TRACE_HOOKS) && defined(V_MULTIWINDOW_NATIVE_PROOF_TEST)
 #include <pthread.h>
+#include <stdio.h>
 #endif
 #include <stdbool.h>
 #include <stdint.h>
@@ -332,6 +333,9 @@ v_multiwindow_test_appkit_oracle_record_get(uint64_t index) {
 @property(assign) int framebufferWidth;
 @property(assign) int framebufferHeight;
 @property(assign) int cursorShape;
+#if defined(SOKOL_TRACE_HOOKS) && defined(V_MULTIWINDOW_NATIVE_PROOF_TEST)
+@property(assign) BOOL nativeProofHeadlessOcclusionOverride;
+#endif
 - (void)updateDimensions;
 - (BOOL)ensureDepthTextureWithDevice:(id<MTLDevice>)device;
 - (void)queueLifecycleEvent:(int)kind;
@@ -716,6 +720,9 @@ static void v_multiwindow_appkit_fill_touch_point(VMultiwindowAppKitWindowState 
 	self = [super init];
 	if (self != nil) {
 		self.queuedEvents = [NSMutableArray array];
+#if defined(SOKOL_TRACE_HOOKS) && defined(V_MULTIWINDOW_NATIVE_PROOF_TEST)
+		self.nativeProofHeadlessOcclusionOverride = NO;
+#endif
 	}
 	return self;
 }
@@ -1550,14 +1557,68 @@ int v_multiwindow_appkit_native_proof_restore_physical_nil_drawable(
 	return 1;
 }
 
+void v_multiwindow_test_appkit_diagnostic_marker(const char *phase,
+		uint64_t identity) {
+	fprintf(stderr, "APPKIT_NATIVE_PROOF phase=%s identity=%llu\n",
+		phase != NULL ? phase : "unknown",
+		(unsigned long long)identity);
+	fflush(stderr);
+}
+
+static void v_multiwindow_test_appkit_admission_probe(int main_thread,
+		int state_present, int window_present, int visible,
+		int miniaturized, int occluded, int polls, const char *reason,
+		int admitted) {
+	fprintf(stderr,
+		"APPKIT_ADMISSION_PROBE main_thread=%d state_present=%d window_present=%d visible=%d miniaturized=%d occluded=%d polls=%d reason=%s admitted=%d\n",
+		main_thread, state_present, window_present, visible, miniaturized,
+		occluded, polls, reason, admitted);
+	fflush(stderr);
+}
+
 int v_multiwindow_test_appkit_admit_window(void *state_ptr) {
 	@autoreleasepool {
-		if (state_ptr == NULL || ![NSThread isMainThread]) {
+		const int main_thread = [NSThread isMainThread] ? 1 : 0;
+		const int state_present = state_ptr != NULL ? 1 : 0;
+		if (state_ptr == NULL || !main_thread) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, -1, -1, -1, -1, 0,
+				state_present ? "not_main_thread" : "state_nil", 0);
 			return 0;
 		}
 		VMultiwindowAppKitWindowState *state =
 			(__bridge VMultiwindowAppKitWindowState *)state_ptr;
+		state.nativeProofHeadlessOcclusionOverride = NO;
 		if (state.window == nil) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 0, -1, -1, -1, 0, "window_nil", 0);
+			return 0;
+		}
+		if (state.view == nil) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 1, -1, -1, -1, 0, "view_nil", 0);
+			return 0;
+		}
+		if (state.layer == nil) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 1, -1, -1, -1, 0, "layer_nil", 0);
+			return 0;
+		}
+		if (state.layer.device == nil) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 1, -1, -1, -1, 0, "device_nil", 0);
+			return 0;
+		}
+		if (state.width <= 0 || state.height <= 0) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 1, -1, -1, -1, 0,
+				"dimensions_non_positive", 0);
+			return 0;
+		}
+		if (state.framebufferWidth <= 0 || state.framebufferHeight <= 0) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 1, -1, -1, -1, 0,
+				"framebuffer_non_positive", 0);
 			return 0;
 		}
 		NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
@@ -1572,13 +1633,18 @@ int v_multiwindow_test_appkit_admit_window(void *state_ptr) {
 		[state.window orderFrontRegardless];
 		[state.window makeKeyWindow];
 		BOOL admitted = NO;
+		int visible = -1;
+		int miniaturized = -1;
+		int occluded = -1;
+		int polls = 0;
 		for (int poll = 0; poll < 128; poll++) {
 			[NSApp updateWindows];
-			BOOL visible = state.window.isVisible;
-			BOOL miniaturized = state.window.isMiniaturized;
-			BOOL occluded = visible
+			visible = state.window.isVisible ? 1 : 0;
+			miniaturized = state.window.isMiniaturized ? 1 : 0;
+			occluded = visible
 				&& ((state.window.occlusionState
-					& NSWindowOcclusionStateVisible) == 0);
+					& NSWindowOcclusionStateVisible) == 0) ? 1 : 0;
+			polls = poll + 1;
 			if (visible && !miniaturized && !occluded) {
 				admitted = YES;
 				break;
@@ -1588,7 +1654,71 @@ int v_multiwindow_test_appkit_admit_window(void *state_ptr) {
 				beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
 		}
 		[center removeObserver:observer];
-		return admitted ? 1 : 0;
+		if (admitted) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 1, visible, miniaturized, occluded, polls,
+				"admitted", 1);
+			return 1;
+		}
+		if (state.window == nil) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 0, visible, miniaturized, occluded, polls,
+				"window_nil", 0);
+			return 0;
+		}
+		if (state.view == nil) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 1, visible, miniaturized, occluded, polls,
+				"view_nil", 0);
+			return 0;
+		}
+		if (state.layer == nil) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 1, visible, miniaturized, occluded, polls,
+				"layer_nil", 0);
+			return 0;
+		}
+		if (state.layer.device == nil) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 1, visible, miniaturized, occluded, polls,
+				"device_nil", 0);
+			return 0;
+		}
+		if (state.width <= 0 || state.height <= 0) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 1, visible, miniaturized, occluded, polls,
+				"dimensions_non_positive", 0);
+			return 0;
+		}
+		if (state.framebufferWidth <= 0 || state.framebufferHeight <= 0) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 1, visible, miniaturized, occluded, polls,
+				"framebuffer_non_positive", 0);
+			return 0;
+		}
+		if (!visible) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 1, visible, miniaturized, occluded, polls,
+				"hidden", 0);
+			return 0;
+		}
+		if (miniaturized) {
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 1, visible, miniaturized, occluded, polls,
+				"miniaturized", 0);
+			return 0;
+		}
+		if (occluded) {
+			state.nativeProofHeadlessOcclusionOverride = YES;
+			v_multiwindow_test_appkit_admission_probe(main_thread,
+				state_present, 1, visible, miniaturized, occluded, polls,
+				"headless_occlusion_override", 2);
+			return 2;
+		}
+		v_multiwindow_test_appkit_admission_probe(main_thread,
+			state_present, 1, visible, miniaturized, occluded, polls,
+			"timeout", 0);
+		return 0;
 	}
 }
 #endif
@@ -1988,7 +2118,14 @@ int v_multiwindow_appkit_render_snapshot(void *state_ptr, int *out_visible, int 
 		BOOL occluded = visible && ((state.window.occlusionState & NSWindowOcclusionStateVisible) == 0);
 		if (out_visible != NULL) *out_visible = visible ? 1 : 0;
 		if (out_miniaturized != NULL) *out_miniaturized = miniaturized ? 1 : 0;
-		if (out_occluded != NULL) *out_occluded = occluded ? 1 : 0;
+		if (out_occluded != NULL) {
+#if defined(SOKOL_TRACE_HOOKS) && defined(V_MULTIWINDOW_NATIVE_PROOF_TEST)
+			*out_occluded = state.nativeProofHeadlessOcclusionOverride
+				? 0 : (occluded ? 1 : 0);
+#else
+			*out_occluded = occluded ? 1 : 0;
+#endif
+		}
 		if (out_width != NULL) *out_width = state.width;
 		if (out_height != NULL) *out_height = state.height;
 		if (out_framebuffer_width != NULL) *out_framebuffer_width = state.framebufferWidth;
@@ -2431,11 +2568,16 @@ VMultiwindowNativePrimitive v_multiwindow_appkit_create_metal_device(void) {
 }
 
 VMultiwindowNativePrimitive v_multiwindow_appkit_release_metal_device(void *device) {
+	const uint64_t identity = (uint64_t)(uintptr_t)device;
+	v_multiwindow_test_appkit_diagnostic_marker("release_device_ENTER", identity);
+	v_multiwindow_test_appkit_diagnostic_marker("release_device_PRE_RELEASE", identity);
 	VMultiwindowNativePrimitive raw =
 		v_multiwindow_appkit_release_metal_device_actual(device);
+	v_multiwindow_test_appkit_diagnostic_marker("release_device_POST_RELEASE", identity);
 	v_multiwindow_test_appkit_oracle_append(
 		V_MULTIWINDOW_TEST_APPKIT_DEVICE_RELEASE,
-		(uint64_t)(uintptr_t)device, 0, raw);
+		identity, 0, raw);
+	v_multiwindow_test_appkit_diagnostic_marker("release_device_RETURN", identity);
 	return raw;
 }
 
@@ -2465,48 +2607,74 @@ VMultiwindowNativePrimitive v_multiwindow_appkit_configure_window_device(
 }
 
 VMultiwindowNativePrimitive v_multiwindow_appkit_destroy_window(void *state_ptr) {
+	const uint64_t identity = (uint64_t)(uintptr_t)state_ptr;
+	v_multiwindow_test_appkit_diagnostic_marker("destroy_window_ENTER", identity);
+	v_multiwindow_test_appkit_diagnostic_marker("destroy_window_PRE_RELEASE", identity);
 	VMultiwindowNativePrimitive raw =
 		v_multiwindow_appkit_destroy_window_actual(state_ptr);
+	v_multiwindow_test_appkit_diagnostic_marker("destroy_window_POST_RELEASE", identity);
 	v_multiwindow_test_appkit_oracle_append(
 		V_MULTIWINDOW_TEST_APPKIT_WINDOW_DESTROY,
-		(uint64_t)(uintptr_t)state_ptr, 0, raw);
+		identity, 0, raw);
+	v_multiwindow_test_appkit_diagnostic_marker("destroy_window_RETURN", identity);
 	return raw;
 }
 
 VMultiwindowNativePrimitive v_multiwindow_appkit_release_window(void *state_ptr) {
+	const uint64_t identity = (uint64_t)(uintptr_t)state_ptr;
+	v_multiwindow_test_appkit_diagnostic_marker("release_window_ENTER", identity);
+	v_multiwindow_test_appkit_diagnostic_marker("release_window_PRE_RELEASE", identity);
 	VMultiwindowNativePrimitive raw =
 		v_multiwindow_appkit_release_window_actual(state_ptr);
+	v_multiwindow_test_appkit_diagnostic_marker("release_window_POST_RELEASE", identity);
 	v_multiwindow_test_appkit_oracle_append(
 		V_MULTIWINDOW_TEST_APPKIT_WINDOW_RELEASE,
-		(uint64_t)(uintptr_t)state_ptr, 0, raw);
+		identity, 0, raw);
+	v_multiwindow_test_appkit_diagnostic_marker("release_window_RETURN", identity);
 	return raw;
 }
 
 VMultiwindowNativePrimitive v_multiwindow_appkit_create_renderer_anchor(void *device_ptr) {
+	const uint64_t identity = (uint64_t)(uintptr_t)device_ptr;
+	v_multiwindow_test_appkit_diagnostic_marker("create_renderer_anchor_ENTER", identity);
+	v_multiwindow_test_appkit_diagnostic_marker("create_renderer_anchor_PRE_ACTUAL", identity);
 	VMultiwindowNativePrimitive raw =
 		v_multiwindow_appkit_create_renderer_anchor_actual(device_ptr);
+	v_multiwindow_test_appkit_diagnostic_marker("create_renderer_anchor_POST_ACTUAL", identity);
 	v_multiwindow_test_appkit_oracle_append(
 		V_MULTIWINDOW_TEST_APPKIT_ANCHOR_CREATE,
-		(uint64_t)(uintptr_t)device_ptr, 0, raw);
+		identity, 0, raw);
+	v_multiwindow_test_appkit_diagnostic_marker("create_renderer_anchor_RETURN", identity);
 	return raw;
 }
 
 VMultiwindowNativePrimitive v_multiwindow_appkit_destroy_renderer_anchor(void *state_ptr) {
+	const uint64_t identity = (uint64_t)(uintptr_t)state_ptr;
+	v_multiwindow_test_appkit_diagnostic_marker("destroy_renderer_anchor_ENTER", identity);
+	v_multiwindow_test_appkit_diagnostic_marker("destroy_renderer_anchor_PRE_ACTUAL", identity);
 	VMultiwindowNativePrimitive raw =
 		v_multiwindow_appkit_destroy_renderer_anchor_actual(state_ptr);
+	v_multiwindow_test_appkit_diagnostic_marker("destroy_renderer_anchor_POST_ACTUAL", identity);
 	v_multiwindow_test_appkit_oracle_append(
 		V_MULTIWINDOW_TEST_APPKIT_ANCHOR_DESTROY,
-		(uint64_t)(uintptr_t)state_ptr, 0, raw);
+		identity, 0, raw);
+	v_multiwindow_test_appkit_diagnostic_marker("destroy_renderer_anchor_RETURN", identity);
 	return raw;
 }
 
 VMultiwindowNativePrimitive v_multiwindow_appkit_begin_frame(void *state_ptr,
 		void *device_ptr) {
+	const uint64_t state_identity = (uint64_t)(uintptr_t)state_ptr;
+	const uint64_t device_identity = (uint64_t)(uintptr_t)device_ptr;
+	v_multiwindow_test_appkit_diagnostic_marker("begin_frame_ENTER", state_identity);
+	v_multiwindow_test_appkit_diagnostic_marker("begin_frame_PRE_ACTUAL", state_identity);
 	VMultiwindowNativePrimitive raw =
 		v_multiwindow_appkit_begin_frame_actual(state_ptr, device_ptr);
+	v_multiwindow_test_appkit_diagnostic_marker("begin_frame_POST_ACTUAL", state_identity);
 	v_multiwindow_test_appkit_oracle_append(
 		V_MULTIWINDOW_TEST_APPKIT_DRAWABLE_ACQUIRE,
-		(uint64_t)(uintptr_t)state_ptr, (uint64_t)(uintptr_t)device_ptr, raw);
+		state_identity, device_identity, raw);
+	v_multiwindow_test_appkit_diagnostic_marker("begin_frame_RETURN", state_identity);
 	return raw;
 }
 
@@ -2532,28 +2700,42 @@ VMultiwindowNativePrimitive v_multiwindow_appkit_abort_frame(void *state_ptr,
 
 VMultiwindowNativePrimitive v_multiwindow_appkit_release_drawable(void *state_ptr,
 		void *drawable_ptr) {
+	const uint64_t identity = (uint64_t)(uintptr_t)drawable_ptr;
+	v_multiwindow_test_appkit_diagnostic_marker("release_drawable_ENTER", identity);
+	v_multiwindow_test_appkit_diagnostic_marker("release_drawable_PRE_RELEASE", identity);
 	VMultiwindowNativePrimitive raw =
 		v_multiwindow_appkit_release_drawable_actual(state_ptr, drawable_ptr);
+	v_multiwindow_test_appkit_diagnostic_marker("release_drawable_POST_RELEASE", identity);
 	v_multiwindow_test_appkit_oracle_append(
 		V_MULTIWINDOW_TEST_APPKIT_DRAWABLE_RELEASE,
-		(uint64_t)(uintptr_t)drawable_ptr, (uint64_t)(uintptr_t)state_ptr, raw);
+		identity, (uint64_t)(uintptr_t)state_ptr, raw);
+	v_multiwindow_test_appkit_diagnostic_marker("release_drawable_RETURN", identity);
 	return raw;
 }
 
 VMultiwindowNativePrimitive v_multiwindow_appkit_begin_render_batch(void) {
+	v_multiwindow_test_appkit_diagnostic_marker("begin_render_batch_ENTER", 0);
+	v_multiwindow_test_appkit_diagnostic_marker("begin_render_batch_PRE_ACTUAL", 0);
 	VMultiwindowNativePrimitive raw =
 		v_multiwindow_appkit_begin_render_batch_actual();
+	v_multiwindow_test_appkit_diagnostic_marker("begin_render_batch_POST_ACTUAL", 0);
 	v_multiwindow_test_appkit_oracle_append(
 		V_MULTIWINDOW_TEST_APPKIT_POOL_PUSH, 0, 0, raw);
+	v_multiwindow_test_appkit_diagnostic_marker("begin_render_batch_RETURN", raw.handle);
 	return raw;
 }
 
 VMultiwindowNativePrimitive v_multiwindow_appkit_end_render_batch(void *pool) {
+	const uint64_t identity = (uint64_t)(uintptr_t)pool;
+	v_multiwindow_test_appkit_diagnostic_marker("end_autorelease_pool_ENTER", identity);
+	v_multiwindow_test_appkit_diagnostic_marker("end_autorelease_pool_PRE_RELEASE", identity);
 	VMultiwindowNativePrimitive raw =
 		v_multiwindow_appkit_end_render_batch_actual(pool);
+	v_multiwindow_test_appkit_diagnostic_marker("end_autorelease_pool_POST_RELEASE", identity);
 	v_multiwindow_test_appkit_oracle_append(
 		V_MULTIWINDOW_TEST_APPKIT_POOL_POP,
-		(uint64_t)(uintptr_t)pool, 0, raw);
+		identity, 0, raw);
+	v_multiwindow_test_appkit_diagnostic_marker("end_autorelease_pool_RETURN", identity);
 	return raw;
 }
 #endif

@@ -211,7 +211,7 @@ fn test_multiwindow_render_runtime_consumer_compiles_enabled_and_disabled() {
 		}
 		flags := render_runtime_child_flags(enabled)
 		cmd := '${os.quoted_path(@VEXE)}${flags} -path "${vlib_dir}|@vlib|@vmodules" -o ${os.quoted_path(output)} ${os.quoted_path(fixture)}'
-		result := os.execute(cmd)
+		result := render_runtime_execute_child(cmd, enabled)
 		assert result.exit_code == 0, 'package-1 ${mode} consumer compile failed\ncommand: ${cmd}\noutput:\n${result.output}'
 	}
 }
@@ -393,7 +393,7 @@ fn test_multiwindow_render_runtime_no_flag_generated_c_is_isolated() {
 				os.rm(c_path) or {}
 			}
 			cmd := '${os.quoted_path(@VEXE)}${render_runtime_child_flags(false)} -os ${target} -b c -path "${vlib_dir}|@vlib|@vmodules" -o ${os.quoted_path(c_path)} ${os.quoted_path(fixture)}'
-			result := os.execute(cmd)
+			result := render_runtime_execute_child(cmd, false)
 			assert result.exit_code == 0, 'no-flag ${target} ${label} consumer C generation failed\ncommand: ${cmd}\noutput:\n${result.output}'
 			generated := render_runtime_generated_c_without_paths(os.read_file(c_path) or {
 				panic(err)
@@ -794,8 +794,17 @@ fn render_runtime_cross_targets() []string {
 fn render_runtime_compile_program(source string, output string, enabled bool) {
 	vlib_dir := os.dir(@DIR)
 	cmd := '${os.quoted_path(@VEXE)}${render_runtime_child_flags(enabled)} -path "${vlib_dir}|@vlib|@vmodules" -o ${os.quoted_path(output)} ${os.quoted_path(source)}'
-	result := os.execute(cmd)
+	result := render_runtime_execute_child(cmd, enabled)
 	assert result.exit_code == 0, 'consumer compile failed for `${os.file_name(source)}`\ncommand: ${cmd}\noutput:\n${result.output}'
+}
+
+fn render_runtime_execute_child(command string, enabled bool) os.Result {
+	$if linux_wayland_session ? {
+		if !enabled {
+			return os.execute('env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE ${command}')
+		}
+	}
+	return os.execute(command)
 }
 
 fn render_runtime_child_flags(enabled bool) string {

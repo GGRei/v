@@ -1,33 +1,56 @@
 #include <stddef.h>
 
-_Static_assert(sizeof(VMultiwindowNativePrimitive) == (13 * sizeof(uint64_t)),
+#ifdef _MSC_VER
+#define V_MULTIWINDOW_TEST_ABI_ASSERT(name, condition, message) \
+	typedef char V_MULTIWINDOW_TEST_ABI_ASSERT_##name[(condition) ? 1 : -1]
+#else
+#define V_MULTIWINDOW_TEST_ABI_ASSERT(name, condition, message) _Static_assert(condition, message)
+#endif
+
+V_MULTIWINDOW_TEST_ABI_ASSERT(primitive_size,
+	sizeof(VMultiwindowNativePrimitive) == (13 * sizeof(uint64_t)),
 	"portable native primitive ABI layout changed");
-_Static_assert(offsetof(VMultiwindowNativePrimitive, valid_mask) == 0,
+V_MULTIWINDOW_TEST_ABI_ASSERT(valid_mask_offset,
+	offsetof(VMultiwindowNativePrimitive, valid_mask) == 0,
 	"native primitive validity mask must remain first");
-_Static_assert(offsetof(VMultiwindowNativePrimitive, return_value) == 8,
+V_MULTIWINDOW_TEST_ABI_ASSERT(return_value_offset,
+	offsetof(VMultiwindowNativePrimitive, return_value) == 8,
 	"native primitive return offset changed");
-_Static_assert(offsetof(VMultiwindowNativePrimitive, handle) == 16,
+V_MULTIWINDOW_TEST_ABI_ASSERT(handle_offset,
+	offsetof(VMultiwindowNativePrimitive, handle) == 16,
 	"native primitive handle offset changed");
-_Static_assert(offsetof(VMultiwindowNativePrimitive, egl_error) == 24,
+V_MULTIWINDOW_TEST_ABI_ASSERT(egl_error_offset,
+	offsetof(VMultiwindowNativePrimitive, egl_error) == 24,
 	"native primitive EGL offset changed");
-_Static_assert(offsetof(VMultiwindowNativePrimitive, native_errno) == 32,
+V_MULTIWINDOW_TEST_ABI_ASSERT(native_errno_offset,
+	offsetof(VMultiwindowNativePrimitive, native_errno) == 32,
 	"native primitive errno offset changed");
-_Static_assert(offsetof(VMultiwindowNativePrimitive, wayland_display_error) == 40,
+V_MULTIWINDOW_TEST_ABI_ASSERT(wayland_display_error_offset,
+	offsetof(VMultiwindowNativePrimitive, wayland_display_error) == 40,
 	"native primitive Wayland offset changed");
-_Static_assert(offsetof(VMultiwindowNativePrimitive, dxgi_removal_reason) == 48,
+V_MULTIWINDOW_TEST_ABI_ASSERT(dxgi_removal_reason_offset,
+	offsetof(VMultiwindowNativePrimitive, dxgi_removal_reason) == 48,
 	"native primitive DXGI offset changed");
-_Static_assert(offsetof(VMultiwindowNativePrimitive, observed_count) == 56,
+V_MULTIWINDOW_TEST_ABI_ASSERT(observed_count_offset,
+	offsetof(VMultiwindowNativePrimitive, observed_count) == 56,
 	"native primitive count offset changed");
-_Static_assert(offsetof(VMultiwindowNativePrimitive, observed_flags) == 64,
+V_MULTIWINDOW_TEST_ABI_ASSERT(observed_flags_offset,
+	offsetof(VMultiwindowNativePrimitive, observed_flags) == 64,
 	"native primitive flags offset changed");
-_Static_assert(offsetof(VMultiwindowNativePrimitive, selected_value) == 72,
+V_MULTIWINDOW_TEST_ABI_ASSERT(selected_value_offset,
+	offsetof(VMultiwindowNativePrimitive, selected_value) == 72,
 	"native primitive selected-value offset changed");
-_Static_assert(offsetof(VMultiwindowNativePrimitive, object_identity_0) == 80,
+V_MULTIWINDOW_TEST_ABI_ASSERT(object_identity_0_offset,
+	offsetof(VMultiwindowNativePrimitive, object_identity_0) == 80,
 	"native primitive first identity offset changed");
-_Static_assert(offsetof(VMultiwindowNativePrimitive, object_identity_1) == 88,
+V_MULTIWINDOW_TEST_ABI_ASSERT(object_identity_1_offset,
+	offsetof(VMultiwindowNativePrimitive, object_identity_1) == 88,
 	"native primitive second identity offset changed");
-_Static_assert(offsetof(VMultiwindowNativePrimitive, object_identity_2) == 96,
+V_MULTIWINDOW_TEST_ABI_ASSERT(object_identity_2_offset,
+	offsetof(VMultiwindowNativePrimitive, object_identity_2) == 96,
 	"native primitive third identity offset changed");
+
+#undef V_MULTIWINDOW_TEST_ABI_ASSERT
 
 size_t v_multiwindow_test_common_native_primitive_size(void) {
 	return sizeof(VMultiwindowNativePrimitive);

@@ -12,45 +12,6 @@
 #include <windows.h>
 #include "../win32_d3d11_backend_helpers.h"
 
-static inline char *v_multiwindow_test_win32_diag_append_text(char *cursor,
-		const char *text) {
-	while (*text != '\0') {
-		*cursor++ = *text++;
-	}
-	return cursor;
-}
-
-static inline char *v_multiwindow_test_win32_diag_append_hex(char *cursor,
-		uint64_t value) {
-	static const char digits[] = "0123456789abcdef";
-	int shift;
-	for (shift = 60; shift >= 0; shift -= 4) {
-		*cursor++ = digits[(value >> shift) & UINT64_C(15)];
-	}
-	return cursor;
-}
-
-static inline void v_multiwindow_test_win32_diag_marker(uint64_t marker,
-		int64_t hresult, uint64_t pointer, uint64_t value) {
-	HANDLE stderr_handle = GetStdHandle(STD_ERROR_HANDLE);
-	if (stderr_handle == NULL || stderr_handle == INVALID_HANDLE_VALUE) {
-		return;
-	}
-	char line[128];
-	char *cursor = line;
-	DWORD written = 0;
-	cursor = v_multiwindow_test_win32_diag_append_text(cursor, "MWDXGI marker=0x");
-	cursor = v_multiwindow_test_win32_diag_append_hex(cursor, marker);
-	cursor = v_multiwindow_test_win32_diag_append_text(cursor, " hr=0x");
-	cursor = v_multiwindow_test_win32_diag_append_hex(cursor, (uint64_t)hresult);
-	cursor = v_multiwindow_test_win32_diag_append_text(cursor, " ptr=0x");
-	cursor = v_multiwindow_test_win32_diag_append_hex(cursor, pointer);
-	cursor = v_multiwindow_test_win32_diag_append_text(cursor, " value=0x");
-	cursor = v_multiwindow_test_win32_diag_append_hex(cursor, value);
-	cursor = v_multiwindow_test_win32_diag_append_text(cursor, "\r\n");
-	(void)WriteFile(stderr_handle, line, (DWORD)(cursor - line), &written, NULL);
-}
-
 #define V_MULTIWINDOW_TEST_WIN32_ORACLE_CAPACITY 512
 
 enum VMultiwindowTestWin32OracleKind {
@@ -119,13 +80,9 @@ static inline void v_multiwindow_test_win32_release(uint64_t identity,
 	VMultiwindowNativePrimitive raw;
 	memset(&raw, 0, sizeof(raw));
 	if (identity != UINT64_C(0)) {
-		v_multiwindow_test_win32_diag_marker(UINT64_C(10), INT64_C(0), identity,
-			UINT64_C(0));
 		ULONG remaining = V_MULTIWINDOW_COM_RELEASE((IUnknown *)(uintptr_t)identity);
 		raw.observed_count = (uint64_t)remaining;
 		raw.valid_mask = V_MULTIWINDOW_NATIVE_VALID_OBSERVED_COUNT;
-		v_multiwindow_test_win32_diag_marker(UINT64_C(11), INT64_C(0), identity,
-			raw.observed_count);
 	}
 	v_multiwindow_test_win32_oracle_record(V_MULTIWINDOW_TEST_WIN32_RELEASE,
 		identity, UINT64_C(0), &raw);
@@ -136,13 +93,7 @@ static inline void v_multiwindow_test_win32_release(uint64_t identity,
 
 static inline void v_multiwindow_test_win32_device_create_attempt(int64_t driver,
 		int64_t feature_list, VMultiwindowNativePrimitive *out) {
-	v_multiwindow_test_win32_diag_marker(UINT64_C(6), INT64_C(0),
-		(uint64_t)driver, (uint64_t)feature_list);
 	v_multiwindow_win32_d3d11_create_device_attempt(driver, feature_list, out);
-	v_multiwindow_test_win32_diag_marker(UINT64_C(7),
-		out != NULL ? out->return_value : INT64_C(0),
-		out != NULL ? out->handle : UINT64_C(0),
-		out != NULL ? out->object_identity_0 : UINT64_C(0));
 	v_multiwindow_test_win32_oracle_record(V_MULTIWINDOW_TEST_WIN32_DEVICE_CREATE,
 		(uint64_t)driver, (uint64_t)feature_list, out);
 }
@@ -243,11 +194,7 @@ static inline void v_multiwindow_test_win32_device_status(uint64_t device,
 
 static inline void v_multiwindow_test_win32_removal_query(uint64_t device,
 		VMultiwindowNativePrimitive *out) {
-	v_multiwindow_test_win32_diag_marker(UINT64_C(8), INT64_C(0), device,
-		UINT64_C(0));
 	v_multiwindow_win32_d3d11_get_removed_reason(device, out);
-	v_multiwindow_test_win32_diag_marker(UINT64_C(9),
-		out != NULL ? out->return_value : INT64_C(0), device, UINT64_C(0));
 	v_multiwindow_test_win32_oracle_record(V_MULTIWINDOW_TEST_WIN32_REMOVAL_QUERY,
 		device, UINT64_C(0), out);
 }

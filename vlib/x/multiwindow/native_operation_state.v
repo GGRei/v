@@ -3,7 +3,12 @@ module multiwindow
 import sync
 
 const native_primitive_plan_capacity = 8
-const native_operation_trace_capacity = 96
+
+$if linux && sokol_wayland ? {
+	const native_operation_trace_capacity = 320
+} $else {
+	const native_operation_trace_capacity = 256
+}
 
 struct NativePrimitivePlanEntry {
 mut:

@@ -1463,15 +1463,12 @@ fn (mut backend AppKitBackend) release_appkit_lifetime_identity(value voidptr, t
 		}
 
 		backend.native_operations.mark_claimed_lifetime_native_released(claim)
-		capture := backend.native_operations.capture_call(claim.context, raw)
-		validation := appkit_lifetime_validation(raw, identity)
-		mut result := backend.native_operations.accept_metal(claim.context, capture, validation,
-			error_text)
-		result = backend.record_metal_result(result)
-		backend.native_operations.record_native_released_lifetime_evidence(claim, capture, result)
-		if !result.succeeded() {
-			backend.append_release_diagnostic(if result.error_text != '' {
-				result.error_text
+		accepted := backend.accept_metal_clear_result(claim.context, raw, identity, error_text)
+		backend.native_operations.record_native_released_lifetime_evidence(claim, accepted.capture,
+			accepted.result)
+		if !accepted.result.succeeded() {
+			backend.append_release_diagnostic(if accepted.result.error_text != '' {
+				accepted.result.error_text
 			} else {
 				error_text
 			})

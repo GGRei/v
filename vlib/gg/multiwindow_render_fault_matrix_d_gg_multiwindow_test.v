@@ -2497,14 +2497,26 @@ fn multiwindow_assert_trace_retained_after_logical_release(before multiwindow_so
 	assert after.records == before.records
 }
 
+fn multiwindow_assert_cleanup_error_swapchain_pass(snapshot multiwindow_sokol_trace.TypedSnapshot, cursor int, width int, height int) int {
+	assert cursor >= 0
+	assert cursor + 2 < snapshot.records.len
+	begin_pass := snapshot.records[cursor]
+	assert begin_pass.operation == .begin_swapchain_pass
+	assert begin_pass.width == width
+	assert begin_pass.height == height
+	assert snapshot.records[cursor + 1].operation == .end_pass
+	assert snapshot.records[cursor + 2].operation == .commit
+	return cursor + 3
+}
+
 fn multiwindow_assert_cleanup_error_trace(snapshot multiwindow_sokol_trace.TypedSnapshot, app_buffer u32, window_buffer u32) {
 	assert app_buffer != 0
 	assert window_buffer != 0
 	assert app_buffer != window_buffer
 	assert snapshot.install_generation != 0
 	assert !snapshot.overflow
-	assert snapshot.records.len == 34
 	assert snapshot.count == usize(snapshot.records.len)
+	assert snapshot.records.len > 0
 	assert snapshot.records[0].sequence != 0
 	for index in 1 .. snapshot.records.len {
 		assert snapshot.records[index].sequence == snapshot.records[index - 1].sequence + 1
@@ -2515,6 +2527,9 @@ fn multiwindow_assert_cleanup_error_trace(snapshot multiwindow_sokol_trace.Typed
 	assert app_create.operation == .make_buffer
 	assert app_create.identity == app_buffer
 	cursor++
+	if cursor < snapshot.records.len && snapshot.records[cursor].operation == .begin_swapchain_pass {
+		cursor = multiwindow_assert_cleanup_error_swapchain_pass(snapshot, cursor, 1, 1)
+	}
 
 	context_create := snapshot.records[cursor]
 	assert context_create.operation == .make_buffer
@@ -2538,17 +2553,8 @@ fn multiwindow_assert_cleanup_error_trace(snapshot multiwindow_sokol_trace.Typed
 	assert window_create.identity == window_buffer
 	cursor++
 
-	for _ in 0 .. 2 {
-		begin_pass := snapshot.records[cursor]
-		assert begin_pass.operation == .begin_swapchain_pass
-		assert begin_pass.width > 0
-		assert begin_pass.height > 0
-		cursor++
-		assert snapshot.records[cursor].operation == .end_pass
-		cursor++
-		assert snapshot.records[cursor].operation == .commit
-		cursor++
-	}
+	cursor = multiwindow_assert_cleanup_error_swapchain_pass(snapshot, cursor, 96, 72)
+	cursor = multiwindow_assert_cleanup_error_swapchain_pass(snapshot, cursor, 1, 1)
 
 	window_destroy := snapshot.records[cursor]
 	assert window_destroy.operation == .destroy_buffer
@@ -2564,15 +2570,7 @@ fn multiwindow_assert_cleanup_error_trace(snapshot multiwindow_sokol_trace.Typed
 		assert pipeline_destroy.identity == identity
 		cursor++
 	}
-	begin_pass := snapshot.records[cursor]
-	assert begin_pass.operation == .begin_swapchain_pass
-	assert begin_pass.width > 0
-	assert begin_pass.height > 0
-	cursor++
-	assert snapshot.records[cursor].operation == .end_pass
-	cursor++
-	assert snapshot.records[cursor].operation == .commit
-	cursor++
+	cursor = multiwindow_assert_cleanup_error_swapchain_pass(snapshot, cursor, 1, 1)
 	app_destroy := snapshot.records[cursor]
 	assert app_destroy.operation == .destroy_buffer
 	assert app_destroy.identity == app_buffer

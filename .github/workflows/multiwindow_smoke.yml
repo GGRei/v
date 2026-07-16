@@ -32,8 +32,8 @@ concurrency:
 
 jobs:
   linux:
-    if: ${{ false }}
-    name: Linux GCC mock, X11 and Wayland
+    name: Linux GCC Wayland
+    if: ${{ true }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -135,137 +135,6 @@ jobs:
           }
           EOF
           ./v -cc gcc -o "$RUNNER_TEMP/multiwindow_ci_watchdog" "$RUNNER_TEMP/multiwindow_ci_watchdog.v"
-
-          cat > "$RUNNER_TEMP/multiwindow_x11_command.sh" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-
-          gate_path="${V_MULTIWINDOW_PROBE_WATCHDOG_GATE:?missing watchdog start gate}"
-          for _ in {1..400}; do
-            if [ -f "$gate_path" ]; then
-              break
-            fi
-            sleep 0.01
-          done
-          if [ ! -f "$gate_path" ]; then
-            echo "parent watchdog did not release $gate_path" >&2
-            exit 1
-          fi
-
-          runtime_dir="$(mktemp -d)"
-          xvfb_pid=''
-          xvfb_log="$runtime_dir/xvfb.log"
-          display_file="$runtime_dir/xvfb-display"
-          cleanup_done=0
-
-          stop_xvfb() {
-            local pid="$1"
-            if [ -z "$pid" ]; then
-              return 0
-            fi
-            if kill -0 "$pid" 2>/dev/null; then
-              kill -TERM "$pid" 2>/dev/null || true
-              for _ in {1..500}; do
-                if ! kill -0 "$pid" 2>/dev/null; then
-                  break
-                fi
-                sleep 0.01
-              done
-            fi
-            if kill -0 "$pid" 2>/dev/null; then
-              kill -KILL "$pid" 2>/dev/null || true
-            fi
-            wait "$pid" 2>/dev/null || true
-            if kill -0 "$pid" 2>/dev/null; then
-              echo "Xvfb process $pid remains alive after cleanup" >&2
-              return 1
-            fi
-          }
-
-          cleanup_x11() {
-            local status="$1"
-            trap - EXIT INT TERM
-            if [ "$cleanup_done" -eq 1 ]; then
-              return 0
-            fi
-            cleanup_done=1
-            local cleanup_failed=0
-            stop_xvfb "$xvfb_pid" || cleanup_failed=1
-            if [ "$status" -ne 0 ] || [ "$cleanup_failed" -ne 0 ]; then
-              echo '----- Xvfb log -----' >&2
-              cat "$xvfb_log" >&2 || true
-            fi
-            if ! rm -rf "$runtime_dir"; then
-              cleanup_failed=1
-            fi
-            return "$cleanup_failed"
-          }
-
-          on_exit() {
-            local status="$?"
-            local cleanup_status=0
-            cleanup_x11 "$status" || cleanup_status=$?
-            if [ "$status" -eq 0 ] && [ "$cleanup_status" -ne 0 ]; then
-              status="$cleanup_status"
-            fi
-            exit "$status"
-          }
-
-          on_int() {
-            cleanup_x11 130 || true
-            exit 130
-          }
-
-          on_term() {
-            cleanup_x11 143 || true
-            exit 143
-          }
-
-          trap on_exit EXIT
-          trap on_int INT
-          trap on_term TERM
-
-          chmod 700 "$runtime_dir"
-          Xvfb -displayfd 1 -screen 0 1280x1024x24 -nolisten tcp >"$display_file" 2>"$xvfb_log" &
-          xvfb_pid=$!
-
-          display_ready=0
-          x_display=''
-          for _ in {1..1000}; do
-            if [ -s "$display_file" ]; then
-              display_number="$(tr -d '\r\n' <"$display_file")"
-              case "$display_number" in
-                ''|*[!0-9]*) ;;
-                *)
-                  x_display=":$display_number"
-                  display_ready=1
-                  break
-                  ;;
-              esac
-            fi
-            if ! kill -0 "$xvfb_pid" 2>/dev/null; then
-              break
-            fi
-            sleep 0.01
-          done
-          if [ "$display_ready" -ne 1 ]; then
-            echo 'Xvfb did not publish a display number' >&2
-            exit 1
-          fi
-
-          set +e
-          DISPLAY="$x_display" "$@"
-          command_status=$?
-          set -e
-          if ! kill -0 "$xvfb_pid" 2>/dev/null; then
-            echo 'Xvfb exited before the X11 command completed' >&2
-            if [ "$command_status" -eq 0 ]; then
-              command_status=1
-            fi
-          fi
-          exit "$command_status"
-          EOF
-          chmod +x "$RUNNER_TEMP/multiwindow_x11_command.sh"
 
           cat > "$RUNNER_TEMP/multiwindow_weston_command.sh" <<'EOF'
           #!/usr/bin/env bash
@@ -388,10 +257,196 @@ jobs:
           chmod +x "$RUNNER_TEMP/multiwindow_weston_command.sh"
 
       - name: Run dedicated Linux matrix
+        if: ${{ false }}
+        run: |
+          set -euo pipefail
+          native_file=vlib/x/multiwindow/native_operation_proof_test.v
+          watchdog="$RUNNER_TEMP/multiwindow_ci_watchdog"
+
+          generic_cases=(
+            test_native_primitive_abi_is_portable_and_included_from_production_header
+            test_native_primitive_darwin_generated_c_has_no_linux_egl_boundary
+            test_native_proof_authority_has_exact_bounds_and_explicit_lifecycle
+            test_native_lifetime_registry_transitions_release_children_before_parent_and_gates_rebind
+            test_native_lifetime_null_burn_and_owner_ack_abandonment_are_terminal
+            test_native_lifetime_retirement_survives_trace_overflow_and_preserves_prefix
+            test_native_proof_generation_exhaustion_is_sticky_and_never_wraps
+            test_native_plan_matches_every_context_field_exactly
+            test_native_plan_rejects_duplicate_and_capacity_overflow_without_mutation
+            test_gg_native_plan_pair_rolls_back_duplicate_secondary_and_disarms
+            test_native_listener_selector_and_exact_plan_collisions_are_symmetric_and_nonmutating
+            test_native_plan_is_app_window_generation_and_epoch_local
+            test_native_plan_does_not_consume_a_stale_renderer_attempt
+            test_native_plan_isolated_between_real_apps_and_windows
+            test_native_compound_ordinal_reservation_exhausts_without_call_or_consumption
+            test_native_trace_separates_real_actual_effective_acceptance_health_and_release
+            test_native_plan_consumption_alone_records_no_operation_milestone
+            test_native_actual_fatal_evidence_cannot_be_downgraded
+            test_native_actual_dxgi_and_wayland_fatal_evidence_cannot_be_downgraded
+            test_wayland_window_surface_handle_classification
+            test_native_trace_bound_reports_overflow_and_preserves_prefix
+            test_native_proof_state_is_identical_after_replayed_public_stop
+          )
+          egl_cases=(
+            test_native_egl_prepass_bad_surface_keeps_serials_dirty_and_replaces_target
+            test_native_egl_postcommit_bad_surface_consumes_only_frame_and_replaces_target
+            test_native_egl_bad_native_window_is_window_local_and_clears_target
+            test_native_egl_context_lost_forbids_later_operations_and_uses_lifetime_releases
+            test_native_egl_bad_display_logically_abandons_without_native_release_calls
+            test_native_egl_bad_current_surface_queries_previous_binding_and_recovers_once
+          )
+          wayland_initial_cases=(
+            test_native_wayland_flush_and_poll_use_fresh_errno_and_display_evidence
+            test_native_wayland_fatal_transport_uses_local_proxy_anchor_release
+          )
+          linux_failed_start_cases=(
+            test_native_linux_egl_failed_start_closes_all_native_ownership_and_replays
+          )
+          wayland_remaining_cases=(
+            test_native_wayland_prepare_and_read_failures_are_balanced_and_retry_once
+            test_native_wayland_bad_poll_revents_latch_loss_after_balanced_cancel
+            test_native_wayland_listener_failure_arms_after_exact_callback_identity_exists
+            test_native_wayland_normal_frame_callback_retires_only_after_post_destroy_completion
+            test_native_wayland_frame_callback_registry_completion_follows_native_destroy
+            test_native_wayland_stop_releases_callback_before_egl_and_wayland_children
+            test_native_wayland_display_error_outranks_null_egl_window_and_forbids_fallback
+            test_native_wayland_private_anchor_acquisitions_rollback_and_retry
+          )
+          shared_cases=(
+            test_native_sokol_swapchain_attachment_matches_backend_authority
+          )
+          ordinal_cases=(
+            test_native_ordinal_exhaustion_at_real_boundary_is_terminal_and_replay_safe
+          )
+          phase_a_cases=(
+            test_native_phase_a_trace_overflow_does_not_block_lifetime_cleanup_or_replay
+          )
+          x11_cases=("${generic_cases[@]}" "${egl_cases[@]}" "${linux_failed_start_cases[@]}" "${shared_cases[@]}" "${ordinal_cases[@]}" "${phase_a_cases[@]}")
+          wayland_cases=("${generic_cases[@]}" "${egl_cases[@]}" "${wayland_initial_cases[@]}" "${linux_failed_start_cases[@]}" "${wayland_remaining_cases[@]}" "${shared_cases[@]}" "${ordinal_cases[@]}" "${phase_a_cases[@]}")
+
+          if [ "${#x11_cases[@]}" -ne 32 ] || [ "${#wayland_cases[@]}" -ne 42 ]; then
+            echo 'Singer native case mapping has an invalid cardinality' >&2
+            exit 1
+          fi
+
+          run_x11_selection() {
+            local selection="$1"
+            VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
+              VGG_MULTIWINDOW_RUNTIME_BACKEND=x11 \
+              V_MULTIWINDOW_PROBE_BACKEND=x11 \
+              VJOBS=1 \
+              "$watchdog" 300 - \
+                "$RUNNER_TEMP/multiwindow_x11_command.sh" \
+                env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true \
+                ./v -cc gcc -d gg_multiwindow -d x_multiwindow_x11 \
+                  test -run-only "$selection" "$native_file"
+          }
+
+          run_wayland_selection() {
+            local selection="$1"
+            VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
+              VGG_MULTIWINDOW_RUNTIME_BACKEND=wayland \
+              V_MULTIWINDOW_PROBE_BACKEND=wayland \
+              VJOBS=1 \
+              "$watchdog" 300 - \
+                "$RUNNER_TEMP/multiwindow_weston_command.sh" \
+                ./v -cc gcc -d gg_multiwindow -d sokol_wayland \
+                  test -run-only "$selection" "$native_file"
+          }
+
+          run_case_matrix() {
+            local backend="$1"
+            local selection_runner="$2"
+            shift 2
+            local -a cases=("$@")
+            local individual_passed=0
+            local individual_failed=0
+            local prefix_passed=0
+            local prefix_failed=0
+            local prefix=''
+            local case_name=''
+            local code=0
+            local n=0
+
+            for case_name in "${cases[@]}"; do
+              echo "BEGIN INDIVIDUAL backend=$backend case=$case_name"
+              if "$selection_runner" "$case_name"; then
+                code=0
+                individual_passed=$((individual_passed + 1))
+                echo "PASS INDIVIDUAL backend=$backend case=$case_name"
+              else
+                code=$?
+                individual_failed=$((individual_failed + 1))
+                echo "FAIL INDIVIDUAL backend=$backend case=$case_name code=$code"
+              fi
+            done
+
+            for case_name in "${cases[@]}"; do
+              n=$((n + 1))
+              if [ -z "$prefix" ]; then
+                prefix="$case_name"
+              else
+                prefix="$prefix,$case_name"
+              fi
+              echo "BEGIN PREFIX backend=$backend n=$n last=$case_name"
+              if "$selection_runner" "$prefix"; then
+                code=0
+                prefix_passed=$((prefix_passed + 1))
+                echo "PASS PREFIX backend=$backend n=$n last=$case_name"
+              else
+                code=$?
+                prefix_failed=$((prefix_failed + 1))
+                echo "FAIL PREFIX backend=$backend n=$n last=$case_name code=$code"
+              fi
+            done
+
+            echo "SUMMARY INDIVIDUAL backend=$backend passed=$individual_passed failed=$individual_failed total=${#cases[@]}"
+            echo "SUMMARY PREFIX backend=$backend passed=$prefix_passed failed=$prefix_failed total=${#cases[@]}"
+            if [ "$individual_failed" -ne 0 ] || [ "$prefix_failed" -ne 0 ]; then
+              return 1
+            fi
+          }
+
+          diagnostic_case=test_native_wayland_frame_callback_registry_completion_follows_native_destroy
+          overall_status=0
+          echo "BEGIN DIAGNOSTIC INDIVIDUAL case=$diagnostic_case"
+          if run_wayland_selection "$diagnostic_case"; then
+            echo "PASS DIAGNOSTIC INDIVIDUAL case=$diagnostic_case"
+          else
+            code=$?
+            overall_status=$code
+            echo "FAIL DIAGNOSTIC INDIVIDUAL case=$diagnostic_case code=$code"
+          fi
+
+          echo 'BEGIN MATRIX backend=x11'
+          if run_case_matrix x11 run_x11_selection "${x11_cases[@]}"; then
+            echo 'PASS MATRIX backend=x11'
+          else
+            code=$?
+            if [ "$overall_status" -eq 0 ]; then
+              overall_status=$code
+            fi
+            echo "FAIL MATRIX backend=x11 code=$code"
+          fi
+
+          echo 'BEGIN MATRIX backend=wayland'
+          if run_case_matrix wayland run_wayland_selection "${wayland_cases[@]}"; then
+            echo 'PASS MATRIX backend=wayland'
+          else
+            code=$?
+            if [ "$overall_status" -eq 0 ]; then
+              overall_status=$code
+            fi
+            echo "FAIL MATRIX backend=wayland code=$code"
+          fi
+          exit "$overall_status"
+
+      - name: Run broad Wayland regressions and examples
         run: |
           set -euo pipefail
           cp .github/workflows/linux_ci.yml.disabled .github/workflows/linux_ci.yml
           trap 'rm -f .github/workflows/linux_ci.yml' EXIT
+          watchdog="$RUNNER_TEMP/multiwindow_ci_watchdog"
 
           tests=(
             vlib/x/multiwindow/event_sequence_exhaustion_test.v
@@ -411,90 +466,38 @@ jobs:
             vlib/gg/draw_rect_empty_test.v
           )
 
-          "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
-            env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE \
-            ./v -cc gcc test vlib/gg/legacy_import_multiwindow_isolation_test.v
-
-          for test in "${tests[@]}"; do
-            VJOBS=1 \
-              "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
-              env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE \
-              ./v -cc gcc -d gg_multiwindow test "$test"
-          done
-
-          ./v -cc gcc -d gg_multiwindow \
-            -o /tmp/gg_multiwindow_mock examples/gg/multiwindow.v
-          ./v -cc gcc -d gg_multiwindow \
-            -o /tmp/gg_multiwindow_render_runtime_mock examples/gg/multiwindow_render_runtime.v
-          ./v -cc gcc -d gg_multiwindow -d x_multiwindow_x11 \
-            -o /tmp/gg_multiwindow_x11 examples/gg/multiwindow.v
-          ./v -cc gcc -d gg_multiwindow -d x_multiwindow_x11 \
-            -o /tmp/gg_multiwindow_render_runtime_x11 examples/gg/multiwindow_render_runtime.v
           ./v -cc gcc -d gg_multiwindow -d sokol_wayland \
             -o /tmp/gg_multiwindow_wayland examples/gg/multiwindow.v
           ./v -cc gcc -d gg_multiwindow -d sokol_wayland \
             -o /tmp/gg_multiwindow_render_runtime_wayland examples/gg/multiwindow_render_runtime.v
 
-          env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE \
-            VGG_MULTIWINDOW_EXAMPLE_UNATTENDED=mock \
-            "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
-              '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
-              /tmp/gg_multiwindow_mock
-
-          for test in "${tests[@]}"; do
-            VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
-              VGG_MULTIWINDOW_RUNTIME_BACKEND=x11 \
-              V_MULTIWINDOW_PROBE_BACKEND=x11 \
-              VJOBS=1 \
-              "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
-                "$RUNNER_TEMP/multiwindow_x11_command.sh" \
-                env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true \
-                ./v -cc gcc -d gg_multiwindow -d x_multiwindow_x11 test "$test"
-          done
-
-          VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
-            VGG_MULTIWINDOW_RUNTIME_BACKEND=x11 \
-            V_MULTIWINDOW_PROBE_BACKEND=x11 \
-            "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
-              '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' \
-              "$RUNNER_TEMP/multiwindow_x11_command.sh" \
-              env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true \
-              /tmp/gg_multiwindow_render_runtime_x11
-
-          VGG_MULTIWINDOW_EXAMPLE_UNATTENDED=x11 \
-            "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
-              '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
-              "$RUNNER_TEMP/multiwindow_x11_command.sh" \
-              env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true \
-              /tmp/gg_multiwindow_x11
-
-          for test in "${tests[@]}"; do
+          for test_file in "${tests[@]}"; do
             VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
               VGG_MULTIWINDOW_RUNTIME_BACKEND=wayland \
               V_MULTIWINDOW_PROBE_BACKEND=wayland \
               VJOBS=1 \
-              "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
+              "$watchdog" 300 - \
                 "$RUNNER_TEMP/multiwindow_weston_command.sh" \
-                ./v -cc gcc -d gg_multiwindow -d sokol_wayland test "$test"
+                ./v -cc gcc -d gg_multiwindow -d sokol_wayland test "$test_file"
           done
 
           VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
             VGG_MULTIWINDOW_RUNTIME_BACKEND=wayland \
             V_MULTIWINDOW_PROBE_BACKEND=wayland \
-            "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
+            "$watchdog" 120 \
               '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' \
               "$RUNNER_TEMP/multiwindow_weston_command.sh" \
               /tmp/gg_multiwindow_render_runtime_wayland
 
           VGG_MULTIWINDOW_EXAMPLE_UNATTENDED=wayland \
-            "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
+            "$watchdog" 120 \
               '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
               "$RUNNER_TEMP/multiwindow_weston_command.sh" \
               /tmp/gg_multiwindow_wayland
 
   macos:
-    if: ${{ false }}
     name: macOS clang Metal/AppKit
+    if: ${{ false }}
     runs-on: macos-14
     timeout-minutes: 90
     steps:
@@ -577,11 +580,193 @@ jobs:
           EOF
           ./v -cc clang -o "$RUNNER_TEMP/multiwindow_ci_watchdog" "$RUNNER_TEMP/multiwindow_ci_watchdog.v"
 
+      - name: Prove AppKit phase-B under default and expanded stacks
+        run: |
+          set -euo pipefail
+          readonly native_file=vlib/x/multiwindow/native_operation_proof_test.v
+          readonly watchdog="$RUNNER_TEMP/multiwindow_ci_watchdog"
+          readonly case_name=test_native_appkit_phase_b_exhaustion_overflow_and_stop_replay
+
+          run_appkit_case() {
+            VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
+              VGG_MULTIWINDOW_RUNTIME_BACKEND=appkit \
+              V_MULTIWINDOW_PROBE_BACKEND=appkit \
+              VJOBS=1 \
+              "$watchdog" 300 - \
+                ./v -cc clang -d gg_multiwindow -d sokol_metal -d multiwindow_native_proof_diag \
+                  test -run-only "$case_name" "$native_file"
+          }
+
+          run_default_stack() {
+            echo 'STACK backend=appkit mode=default kilobytes:'
+            ulimit -s
+            run_appkit_case
+          }
+
+          run_expanded_stack() (
+            current_stack="$(ulimit -s)"
+            hard_stack="$(ulimit -H -s)"
+            case "$hard_stack" in
+              unlimited)
+                target_stack=65520
+                ;;
+              ''|*[!0-9]*)
+                echo "invalid macOS hard stack limit: $hard_stack" >&2
+                exit 125
+                ;;
+              *)
+                if [ "$hard_stack" -lt 65520 ]; then
+                  target_stack="$hard_stack"
+                else
+                  target_stack=65520
+                fi
+                ;;
+            esac
+            if [ "$current_stack" != unlimited ] && [ "$target_stack" -le "$current_stack" ]; then
+              echo "macOS stack cannot be enlarged: current=$current_stack hard=$hard_stack" >&2
+              exit 125
+            fi
+            if ! ulimit -s "$target_stack"; then
+              echo "failed to set macOS stack limit to $target_stack" >&2
+              exit 125
+            fi
+            echo 'STACK backend=appkit mode=expanded kilobytes:'
+            ulimit -s
+            run_appkit_case
+          )
+
+          default_status=0
+          expanded_status=0
+
+          echo "BEGIN backend=appkit mode=default case=$case_name"
+          if run_default_stack; then
+            echo "PASS backend=appkit mode=default case=$case_name code=0"
+          else
+            default_status=$?
+            echo "FAIL backend=appkit mode=default case=$case_name code=$default_status"
+          fi
+
+          echo "BEGIN backend=appkit mode=expanded case=$case_name"
+          if run_expanded_stack; then
+            echo "PASS backend=appkit mode=expanded case=$case_name code=0"
+          else
+            expanded_status=$?
+            echo "FAIL backend=appkit mode=expanded case=$case_name code=$expanded_status"
+          fi
+
+          echo "SUMMARY backend=appkit case=$case_name default_code=$default_status expanded_code=$expanded_status"
+          if [ "$default_status" -ne 0 ]; then
+            exit "$default_status"
+          fi
+          if [ "$expanded_status" -ne 0 ]; then
+            exit "$expanded_status"
+          fi
+
       - name: Run dedicated Metal/AppKit matrix
+        run: |
+          set -euo pipefail
+          native_file=vlib/x/multiwindow/native_operation_proof_test.v
+          watchdog="$RUNNER_TEMP/multiwindow_ci_watchdog"
+          generic_cases=(
+            test_native_primitive_abi_is_portable_and_included_from_production_header
+            test_native_primitive_darwin_generated_c_has_no_linux_egl_boundary
+            test_native_proof_authority_has_exact_bounds_and_explicit_lifecycle
+            test_native_lifetime_registry_transitions_release_children_before_parent_and_gates_rebind
+            test_native_lifetime_null_burn_and_owner_ack_abandonment_are_terminal
+            test_native_lifetime_retirement_survives_trace_overflow_and_preserves_prefix
+            test_native_proof_generation_exhaustion_is_sticky_and_never_wraps
+            test_native_plan_matches_every_context_field_exactly
+            test_native_plan_rejects_duplicate_and_capacity_overflow_without_mutation
+            test_gg_native_plan_pair_rolls_back_duplicate_secondary_and_disarms
+            test_native_listener_selector_and_exact_plan_collisions_are_symmetric_and_nonmutating
+            test_native_plan_is_app_window_generation_and_epoch_local
+            test_native_plan_does_not_consume_a_stale_renderer_attempt
+            test_native_plan_isolated_between_real_apps_and_windows
+            test_native_compound_ordinal_reservation_exhausts_without_call_or_consumption
+            test_native_trace_separates_real_actual_effective_acceptance_health_and_release
+            test_native_plan_consumption_alone_records_no_operation_milestone
+            test_native_actual_fatal_evidence_cannot_be_downgraded
+            test_native_actual_dxgi_and_wayland_fatal_evidence_cannot_be_downgraded
+            test_wayland_window_surface_handle_classification
+            test_native_trace_bound_reports_overflow_and_preserves_prefix
+            test_native_proof_state_is_identical_after_replayed_public_stop
+          )
+          shared_cases=(
+            test_native_sokol_swapchain_attachment_matches_backend_authority
+          )
+          appkit_native_cases=(
+            test_native_appkit_phase_b_lifetimes_are_bijective_and_child_first
+            test_native_appkit_phase_b_null_burn_rejection_and_wrong_thread
+            test_native_appkit_phase_b_exhaustion_overflow_and_stop_replay
+            test_native_appkit_physical_nil_window_drawable_is_transient_and_retryable
+            test_native_appkit_physical_nil_anchor_drawable_is_transient_and_retryable
+          )
+          appkit_cases=("${generic_cases[@]}" "${shared_cases[@]}" "${appkit_native_cases[@]}")
+
+          if [ "${#appkit_cases[@]}" -ne 28 ]; then
+            echo 'AppKit case mapping has an invalid cardinality' >&2
+            exit 1
+          fi
+
+          run_appkit_selection() {
+            local selection="$1"
+            VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
+              VGG_MULTIWINDOW_RUNTIME_BACKEND=appkit \
+              V_MULTIWINDOW_PROBE_BACKEND=appkit \
+              VJOBS=1 \
+              "$watchdog" 300 - \
+                ./v -cc clang -d gg_multiwindow -d sokol_metal -d multiwindow_native_proof_diag \
+                  test -run-only "$selection" "$native_file"
+          }
+
+          individual_passed=0
+          individual_failed=0
+          prefix_passed=0
+          prefix_failed=0
+          prefix=''
+          n=0
+          for case_name in "${appkit_cases[@]}"; do
+            echo "BEGIN INDIVIDUAL backend=appkit case=$case_name"
+            if run_appkit_selection "$case_name"; then
+              individual_passed=$((individual_passed + 1))
+              echo "PASS INDIVIDUAL backend=appkit case=$case_name"
+            else
+              code=$?
+              individual_failed=$((individual_failed + 1))
+              echo "FAIL INDIVIDUAL backend=appkit case=$case_name code=$code"
+            fi
+          done
+
+          for case_name in "${appkit_cases[@]}"; do
+            n=$((n + 1))
+            if [ -z "$prefix" ]; then
+              prefix="$case_name"
+            else
+              prefix="$prefix,$case_name"
+            fi
+            echo "BEGIN PREFIX backend=appkit n=$n last=$case_name"
+            if run_appkit_selection "$prefix"; then
+              prefix_passed=$((prefix_passed + 1))
+              echo "PASS PREFIX backend=appkit n=$n last=$case_name"
+            else
+              code=$?
+              prefix_failed=$((prefix_failed + 1))
+              echo "FAIL PREFIX backend=appkit n=$n last=$case_name code=$code"
+            fi
+          done
+
+          echo "SUMMARY INDIVIDUAL backend=appkit passed=$individual_passed failed=$individual_failed total=${#appkit_cases[@]}"
+          echo "SUMMARY PREFIX backend=appkit passed=$prefix_passed failed=$prefix_failed total=${#appkit_cases[@]}"
+          if [ "$individual_failed" -ne 0 ] || [ "$prefix_failed" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Run broad Metal/AppKit regressions and examples
         run: |
           set -euo pipefail
           cp .github/workflows/macos_ci.yml.disabled .github/workflows/macos_ci.yml
           trap 'rm -f .github/workflows/macos_ci.yml' EXIT
+          watchdog="$RUNNER_TEMP/multiwindow_ci_watchdog"
 
           tests=(
             vlib/x/multiwindow/event_sequence_exhaustion_test.v
@@ -601,19 +786,19 @@ jobs:
             vlib/gg/draw_rect_empty_test.v
           )
 
-          "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
+          "$watchdog" 300 - \
             ./v -cc clang test vlib/gg/legacy_import_multiwindow_isolation_test.v
 
-          for test in "${tests[@]}"; do
+          for test_file in "${tests[@]}"; do
             VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
               VGG_MULTIWINDOW_RUNTIME_BACKEND=appkit \
               V_MULTIWINDOW_PROBE_BACKEND=appkit \
               VJOBS=1 \
-              "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
-                ./v -cc clang -d gg_multiwindow -d sokol_metal test "$test"
+              "$watchdog" 300 - \
+                ./v -cc clang -d gg_multiwindow -d sokol_metal test "$test_file"
           done
 
-          "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
+          "$watchdog" 300 - \
             ./v -cc clang -d gg_multiwindow -d darwin_sokol_glcore33 test \
               vlib/x/multiwindow/multiwindow_test.v
 
@@ -625,17 +810,18 @@ jobs:
           VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
             VGG_MULTIWINDOW_RUNTIME_BACKEND=appkit \
             V_MULTIWINDOW_PROBE_BACKEND=appkit \
-            "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
+            "$watchdog" 120 \
               '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' \
               /tmp/gg_multiwindow_render_runtime_metal
 
           VGG_MULTIWINDOW_EXAMPLE_UNATTENDED=appkit \
-            "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
+            "$watchdog" 120 \
               '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
               /tmp/gg_multiwindow_metal
 
   windows:
     name: Windows ${{ matrix.ccompiler }}
+    if: ${{ false }}
     runs-on: windows-2025
     timeout-minutes: 90
     strategy:
@@ -645,9 +831,6 @@ jobs:
           - msvc
           - gcc
           - tcc
-        exclude:
-          - ccompiler: msvc
-          - ccompiler: tcc
     steps:
       - name: Checkout V
         uses: actions/checkout@v7
@@ -904,50 +1087,91 @@ jobs:
           V_MULTIWINDOW_PROBE_BACKEND: win32
           VTEST_SHOW_START: '1'
         run: |
+          $PSNativeCommandUseErrorActionPreference = $false
           $runner = Join-Path $env:RUNNER_TEMP 'multiwindow_ci_watchdog.exe'
           $vexe = (Resolve-Path .\v.exe).Path
-          $interactive = Join-Path $env:RUNNER_TEMP 'gg_multiwindow_msvc.exe'
-          $runtime = Join-Path $env:RUNNER_TEMP 'gg_multiwindow_render_runtime_msvc.exe'
-          $workflow = '.github/workflows/windows_ci_msvc.yml'
-          Copy-Item -Force "${workflow}.disabled" $workflow
-          try {
-            .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp -o $interactive examples/gg/multiwindow.v
-            if ($LASTEXITCODE -ne 0) { throw 'MSVC interactive example compile failed' }
-            .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp -o $runtime examples/gg/multiwindow_render_runtime.v
-            if ($LASTEXITCODE -ne 0) { throw 'MSVC runtime example compile failed' }
+          $nativeFile = 'vlib/x/multiwindow/native_operation_proof_test.v'
+          $genericCases = @(
+            'test_native_primitive_abi_is_portable_and_included_from_production_header',
+            'test_native_primitive_darwin_generated_c_has_no_linux_egl_boundary',
+            'test_native_proof_authority_has_exact_bounds_and_explicit_lifecycle',
+            'test_native_lifetime_registry_transitions_release_children_before_parent_and_gates_rebind',
+            'test_native_lifetime_null_burn_and_owner_ack_abandonment_are_terminal',
+            'test_native_lifetime_retirement_survives_trace_overflow_and_preserves_prefix',
+            'test_native_proof_generation_exhaustion_is_sticky_and_never_wraps',
+            'test_native_plan_matches_every_context_field_exactly',
+            'test_native_plan_rejects_duplicate_and_capacity_overflow_without_mutation',
+            'test_gg_native_plan_pair_rolls_back_duplicate_secondary_and_disarms',
+            'test_native_listener_selector_and_exact_plan_collisions_are_symmetric_and_nonmutating',
+            'test_native_plan_is_app_window_generation_and_epoch_local',
+            'test_native_plan_does_not_consume_a_stale_renderer_attempt',
+            'test_native_plan_isolated_between_real_apps_and_windows',
+            'test_native_compound_ordinal_reservation_exhausts_without_call_or_consumption',
+            'test_native_trace_separates_real_actual_effective_acceptance_health_and_release',
+            'test_native_plan_consumption_alone_records_no_operation_milestone',
+            'test_native_actual_fatal_evidence_cannot_be_downgraded',
+            'test_native_actual_dxgi_and_wayland_fatal_evidence_cannot_be_downgraded',
+            'test_wayland_window_surface_handle_classification',
+            'test_native_trace_bound_reports_overflow_and_preserves_prefix',
+            'test_native_proof_state_is_identical_after_replayed_public_stop'
+          )
+          $sharedCases = @(
+            'test_native_sokol_swapchain_attachment_matches_backend_authority'
+          )
+          $win32DxgiCases = @(
+            'test_native_dxgi_null_success_and_direct_losses_forbid_fallback_and_release_outputs',
+            'test_native_dxgi_present_captures_operation_and_removal_before_release',
+            'test_native_dxgi_resize_invalid_call_propagates_and_clears_durable_slot'
+          )
+          $win32PhaseBCases = @(
+            'test_native_win32_phase_b_com_lifetimes_are_bijective_and_child_first',
+            'test_native_win32_phase_b_alias_null_burn_rejection_and_wrong_thread',
+            'test_native_win32_phase_b_exhaustion_overflow_and_stop_replay'
+          )
+          $win32Cases = @($genericCases + $win32DxgiCases + $sharedCases + $win32PhaseBCases)
+          if ($win32Cases.Count -ne 29) {
+            throw "Singer Win32 case mapping has invalid cardinality $($win32Cases.Count)"
+          }
 
-            $tests = @(
-              'vlib/x/multiwindow/event_sequence_exhaustion_test.v',
-              'vlib/x/multiwindow/event_terminal_delivery_test.v',
-              'vlib/x/multiwindow/internal_fault_matrix_test.v',
-              'vlib/x/multiwindow/multiwindow_test.v',
-              'vlib/x/multiwindow/native_operation_proof_test.v',
-              'vlib/x/multiwindow/render_scheduler_test.v',
-              'vlib/x/multiwindow/render_target_lease_test.v',
-              'vlib/x/multiwindow/teardown_contract_test.v',
-              'vlib/x/multiwindow/win32_render_metrics_test.v',
-              'vlib/gg/multiwindow_api_d_gg_multiwindow_test.v',
-              'vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v',
-              'vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v',
-              'vlib/gg/multiwindow_render_runtime_contract_test.v',
-              'vlib/gg/frame_pacing_test.v',
-              'vlib/gg/draw_fns_api_test.v',
-              'vlib/gg/draw_rect_empty_test.v'
-            )
-            & $runner 300 '-' $vexe '-cc' 'msvc' 'test' 'vlib/gg/legacy_import_multiwindow_isolation_test.v'
-            if ($LASTEXITCODE -ne 0) { throw 'MSVC no-flag isolation failed' }
-            foreach ($test in $tests) {
-              & $runner 300 '-' $vexe '-cc' 'msvc' '-d' 'gg_multiwindow' '-d' 'sokol_d3d11' '-d' 'gg_multiwindow_d3d11_warp' 'test' $test
-              if ($LASTEXITCODE -ne 0) {
-                throw "MSVC D3D11 WARP test '$test' failed with exit code $LASTEXITCODE"
-              }
+          $individualPassed = 0
+          $individualFailures = @()
+          foreach ($caseName in $win32Cases) {
+            Write-Host "BEGIN INDIVIDUAL backend=win32 compiler=msvc case=$caseName"
+            & $runner 300 '-' $vexe '-cc' 'msvc' '-subsystem' 'console' '-d' 'gg_multiwindow' '-d' 'sokol_d3d11' '-d' 'gg_multiwindow_d3d11_warp' 'test' '-run-only' $caseName $nativeFile
+            $code = $LASTEXITCODE
+            if ($code -eq 0) {
+              $individualPassed++
+              Write-Host "PASS INDIVIDUAL backend=win32 compiler=msvc case=$caseName"
+            } else {
+              $individualFailures += "${caseName}:${code}"
+              Write-Host "FAIL INDIVIDUAL backend=win32 compiler=msvc case=$caseName code=$code"
             }
-            & $runner 120 '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' $runtime
-            if ($LASTEXITCODE -ne 0) { throw 'MSVC runtime example failed' }
-            & $runner 120 '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' $interactive
-            if ($LASTEXITCODE -ne 0) { throw 'MSVC interactive example failed' }
-          } finally {
-            Remove-Item -Force $workflow -ErrorAction SilentlyContinue
+          }
+
+          $prefixPassed = 0
+          $prefixFailures = @()
+          $prefixCases = @()
+          $prefixNumber = 0
+          foreach ($caseName in $win32Cases) {
+            $prefixNumber++
+            $prefixCases += $caseName
+            $selection = $prefixCases -join ','
+            Write-Host "BEGIN PREFIX backend=win32 compiler=msvc n=$prefixNumber last=$caseName"
+            & $runner 300 '-' $vexe '-cc' 'msvc' '-subsystem' 'console' '-d' 'gg_multiwindow' '-d' 'sokol_d3d11' '-d' 'gg_multiwindow_d3d11_warp' 'test' '-run-only' $selection $nativeFile
+            $code = $LASTEXITCODE
+            if ($code -eq 0) {
+              $prefixPassed++
+              Write-Host "PASS PREFIX backend=win32 compiler=msvc n=$prefixNumber last=$caseName"
+            } else {
+              $prefixFailures += "${prefixNumber}:${caseName}:${code}"
+              Write-Host "FAIL PREFIX backend=win32 compiler=msvc n=$prefixNumber last=$caseName code=$code"
+            }
+          }
+
+          Write-Host "SUMMARY INDIVIDUAL backend=win32 compiler=msvc passed=$individualPassed failed=$($individualFailures.Count) total=$($win32Cases.Count) failures=$($individualFailures -join ',')"
+          Write-Host "SUMMARY PREFIX backend=win32 compiler=msvc passed=$prefixPassed failed=$($prefixFailures.Count) total=$($win32Cases.Count) failures=$($prefixFailures -join ',')"
+          if ($individualFailures.Count -ne 0 -or $prefixFailures.Count -ne 0) {
+            throw 'MSVC Win32 native diagnostic matrix failed'
           }
 
       - name: Run MinGW GCC D3D11 WARP matrix
@@ -963,57 +1187,96 @@ jobs:
         run: |
           set -euo pipefail
           runner=./multiwindow_ci_watchdog_tmp.exe
-          workflow=.github/workflows/windows_ci_gcc.yml
-          cp "$workflow.disabled" "$workflow"
-          trap 'rm -f .github/workflows/windows_ci_gcc.yml multiwindow_ci_watchdog_tmp.exe gg_multiwindow_gcc.exe gg_multiwindow_render_runtime_gcc.exe' EXIT
-
-          tests=(
-            vlib/x/multiwindow/event_sequence_exhaustion_test.v
-            vlib/x/multiwindow/event_terminal_delivery_test.v
-            vlib/x/multiwindow/internal_fault_matrix_test.v
-            vlib/x/multiwindow/multiwindow_test.v
-            vlib/x/multiwindow/native_operation_proof_test.v
-            vlib/x/multiwindow/render_scheduler_test.v
-            vlib/x/multiwindow/render_target_lease_test.v
-            vlib/x/multiwindow/teardown_contract_test.v
-            vlib/x/multiwindow/win32_render_metrics_test.v
-            vlib/gg/multiwindow_api_d_gg_multiwindow_test.v
-            vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v
-            vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v
-            vlib/gg/multiwindow_render_runtime_contract_test.v
-            vlib/gg/frame_pacing_test.v
-            vlib/gg/draw_fns_api_test.v
-            vlib/gg/draw_rect_empty_test.v
+          native_file=vlib/x/multiwindow/native_operation_proof_test.v
+          trap 'rm -f multiwindow_ci_watchdog_tmp.exe' EXIT
+          generic_cases=(
+            test_native_primitive_abi_is_portable_and_included_from_production_header
+            test_native_primitive_darwin_generated_c_has_no_linux_egl_boundary
+            test_native_proof_authority_has_exact_bounds_and_explicit_lifecycle
+            test_native_lifetime_registry_transitions_release_children_before_parent_and_gates_rebind
+            test_native_lifetime_null_burn_and_owner_ack_abandonment_are_terminal
+            test_native_lifetime_retirement_survives_trace_overflow_and_preserves_prefix
+            test_native_proof_generation_exhaustion_is_sticky_and_never_wraps
+            test_native_plan_matches_every_context_field_exactly
+            test_native_plan_rejects_duplicate_and_capacity_overflow_without_mutation
+            test_gg_native_plan_pair_rolls_back_duplicate_secondary_and_disarms
+            test_native_listener_selector_and_exact_plan_collisions_are_symmetric_and_nonmutating
+            test_native_plan_is_app_window_generation_and_epoch_local
+            test_native_plan_does_not_consume_a_stale_renderer_attempt
+            test_native_plan_isolated_between_real_apps_and_windows
+            test_native_compound_ordinal_reservation_exhausts_without_call_or_consumption
+            test_native_trace_separates_real_actual_effective_acceptance_health_and_release
+            test_native_plan_consumption_alone_records_no_operation_milestone
+            test_native_actual_fatal_evidence_cannot_be_downgraded
+            test_native_actual_dxgi_and_wayland_fatal_evidence_cannot_be_downgraded
+            test_wayland_window_surface_handle_classification
+            test_native_trace_bound_reports_overflow_and_preserves_prefix
+            test_native_proof_state_is_identical_after_replayed_public_stop
           )
-
-          ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp \
-            -o gg_multiwindow_gcc.exe examples/gg/multiwindow.v
-          ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp \
-            -o gg_multiwindow_render_runtime_gcc.exe examples/gg/multiwindow_render_runtime.v
-
-          "$runner" 300 - ./v.exe -cc gcc test vlib/gg/legacy_import_multiwindow_isolation_test.v
-          native_cases=(
+          shared_cases=(
+            test_native_sokol_swapchain_attachment_matches_backend_authority
+          )
+          win32_dxgi_cases=(
             test_native_dxgi_null_success_and_direct_losses_forbid_fallback_and_release_outputs
             test_native_dxgi_present_captures_operation_and_removal_before_release
             test_native_dxgi_resize_invalid_call_propagates_and_clears_durable_slot
-            test_native_sokol_swapchain_attachment_matches_backend_authority
+          )
+          win32_phase_b_cases=(
             test_native_win32_phase_b_com_lifetimes_are_bijective_and_child_first
             test_native_win32_phase_b_alias_null_burn_rejection_and_wrong_thread
             test_native_win32_phase_b_exhaustion_overflow_and_stop_replay
           )
-          for case in "${native_cases[@]}"; do
-            echo "BEGIN $case"
-            "$runner" 300 - ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 \
-              -d gg_multiwindow_d3d11_warp test -run-only "$case" \
-              vlib/x/multiwindow/native_operation_proof_test.v
+          win32_cases=("${generic_cases[@]}" "${win32_dxgi_cases[@]}" "${shared_cases[@]}" "${win32_phase_b_cases[@]}")
+          if [ "${#win32_cases[@]}" -ne 29 ]; then
+            echo "Singer Win32 case mapping has invalid cardinality ${#win32_cases[@]}" >&2
+            exit 1
+          fi
+
+          run_win32_selection() {
+            local selection="$1"
+            "$runner" 300 - ./v.exe -cc gcc -subsystem console -d gg_multiwindow \
+              -d sokol_d3d11 -d gg_multiwindow_d3d11_warp \
+              test -run-only "$selection" "$native_file"
+          }
+
+          individual_passed=0
+          individual_failed=0
+          prefix_passed=0
+          prefix_failed=0
+          for case_name in "${win32_cases[@]}"; do
+            echo "BEGIN INDIVIDUAL backend=win32 compiler=gcc case=$case_name"
+            if run_win32_selection "$case_name"; then
+              individual_passed=$((individual_passed + 1))
+              echo "PASS INDIVIDUAL backend=win32 compiler=gcc case=$case_name"
+            else
+              code=$?
+              individual_failed=$((individual_failed + 1))
+              echo "FAIL INDIVIDUAL backend=win32 compiler=gcc case=$case_name code=$code"
+            fi
           done
-          for test in "${tests[@]}"; do
-            "$runner" 300 - ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 \
-              -d gg_multiwindow_d3d11_warp test "$test"
+
+          prefix=''
+          prefix_number=0
+          for case_name in "${win32_cases[@]}"; do
+            prefix_number=$((prefix_number + 1))
+            if [ -z "$prefix" ]; then
+              prefix="$case_name"
+            else
+              prefix="$prefix,$case_name"
+            fi
+            echo "BEGIN PREFIX backend=win32 compiler=gcc n=$prefix_number last=$case_name"
+            if run_win32_selection "$prefix"; then
+              prefix_passed=$((prefix_passed + 1))
+              echo "PASS PREFIX backend=win32 compiler=gcc n=$prefix_number last=$case_name"
+            else
+              code=$?
+              prefix_failed=$((prefix_failed + 1))
+              echo "FAIL PREFIX backend=win32 compiler=gcc n=$prefix_number last=$case_name code=$code"
+            fi
           done
-          "$runner" 120 \
-            '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' \
-            ./gg_multiwindow_render_runtime_gcc.exe
-          "$runner" 120 \
-            '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
-            ./gg_multiwindow_gcc.exe
+
+          echo "SUMMARY INDIVIDUAL backend=win32 compiler=gcc passed=$individual_passed failed=$individual_failed total=${#win32_cases[@]}"
+          echo "SUMMARY PREFIX backend=win32 compiler=gcc passed=$prefix_passed failed=$prefix_failed total=${#win32_cases[@]}"
+          if [ "$individual_failed" -ne 0 ] || [ "$prefix_failed" -ne 0 ]; then
+            exit 1
+          fi

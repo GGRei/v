@@ -922,7 +922,7 @@ fn multiwindow_create_cleanup_cause_window(mut app App, title string, mut proof 
 		title:       title
 		width:       96
 		height:      72
-		visible:     false
+		visible:     app.capabilities().backend == .wayland
 		redraw_mode: .on_demand
 		cleanup_fn:  fn [mut proof] (mut context WindowCleanupContext) ! {
 			multiwindow_record_cleanup_cause(mut context, mut proof)

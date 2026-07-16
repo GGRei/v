@@ -565,10 +565,11 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			}
 			state := app.backend.appkit.windows[index].state
 			if state == unsafe { nil } {
-				return error('AppKit fault-matrix admission requires a live native window state')
+				return error('AppKit fault-matrix native proof requires owner main thread and a live, visible, non-miniaturized native window')
 			}
-			if C.v_multiwindow_test_appkit_admit_window(state) != 1 {
-				return error('AppKit fault-matrix admission requires the owner main thread')
+			status := C.v_multiwindow_test_appkit_admit_window(state)
+			if status != 1 && status != 2 {
+				return error('AppKit fault-matrix native proof requires owner main thread and a live, visible, non-miniaturized native window')
 			}
 			return
 		} $else {

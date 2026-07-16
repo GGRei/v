@@ -4,6 +4,16 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 	import sokol.gfx
 }
 
+$if multiwindow_native_proof_diag ? {
+	fn C.v_multiwindow_test_appkit_diagnostic_marker(phase &char, identity u64)
+
+	fn appkit_render_runtime_diagnostic_marker(phase string, identity u64) {
+		$if darwin {
+			C.v_multiwindow_test_appkit_diagnostic_marker(&char(phase.str), identity)
+		}
+	}
+}
+
 $if gg_multiwindow ? || x_multiwindow_render ? {
 	fn (mut backend AppKitBackend) create_renderer_anchor() ! {
 		$if darwin {
@@ -48,21 +58,47 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			}
 			raw := C.v_multiwindow_appkit_create_renderer_anchor(backend.device)
 			state := native_pointer(raw.handle)
+			state_identity := raw.handle
+			$if multiwindow_native_proof_diag ? {
+				appkit_render_runtime_diagnostic_marker('create_renderer_anchor_C_RETURN',
+					state_identity)
+			}
 			if state == unsafe { nil } {
 				if backend.native_operations.burn_lifetime_ticket(state_ticket) {
 					state_ticket = 0
 				}
 			} else {
-				backend.native_operations.bind_lifetime_ticket(state_ticket,
-					native_identity(state), 0)
+				$if multiwindow_native_proof_diag ? {
+					appkit_render_runtime_diagnostic_marker('create_renderer_anchor_BIND_LIFETIME_TICKET_ENTER',
+						state_identity)
+				}
+				backend.native_operations.bind_lifetime_ticket(state_ticket, state_identity, 0)
+				$if multiwindow_native_proof_diag ? {
+					appkit_render_runtime_diagnostic_marker('create_renderer_anchor_BIND_LIFETIME_TICKET_RETURN',
+						state_identity)
+				}
 			}
 			backend.anchor_state = state
 			backend.anchor_state_ticket = state_ticket
 			backend.anchor_native_destroyed = false
+			$if multiwindow_native_proof_diag ? {
+				appkit_render_runtime_diagnostic_marker('create_renderer_anchor_FIELDS_ASSIGNED',
+					state_identity)
+				appkit_render_runtime_diagnostic_marker('create_renderer_anchor_ACCEPT_RESULT_ENTER',
+					state_identity)
+			}
 			result := backend.accept_metal_result(context, raw, .none, err_render_anchor_failed)
+			$if multiwindow_native_proof_diag ? {
+				appkit_render_runtime_diagnostic_marker('create_renderer_anchor_ACCEPT_RESULT_RETURN',
+					state_identity)
+			}
 			if !result.succeeded() {
+				$if multiwindow_native_proof_diag ? {
+					appkit_render_runtime_diagnostic_marker('create_renderer_anchor_ROLLBACK_ENTER',
+						state_identity)
+				}
 				if backend.anchor_state != unsafe { nil } {
-					cleanup_seed := seed.with_target_identity(native_identity(backend.anchor_state))
+					cleanup_seed := seed.with_target_identity(state_identity)
 					if backend.render_health.blocks_graphics() {
 						ordinals.skip(1) or {
 							backend.render_health =
@@ -78,25 +114,68 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 							NativeOperationContext{}
 						}
 						if cleanup_context.ordinal != 0 {
+							$if multiwindow_native_proof_diag ? {
+								appkit_render_runtime_diagnostic_marker('create_renderer_anchor_DESTROY_ENTER',
+									state_identity)
+							}
 							cleanup_raw :=
 								C.v_multiwindow_appkit_destroy_renderer_anchor(backend.anchor_state)
+							$if multiwindow_native_proof_diag ? {
+								appkit_render_runtime_diagnostic_marker('create_renderer_anchor_DESTROY_RETURN',
+									state_identity)
+							}
 							backend.anchor_native_destroyed = true
+							$if multiwindow_native_proof_diag ? {
+								appkit_render_runtime_diagnostic_marker('create_renderer_anchor_ACCEPT_CLEANUP_ENTER',
+									state_identity)
+							}
 							backend.accept_metal_result(cleanup_context, cleanup_raw,
 								.void_completion, err_render_anchor_failed)
+							$if multiwindow_native_proof_diag ? {
+								appkit_render_runtime_diagnostic_marker('create_renderer_anchor_ACCEPT_CLEANUP_RETURN',
+									state_identity)
+							}
 						}
 					}
 				} else {
 					ordinals.skip(1) or {}
 				}
-				if !backend.release_anchor_state_lifetime(seed) {
+				$if multiwindow_native_proof_diag ? {
+					appkit_render_runtime_diagnostic_marker('create_renderer_anchor_RELEASE_LIFETIME_ENTER',
+						state_identity)
+				}
+				anchor_lifetime_released := backend.release_anchor_state_lifetime(seed)
+				$if multiwindow_native_proof_diag ? {
+					appkit_render_runtime_diagnostic_marker('create_renderer_anchor_RELEASE_LIFETIME_RETURN',
+						state_identity)
+				}
+				if !anchor_lifetime_released {
+					$if multiwindow_native_proof_diag ? {
+						appkit_render_runtime_diagnostic_marker('create_renderer_anchor_RETURN_ERROR',
+							state_identity)
+					}
 					return error(err_render_anchor_failed)
+				}
+				$if multiwindow_native_proof_diag ? {
+					appkit_render_runtime_diagnostic_marker('create_renderer_anchor_RETURN_ERROR',
+						state_identity)
 				}
 				return error(err_render_anchor_failed)
 			}
 			ordinals.skip(1) or {
 				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
 				backend.anchor_native_destroyed = true
+				$if multiwindow_native_proof_diag ? {
+					appkit_render_runtime_diagnostic_marker('create_renderer_anchor_RELEASE_LIFETIME_ENTER',
+						state_identity)
+				}
 				_ = backend.release_anchor_state_lifetime(seed)
+				$if multiwindow_native_proof_diag ? {
+					appkit_render_runtime_diagnostic_marker('create_renderer_anchor_RELEASE_LIFETIME_RETURN',
+						state_identity)
+					appkit_render_runtime_diagnostic_marker('create_renderer_anchor_RETURN_ERROR',
+						state_identity)
+				}
 				return error(err_render_anchor_failed)
 			}
 			return
