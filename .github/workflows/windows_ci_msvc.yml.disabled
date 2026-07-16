@@ -168,6 +168,7 @@ jobs:
             'vlib/x/multiwindow/render_scheduler_test.v',
             'vlib/x/multiwindow/render_target_lease_test.v',
             'vlib/x/multiwindow/teardown_contract_test.v',
+            'vlib/x/multiwindow/win32_render_metrics_test.v',
             'vlib/gg/multiwindow_api_d_gg_multiwindow_test.v',
             'vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v',
             'vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v',

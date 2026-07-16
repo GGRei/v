@@ -261,39 +261,104 @@ jobs:
           cp .github/workflows/linux_ci.yml.disabled .github/workflows/linux_ci.yml
           trap 'rm -f .github/workflows/linux_ci.yml' EXIT
 
-          renderer_tests=(
-            test_renderer_anchor_create_fault_drives_start_renderer_retry_and_cleanup
-            test_renderer_environment_fault_drives_start_renderer_retry_and_cleanup
-            test_renderer_setup_fault_drives_start_renderer_retry_and_cleanup
-            test_renderer_batch_begin_fault_is_recoverable_before_scheduler_commit
-            test_renderer_target_acquire_fault_is_recoverable_before_claim_commit
-            test_renderer_pass_begin_fault_preserves_prepared_target_for_retry
-            test_renderer_anchor_begin_fault_terminalizes_before_anchor_sokol_call
-            test_renderer_precommit_fault_terminalizes_after_anchor_pass_before_commit
-            test_renderer_submission_finalize_fault_terminalizes_after_one_native_submission
+          tests=(
+            vlib/x/multiwindow/event_sequence_exhaustion_test.v
+            vlib/x/multiwindow/event_terminal_delivery_test.v
+            vlib/x/multiwindow/internal_fault_matrix_test.v
+            vlib/x/multiwindow/multiwindow_test.v
+            vlib/x/multiwindow/native_operation_proof_test.v
+            vlib/x/multiwindow/render_scheduler_test.v
+            vlib/x/multiwindow/render_target_lease_test.v
+            vlib/x/multiwindow/teardown_contract_test.v
+            vlib/gg/multiwindow_api_d_gg_multiwindow_test.v
+            vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v
+            vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v
+            vlib/gg/multiwindow_render_runtime_contract_test.v
+            vlib/gg/frame_pacing_test.v
+            vlib/gg/draw_fns_api_test.v
+            vlib/gg/draw_rect_empty_test.v
           )
-          for renderer_test in "${renderer_tests[@]}"; do
-            echo "::group::$renderer_test"
-            if ! VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
+
+          "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
+            env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE \
+            ./v -cc gcc test vlib/gg/legacy_import_multiwindow_isolation_test.v
+
+          for test in "${tests[@]}"; do
+            VJOBS=1 \
+              "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
+              env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE \
+              ./v -cc gcc -d gg_multiwindow test "$test"
+          done
+
+          ./v -cc gcc -d gg_multiwindow \
+            -o /tmp/gg_multiwindow_mock examples/gg/multiwindow.v
+          ./v -cc gcc -d gg_multiwindow \
+            -o /tmp/gg_multiwindow_render_runtime_mock examples/gg/multiwindow_render_runtime.v
+          ./v -cc gcc -d gg_multiwindow -d x_multiwindow_x11 \
+            -o /tmp/gg_multiwindow_x11 examples/gg/multiwindow.v
+          ./v -cc gcc -d gg_multiwindow -d x_multiwindow_x11 \
+            -o /tmp/gg_multiwindow_render_runtime_x11 examples/gg/multiwindow_render_runtime.v
+          ./v -cc gcc -d gg_multiwindow -d sokol_wayland \
+            -o /tmp/gg_multiwindow_wayland examples/gg/multiwindow.v
+          ./v -cc gcc -d gg_multiwindow -d sokol_wayland \
+            -o /tmp/gg_multiwindow_render_runtime_wayland examples/gg/multiwindow_render_runtime.v
+
+          env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE \
+            VGG_MULTIWINDOW_EXAMPLE_UNATTENDED=mock \
+            "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
+              '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
+              /tmp/gg_multiwindow_mock
+
+          for test in "${tests[@]}"; do
+            VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
+              VGG_MULTIWINDOW_RUNTIME_BACKEND=x11 \
+              V_MULTIWINDOW_PROBE_BACKEND=x11 \
+              VJOBS=1 \
+              "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
+                xvfb-run -a -s '-screen 0 1280x1024x24' \
+                env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true \
+                ./v -cc gcc -d gg_multiwindow -d x_multiwindow_x11 test "$test"
+          done
+
+          VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
+            VGG_MULTIWINDOW_RUNTIME_BACKEND=x11 \
+            V_MULTIWINDOW_PROBE_BACKEND=x11 \
+            "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
+              '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' \
+              xvfb-run -a -s '-screen 0 1280x1024x24' \
+              env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true \
+              /tmp/gg_multiwindow_render_runtime_x11
+
+          VGG_MULTIWINDOW_EXAMPLE_UNATTENDED=x11 \
+            "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
+              '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
+              xvfb-run -a -s '-screen 0 1280x1024x24' \
+              env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true \
+              /tmp/gg_multiwindow_x11
+
+          for test in "${tests[@]}"; do
+            VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
               VGG_MULTIWINDOW_RUNTIME_BACKEND=wayland \
               V_MULTIWINDOW_PROBE_BACKEND=wayland \
-              VTEST_SHOW_START=1 \
               VJOBS=1 \
-              WAYLAND_DEBUG=1 \
-              EGL_LOG_LEVEL=debug \
-              LIBGL_DEBUG=verbose \
-              MESA_DEBUG=1 \
-              LIBGL_ALWAYS_SOFTWARE=true \
-              "$RUNNER_TEMP/multiwindow_ci_watchdog" 60 - \
+              "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
                 "$RUNNER_TEMP/multiwindow_weston_command.sh" \
-                ./v -cc gcc -d gg_multiwindow -d sokol_wayland test \
-                  -run-only "$renderer_test" \
-                  vlib/x/multiwindow/internal_fault_matrix_test.v; then
-              echo "::endgroup::"
-              exit 1
-            fi
-            echo "::endgroup::"
+                ./v -cc gcc -d gg_multiwindow -d sokol_wayland test "$test"
           done
+
+          VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
+            VGG_MULTIWINDOW_RUNTIME_BACKEND=wayland \
+            V_MULTIWINDOW_PROBE_BACKEND=wayland \
+            "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
+              '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' \
+              "$RUNNER_TEMP/multiwindow_weston_command.sh" \
+              /tmp/gg_multiwindow_render_runtime_wayland
+
+          VGG_MULTIWINDOW_EXAMPLE_UNATTENDED=wayland \
+            "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
+              '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
+              "$RUNNER_TEMP/multiwindow_weston_command.sh" \
+              /tmp/gg_multiwindow_wayland
 
   macos:
     name: macOS clang Metal/AppKit
@@ -385,33 +450,56 @@ jobs:
           cp .github/workflows/macos_ci.yml.disabled .github/workflows/macos_ci.yml
           trap 'rm -f .github/workflows/macos_ci.yml' EXIT
 
-          renderer_tests=(
-            test_renderer_anchor_create_fault_drives_start_renderer_retry_and_cleanup
-            test_renderer_environment_fault_drives_start_renderer_retry_and_cleanup
-            test_renderer_setup_fault_drives_start_renderer_retry_and_cleanup
-            test_renderer_batch_begin_fault_is_recoverable_before_scheduler_commit
-            test_renderer_target_acquire_fault_is_recoverable_before_claim_commit
-            test_renderer_pass_begin_fault_preserves_prepared_target_for_retry
-            test_renderer_anchor_begin_fault_terminalizes_before_anchor_sokol_call
-            test_renderer_precommit_fault_terminalizes_after_anchor_pass_before_commit
-            test_renderer_submission_finalize_fault_terminalizes_after_one_native_submission
+          tests=(
+            vlib/x/multiwindow/event_sequence_exhaustion_test.v
+            vlib/x/multiwindow/event_terminal_delivery_test.v
+            vlib/x/multiwindow/internal_fault_matrix_test.v
+            vlib/x/multiwindow/multiwindow_test.v
+            vlib/x/multiwindow/native_operation_proof_test.v
+            vlib/x/multiwindow/render_scheduler_test.v
+            vlib/x/multiwindow/render_target_lease_test.v
+            vlib/x/multiwindow/teardown_contract_test.v
+            vlib/gg/multiwindow_api_d_gg_multiwindow_test.v
+            vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v
+            vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v
+            vlib/gg/multiwindow_render_runtime_contract_test.v
+            vlib/gg/frame_pacing_test.v
+            vlib/gg/draw_fns_api_test.v
+            vlib/gg/draw_rect_empty_test.v
           )
-          for renderer_test in "${renderer_tests[@]}"; do
-            echo "::group::$renderer_test"
-            if ! VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
+
+          "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
+            ./v -cc clang test vlib/gg/legacy_import_multiwindow_isolation_test.v
+
+          for test in "${tests[@]}"; do
+            VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
               VGG_MULTIWINDOW_RUNTIME_BACKEND=appkit \
               V_MULTIWINDOW_PROBE_BACKEND=appkit \
-              VTEST_SHOW_START=1 \
               VJOBS=1 \
-              "$RUNNER_TEMP/multiwindow_ci_watchdog" 60 - \
-                ./v -cc clang -d gg_multiwindow -d sokol_metal test \
-                  -run-only "$renderer_test" \
-                  vlib/x/multiwindow/internal_fault_matrix_test.v; then
-              echo "::endgroup::"
-              exit 1
-            fi
-            echo "::endgroup::"
+              "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
+                ./v -cc clang -d gg_multiwindow -d sokol_metal test "$test"
           done
+
+          "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
+            ./v -cc clang -d gg_multiwindow -d darwin_sokol_glcore33 test \
+              vlib/x/multiwindow/multiwindow_test.v
+
+          ./v -cc clang -d gg_multiwindow -d sokol_metal \
+            -o /tmp/gg_multiwindow_metal examples/gg/multiwindow.v
+          ./v -cc clang -d gg_multiwindow -d sokol_metal \
+            -o /tmp/gg_multiwindow_render_runtime_metal examples/gg/multiwindow_render_runtime.v
+
+          VGG_MULTIWINDOW_RUNTIME_PROBES=1 \
+            VGG_MULTIWINDOW_RUNTIME_BACKEND=appkit \
+            V_MULTIWINDOW_PROBE_BACKEND=appkit \
+            "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
+              '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' \
+              /tmp/gg_multiwindow_render_runtime_metal
+
+          VGG_MULTIWINDOW_EXAMPLE_UNATTENDED=appkit \
+            "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
+              '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
+              /tmp/gg_multiwindow_metal
 
   windows:
     name: Windows ${{ matrix.ccompiler }}
@@ -642,10 +730,31 @@ jobs:
         run: |
           $runner = Join-Path $env:RUNNER_TEMP 'multiwindow_ci_watchdog.exe'
           $vexe = (Resolve-Path .\v.exe).Path
-          $test = 'vlib/x/multiwindow/native_operation_proof_test.v'
-          & $runner 300 '-' $vexe '-cc' 'tcc' '-show-c-output' 'test' $test
-          if ($LASTEXITCODE -ne 0) {
-            throw "TCC native proof test '$test' failed with exit code $LASTEXITCODE"
+          $interactive = Join-Path $env:RUNNER_TEMP 'gg_multiwindow_no_flag_tcc.exe'
+          $runtime = Join-Path $env:RUNNER_TEMP 'gg_multiwindow_render_runtime_no_flag_tcc.exe'
+          .\v.exe -cc tcc -o $interactive examples/gg/multiwindow.v
+          if ($LASTEXITCODE -ne 0) { throw 'TCC no-flag interactive example compile failed' }
+          .\v.exe -cc tcc -o $runtime examples/gg/multiwindow_render_runtime.v
+          if ($LASTEXITCODE -ne 0) { throw 'TCC no-flag runtime example compile failed' }
+          $tests = @(
+            'vlib/gg/legacy_import_multiwindow_isolation_test.v',
+            'vlib/x/multiwindow/event_sequence_exhaustion_test.v',
+            'vlib/x/multiwindow/event_terminal_delivery_test.v',
+            'vlib/x/multiwindow/internal_fault_matrix_test.v',
+            'vlib/x/multiwindow/multiwindow_test.v',
+            'vlib/x/multiwindow/native_operation_proof_test.v',
+            'vlib/x/multiwindow/render_scheduler_test.v',
+            'vlib/x/multiwindow/render_target_lease_test.v',
+            'vlib/x/multiwindow/teardown_contract_test.v',
+            'vlib/gg/frame_pacing_test.v',
+            'vlib/gg/draw_fns_api_test.v',
+            'vlib/gg/draw_rect_empty_test.v'
+          )
+          foreach ($test in $tests) {
+            & $runner 300 '-' $vexe '-cc' 'tcc' 'test' $test
+            if ($LASTEXITCODE -ne 0) {
+              throw "TCC no-flag/mock test '$test' failed with exit code $LASTEXITCODE"
+            }
           }
 
       - name: Run MSVC D3D11 WARP matrix
@@ -661,29 +770,46 @@ jobs:
         run: |
           $runner = Join-Path $env:RUNNER_TEMP 'multiwindow_ci_watchdog.exe'
           $vexe = (Resolve-Path .\v.exe).Path
+          $interactive = Join-Path $env:RUNNER_TEMP 'gg_multiwindow_msvc.exe'
+          $runtime = Join-Path $env:RUNNER_TEMP 'gg_multiwindow_render_runtime_msvc.exe'
           $workflow = '.github/workflows/windows_ci_msvc.yml'
           Copy-Item -Force "${workflow}.disabled" $workflow
           try {
-            $rendererTests = @(
-              'test_renderer_anchor_create_fault_drives_start_renderer_retry_and_cleanup',
-              'test_renderer_environment_fault_drives_start_renderer_retry_and_cleanup',
-              'test_renderer_setup_fault_drives_start_renderer_retry_and_cleanup',
-              'test_renderer_batch_begin_fault_is_recoverable_before_scheduler_commit',
-              'test_renderer_target_acquire_fault_is_recoverable_before_claim_commit',
-              'test_renderer_pass_begin_fault_preserves_prepared_target_for_retry',
-              'test_renderer_anchor_begin_fault_terminalizes_before_anchor_sokol_call',
-              'test_renderer_precommit_fault_terminalizes_after_anchor_pass_before_commit',
-              'test_renderer_submission_finalize_fault_terminalizes_after_one_native_submission'
+            .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp -o $interactive examples/gg/multiwindow.v
+            if ($LASTEXITCODE -ne 0) { throw 'MSVC interactive example compile failed' }
+            .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp -o $runtime examples/gg/multiwindow_render_runtime.v
+            if ($LASTEXITCODE -ne 0) { throw 'MSVC runtime example compile failed' }
+
+            $tests = @(
+              'vlib/x/multiwindow/event_sequence_exhaustion_test.v',
+              'vlib/x/multiwindow/event_terminal_delivery_test.v',
+              'vlib/x/multiwindow/internal_fault_matrix_test.v',
+              'vlib/x/multiwindow/multiwindow_test.v',
+              'vlib/x/multiwindow/native_operation_proof_test.v',
+              'vlib/x/multiwindow/render_scheduler_test.v',
+              'vlib/x/multiwindow/render_target_lease_test.v',
+              'vlib/x/multiwindow/teardown_contract_test.v',
+              'vlib/x/multiwindow/win32_render_metrics_test.v',
+              'vlib/gg/multiwindow_api_d_gg_multiwindow_test.v',
+              'vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v',
+              'vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v',
+              'vlib/gg/multiwindow_render_runtime_contract_test.v',
+              'vlib/gg/frame_pacing_test.v',
+              'vlib/gg/draw_fns_api_test.v',
+              'vlib/gg/draw_rect_empty_test.v'
             )
-            foreach ($rendererTest in $rendererTests) {
-              Write-Host "::group::$rendererTest"
-              & $runner 60 '-' $vexe '-cc' 'msvc' '-d' 'gg_multiwindow' '-d' 'sokol_d3d11' '-d' 'gg_multiwindow_d3d11_warp' 'test' '-run-only' $rendererTest 'vlib/x/multiwindow/internal_fault_matrix_test.v'
-              $exitCode = $LASTEXITCODE
-              Write-Host '::endgroup::'
-              if ($exitCode -ne 0) {
-                throw "MSVC D3D11 WARP test '$rendererTest' failed with exit code $exitCode"
+            & $runner 300 '-' $vexe '-cc' 'msvc' 'test' 'vlib/gg/legacy_import_multiwindow_isolation_test.v'
+            if ($LASTEXITCODE -ne 0) { throw 'MSVC no-flag isolation failed' }
+            foreach ($test in $tests) {
+              & $runner 300 '-' $vexe '-cc' 'msvc' '-d' 'gg_multiwindow' '-d' 'sokol_d3d11' '-d' 'gg_multiwindow_d3d11_warp' 'test' $test
+              if ($LASTEXITCODE -ne 0) {
+                throw "MSVC D3D11 WARP test '$test' failed with exit code $LASTEXITCODE"
               }
             }
+            & $runner 120 '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' $runtime
+            if ($LASTEXITCODE -ne 0) { throw 'MSVC runtime example failed' }
+            & $runner 120 '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' $interactive
+            if ($LASTEXITCODE -ne 0) { throw 'MSVC interactive example failed' }
           } finally {
             Remove-Item -Force $workflow -ErrorAction SilentlyContinue
           }
@@ -705,24 +831,38 @@ jobs:
           cp "$workflow.disabled" "$workflow"
           trap 'rm -f .github/workflows/windows_ci_gcc.yml multiwindow_ci_watchdog_tmp.exe gg_multiwindow_gcc.exe gg_multiwindow_render_runtime_gcc.exe' EXIT
 
-          renderer_tests=(
-            test_renderer_anchor_create_fault_drives_start_renderer_retry_and_cleanup
-            test_renderer_environment_fault_drives_start_renderer_retry_and_cleanup
-            test_renderer_setup_fault_drives_start_renderer_retry_and_cleanup
-            test_renderer_batch_begin_fault_is_recoverable_before_scheduler_commit
-            test_renderer_target_acquire_fault_is_recoverable_before_claim_commit
-            test_renderer_pass_begin_fault_preserves_prepared_target_for_retry
-            test_renderer_anchor_begin_fault_terminalizes_before_anchor_sokol_call
-            test_renderer_precommit_fault_terminalizes_after_anchor_pass_before_commit
-            test_renderer_submission_finalize_fault_terminalizes_after_one_native_submission
+          tests=(
+            vlib/x/multiwindow/event_sequence_exhaustion_test.v
+            vlib/x/multiwindow/event_terminal_delivery_test.v
+            vlib/x/multiwindow/internal_fault_matrix_test.v
+            vlib/x/multiwindow/multiwindow_test.v
+            vlib/x/multiwindow/native_operation_proof_test.v
+            vlib/x/multiwindow/render_scheduler_test.v
+            vlib/x/multiwindow/render_target_lease_test.v
+            vlib/x/multiwindow/teardown_contract_test.v
+            vlib/x/multiwindow/win32_render_metrics_test.v
+            vlib/gg/multiwindow_api_d_gg_multiwindow_test.v
+            vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v
+            vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v
+            vlib/gg/multiwindow_render_runtime_contract_test.v
+            vlib/gg/frame_pacing_test.v
+            vlib/gg/draw_fns_api_test.v
+            vlib/gg/draw_rect_empty_test.v
           )
-          for renderer_test in "${renderer_tests[@]}"; do
-            echo "::group::$renderer_test"
-            if ! "$runner" 60 - ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 \
-              -d gg_multiwindow_d3d11_warp test -run-only "$renderer_test" \
-              vlib/x/multiwindow/internal_fault_matrix_test.v; then
-              echo "::endgroup::"
-              exit 1
-            fi
-            echo "::endgroup::"
+
+          ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp \
+            -o gg_multiwindow_gcc.exe examples/gg/multiwindow.v
+          ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp \
+            -o gg_multiwindow_render_runtime_gcc.exe examples/gg/multiwindow_render_runtime.v
+
+          "$runner" 300 - ./v.exe -cc gcc test vlib/gg/legacy_import_multiwindow_isolation_test.v
+          for test in "${tests[@]}"; do
+            "$runner" 300 - ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 \
+              -d gg_multiwindow_d3d11_warp test "$test"
           done
+          "$runner" 120 \
+            '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' \
+            ./gg_multiwindow_render_runtime_gcc.exe
+          "$runner" 120 \
+            '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
+            ./gg_multiwindow_gcc.exe
