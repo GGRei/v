@@ -2,6 +2,7 @@
 #define V_MULTIWINDOW_LINUX_EGL_NATIVE_HELPERS_H
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <EGL/egl.h>
 #include "native_render_result.h"
@@ -140,6 +141,90 @@ static inline void v_multiwindow_linux_egl_choose_config(uint64_t display_identi
 			V_MULTIWINDOW_NATIVE_VALID_OBSERVED_COUNT;
 		out->handle = v_multiwindow_linux_egl_identity(config);
 		out->observed_count = count > 0 ? (uint64_t)count : UINT64_C(0);
+	}
+}
+
+static inline void v_multiwindow_linux_egl_choose_wayland_config(
+		uint64_t display_identity, VMultiwindowNativePrimitive *out) {
+	const EGLint attributes[] = {
+		EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+		EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+		EGL_RED_SIZE, 8,
+		EGL_GREEN_SIZE, 8,
+		EGL_BLUE_SIZE, 8,
+		EGL_ALPHA_SIZE, 8,
+		EGL_DEPTH_SIZE, 24,
+		EGL_STENCIL_SIZE, 8,
+		EGL_SAMPLE_BUFFERS, 0,
+		EGL_SAMPLES, 0,
+		EGL_NONE
+	};
+	EGLDisplay display = (EGLDisplay)(uintptr_t)display_identity;
+	EGLConfig selected = NULL;
+	EGLint count = 0;
+	EGLint exact_count = 0;
+	EGLBoolean result = eglChooseConfig(display, attributes, NULL, 0, &count);
+	EGLConfig *configs = NULL;
+	if (result == EGL_TRUE && count > 0) {
+		configs = (EGLConfig *)calloc((size_t)count, sizeof(EGLConfig));
+		if (configs == NULL) {
+			result = EGL_FALSE;
+		} else {
+			EGLint returned = 0;
+			result = eglChooseConfig(display, attributes, configs, count, &returned);
+			if (result == EGL_TRUE) {
+				for (EGLint index = 0; index < returned; index++) {
+					EGLint surface_type = 0;
+					EGLint renderable_type = 0;
+					EGLint red = 0;
+					EGLint green = 0;
+					EGLint blue = 0;
+					EGLint alpha = 0;
+					EGLint depth = 0;
+					EGLint stencil = 0;
+					EGLint sample_buffers = 0;
+					EGLint samples = 0;
+					EGLBoolean queried =
+						eglGetConfigAttrib(display, configs[index], EGL_SURFACE_TYPE,
+							&surface_type) &&
+						eglGetConfigAttrib(display, configs[index], EGL_RENDERABLE_TYPE,
+							&renderable_type) &&
+						eglGetConfigAttrib(display, configs[index], EGL_RED_SIZE, &red) &&
+						eglGetConfigAttrib(display, configs[index], EGL_GREEN_SIZE, &green) &&
+						eglGetConfigAttrib(display, configs[index], EGL_BLUE_SIZE, &blue) &&
+						eglGetConfigAttrib(display, configs[index], EGL_ALPHA_SIZE, &alpha) &&
+						eglGetConfigAttrib(display, configs[index], EGL_DEPTH_SIZE, &depth) &&
+						eglGetConfigAttrib(display, configs[index], EGL_STENCIL_SIZE,
+							&stencil) &&
+						eglGetConfigAttrib(display, configs[index], EGL_SAMPLE_BUFFERS,
+							&sample_buffers) &&
+						eglGetConfigAttrib(display, configs[index], EGL_SAMPLES, &samples);
+					if (queried != EGL_TRUE) {
+						result = EGL_FALSE;
+						selected = NULL;
+						exact_count = 0;
+						break;
+					}
+					if ((surface_type & EGL_WINDOW_BIT) != 0 &&
+							(renderable_type & EGL_OPENGL_BIT) != 0 && red == 8 &&
+							green == 8 && blue == 8 && alpha == 8 && depth == 24 &&
+							stencil == 8 && sample_buffers == 0 && samples == 0) {
+						exact_count++;
+						if (selected == NULL) {
+							selected = configs[index];
+						}
+					}
+				}
+			}
+		}
+	}
+	free(configs);
+	v_multiwindow_linux_egl_capture_return(out, result);
+	if (out != NULL) {
+		out->valid_mask |= V_MULTIWINDOW_NATIVE_VALID_HANDLE |
+			V_MULTIWINDOW_NATIVE_VALID_OBSERVED_COUNT;
+		out->handle = v_multiwindow_linux_egl_identity(selected);
+		out->observed_count = exact_count > 0 ? (uint64_t)exact_count : UINT64_C(0);
 	}
 }
 

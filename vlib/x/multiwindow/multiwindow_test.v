@@ -3567,6 +3567,32 @@ fn multiwindow_source_file(name string) string {
 	return os.read_file(os.join_path(@DIR, name)) or { panic(err) }
 }
 
+fn test_wayland_renderer_anchor_secondary_architecture_source_guard() {
+	runtime_source := multiwindow_source_file('wayland_render_runtime.c.v')
+	marker := 'fn (mut backend WaylandBackend) create_private_renderer_anchor'
+	assert runtime_source.contains(marker)
+	anchor_body :=
+		runtime_source.all_after(marker).all_before('fn (mut backend WaylandBackend) create_renderer_anchor')
+	// Native proof tests establish acquisition, rollback, ownership, and release order.
+	for forbidden in ['wl_surface_commit', 'xdg_', 'display_flush', 'frame_callback', 'swap_buffers',
+		'WindowId'] {
+		assert !anchor_body.contains(forbidden)
+	}
+
+	egl_source := multiwindow_source_file('linux_egl_native_helpers.h')
+	wayland_config :=
+		egl_source.all_after('v_multiwindow_linux_egl_choose_wayland_config').all_before('v_multiwindow_linux_egl_get_native_visual')
+	for required in ['EGL_WINDOW_BIT', 'EGL_OPENGL_BIT', 'EGL_RED_SIZE, 8', 'EGL_GREEN_SIZE, 8',
+		'EGL_BLUE_SIZE, 8', 'EGL_ALPHA_SIZE, 8', 'EGL_DEPTH_SIZE, 24', 'EGL_STENCIL_SIZE, 8',
+		'EGL_SAMPLE_BUFFERS, 0', 'EGL_SAMPLES, 0', 'eglGetConfigAttrib'] {
+		assert wayland_config.contains(required)
+	}
+	assert !wayland_config.contains('EGL_PBUFFER_BIT')
+	x11_config :=
+		egl_source.all_after('v_multiwindow_linux_egl_choose_config').all_before('v_multiwindow_linux_egl_choose_wayland_config')
+	assert x11_config.contains('EGL_WINDOW_BIT | EGL_PBUFFER_BIT')
+}
+
 fn assert_source_order(source string, before string, after string) {
 	before_index := source.index(before) or {
 		assert false, 'source does not contain `${before}`'

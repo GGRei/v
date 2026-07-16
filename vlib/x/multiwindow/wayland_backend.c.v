@@ -94,6 +94,8 @@ const wayland_data_offer_drain_chunk_size = 4096
 const wayland_data_offer_max_read_chunks = 16
 const wayland_data_offer_max_pending_poll_cycles = 300
 const wayland_max_fallback_buffers = 3
+const wayland_anchor_release_protocol_destroy = u64(1)
+const wayland_anchor_release_local_proxy_destroy = u64(2)
 const wayland_nsec_per_sec = u64(1_000_000_000)
 const wayland_nsec_per_msec = u64(1_000_000)
 const wayland_dnd_action_none = u32(0)
@@ -222,6 +224,10 @@ mut:
 	egl_context_ticket            u64
 	anchor_surface                voidptr
 	anchor_surface_ticket         u64
+	anchor_wl_egl_window          voidptr
+	anchor_wl_egl_window_ticket   u64
+	anchor_wl_surface             voidptr
+	anchor_wl_surface_ticket      u64
 	egl_display_ticket            u64
 	egl_thread_ticket             u64
 	anchor_generation             u64 = 1
@@ -289,9 +295,11 @@ fn (backend &WaylandBackend) retains_native_ownership_except_display() bool {
 		|| backend.xkb_state != unsafe { nil } || backend.egl_display != unsafe { nil }
 		|| backend.egl_config != unsafe { nil } || backend.egl_context != unsafe { nil }
 		|| backend.anchor_surface != unsafe { nil } || backend.egl_binding.surface != unsafe { nil }
-		|| backend.egl_context_ticket != 0 || backend.anchor_surface_ticket != 0
-		|| backend.egl_display_ticket != 0 || backend.egl_thread_ticket != 0
-		|| backend.windows.len != 0 || live_tickets
+		|| backend.anchor_wl_egl_window != unsafe { nil }
+		|| backend.anchor_wl_surface != unsafe { nil } || backend.egl_context_ticket != 0
+		|| backend.anchor_surface_ticket != 0 || backend.anchor_wl_egl_window_ticket != 0
+		|| backend.anchor_wl_surface_ticket != 0 || backend.egl_display_ticket != 0
+		|| backend.egl_thread_ticket != 0 || backend.windows.len != 0 || live_tickets
 }
 
 fn (backend &WaylandBackend) retains_native_ownership() bool {
@@ -458,6 +466,8 @@ $if linux && sokol_wayland ? {
 	fn C.v_multiwindow_wayland_flush(display &C.wl_display, result &C.VMultiwindowNativePrimitive)
 	fn C.v_multiwindow_wayland_display_error(display &C.wl_display, result &C.VMultiwindowNativePrimitive)
 	fn C.v_multiwindow_wayland_proxy_destroy_local(proxy voidptr)
+	fn C.v_multiwindow_wayland_create_anchor_surface(compositor &C.wl_compositor, result &C.VMultiwindowNativePrimitive)
+	fn C.v_multiwindow_wayland_destroy_anchor_surface(surface voidptr, marshal int, result &C.VMultiwindowNativePrimitive)
 	fn C.wl_registry_destroy(registry &C.wl_registry)
 	fn C.wl_compositor_create_surface(compositor &C.wl_compositor) &C.wl_surface
 	fn C.wl_compositor_destroy(compositor &C.wl_compositor)
@@ -1707,7 +1717,7 @@ fn (mut backend WaylandBackend) init_renderer() ! {
 			backend.release_egl_lifetime()
 			return error(err_render_native_renderer_unavailable)
 		}
-		C.v_multiwindow_linux_egl_choose_config(actual_display, &raw)
+		C.v_multiwindow_linux_egl_choose_wayland_config(actual_display, &raw)
 		actual_config := raw.handle
 		config_result := backend.accept_egl_result(config_context, mut ordinals, initialize_seed,
 			raw, .none)
@@ -1875,7 +1885,7 @@ $if linux && sokol_wayland ? {
 	}
 
 	fn (mut backend WaylandBackend) reserve_wayland_lifetime_ticket(mut cleanup NativeOrdinalRange, release_kind NativeLifetimeReleaseKind, seed NativeOperationSeed) !u64 {
-		if release_kind !in [.wayland_egl_window, .wayland_frame_callback] {
+		if release_kind !in [.wayland_egl_window, .wayland_surface, .wayland_frame_callback] {
 			return error(err_render_native_renderer_unavailable)
 		}
 		context := cleanup.materialize(backend.native_operations, .wayland,
@@ -1912,6 +1922,114 @@ $if linux && sokol_wayland ? {
 		record.wl_egl_window = unsafe { nil }
 		record.wl_egl_window_ticket = 0
 		return result
+	}
+
+	fn (mut backend WaylandBackend) destroy_anchor_wl_egl_window_lifetime() NativeRenderResult {
+		if backend.anchor_wl_egl_window == unsafe { nil } {
+			return native_render_ok(.wayland, .surface_destroy, .anchor)
+		}
+		if !backend.native_operations.owner_thread_is_current() {
+			return backend.blocked_renderer_result(.surface_destroy)
+		}
+		wl_egl_window := backend.anchor_wl_egl_window
+		parent := backend.anchor_wl_surface
+		claim := backend.native_operations.claim_lifetime_release(backend.anchor_wl_egl_window_ticket,
+			.wayland_egl_window, native_identity(wl_egl_window), native_identity(parent)) or {
+			if backend.native_operations.acknowledge_abandoned_lifetime_ticket(backend.anchor_wl_egl_window_ticket,
+				.wayland_egl_window, native_identity(wl_egl_window), native_identity(parent))
+			{
+				mut abandoned_raw := C.VMultiwindowNativePrimitive{}
+				C.v_multiwindow_wayland_egl_destroy_window(wl_egl_window, &abandoned_raw)
+				backend.anchor_wl_egl_window = unsafe { nil }
+				backend.anchor_wl_egl_window_ticket = 0
+			}
+			return backend.blocked_renderer_result(.surface_destroy)
+		}
+		mut raw := C.VMultiwindowNativePrimitive{}
+		C.v_multiwindow_wayland_egl_destroy_window(wl_egl_window, &raw)
+		result := backend.native_operations.complete_lifetime_release(claim, raw, .void_completion,
+			backend.render_health, err_wayland_egl_surface_failed)
+		backend.anchor_wl_egl_window = unsafe { nil }
+		backend.anchor_wl_egl_window_ticket = 0
+		return result
+	}
+
+	fn (mut backend WaylandBackend) destroy_anchor_wl_surface_lifetime() NativeRenderResult {
+		if backend.anchor_wl_surface == unsafe { nil } {
+			return native_render_ok(.wayland, .surface_destroy, .anchor)
+		}
+		if !backend.native_operations.owner_thread_is_current() {
+			return backend.blocked_renderer_result(.surface_destroy)
+		}
+		surface := backend.anchor_wl_surface
+		parent := backend.compositor
+		claim := backend.native_operations.claim_lifetime_release(backend.anchor_wl_surface_ticket,
+			.wayland_surface, native_identity(surface), native_identity(parent)) or {
+			if backend.native_operations.acknowledge_abandoned_lifetime_ticket(backend.anchor_wl_surface_ticket,
+				.wayland_surface, native_identity(surface), native_identity(parent))
+			{
+				mut abandoned_raw := C.VMultiwindowNativePrimitive{}
+				C.v_multiwindow_wayland_destroy_anchor_surface(surface, if backend.transport_can_marshal() {
+					1
+				} else {
+					0
+				}, &abandoned_raw)
+				backend.anchor_wl_surface = unsafe { nil }
+				backend.anchor_wl_surface_ticket = 0
+			}
+			return backend.blocked_renderer_result(.surface_destroy)
+		}
+		mut raw := C.VMultiwindowNativePrimitive{}
+		C.v_multiwindow_wayland_destroy_anchor_surface(surface, if backend.transport_can_marshal() {
+			1
+		} else {
+			0
+		}, &raw)
+		result := backend.native_operations.complete_lifetime_release(claim, raw, .void_completion,
+			backend.render_health, err_wayland_create_surface_failed)
+		backend.anchor_wl_surface = unsafe { nil }
+		backend.anchor_wl_surface_ticket = 0
+		return result
+	}
+
+	fn (mut backend WaylandBackend) release_renderer_anchor_lifetime() bool {
+		if backend.anchor_surface != unsafe { nil } {
+			release := backend.release_egl_surface_ticket(backend.anchor_surface_ticket,
+				backend.anchor_surface)
+			if !release.terminal {
+				return false
+			}
+			backend.anchor_surface = unsafe { nil }
+			backend.anchor_surface_ticket = 0
+		} else if backend.anchor_surface_ticket != 0 {
+			if !backend.native_operations.burn_lifetime_ticket(backend.anchor_surface_ticket) {
+				return false
+			}
+			backend.anchor_surface_ticket = 0
+		}
+		if backend.anchor_wl_egl_window != unsafe { nil } {
+			_ = backend.destroy_anchor_wl_egl_window_lifetime()
+			if backend.anchor_wl_egl_window != unsafe { nil } {
+				return false
+			}
+		} else if backend.anchor_wl_egl_window_ticket != 0 {
+			if !backend.native_operations.burn_lifetime_ticket(backend.anchor_wl_egl_window_ticket) {
+				return false
+			}
+			backend.anchor_wl_egl_window_ticket = 0
+		}
+		if backend.anchor_wl_surface != unsafe { nil } {
+			_ = backend.destroy_anchor_wl_surface_lifetime()
+			if backend.anchor_wl_surface != unsafe { nil } {
+				return false
+			}
+		} else if backend.anchor_wl_surface_ticket != 0 {
+			if !backend.native_operations.burn_lifetime_ticket(backend.anchor_wl_surface_ticket) {
+				return false
+			}
+			backend.anchor_wl_surface_ticket = 0
+		}
+		return true
 	}
 
 	fn (mut backend WaylandBackend) destroy_frame_callback_lifetime(mut record &WaylandWindowRecord) NativeRenderResult {
@@ -2077,15 +2195,8 @@ fn (mut backend WaylandBackend) release_egl_lifetime() {
 					}
 				}
 			}
-			if backend.anchor_surface != unsafe { nil } {
-				release := backend.release_egl_surface_ticket(backend.anchor_surface_ticket,
-					backend.anchor_surface)
-				if release.terminal {
-					backend.anchor_surface = unsafe { nil }
-					backend.anchor_surface_ticket = 0
-				} else {
-					children_terminal = false
-				}
+			if !backend.release_renderer_anchor_lifetime() {
+				children_terminal = false
 			}
 			if !children_terminal {
 				return
@@ -2140,7 +2251,8 @@ fn (mut backend WaylandBackend) release_egl_lifetime() {
 			exhaust_backend_target_generation(record.render_target_generation)
 	}
 	if backend.egl_display_ticket == 0 && backend.egl_context_ticket == 0
-		&& backend.egl_thread_ticket == 0 && backend.anchor_surface_ticket == 0 {
+		&& backend.egl_thread_ticket == 0 && backend.anchor_surface_ticket == 0
+		&& backend.anchor_wl_egl_window_ticket == 0 && backend.anchor_wl_surface_ticket == 0 {
 		backend.egl_config = unsafe { nil }
 	}
 	backend.egl_binding = EglBindingIdentity{}
@@ -4177,8 +4289,11 @@ fn (mut backend WaylandBackend) close_connection() string {
 		backend.shutdown_renderer()
 		if backend.windows.len == 0 && backend.egl_display == unsafe { nil }
 			&& backend.egl_context == unsafe { nil } && backend.anchor_surface == unsafe { nil }
-			&& backend.egl_display_ticket == 0 && backend.egl_context_ticket == 0
-			&& backend.anchor_surface_ticket == 0 && backend.egl_thread_ticket == 0 {
+			&& backend.anchor_wl_egl_window == unsafe { nil }
+			&& backend.anchor_wl_surface == unsafe { nil } && backend.egl_display_ticket == 0
+			&& backend.egl_context_ticket == 0 && backend.anchor_surface_ticket == 0
+			&& backend.anchor_wl_egl_window_ticket == 0 && backend.anchor_wl_surface_ticket == 0
+			&& backend.egl_thread_ticket == 0 {
 			backend.destroy_seat_devices()
 			backend.destroy_data_device_manager()
 			backend.destroy_cursor_shape_manager()

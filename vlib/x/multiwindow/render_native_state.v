@@ -248,6 +248,7 @@ enum NativeLifetimeReleaseKind {
 	egl_display
 	egl_thread
 	wayland_egl_window
+	wayland_surface
 	wayland_frame_callback
 	com_reference
 	metal_device
@@ -668,7 +669,7 @@ fn native_result_from_wayland(context NativeOperationContext, capture NativePrim
 		result_scope = .renderer
 	}
 	if disposition == .none {
-		if context.operation in [.window_surface_create, .frame_callback]
+		if context.operation in [.window_surface_create, .anchor_surface_create, .frame_callback]
 			&& evidence.has(native_valid_handle) && evidence.handle != 0 {
 			disposition = .ok
 		} else if !evidence.has(native_valid_return_value) {

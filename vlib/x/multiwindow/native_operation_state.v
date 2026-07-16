@@ -334,7 +334,7 @@ fn (mut reservation NativeOrdinalRange) split_tail(count u64) !NativeOrdinalRang
 
 fn native_lifetime_release_operation(kind NativeLifetimeReleaseKind) NativeRenderOperation {
 	return match kind {
-		.egl_surface, .wayland_egl_window, .wayland_frame_callback { .surface_destroy }
+		.egl_surface, .wayland_egl_window, .wayland_surface, .wayland_frame_callback { .surface_destroy }
 		.egl_context { .context_destroy }
 		.egl_display { .display_terminate }
 		.egl_thread { .release_thread }
@@ -348,7 +348,7 @@ fn native_lifetime_release_operation(kind NativeLifetimeReleaseKind) NativeRende
 fn native_lifetime_release_domain(kind NativeLifetimeReleaseKind) NativeRenderDomain {
 	return match kind {
 		.egl_surface, .egl_context, .egl_display, .egl_thread { .egl }
-		.wayland_egl_window, .wayland_frame_callback { .wayland }
+		.wayland_egl_window, .wayland_surface, .wayland_frame_callback { .wayland }
 		.com_reference { .dxgi }
 		.metal_device, .appkit_state, .appkit_autorelease_pool, .metal_drawable { .metal }
 		.none { .none }
@@ -825,7 +825,26 @@ fn native_lifetime_scope_may_depend_on(child NativeOperationAuthorityScope, pare
 }
 
 fn (authority &NativeOperationAuthority) lifetime_parent_authority(child_scope NativeOperationAuthorityScope, child_token u64, release_kind NativeLifetimeReleaseKind, required_parent_identity u64) ?NativeLifetimeParentAuthority {
-	if release_kind in [.wayland_egl_window, .wayland_frame_callback] {
+	if release_kind == .wayland_egl_window {
+		if required_parent_identity == 0 {
+			return none
+		}
+		for ticket in authority.lifetime_tickets {
+			if ticket.release_kind == .wayland_surface && ticket.state == .bound
+				&& ticket.app_identity == authority.app_identity
+				&& ticket.native_identity == required_parent_identity
+				&& native_lifetime_scope_may_depend_on(child_scope, ticket.authority_scope)
+				&& authority.authority_scope_is_current(ticket.authority_scope, ticket.authority_token)
+				&& (ticket.authority_scope != child_scope || ticket.authority_token == child_token) {
+				return NativeLifetimeParentAuthority{
+					scope: ticket.authority_scope
+					token: ticket.authority_token
+				}
+			}
+		}
+		return NativeLifetimeParentAuthority{}
+	}
+	if release_kind in [.wayland_surface, .wayland_frame_callback] {
 		if required_parent_identity == 0 {
 			return none
 		}
@@ -1182,6 +1201,14 @@ fn (mut authority NativeOperationAuthority) inject(context NativeOperationContex
 			return entry.evidence
 		}
 	}
+	for index in 0 .. native_primitive_plan_capacity {
+		entry := authority.proof.plan[index]
+		if entry.proof_generation == authority.proof.generation && entry.armed
+			&& native_anchor_acquisition_selector_matches(entry.context, context) {
+			authority.proof.plan[index].armed = false
+			return entry.evidence
+		}
+	}
 	return actual
 }
 
@@ -1192,7 +1219,7 @@ fn (mut authority NativeOperationAuthority) arm(context NativeOperationContext, 
 	for index in 0 .. native_primitive_plan_capacity {
 		entry := authority.proof.plan[index]
 		if entry.proof_generation == authority.proof.generation && entry.armed
-			&& native_operation_contexts_identical(entry.context, context) {
+			&& native_operation_plan_contexts_overlap(entry.context, context) {
 			return false
 		}
 		if entry.proof_generation == authority.proof.generation
@@ -1214,6 +1241,46 @@ fn (mut authority NativeOperationAuthority) arm(context NativeOperationContext, 
 		}
 	}
 	return false
+}
+
+fn native_operation_plan_contexts_overlap(left NativeOperationContext, right NativeOperationContext) bool {
+	return native_operation_contexts_identical(left, right)
+		|| native_anchor_acquisition_selector_matches(left, right)
+		|| native_anchor_acquisition_selector_matches(right, left)
+}
+
+fn native_anchor_acquisition_selector_matches(selector NativeOperationContext, context NativeOperationContext) bool {
+	return selector.authority_scope == .renderer_attempt
+		&& selector.authority_scope == context.authority_scope
+		&& selector.authority_token == context.authority_token
+		&& selector.renderer_attempt_token == selector.authority_token
+		&& selector.renderer_attempt_token == context.renderer_attempt_token
+		&& selector.app_identity == context.app_identity
+		&& selector.presence_mask == native_context_has_target_generation
+		&& context.presence_mask == (native_context_has_target_generation | native_context_has_target_identity)
+		&& selector.domain in [.wayland, .egl] && selector.domain == context.domain
+		&& selector.operation == .anchor_surface_create && selector.operation == context.operation
+		&& selector.call_site == .anchor_create && selector.call_site == context.call_site
+		&& selector.scope == .anchor && selector.scope == context.scope
+		&& selector.window == WindowId{} && context.window == WindowId{}
+		&& selector.target_generation != 0
+		&& selector.target_generation == context.target_generation && selector.target_identity == 0
+		&& context.target_identity != 0 && selector.batch_epoch == 0 && context.batch_epoch == 0
+		&& selector.window_lease_epoch == 0 && context.window_lease_epoch == 0
+		&& selector.target_lease_epoch == 0 && context.target_lease_epoch == 0
+		&& selector.ordinal == context.ordinal
+}
+
+fn (mut authority NativeOperationAuthority) arm_anchor_acquisition_for_test(selector NativeOperationContext, evidence NativePrimitiveEvidence) bool {
+	if selector.presence_mask != native_context_has_target_generation
+		|| selector.target_identity != 0 || selector.domain !in [.wayland, .egl]
+		|| selector.operation != .anchor_surface_create || selector.call_site != .anchor_create
+		|| selector.scope != .anchor || selector.window != WindowId{}
+		|| selector.target_generation == 0 || selector.batch_epoch != 0
+		|| selector.window_lease_epoch != 0 || selector.target_lease_epoch != 0 {
+		return false
+	}
+	return authority.arm(selector, evidence)
 }
 
 fn listener_registration_selector_matches(selector NativeOperationContext, context NativeOperationContext) bool {
@@ -1416,6 +1483,10 @@ fn native_validation_after_injection(context NativeOperationContext, evidence Na
 		.device_create, .swapchain_create, .backbuffer_acquire, .color_texture_create,
 		.render_view_create, .depth_texture_create, .depth_view_create, .device_query,
 		.adapter_acquire, .factory_acquire, .anchor_surface_create, .render_batch_begin {
+			if context.domain == .wayland && evidence.has(native_valid_handle)
+				&& evidence.handle == 0 {
+				return .null_output
+			}
 			if context.domain == .metal && evidence.has(native_valid_handle) && evidence.handle == 0 {
 				return .null_output
 			}

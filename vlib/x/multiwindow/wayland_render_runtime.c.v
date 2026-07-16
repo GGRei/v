@@ -5,10 +5,165 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 }
 
 $if gg_multiwindow ? || x_multiwindow_render ? {
+	$if linux && sokol_wayland ? {
+		fn (backend &WaylandBackend) renderer_anchor_lifetime_absent() bool {
+			return backend.anchor_surface == unsafe { nil }
+				&& backend.anchor_wl_egl_window == unsafe { nil }
+				&& backend.anchor_wl_surface == unsafe { nil } && backend.anchor_surface_ticket == 0
+				&& backend.anchor_wl_egl_window_ticket == 0 && backend.anchor_wl_surface_ticket == 0
+		}
+
+		fn (backend &WaylandBackend) renderer_anchor_lifetime_complete() bool {
+			return backend.anchor_surface != unsafe { nil }
+				&& backend.anchor_wl_egl_window != unsafe { nil }
+				&& backend.anchor_wl_surface != unsafe { nil } && backend.anchor_surface_ticket != 0
+				&& backend.anchor_wl_egl_window_ticket != 0 && backend.anchor_wl_surface_ticket != 0
+		}
+
+		fn (mut backend WaylandBackend) create_private_renderer_anchor(mut ordinals NativeOrdinalRange, mut cleanup_ordinals NativeOrdinalRange, seed NativeOperationSeed) NativeRenderResult {
+			if !backend.transport_can_marshal() || backend.compositor == unsafe { nil }
+				|| backend.display == unsafe { nil } {
+				return backend.record_wayland_result(native_wayland_logical_result(.anchor_surface_create,
+					.anchor, .renderer_unavailable, backend.wayland_display_error,
+					err_wayland_create_surface_failed))
+			}
+			if !backend.renderer_anchor_lifetime_absent() {
+				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+				return backend.blocked_renderer_result(.anchor_surface_create)
+			}
+			egl_surface_ticket := backend.native_operations.reserve_linux_egl_lifetime_ticket(mut cleanup_ordinals,
+				.egl_surface, seed) or {
+				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+				return backend.blocked_renderer_result(.anchor_surface_create)
+			}
+			backend.anchor_surface_ticket = egl_surface_ticket
+			wl_egl_window_ticket := backend.reserve_wayland_lifetime_ticket(mut cleanup_ordinals,
+				.wayland_egl_window, seed) or {
+				backend.native_operations.burn_lifetime_ticket(egl_surface_ticket)
+				backend.anchor_surface_ticket = 0
+				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+				return backend.blocked_renderer_result(.anchor_surface_create)
+			}
+			backend.anchor_wl_egl_window_ticket = wl_egl_window_ticket
+			wl_surface_ticket := backend.reserve_wayland_lifetime_ticket(mut cleanup_ordinals,
+				.wayland_surface, seed) or {
+				backend.native_operations.burn_lifetime_ticket(wl_egl_window_ticket)
+				backend.native_operations.burn_lifetime_ticket(egl_surface_ticket)
+				backend.anchor_wl_egl_window_ticket = 0
+				backend.anchor_surface_ticket = 0
+				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+				return backend.blocked_renderer_result(.anchor_surface_create)
+			}
+			backend.anchor_wl_surface_ticket = wl_surface_ticket
+
+			display := unsafe { &C.wl_display(backend.display) }
+			mut raw := C.VMultiwindowNativePrimitive{}
+			surface_seed := seed.with_target_identity(native_identity(backend.compositor))
+			surface_context := ordinals.materialize(backend.native_operations, .wayland,
+				.anchor_surface_create, surface_seed) or {
+				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+				_ = backend.release_renderer_anchor_lifetime()
+				return backend.blocked_renderer_result(.anchor_surface_create)
+			}
+			C.v_multiwindow_wayland_create_anchor_surface(unsafe {
+				&C.wl_compositor(backend.compositor)
+			}, &raw)
+			actual_wl_surface := native_pointer(raw.handle)
+			if actual_wl_surface != unsafe { nil } {
+				backend.anchor_wl_surface = actual_wl_surface
+				backend.native_operations.bind_lifetime_ticket(wl_surface_ticket,
+					native_identity(actual_wl_surface), native_identity(backend.compositor))
+			}
+			surface_validation := if actual_wl_surface == unsafe { nil } {
+				NativeLocalValidation.null_output
+			} else {
+				NativeLocalValidation.none
+			}
+			surface_result := backend.accept_wayland_result(surface_context, mut ordinals, display,
+				raw, surface_validation, err_wayland_create_surface_failed)
+			if actual_wl_surface == unsafe { nil } {
+				backend.native_operations.burn_lifetime_ticket(wl_surface_ticket)
+				backend.anchor_wl_surface_ticket = 0
+			}
+			if !surface_result.succeeded() {
+				_ = backend.release_renderer_anchor_lifetime()
+				return surface_result
+			}
+
+			window_seed := seed.with_target_identity(native_identity(actual_wl_surface))
+			window_context := ordinals.materialize(backend.native_operations, .wayland,
+				.anchor_surface_create, window_seed) or {
+				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+				_ = backend.release_renderer_anchor_lifetime()
+				return backend.blocked_renderer_result(.anchor_surface_create)
+			}
+			C.v_multiwindow_wayland_egl_create_window(unsafe { &C.wl_surface(actual_wl_surface) },
+				1, 1, &raw)
+			actual_wl_egl_window := native_pointer(raw.handle)
+			if actual_wl_egl_window != unsafe { nil } {
+				backend.anchor_wl_egl_window = actual_wl_egl_window
+				backend.native_operations.bind_lifetime_ticket(wl_egl_window_ticket,
+					native_identity(actual_wl_egl_window), native_identity(actual_wl_surface))
+			}
+			window_validation := if actual_wl_egl_window == unsafe { nil } {
+				NativeLocalValidation.null_output
+			} else {
+				NativeLocalValidation.none
+			}
+			window_result := backend.accept_wayland_result(window_context, mut ordinals, display,
+				raw, window_validation, err_wayland_egl_surface_failed)
+			if actual_wl_egl_window == unsafe { nil } {
+				backend.native_operations.burn_lifetime_ticket(wl_egl_window_ticket)
+				backend.anchor_wl_egl_window_ticket = 0
+			}
+			if !window_result.succeeded() {
+				_ = backend.release_renderer_anchor_lifetime()
+				return window_result
+			}
+
+			egl_seed := seed.with_target_identity(native_identity(actual_wl_egl_window))
+			egl_context := ordinals.materialize(backend.native_operations, .egl,
+				.anchor_surface_create, egl_seed) or {
+				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+				_ = backend.release_renderer_anchor_lifetime()
+				return backend.blocked_renderer_result(.anchor_surface_create)
+			}
+			C.v_multiwindow_linux_egl_create_window_surface(native_identity(backend.egl_display),
+				native_identity(backend.egl_config), native_identity(actual_wl_egl_window), &raw)
+			actual_egl_surface := native_pointer(raw.handle)
+			if actual_egl_surface != unsafe { nil } {
+				backend.anchor_surface = actual_egl_surface
+				backend.native_operations.bind_lifetime_ticket(egl_surface_ticket,
+					native_identity(actual_egl_surface), native_identity(backend.egl_display))
+			}
+			egl_validation := if actual_egl_surface == unsafe { nil } {
+				NativeLocalValidation.null_output
+			} else {
+				NativeLocalValidation.none
+			}
+			egl_result := backend.accept_egl_result(egl_context, mut ordinals, egl_seed, raw,
+				egl_validation)
+			if actual_egl_surface == unsafe { nil } {
+				backend.native_operations.burn_lifetime_ticket(egl_surface_ticket)
+				backend.anchor_surface_ticket = 0
+			}
+			if !egl_result.succeeded() {
+				_ = backend.release_renderer_anchor_lifetime()
+				return egl_result
+			}
+			return egl_result
+		}
+	}
+
 	fn (mut backend WaylandBackend) create_renderer_anchor() ! {
 		$if linux && sokol_wayland ? {
-			if backend.anchor_surface != unsafe { nil } {
+			if backend.renderer_anchor_lifetime_complete() {
 				return
+			}
+			if !backend.renderer_anchor_lifetime_absent() {
+				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+				_ = backend.release_renderer_anchor_lifetime()
+				return error(err_render_native_renderer_unavailable)
 			}
 			if backend.anchor_generation == 0 {
 				outcome := backend.record_egl_result(native_render_outcome(.egl,
@@ -25,46 +180,17 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				scope:             .anchor
 				target_generation: backend.anchor_generation
 			}
-			mut ordinals := backend.native_operations.reserve_ordinals(3) or {
+			mut ordinals := backend.native_operations.reserve_ordinals(9) or {
 				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
 				return error(err_render_native_renderer_unavailable)
 			}
-			mut cleanup_ordinals := ordinals.split_tail(1) or {
+			mut cleanup_ordinals := ordinals.split_tail(3) or {
 				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
 				return error(err_render_native_renderer_unavailable)
 			}
-			cleanup_ticket := backend.native_operations.reserve_linux_egl_lifetime_ticket(mut cleanup_ordinals,
-				.egl_surface, seed) or {
-				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
-				return error(err_render_native_renderer_unavailable)
-			}
-			mut raw := C.VMultiwindowNativePrimitive{}
-			create_seed := seed.with_target_identity(native_identity(backend.egl_config))
-			context := ordinals.materialize(backend.native_operations, .egl,
-				.anchor_surface_create, create_seed) or {
-				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
-				backend.native_operations.burn_lifetime_ticket(cleanup_ticket)
-				return error(err_render_native_renderer_unavailable)
-			}
-			C.v_multiwindow_linux_egl_create_pbuffer_surface(native_identity(backend.egl_display),
-				native_identity(backend.egl_config), 1, 1, &raw)
-			actual_surface := native_pointer(raw.handle)
-			if actual_surface != unsafe { nil } {
-				backend.anchor_surface = actual_surface
-				backend.anchor_surface_ticket = cleanup_ticket
-				backend.native_operations.bind_lifetime_ticket(cleanup_ticket,
-					native_identity(actual_surface), native_identity(backend.egl_display))
-			}
-			outcome := backend.accept_egl_result(context, mut ordinals, create_seed, raw, .none)
-			if actual_surface == unsafe { nil } {
-				backend.native_operations.burn_lifetime_ticket(cleanup_ticket)
-			}
+			outcome :=
+				backend.create_private_renderer_anchor(mut ordinals, mut cleanup_ordinals, seed)
 			if !outcome.succeeded() {
-				release := backend.release_egl_surface_ticket(cleanup_ticket, actual_surface)
-				if release.terminal {
-					backend.anchor_surface = unsafe { nil }
-					backend.anchor_surface_ticket = 0
-				}
 				return native_render_error(outcome)
 			}
 			binding := backend.make_renderer_anchor_current(.anchor_prepare)
@@ -334,7 +460,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				return backend.record_egl_result(egl_unavailable_after_failed_recovery(verified))
 			}
 			backend.egl_binding = actual
-			return backend.record_egl_result(verified)
+			return verified
 		}
 	}
 
@@ -420,7 +546,11 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				|| backend.egl_context_ticket == 0 || backend.anchor_generation == 0 {
 				return backend.record_egl_result(egl_unavailable_after_failed_recovery(failure))
 			}
-			need_anchor := backend.anchor_surface == unsafe { nil }
+			if !backend.renderer_anchor_lifetime_absent()
+				&& !backend.renderer_anchor_lifetime_complete() {
+				return backend.record_egl_result(egl_unavailable_after_failed_recovery(failure))
+			}
+			need_anchor := backend.renderer_anchor_lifetime_absent()
 			seed := NativeOperationSeed{
 				presence_mask:      native_context_has_target_generation | native_context_has_batch_epoch | native_context_has_window_lease_epoch | native_context_has_target_lease_epoch
 				call_site:          .anchor_prepare
@@ -431,7 +561,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				target_lease_epoch: failure.context.target_lease_epoch
 			}
 			mut ordinals := backend.native_operations.reserve_ordinals(if need_anchor {
-				u64(8)
+				u64(14)
 			} else {
 				u64(5)
 			}) or {
@@ -440,42 +570,13 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			}
 			mut raw := C.VMultiwindowNativePrimitive{}
 			if need_anchor {
-				mut cleanup_ordinals := ordinals.split_tail(1) or {
+				mut cleanup_ordinals := ordinals.split_tail(3) or {
 					backend.render_health = renderer_health_latch_unavailable(backend.render_health)
 					return backend.record_egl_result(egl_unavailable_after_failed_recovery(failure))
 				}
-				cleanup_ticket := backend.native_operations.reserve_linux_egl_lifetime_ticket(mut cleanup_ordinals,
-					.egl_surface, seed) or {
-					backend.render_health = renderer_health_latch_unavailable(backend.render_health)
-					return backend.record_egl_result(egl_unavailable_after_failed_recovery(failure))
-				}
-				create_seed := seed.with_target_identity(native_identity(backend.egl_config))
-				create_context := ordinals.materialize(backend.native_operations, .egl,
-					.anchor_surface_create, create_seed) or {
-					backend.render_health = renderer_health_latch_unavailable(backend.render_health)
-					backend.native_operations.burn_lifetime_ticket(cleanup_ticket)
-					return backend.record_egl_result(egl_unavailable_after_failed_recovery(failure))
-				}
-				C.v_multiwindow_linux_egl_create_pbuffer_surface(native_identity(backend.egl_display),
-					native_identity(backend.egl_config), 1, 1, &raw)
-				actual_surface := native_pointer(raw.handle)
-				if actual_surface != unsafe { nil } {
-					backend.anchor_surface = actual_surface
-					backend.anchor_surface_ticket = cleanup_ticket
-					backend.native_operations.bind_lifetime_ticket(cleanup_ticket,
-						native_identity(actual_surface), native_identity(backend.egl_display))
-				}
-				created := backend.accept_egl_result(create_context, mut ordinals, create_seed,
-					raw, .none)
-				if actual_surface == unsafe { nil } {
-					backend.native_operations.burn_lifetime_ticket(cleanup_ticket)
-				}
+				created := backend.create_private_renderer_anchor(mut ordinals, mut
+					cleanup_ordinals, seed)
 				if !created.succeeded() {
-					release := backend.release_egl_surface_ticket(cleanup_ticket, actual_surface)
-					if release.terminal {
-						backend.anchor_surface = unsafe { nil }
-						backend.anchor_surface_ticket = 0
-					}
 					return backend.record_egl_result(egl_unavailable_after_failed_recovery(created))
 				}
 			}
@@ -546,13 +647,12 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 
 	fn (mut backend WaylandBackend) invalidate_egl_anchor() {
 		$if linux && sokol_wayland ? {
-			if backend.anchor_surface != unsafe { nil } {
+			if backend.anchor_surface != unsafe { nil }
+				|| backend.anchor_wl_egl_window != unsafe { nil }
+				|| backend.anchor_wl_surface != unsafe { nil } || backend.anchor_surface_ticket != 0
+				|| backend.anchor_wl_egl_window_ticket != 0 || backend.anchor_wl_surface_ticket != 0 {
 				old_surface := backend.anchor_surface
-				release := backend.release_egl_surface_ticket(backend.anchor_surface_ticket,
-					old_surface)
-				if release.terminal {
-					backend.anchor_surface = unsafe { nil }
-					backend.anchor_surface_ticket = 0
+				if backend.release_renderer_anchor_lifetime() {
 					backend.anchor_generation =
 						exhaust_backend_target_generation(backend.anchor_generation)
 					if backend.egl_binding.kind == .anchor

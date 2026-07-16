@@ -15,6 +15,9 @@
 #include <wayland-egl.h>
 #include "linux_egl_native_helpers.h"
 
+#define V_MULTIWINDOW_WAYLAND_ANCHOR_RELEASE_PROTOCOL_DESTROY UINT64_C(1)
+#define V_MULTIWINDOW_WAYLAND_ANCHOR_RELEASE_LOCAL_PROXY_DESTROY UINT64_C(2)
+
 static inline void v_multiwindow_wayland_result(VMultiwindowNativePrimitive *out_result,
 		int result, int native_errno) {
 	if (out_result == NULL) {
@@ -1075,6 +1078,45 @@ static inline void v_multiwindow_wayland_xdg_decoration_manager_destroy(struct z
 
 static inline void v_multiwindow_wayland_xdg_toplevel_destroy(struct xdg_toplevel *toplevel) {
 	wl_proxy_marshal_flags((struct wl_proxy *)toplevel, XDG_TOPLEVEL_DESTROY, NULL, wl_proxy_get_version((struct wl_proxy *)toplevel), WL_MARSHAL_FLAG_DESTROY);
+}
+
+static inline void v_multiwindow_wayland_create_anchor_surface(
+		struct wl_compositor *compositor, VMultiwindowNativePrimitive *out_result) {
+	v_multiwindow_wayland_reset(out_result);
+	if (compositor == NULL) {
+		return;
+	}
+	struct wl_surface *surface = wl_compositor_create_surface(compositor);
+	if (out_result != NULL) {
+		out_result->valid_mask = V_MULTIWINDOW_NATIVE_VALID_HANDLE;
+		out_result->handle = (uint64_t)(uintptr_t)surface;
+	}
+}
+
+static inline void v_multiwindow_wayland_destroy_anchor_surface(void *surface,
+		int marshal, VMultiwindowNativePrimitive *out_result) {
+	v_multiwindow_wayland_reset(out_result);
+	if (surface == NULL) {
+		return;
+	}
+	const uint64_t surface_identity = (uint64_t)(uintptr_t)surface;
+	uint64_t release_mode;
+	if (marshal) {
+		wl_surface_destroy((struct wl_surface *)surface);
+		release_mode = V_MULTIWINDOW_WAYLAND_ANCHOR_RELEASE_PROTOCOL_DESTROY;
+	} else {
+		wl_proxy_destroy((struct wl_proxy *)surface);
+		release_mode = V_MULTIWINDOW_WAYLAND_ANCHOR_RELEASE_LOCAL_PROXY_DESTROY;
+	}
+	if (out_result != NULL) {
+		out_result->valid_mask = V_MULTIWINDOW_NATIVE_VALID_OBSERVED_FLAGS;
+		out_result->observed_flags = release_mode;
+	}
+	#if defined(SOKOL_TRACE_HOOKS) && defined(V_MULTIWINDOW_NATIVE_PROOF_TEST) \
+		&& defined(V_MULTIWINDOW_NATIVE_WAYLAND_RELEASE_ORACLE_HELPERS_H)
+	v_multiwindow_test_wayland_anchor_surface_destroyed(
+		surface_identity, release_mode);
+	#endif
 }
 
 static inline void v_multiwindow_wayland_egl_create_window(struct wl_surface *surface, int width,

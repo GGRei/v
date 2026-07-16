@@ -130,6 +130,14 @@ fn test_renderer_submission_finalize_fault_terminalizes_after_one_native_submiss
 	}
 }
 
+fn test_renderer_submission_finalize_shutdown_replay_is_exact() {
+	$if gg_multiwindow ? || x_multiwindow_render ? {
+		if renderer_fault_runtime_requested_for_test() {
+			renderer_fault_exercise_submission_finalize_shutdown_replay_for_test()!
+		}
+	}
+}
+
 $if gg_multiwindow ? || x_multiwindow_render ? {
 	@[heap]
 	struct RendererFaultBatchRetryState {
@@ -273,6 +281,10 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		backend_windows                   int
 		backend_anchor_identity           u64
 		backend_anchor_ticket             u64
+		wayland_anchor_egl_surface        RendererFaultLifetimeTeardownAuthority
+		wayland_anchor_wl_egl_window      RendererFaultLifetimeTeardownAuthority
+		wayland_anchor_wl_surface         RendererFaultLifetimeTeardownAuthority
+		wayland_compositor_identity       u64
 		backend_renderer_device_identity  u64
 		backend_renderer_device_ticket    u64
 		backend_renderer_context_identity u64
@@ -341,6 +353,8 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		context                  NativeOperationContext
 		ticket_native_identity   u64
 		required_parent_identity u64
+		parent_authority_scope   NativeOperationAuthorityScope
+		parent_authority_token   u64
 		state                    NativeLifetimeTicketState
 	}
 
@@ -720,6 +734,16 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 					backend_anchor_generation:         app.backend.wayland.anchor_generation
 					backend_anchor_identity:           native_identity(app.backend.wayland.anchor_surface)
 					backend_anchor_ticket:             app.backend.wayland.anchor_surface_ticket
+					wayland_anchor_egl_surface:        renderer_fault_lifetime_teardown_authority_for_test(app,
+						native_identity(app.backend.wayland.anchor_surface),
+						app.backend.wayland.anchor_surface_ticket)
+					wayland_anchor_wl_egl_window:      renderer_fault_lifetime_teardown_authority_for_test(app,
+						native_identity(app.backend.wayland.anchor_wl_egl_window),
+						app.backend.wayland.anchor_wl_egl_window_ticket)
+					wayland_anchor_wl_surface:         renderer_fault_lifetime_teardown_authority_for_test(app,
+						native_identity(app.backend.wayland.anchor_wl_surface),
+						app.backend.wayland.anchor_wl_surface_ticket)
+					wayland_compositor_identity:       native_identity(app.backend.wayland.compositor)
 					backend_renderer_context_identity: native_identity(app.backend.wayland.egl_context)
 					backend_renderer_context_ticket:   app.backend.wayland.egl_context_ticket
 					backend_display_identity:          native_identity(app.backend.wayland.egl_display)
@@ -861,6 +885,8 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				context:                  ticket.context
 				ticket_native_identity:   ticket.native_identity
 				required_parent_identity: ticket.required_parent_identity
+				parent_authority_scope:   ticket.parent_authority_scope
+				parent_authority_token:   ticket.parent_authority_token
 				state:                    ticket.state
 			}
 			break
@@ -1542,7 +1568,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert stopped.appkit_window_drawable_ticket == 0
 	}
 
-	fn renderer_fault_assert_first_stop_proof_for_test(fresh RendererFaultNativeProofSnapshot, stopped RendererFaultNativeProofSnapshot) {
+	fn renderer_fault_assert_first_stop_proof_for_test(fresh RendererFaultNativeProofSnapshot, stopped RendererFaultNativeProofSnapshot, backend BackendKind) {
 		assert stopped.generation == fresh.generation
 		assert stopped.ordinal_floor == fresh.ordinal_floor
 		assert stopped.accepting_plans
@@ -1552,7 +1578,11 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		}
 		assert stopped.trace_len > 0
 		assert !stopped.trace_overflow
-		assert stopped.next_ordinal > fresh.next_ordinal
+		if backend == .wayland {
+			assert stopped.next_ordinal > fresh.next_ordinal
+		} else {
+			assert stopped.next_ordinal == fresh.next_ordinal
+		}
 		assert !stopped.sequence_exhausted
 		assert stopped.terminal_cause == .none
 		assert stopped.live_tickets == 0
@@ -1726,8 +1756,8 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				release := proof.trace[index]
 				assert release.milestone == .authority_release
 				assert release.context == cancel
-				assert release.actual == proof.trace[cancel_start + 1].actual
-				assert release.effective == proof.trace[cancel_start + 2].effective
+				assert release.actual == proof.trace[cancel_start + 6].actual
+				assert release.effective == proof.trace[cancel_start + 6].effective
 				assert release.result == proof.trace[cancel_start + 6].result
 				index++
 				break
@@ -2125,6 +2155,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert app.backend.native_operations.proof.trace_len == proof_trace_len
 		renderer_fault_assert_sokol_snapshots_equal_for_test(first_trace,
 			multiwindow_sokol_trace.typed_snapshot())
+		_ = renderer_fault_clear_native_trace_for_test(mut app)
 		before_stop := renderer_fault_state_snapshot_for_test(app, window)!
 		assert before_stop == after_state
 		renderer_fault_assert_idle_state_for_test(before_stop)
@@ -2133,7 +2164,6 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert app.status() == .stopped
 		assert renderer_fault_native_submission_count_for_test(app) == 1
 		assert app.backend.native_operations.disarm_proof()
-		renderer_fault_exercise_submission_finalize_shutdown_replay_for_test()!
 	}
 
 	fn renderer_fault_exercise_submission_finalize_shutdown_replay_for_test() ! {
@@ -2191,8 +2221,68 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		delivery_suffix := renderer_fault_delivery_suffix_snapshot_for_test(delivery_before, app)
 		callback_after := renderer_fault_wayland_frame_callback_state_for_test(app, window)
 		window_teardown_authority := renderer_fault_window_teardown_authority_for_test(app, window)
+		assert prepare_error == ''
+		assert prepared_capture_error == ''
+		assert proof_was_nil
+		assert proof_armed
+		assert fresh_capture.available
+		assert harvested_capture.available
+		fresh := fresh_capture.snapshot
+		harvested_proof := harvested_capture.snapshot
+		assert fresh.generation != 0
+		assert fresh.ordinal_floor != 0
+		assert fresh.trace_len == 0
+		assert !fresh.trace_overflow
+		assert fresh.accepting_plans
+		assert before_stop == after
+		renderer_fault_assert_idle_state_for_test(before_stop)
+		renderer_fault_assert_prepared_stop_transition_for_test(before_stop, prepared, ticket,
+			delivery_suffix, app.backend.kind, callback_after)!
+		harvest_cursor := renderer_fault_assert_prepare_harvest_proof_for_test(app, window,
+			prepared, fresh, harvested_proof, harvested_proof, callback_before, callback_after)
+		assert harvest_cursor == harvested_proof.trace_len
+		window_fresh := renderer_fault_clear_native_trace_for_test(mut app)
+		assert window_fresh.next_ordinal == harvested_proof.next_ordinal
+
+		mut teardown_errors := []string{}
+		prepared_ticket := app.prepare_window_destroy_for_stop(window)!
+		prepared_tickets := app.prepared_window_tickets_for_stop()
+		assert prepared_tickets.len == 1
+		assert prepared_tickets[0] == prepared_ticket
+		for destroy_ticket in prepared_tickets {
+			app.seal_window_destroy(destroy_ticket) or {
+				teardown_errors << err.msg()
+				continue
+			}
+			app.finish_window_destroy(destroy_ticket, []string{}) or {
+				teardown_errors << err.msg()
+			}
+		}
+		assert teardown_errors.len == 0
+		assert app.sealed_window_tickets_for_stop().len == 0
+		assert app.live_window_ids_for_stop().len == 0
+		window_proof_capture := renderer_fault_native_proof_capture_for_test(app)
+		assert window_proof_capture.available
+		window_proof := window_proof_capture.snapshot
+		assert !window_proof.trace_overflow, 'window teardown native proof overflowed after segmentation'
+		window_cursor, shutdown_ordinal := renderer_fault_assert_window_teardown_native_prefix_for_test(app,
+			prepared, window_teardown_authority, callback_after, 0, window_fresh.next_ordinal)
+		assert window_cursor == window_proof.trace_len
+		shutdown_fresh := renderer_fault_clear_native_trace_for_test(mut app)
+		assert shutdown_fresh.next_ordinal == shutdown_ordinal
+		app.shutdown_render_bridge_for_stop() or { teardown_errors << err.msg() }
+		assert teardown_errors.len == 0
+		bridge_proof_capture := renderer_fault_native_proof_capture_for_test(app)
+		assert bridge_proof_capture.available
+		bridge_proof := bridge_proof_capture.snapshot
+		assert !bridge_proof.trace_overflow, 'renderer bridge shutdown native proof overflowed after segmentation'
+		renderer_fault_assert_shutdown_native_phase_for_test(app, bridge_proof, prepared, 0,
+			shutdown_ordinal, true)
+		backend_fresh := renderer_fault_clear_native_trace_for_test(mut app)
+		assert backend_fresh.next_ordinal == bridge_proof.next_ordinal
+
 		mut first_stop_error := ''
-		app.stop() or { first_stop_error = err.msg() }
+		app.finish_stop(ticket, teardown_errors) or { first_stop_error = err.msg() }
 		mut first_terminal_capture_error := ''
 		first_terminal := renderer_fault_state_snapshot_for_test(app, window) or {
 			first_terminal_capture_error = err.msg()
@@ -2208,40 +2298,20 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		}
 		second_proof_capture := renderer_fault_native_proof_capture_for_test(app)
 
-		assert prepare_error == ''
-		assert prepared_capture_error == ''
 		assert first_terminal_capture_error == ''
 		assert second_terminal_capture_error == ''
-		assert proof_was_nil
-		assert proof_armed
-		assert fresh_capture.available
-		assert harvested_capture.available
 		assert first_proof_capture.available
 		assert second_proof_capture.available
-		fresh := fresh_capture.snapshot
-		harvested_proof := harvested_capture.snapshot
 		first_proof := first_proof_capture.snapshot
 		second_proof := second_proof_capture.snapshot
-		assert fresh.generation != 0
-		assert fresh.ordinal_floor != 0
-		assert fresh.trace_len == 0
-		assert !fresh.trace_overflow
-		assert fresh.accepting_plans
-		assert before_stop == after
-		renderer_fault_assert_idle_state_for_test(before_stop)
-		renderer_fault_assert_prepared_stop_transition_for_test(before_stop, prepared, ticket,
-			delivery_suffix, app.backend.kind, callback_after)!
+		assert !first_proof.trace_overflow, 'renderer/backend shutdown native proof overflowed after segmentation'
 		assert first_stop_error == ''
 		assert app.status() == .stopped
-		harvest_cursor := renderer_fault_assert_prepare_harvest_proof_for_test(app, window,
-			prepared, fresh, harvested_proof, first_proof, callback_before, callback_after)
-		shutdown_cursor, shutdown_ordinal := renderer_fault_assert_window_teardown_native_prefix_for_test(app,
-			prepared, window_teardown_authority, callback_after, harvest_cursor,
-			harvested_proof.next_ordinal)
 		renderer_fault_assert_first_stop_terminal_state_for_test(prepared, first_terminal, message)
-		renderer_fault_assert_first_stop_proof_for_test(fresh, first_proof)
-		renderer_fault_assert_shutdown_native_suffix_for_test(app, first_proof, prepared,
-			shutdown_cursor, shutdown_ordinal)
+		renderer_fault_assert_first_stop_proof_for_test(backend_fresh, first_proof,
+			app.backend.kind)
+		renderer_fault_assert_shutdown_native_phase_for_test(app, first_proof, prepared, 0,
+			backend_fresh.next_ordinal, false)
 		assert second_stop_error == first_stop_error
 		assert second_terminal == first_terminal
 		assert second_proof == first_proof
@@ -2447,6 +2517,8 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert native_operation_contexts_identical(actual.context, expected.context)
 		assert actual.ticket_native_identity == expected.ticket_native_identity
 		assert actual.required_parent_identity == expected.required_parent_identity
+		assert actual.parent_authority_scope == expected.parent_authority_scope
+		assert actual.parent_authority_token == expected.parent_authority_token
 		assert actual.state == expected.state
 	}
 
@@ -3159,6 +3231,52 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		return start + 6
 	}
 
+	fn renderer_fault_assert_wayland_anchor_release_for_test(app &App, proof &NativeOperationProofState, start int, authority RendererFaultLifetimeTeardownAuthority, expected_domain NativeRenderDomain, expected_kind NativeLifetimeReleaseKind, expected_parent_identity u64, expected_parent_scope NativeOperationAuthorityScope, target_generation u64) int {
+		assert authority.captured
+		assert authority.value_identity != 0
+		assert authority.ticket_id != 0
+		assert authority.app_identity == app.instance_id
+		assert authority.authority_scope == .renderer_attempt
+		assert authority.authority_token == app.backend.native_operations.renderer_attempt_token
+		assert authority.domain == expected_domain
+		assert authority.release_kind == expected_kind
+		assert authority.ticket_native_identity == authority.value_identity
+		assert authority.required_parent_identity == expected_parent_identity
+		assert authority.parent_authority_scope == expected_parent_scope
+		assert authority.parent_authority_token == if expected_parent_scope == .app_lifetime {
+			app.backend.native_operations.app_lifetime_token
+		} else if expected_parent_scope == .renderer_attempt {
+			app.backend.native_operations.renderer_attempt_token
+		} else {
+			u64(0)
+		}
+		assert authority.state == .bound
+		assert authority.owner_seed.call_site == .anchor_create
+		assert authority.owner_seed.scope == .anchor
+		assert authority.owner_seed.window == WindowId{}
+		assert authority.owner_seed.presence_mask == native_context_has_target_generation
+		assert authority.owner_seed.target_generation == target_generation
+		assert authority.owner_seed.target_identity == 0
+		assert authority.proof_generation == 0
+		context := authority.context
+		renderer_fault_assert_scoped_authority_context_for_test(app, context)
+		assert context.authority_scope == .renderer_attempt
+		assert context.domain == expected_domain
+		assert context.operation == native_lifetime_release_operation(expected_kind)
+		assert context.call_site == .anchor_create
+		assert context.scope == .anchor
+		assert context.presence_mask == native_context_has_target_generation | native_context_has_target_identity
+		assert context.window == WindowId{}
+		assert context.target_generation == target_generation
+		assert context.target_identity == authority.value_identity
+		assert context.ordinal == authority.ticket_id
+		assert start < proof.trace_len
+		assert native_operation_contexts_identical(proof.trace[start].context, context)
+		return renderer_fault_assert_lifetime_release_chain_for_test(app, proof, start,
+			expected_domain, native_lifetime_release_operation(expected_kind), .anchor_create,
+			.anchor, .renderer_attempt, authority.ticket_id, authority.value_identity)
+	}
+
 	fn renderer_fault_assert_window_lifetime_release_for_test(app &App, proof &NativeOperationProofState, start int, window WindowId, authority RendererFaultLifetimeTeardownAuthority, expected_domain NativeRenderDomain, expected_kind NativeLifetimeReleaseKind, expected_call_site NativeRenderCallSite, expected_authority_scope NativeOperationAuthorityScope, expected_parent_identity u64) int {
 		assert authority.captured
 		assert authority.value_identity != 0
@@ -3311,7 +3429,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		return index, next_ordinal
 	}
 
-	fn renderer_fault_assert_shutdown_native_suffix_for_test(app &App, snapshot RendererFaultNativeProofSnapshot, before_stop RendererFaultStateSnapshot, start int, expected_first_ordinal u64) {
+	fn renderer_fault_assert_shutdown_native_phase_for_test(app &App, snapshot RendererFaultNativeProofSnapshot, before_stop RendererFaultStateSnapshot, start int, expected_first_ordinal u64, bridge_phase bool) {
 		proof := renderer_fault_native_proof_for_test(app)
 		assert proof.generation == snapshot.generation
 		assert proof.ordinal_floor == snapshot.ordinal_floor
@@ -3322,110 +3440,182 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert expected_first_ordinal != 0
 		mut index := start
 		match app.backend.kind {
-			.x11, .wayland {
-				mut bind := NativeOperationContext{}
-				index, bind = renderer_fault_assert_egl_binding_sequence_for_test(app, proof,
-					index, .shutdown_anchor, .anchor, RenderTargetLease{})
-				assert bind.domain == .egl
-				assert bind.ordinal == expected_first_ordinal
-				assert bind.target_generation == before_stop.backend_anchor_generation
-				assert bind.target_identity == before_stop.backend_anchor_identity
-				unbind := renderer_fault_assert_native_chain_at_for_test(proof, index, .egl,
-					.make_current, .shutdown_anchor, .anchor)
-				renderer_fault_assert_anchor_context_for_test(app, unbind)
-				assert unbind.target_generation == bind.target_generation
-				assert unbind.target_identity == bind.target_identity
-				assert unbind.ordinal == bind.ordinal + 5
-				assert proof.trace[index + 1].actual.has(native_valid_return_value)
-				assert proof.trace[index + 1].actual.return_value == 1
-				index += 5
-				index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof, index,
-					.egl, .surface_destroy, .anchor_create, .anchor, .renderer_attempt,
-					before_stop.backend_anchor_ticket, before_stop.backend_anchor_identity)
-				index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof, index,
-					.egl, .context_destroy, .renderer_start, .renderer, .app_lifetime,
-					before_stop.backend_renderer_context_ticket,
-					before_stop.backend_renderer_context_identity)
-				index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof, index,
-					.egl, .display_terminate, .renderer_start, .renderer, .app_lifetime,
-					before_stop.backend_display_ticket, before_stop.backend_display_identity)
-				index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof, index,
-					.egl, .release_thread, .renderer_start, .renderer, .app_lifetime,
-					before_stop.backend_thread_ticket, before_stop.backend_owner_thread_identity)
+			.x11 {
+				if bridge_phase {
+					mut bind := NativeOperationContext{}
+					index, bind = renderer_fault_assert_egl_binding_sequence_for_test(app, proof,
+						index, .shutdown_anchor, .anchor, RenderTargetLease{})
+					assert bind.domain == .egl
+					assert bind.ordinal == expected_first_ordinal
+					assert bind.target_generation == before_stop.backend_anchor_generation
+					assert bind.target_identity == before_stop.backend_anchor_identity
+					unbind := renderer_fault_assert_native_chain_at_for_test(proof, index, .egl,
+						.make_current, .shutdown_anchor, .anchor)
+					renderer_fault_assert_anchor_context_for_test(app, unbind)
+					assert unbind.target_generation == bind.target_generation
+					assert unbind.target_identity == bind.target_identity
+					assert unbind.ordinal == bind.ordinal + 5
+					assert proof.trace[index + 1].actual.has(native_valid_return_value)
+					assert proof.trace[index + 1].actual.return_value == 1
+					index += 5
+					index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof,
+						index, .egl, .surface_destroy, .anchor_create, .anchor, .renderer_attempt,
+						before_stop.backend_anchor_ticket, before_stop.backend_anchor_identity)
+				} else {
+					index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof,
+						index, .egl, .context_destroy, .renderer_start, .renderer, .app_lifetime,
+						before_stop.backend_renderer_context_ticket,
+						before_stop.backend_renderer_context_identity)
+					index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof,
+						index, .egl, .display_terminate, .renderer_start, .renderer, .app_lifetime,
+						before_stop.backend_display_ticket, before_stop.backend_display_identity)
+					index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof,
+						index, .egl, .release_thread, .renderer_start, .renderer, .app_lifetime,
+						before_stop.backend_thread_ticket,
+						before_stop.backend_owner_thread_identity)
+				}
+			}
+			.wayland {
+				if bridge_phase {
+					mut bind := NativeOperationContext{}
+					index, bind = renderer_fault_assert_egl_binding_sequence_for_test(app, proof,
+						index, .shutdown_anchor, .anchor, RenderTargetLease{})
+					assert bind.domain == .egl
+					assert bind.ordinal == expected_first_ordinal
+					assert bind.target_generation == before_stop.backend_anchor_generation
+					assert bind.target_identity == before_stop.backend_anchor_identity
+					unbind := renderer_fault_assert_native_chain_at_for_test(proof, index, .egl,
+						.make_current, .shutdown_anchor, .anchor)
+					renderer_fault_assert_anchor_context_for_test(app, unbind)
+					assert unbind.target_generation == bind.target_generation
+					assert unbind.target_identity == bind.target_identity
+					assert unbind.ordinal == bind.ordinal + 5
+					assert proof.trace[index + 1].actual.has(native_valid_return_value)
+					assert proof.trace[index + 1].actual.return_value == 1
+					index += 5
+
+					anchor_surface := before_stop.wayland_anchor_egl_surface
+					anchor_wl_egl_window := before_stop.wayland_anchor_wl_egl_window
+					anchor_wl_surface := before_stop.wayland_anchor_wl_surface
+					assert anchor_surface.value_identity == before_stop.backend_anchor_identity
+					assert anchor_surface.ticket_id == before_stop.backend_anchor_ticket
+					assert anchor_wl_egl_window.ticket_id == anchor_surface.ticket_id + 1
+					assert anchor_wl_surface.ticket_id == anchor_wl_egl_window.ticket_id + 1
+					assert anchor_surface.required_parent_identity == before_stop.backend_display_identity
+					assert anchor_wl_egl_window.required_parent_identity == anchor_wl_surface.value_identity
+					assert anchor_wl_surface.required_parent_identity == before_stop.wayland_compositor_identity
+					index = renderer_fault_assert_wayland_anchor_release_for_test(app, proof,
+						index, anchor_surface, .egl, .egl_surface,
+						before_stop.backend_display_identity, .app_lifetime,
+						before_stop.backend_anchor_generation)
+					index = renderer_fault_assert_wayland_anchor_release_for_test(app, proof,
+						index, anchor_wl_egl_window, .wayland, .wayland_egl_window,
+						anchor_wl_surface.value_identity, .renderer_attempt,
+						before_stop.backend_anchor_generation)
+					assert proof.trace[index + 1].actual.has(native_valid_observed_flags)
+					assert proof.trace[index + 1].actual.observed_flags == wayland_anchor_release_protocol_destroy
+					index = renderer_fault_assert_wayland_anchor_release_for_test(app, proof,
+						index, anchor_wl_surface, .wayland, .wayland_surface,
+						before_stop.wayland_compositor_identity, .none,
+						before_stop.backend_anchor_generation)
+				} else {
+					index, _, _ = renderer_fault_assert_wayland_harvest_trace_for_test(app, proof,
+						index, proof.trace_len, expected_first_ordinal,
+						before_stop.wayland_display_identity, false, RendererFaultWaylandFrameCallbackState{})
+					index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof,
+						index, .egl, .context_destroy, .renderer_start, .renderer, .app_lifetime,
+						before_stop.backend_renderer_context_ticket,
+						before_stop.backend_renderer_context_identity)
+					index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof,
+						index, .egl, .display_terminate, .renderer_start, .renderer, .app_lifetime,
+						before_stop.backend_display_ticket, before_stop.backend_display_identity)
+					index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof,
+						index, .egl, .release_thread, .renderer_start, .renderer, .app_lifetime,
+						before_stop.backend_thread_ticket,
+						before_stop.backend_owner_thread_identity)
+				}
 			}
 			.appkit {
-				begin := renderer_fault_assert_native_chain_at_for_test(proof, index, .metal,
-					.render_batch_begin, .shutdown_anchor, .batch)
-				renderer_fault_assert_authority_context_for_test(app, begin)
-				assert begin.ordinal == expected_first_ordinal
-				assert begin.presence_mask == 0
-				assert begin.target_identity == 0
-				pool_identity := proof.trace[index + 1].actual.handle
-				assert pool_identity != 0
-				index += 5
-				pool_release := renderer_fault_assert_native_chain_at_for_test(proof, index,
-					.metal, .render_batch_end, .shutdown_anchor, .batch)
-				renderer_fault_assert_authority_context_for_test(app, pool_release)
-				assert pool_release.presence_mask == native_context_has_target_identity
-				assert pool_release.target_identity == pool_identity
-				assert pool_release.ordinal == begin.ordinal + 1
-				index += 5
-				pool_authority_release := proof.trace[index]
-				assert pool_authority_release.milestone == .authority_release
-				assert pool_authority_release.context == pool_release
-				assert pool_authority_release.actual.has(native_valid_object_identity_0)
-				assert pool_authority_release.actual.object_identity_0 == pool_identity
-				assert pool_authority_release.actual == pool_authority_release.effective
-				assert pool_authority_release.local_validation == .void_completion
-				assert pool_authority_release.result.context == pool_release
-				index++
-				destroy := renderer_fault_assert_native_chain_at_for_test(proof, index, .metal,
-					.surface_destroy, .shutdown_release, .anchor)
-				renderer_fault_assert_appkit_anchor_context_for_test(app, destroy)
-				assert destroy.target_identity == before_stop.backend_anchor_identity
-				assert destroy.ordinal == pool_release.ordinal + 1
-				index = renderer_fault_assert_appkit_surface_destroy_authority_release_for_test(proof,
-					index, destroy)
-				index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof, index,
-					.metal, .object_release, .anchor_create, .anchor, .renderer_attempt,
-					before_stop.backend_anchor_ticket, before_stop.backend_anchor_identity)
-				index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof, index,
-					.metal, .object_release, .renderer_start, .renderer, .app_lifetime,
-					before_stop.backend_renderer_device_ticket,
-					before_stop.backend_renderer_device_identity)
+				if bridge_phase {
+					begin := renderer_fault_assert_native_chain_at_for_test(proof, index, .metal,
+						.render_batch_begin, .shutdown_anchor, .batch)
+					renderer_fault_assert_authority_context_for_test(app, begin)
+					assert begin.ordinal == expected_first_ordinal
+					assert begin.presence_mask == 0
+					assert begin.target_identity == 0
+					pool_identity := proof.trace[index + 1].actual.handle
+					assert pool_identity != 0
+					index += 5
+					pool_release := renderer_fault_assert_native_chain_at_for_test(proof, index,
+						.metal, .render_batch_end, .shutdown_anchor, .batch)
+					renderer_fault_assert_authority_context_for_test(app, pool_release)
+					assert pool_release.presence_mask == native_context_has_target_identity
+					assert pool_release.target_identity == pool_identity
+					assert pool_release.ordinal == begin.ordinal + 1
+					index += 5
+					pool_authority_release := proof.trace[index]
+					assert pool_authority_release.milestone == .authority_release
+					assert pool_authority_release.context == pool_release
+					assert pool_authority_release.actual.has(native_valid_object_identity_0)
+					assert pool_authority_release.actual.object_identity_0 == pool_identity
+					assert pool_authority_release.actual == pool_authority_release.effective
+					assert pool_authority_release.local_validation == .void_completion
+					assert pool_authority_release.result.context == pool_release
+					index++
+					destroy := renderer_fault_assert_native_chain_at_for_test(proof, index, .metal,
+						.surface_destroy, .shutdown_release, .anchor)
+					renderer_fault_assert_appkit_anchor_context_for_test(app, destroy)
+					assert destroy.target_identity == before_stop.backend_anchor_identity
+					assert destroy.ordinal == pool_release.ordinal + 1
+					index = renderer_fault_assert_appkit_surface_destroy_authority_release_for_test(proof,
+						index, destroy)
+					index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof,
+						index, .metal, .object_release, .anchor_create, .anchor, .renderer_attempt,
+						before_stop.backend_anchor_ticket, before_stop.backend_anchor_identity)
+				} else {
+					index = renderer_fault_assert_lifetime_release_chain_for_test(app, proof,
+						index, .metal, .object_release, .renderer_start, .renderer, .app_lifetime,
+						before_stop.backend_renderer_device_ticket,
+						before_stop.backend_renderer_device_identity)
+				}
 			}
 			.win32 {
-				status := renderer_fault_assert_native_chain_at_for_test(proof, index, .dxgi,
-					.device_status, .shutdown_anchor, .renderer)
-				renderer_fault_assert_authority_context_for_test(app, status)
-				assert status.ordinal == expected_first_ordinal
-				assert status.presence_mask == native_context_has_target_identity
-				assert status.target_identity == before_stop.backend_renderer_device_identity
-				index += 5
-				anchor_identities := [before_stop.win32_anchor_depth_view, before_stop.win32_anchor_depth_texture,
-					before_stop.win32_anchor_render_view, before_stop.win32_anchor_color_texture]
-				anchor_tickets := [before_stop.win32_anchor_depth_view_ticket,
-					before_stop.win32_anchor_depth_ticket, before_stop.win32_anchor_render_view_ticket,
-					before_stop.win32_anchor_color_ticket]
-				anchor_seed := NativeOperationSeed{
-					call_site: .anchor_create
-					scope:     .anchor
-				}
-				for offset, identity in anchor_identities {
-					index = renderer_fault_assert_win32_object_release_for_test(app, proof, index,
-						anchor_seed, .renderer_attempt, anchor_tickets[offset], identity)
-				}
-				renderer_identities := [before_stop.backend_factory_identity,
-					before_stop.backend_renderer_context_identity, before_stop.backend_renderer_device_identity]
-				renderer_tickets := [before_stop.backend_factory_ticket,
-					before_stop.backend_renderer_context_ticket, before_stop.backend_renderer_device_ticket]
-				renderer_seed := NativeOperationSeed{
-					call_site: .renderer_start
-					scope:     .renderer
-				}
-				for offset, identity in renderer_identities {
-					index = renderer_fault_assert_win32_object_release_for_test(app, proof, index,
-						renderer_seed, .app_lifetime, renderer_tickets[offset], identity)
+				if bridge_phase {
+					status := renderer_fault_assert_native_chain_at_for_test(proof, index, .dxgi,
+						.device_status, .shutdown_anchor, .renderer)
+					renderer_fault_assert_authority_context_for_test(app, status)
+					assert status.ordinal == expected_first_ordinal
+					assert status.presence_mask == native_context_has_target_identity
+					assert status.target_identity == before_stop.backend_renderer_device_identity
+					index += 5
+					anchor_identities := [before_stop.win32_anchor_depth_view,
+						before_stop.win32_anchor_depth_texture, before_stop.win32_anchor_render_view,
+						before_stop.win32_anchor_color_texture]
+					anchor_tickets := [before_stop.win32_anchor_depth_view_ticket,
+						before_stop.win32_anchor_depth_ticket, before_stop.win32_anchor_render_view_ticket,
+						before_stop.win32_anchor_color_ticket]
+					anchor_seed := NativeOperationSeed{
+						call_site: .anchor_create
+						scope:     .anchor
+					}
+					for offset, identity in anchor_identities {
+						index = renderer_fault_assert_win32_object_release_for_test(app, proof,
+							index, anchor_seed, .renderer_attempt, anchor_tickets[offset], identity)
+					}
+				} else {
+					renderer_identities := [before_stop.backend_factory_identity,
+						before_stop.backend_renderer_context_identity,
+						before_stop.backend_renderer_device_identity]
+					renderer_tickets := [before_stop.backend_factory_ticket,
+						before_stop.backend_renderer_context_ticket, before_stop.backend_renderer_device_ticket]
+					renderer_seed := NativeOperationSeed{
+						call_site: .renderer_start
+						scope:     .renderer
+					}
+					for offset, identity in renderer_identities {
+						index = renderer_fault_assert_win32_object_release_for_test(app, proof,
+							index, renderer_seed, .app_lifetime, renderer_tickets[offset], identity)
+					}
 				}
 			}
 			else {
@@ -3441,6 +3631,29 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		proof := app.backend.native_operations.proof
 		assert !proof.trace_overflow
 		return proof
+	}
+
+	fn renderer_fault_clear_native_trace_for_test(mut app App) RendererFaultNativeProofSnapshot {
+		mut proof := renderer_fault_native_proof_for_test(app)
+		assert !app.backend.native_operations.has_pending_native_plans()
+		assert app.backend.native_operations.has_live_lifetime_tickets()
+		generation := proof.generation
+		ordinal_floor := proof.ordinal_floor
+		next_ordinal := app.backend.native_operations.next_ordinal
+		for index in 0 .. native_operation_trace_capacity {
+			proof.trace[index] = NativeOperationTraceEntry{}
+		}
+		proof.trace_len = 0
+		proof.trace_overflow = false
+		fresh := renderer_fault_native_proof_capture_for_test(app)
+		assert fresh.available
+		assert fresh.snapshot.generation == generation
+		assert fresh.snapshot.ordinal_floor == ordinal_floor
+		assert fresh.snapshot.next_ordinal == next_ordinal
+		assert fresh.snapshot.trace_len == 0
+		assert !fresh.snapshot.trace_overflow
+		assert fresh.snapshot.live_tickets > 0
+		return fresh.snapshot
 	}
 
 	fn renderer_fault_assert_target_lease_for_test(app &App, lease RenderTargetLease) {
@@ -3507,8 +3720,11 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		actual_capture := proof.trace[start + 1]
 		effective_primitive := proof.trace[start + 2]
 		health_latch := proof.trace[start + 4]
+		wayland_release_mode_evidence := domain == .wayland && operation == .surface_destroy
+			&& actual_capture.actual.valid_mask == native_valid_observed_flags
+			&& actual_capture.actual.observed_flags in [u64(wayland_anchor_release_protocol_destroy), u64(wayland_anchor_release_local_proxy_destroy)]
 		void_release_without_evidence := operation == .surface_destroy
-			&& domain in [.wayland, .metal]
+			&& domain in [.wayland, .metal] && !wayland_release_mode_evidence
 		assert real_call.actual == NativePrimitiveEvidence{}
 		assert real_call.effective == NativePrimitiveEvidence{}
 		if void_release_without_evidence {
@@ -3520,6 +3736,10 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		}
 		assert actual_capture.effective == NativePrimitiveEvidence{}
 		assert effective_primitive.actual == NativePrimitiveEvidence{}
+		if wayland_release_mode_evidence {
+			assert effective_primitive.effective.valid_mask == native_valid_observed_flags
+			assert effective_primitive.effective.observed_flags == actual_capture.actual.observed_flags
+		}
 		assert health_latch.actual == NativePrimitiveEvidence{}
 		assert health_latch.effective == NativePrimitiveEvidence{}
 		actual := proof.trace[start + 1].actual
@@ -3672,10 +3892,18 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		}
 		assert proof.trace[start].actual == NativePrimitiveEvidence{}
 		assert proof.trace[start].effective == NativePrimitiveEvidence{}
-		assert proof.trace[start + 1].actual.valid_mask != 0
+		if operation == .display_cancel {
+			assert proof.trace[start + 1].actual == NativePrimitiveEvidence{}
+		} else {
+			assert proof.trace[start + 1].actual.valid_mask != 0
+		}
 		assert proof.trace[start + 1].effective == NativePrimitiveEvidence{}
 		assert proof.trace[start + 2].actual == NativePrimitiveEvidence{}
-		assert proof.trace[start + 2].effective.valid_mask != 0
+		if operation == .display_cancel {
+			assert proof.trace[start + 2].effective == NativePrimitiveEvidence{}
+		} else {
+			assert proof.trace[start + 2].effective.valid_mask != 0
+		}
 		evidence_context := proof.trace[start + 3].context
 		renderer_fault_assert_authority_context_for_test(app, evidence_context)
 		assert evidence_context.domain == .wayland
@@ -3704,7 +3932,12 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		effective := proof.trace[start + 2].effective
 		evidence_actual := proof.trace[start + 4].actual
 		evidence_effective := proof.trace[start + 5].effective
-		assert actual.valid_mask != 0
+		if operation == .display_cancel {
+			assert actual == NativePrimitiveEvidence{}
+			assert effective == NativePrimitiveEvidence{}
+		} else {
+			assert actual.valid_mask != 0
+		}
 		assert actual == effective
 		assert evidence_actual.valid_mask != 0
 		assert evidence_actual == evidence_effective
@@ -3723,7 +3956,11 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert accepted.result.operation == operation
 		assert accepted.result.scope == scope
 		assert accepted.result.disposition == disposition
-		assert accepted.result.local_validation == .none
+		assert accepted.result.local_validation == if operation == .display_cancel {
+			NativeLocalValidation.void_completion
+		} else {
+			NativeLocalValidation.none
+		}
 		assert proof.trace[start + 7].milestone == .health_latched
 		assert proof.trace[start + 7].context == context
 		assert proof.trace[start + 7].health == .ready

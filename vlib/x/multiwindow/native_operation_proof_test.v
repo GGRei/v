@@ -54,6 +54,7 @@ $if linux {
 		fn C.v_multiwindow_test_wayland_release_oracle_sequence(index u64) u64
 		fn C.v_multiwindow_test_wayland_release_oracle_kind(index u64) u64
 		fn C.v_multiwindow_test_wayland_release_oracle_identity(index u64) u64
+		fn C.v_multiwindow_test_wayland_release_oracle_mode(index u64) u64
 		fn C.v_multiwindow_test_wayland_invoke_frame_done_trampoline(data voidptr, callback voidptr, time u32)
 	}
 }
@@ -170,6 +171,7 @@ struct NativeReleaseOracleRecord {
 	kind            u64
 	identity        u64
 	parent_identity u64
+	mode            u64
 }
 
 struct NativeReleaseOracleSnapshot {
@@ -312,10 +314,15 @@ struct NativePhaseABackendOwnershipSnapshot {
 	egl_config                    u64
 	egl_context                   u64
 	anchor_surface                u64
+	anchor_wl_egl_window          u64
+	anchor_wl_surface             u64
+	wayland_compositor            u64
 	egl_display_ticket            u64
 	egl_context_ticket            u64
 	egl_thread_ticket             u64
 	anchor_surface_ticket         u64
+	anchor_wl_egl_window_ticket   u64
+	anchor_wl_surface_ticket      u64
 	anchor_generation             u64
 	binding_kind                  EglBindingKind
 	binding_window                WindowId
@@ -2262,6 +2269,14 @@ fn test_native_wayland_flush_and_poll_use_fresh_errno_and_display_evidence() {
 			return
 		}
 		native_wayland_exercise_transport_evidence()!
+	}
+}
+
+fn test_native_wayland_fatal_transport_uses_local_proxy_anchor_release() {
+	$if gg_multiwindow ? || x_multiwindow_render ? {
+		if !native_wayland_runtime_requested_for_test() {
+			return
+		}
 		native_wayland_exercise_fatal_transport_cleanup()!
 	}
 }
@@ -2336,6 +2351,15 @@ fn test_native_wayland_display_error_outranks_null_egl_window_and_forbids_fallba
 			return
 		}
 		native_wayland_exercise_null_egl_window_global_loss()!
+	}
+}
+
+fn test_native_wayland_private_anchor_acquisitions_rollback_and_retry() {
+	$if gg_multiwindow ? || x_multiwindow_render ? {
+		if !native_wayland_runtime_requested_for_test() {
+			return
+		}
+		native_wayland_exercise_private_anchor_acquisition_boundaries()!
 	}
 }
 
@@ -2760,10 +2784,15 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 						egl_config:                    native_identity(app.backend.wayland.egl_config)
 						egl_context:                   native_identity(app.backend.wayland.egl_context)
 						anchor_surface:                native_identity(app.backend.wayland.anchor_surface)
+						anchor_wl_egl_window:          native_identity(app.backend.wayland.anchor_wl_egl_window)
+						anchor_wl_surface:             native_identity(app.backend.wayland.anchor_wl_surface)
+						wayland_compositor:            native_identity(app.backend.wayland.compositor)
 						egl_display_ticket:            app.backend.wayland.egl_display_ticket
 						egl_context_ticket:            app.backend.wayland.egl_context_ticket
 						egl_thread_ticket:             app.backend.wayland.egl_thread_ticket
 						anchor_surface_ticket:         app.backend.wayland.anchor_surface_ticket
+						anchor_wl_egl_window_ticket:   app.backend.wayland.anchor_wl_egl_window_ticket
+						anchor_wl_surface_ticket:      app.backend.wayland.anchor_wl_surface_ticket
 						anchor_generation:             app.backend.wayland.anchor_generation
 						binding_kind:                  binding.kind
 						binding_window:                binding.window
@@ -2832,6 +2861,8 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 							native_identity(app.backend.wayland.egl_config),
 							native_identity(app.backend.wayland.egl_context),
 							native_identity(app.backend.wayland.anchor_surface),
+							native_identity(app.backend.wayland.anchor_wl_egl_window),
+							native_identity(app.backend.wayland.anchor_wl_surface),
 						]
 						backend_state_words:           [
 							u64(app.backend.wayland.compositor_name),
@@ -2882,10 +2913,15 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert actual.egl_config == expected.egl_config
 		assert actual.egl_context == expected.egl_context
 		assert actual.anchor_surface == expected.anchor_surface
+		assert actual.anchor_wl_egl_window == expected.anchor_wl_egl_window
+		assert actual.anchor_wl_surface == expected.anchor_wl_surface
+		assert actual.wayland_compositor == expected.wayland_compositor
 		assert actual.egl_display_ticket == expected.egl_display_ticket
 		assert actual.egl_context_ticket == expected.egl_context_ticket
 		assert actual.egl_thread_ticket == expected.egl_thread_ticket
 		assert actual.anchor_surface_ticket == expected.anchor_surface_ticket
+		assert actual.anchor_wl_egl_window_ticket == expected.anchor_wl_egl_window_ticket
+		assert actual.anchor_wl_surface_ticket == expected.anchor_wl_surface_ticket
 		assert actual.anchor_generation == expected.anchor_generation
 		assert actual.binding_kind == expected.binding_kind
 		assert actual.binding_window == expected.binding_window
@@ -2964,6 +3000,11 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert snapshot.egl_display != 0
 		assert snapshot.egl_context != 0
 		assert snapshot.anchor_surface != 0
+		if snapshot.kind == .wayland {
+			assert snapshot.anchor_wl_egl_window != 0
+			assert snapshot.anchor_wl_surface != 0
+			assert snapshot.wayland_compositor != 0
+		}
 		native_phase_a_assert_ticket_slot_for_test(snapshot, snapshot.egl_display_ticket,
 			.egl_display, snapshot.egl_display, 0, .app_lifetime, .none, display_loss)
 		native_phase_a_assert_ticket_slot_for_test(snapshot, snapshot.egl_context_ticket,
@@ -2974,6 +3015,16 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		native_phase_a_assert_ticket_slot_for_test(snapshot, snapshot.anchor_surface_ticket,
 			.egl_surface, snapshot.anchor_surface, snapshot.egl_display, .renderer_attempt,
 			.app_lifetime, display_loss)
+		if snapshot.kind == .wayland {
+			native_phase_a_assert_ticket_slot_for_test(snapshot,
+				snapshot.anchor_wl_egl_window_ticket, .wayland_egl_window,
+				snapshot.anchor_wl_egl_window, snapshot.anchor_wl_surface, .renderer_attempt,
+				.renderer_attempt, false)
+			native_phase_a_assert_ticket_slot_for_test(snapshot, snapshot.anchor_wl_surface_ticket,
+				.wayland_surface, snapshot.anchor_wl_surface, snapshot.wayland_compositor,
+				.renderer_attempt, .none, false)
+			native_assert_private_wayland_anchor_trace_for_test(snapshot.authority)
+		}
 		for window in snapshot.windows {
 			assert (window.egl_surface_ticket == 0) == (window.egl_surface == 0)
 			if window.egl_surface_ticket != 0 {
@@ -2996,7 +3047,8 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		}
 		mut slot_ids := []u64{}
 		for ticket_id in [snapshot.egl_display_ticket, snapshot.egl_context_ticket, snapshot.egl_thread_ticket,
-			snapshot.anchor_surface_ticket] {
+			snapshot.anchor_surface_ticket, snapshot.anchor_wl_egl_window_ticket,
+			snapshot.anchor_wl_surface_ticket] {
 			if ticket_id != 0 {
 				assert ticket_id !in slot_ids
 				slot_ids << ticket_id
@@ -3018,6 +3070,552 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			assert ticket.authority_token == app.backend.native_operations.authority_token(ticket.authority_scope)
 		}
 		return snapshot.registry.tickets.clone()
+	}
+
+	fn native_assert_private_wayland_anchor_trace_for_test(snapshot NativeAuthorityProofSnapshot) {
+		for index in 0 .. snapshot.trace_len {
+			entry := snapshot.trace[index]
+			if entry.context.scope != .anchor {
+				continue
+			}
+			assert entry.context.window == WindowId{}
+			assert entry.context.presence_mask & native_context_has_window == 0
+			assert entry.context.operation !in [.swap_buffers, .frame_callback, .display_flush,
+				.window_configure]
+		}
+	}
+
+	enum NativeWaylandAnchorBoundary {
+		wl_surface
+		wl_egl_window
+		egl_surface
+	}
+
+	fn native_wayland_anchor_app_for_test() !&App {
+		mut app := native_phase_b_new_app_without_renderer_for_test(.wayland)!
+		$if linux && sokol_wayland ? {
+			app.backend.wayland.init_renderer()!
+			assert app.backend.wayland.renderer_ready()
+			assert app.backend.wayland.renderer_anchor_lifetime_absent()
+			assert app.backend.wayland.anchor_generation != 0
+			return app
+		} $else {
+			app.stop() or {}
+			return error(err_backend_unsupported)
+		}
+	}
+
+	fn native_wayland_anchor_selector_for_test(app &App, boundary NativeWaylandAnchorBoundary, base_ordinal u64) NativeOperationContext {
+		operation_offset := match boundary {
+			.wl_surface { u64(0) }
+			.wl_egl_window { u64(2) }
+			.egl_surface { u64(4) }
+		}
+
+		domain := if boundary == .egl_surface {
+			NativeRenderDomain.egl
+		} else {
+			NativeRenderDomain.wayland
+		}
+		return NativeOperationContext{
+			authority_scope:        .renderer_attempt
+			authority_token:        app.backend.native_operations.renderer_attempt_token
+			renderer_attempt_token: app.backend.native_operations.renderer_attempt_token
+			app_identity:           app.instance_id
+			presence_mask:          native_context_has_target_generation
+			domain:                 domain
+			operation:              .anchor_surface_create
+			call_site:              .anchor_create
+			scope:                  .anchor
+			target_generation:      app.backend.wayland.anchor_generation
+			ordinal:                base_ordinal + operation_offset
+		}
+	}
+
+	fn native_wayland_arm_anchor_boundary_for_test(mut app App, boundary NativeWaylandAnchorBoundary, base_ordinal u64) !NativeOperationContext {
+		selector := native_wayland_anchor_selector_for_test(app, boundary, base_ordinal)
+		failure := NativePrimitiveEvidence{
+			valid_mask: native_valid_handle
+			handle:     0
+		}
+		if boundary == .wl_surface {
+			exact := NativeOperationContext{
+				...selector
+				presence_mask:   selector.presence_mask | native_context_has_target_identity
+				target_identity: native_identity(app.backend.wayland.compositor)
+			}
+			if !app.backend.native_operations.arm(exact, failure) {
+				return error('could not arm the exact Wayland wl_surface anchor acquisition')
+			}
+			return exact
+		}
+		if !app.backend.native_operations.arm_anchor_acquisition_for_test(selector, failure) {
+			return error('could not arm the dynamic Wayland anchor acquisition `${boundary}`')
+		}
+		return selector
+	}
+
+	fn native_assert_wayland_anchor_primary_for_test(snapshot NativeAuthorityProofSnapshot, start int, selector NativeOperationContext, display_identity u64, injected bool) u64 {
+		assert start >= 0
+		assert start + 7 < snapshot.trace_len
+		primary := snapshot.trace[start].context
+		if selector.target_identity == 0 {
+			assert native_anchor_acquisition_selector_matches(selector, primary)
+		} else {
+			assert native_operation_contexts_identical(selector, primary)
+		}
+		for offset, milestone in [NativeOperationTraceMilestone.real_call, .actual_primitive,
+			.effective_primitive] {
+			entry := snapshot.trace[start + offset]
+			assert entry.milestone == milestone
+			assert native_operation_contexts_identical(entry.context, primary)
+		}
+		actual := snapshot.trace[start + 1].actual
+		effective := snapshot.trace[start + 2].effective
+		assert actual.has(native_valid_handle)
+		assert actual.handle != 0
+		assert effective.has(native_valid_handle)
+		assert effective.handle == if injected {
+			u64(0)
+		} else {
+			actual.handle
+		}
+		query := native_wayland_display_error_context_for_test_from_context(primary,
+			display_identity)
+		for offset, milestone in [NativeOperationTraceMilestone.real_call, .actual_primitive,
+			.effective_primitive] {
+			entry := snapshot.trace[start + 3 + offset]
+			assert entry.milestone == milestone
+			assert native_operation_contexts_identical(entry.context, query)
+		}
+		for evidence in [snapshot.trace[start + 4].actual, snapshot.trace[start + 5].effective] {
+			assert evidence.has(native_valid_wayland_display_error)
+			assert evidence.wayland_display_error == 0
+		}
+		acceptance := snapshot.trace[start + 6]
+		assert acceptance.milestone == .acceptance
+		assert native_operation_contexts_identical(acceptance.context, primary)
+		assert acceptance.local_validation == if injected {
+			NativeLocalValidation.null_output
+		} else {
+			NativeLocalValidation.none
+		}
+		assert acceptance.result.disposition == if injected {
+			NativeRenderDisposition.renderer_unavailable
+		} else {
+			NativeRenderDisposition.ok
+		}
+		health := snapshot.trace[start + 7]
+		assert health.milestone == .health_latched
+		assert native_operation_contexts_identical(health.context, primary)
+		assert health.health == if injected {
+			NativeRendererHealth.unavailable
+		} else {
+			NativeRendererHealth.ready
+		}
+		return actual.handle
+	}
+
+	fn native_wayland_display_error_context_for_test_from_context(primary NativeOperationContext, display_identity u64) NativeOperationContext {
+		return NativeOperationContext{
+			authority_scope:        .renderer_attempt
+			authority_token:        primary.authority_token
+			renderer_attempt_token: primary.renderer_attempt_token
+			app_identity:           primary.app_identity
+			presence_mask:          native_context_has_target_identity
+			domain:                 .wayland
+			operation:              .wayland_display_error_query
+			call_site:              .display_transport
+			scope:                  .renderer
+			target_identity:        display_identity
+			ordinal:                primary.ordinal + 1
+		}
+	}
+
+	fn native_assert_egl_anchor_primary_for_test(snapshot NativeAuthorityProofSnapshot, start int, selector NativeOperationContext, injected bool) u64 {
+		required_len := if injected { 8 } else { 5 }
+		assert start >= 0
+		assert start + required_len <= snapshot.trace_len
+		primary := snapshot.trace[start].context
+		if selector.target_identity == 0 {
+			assert native_anchor_acquisition_selector_matches(selector, primary)
+		} else {
+			assert native_operation_contexts_identical(selector, primary)
+		}
+		for offset, milestone in [NativeOperationTraceMilestone.real_call, .actual_primitive,
+			.effective_primitive] {
+			entry := snapshot.trace[start + offset]
+			assert entry.milestone == milestone
+			assert native_operation_contexts_identical(entry.context, primary)
+		}
+		actual := snapshot.trace[start + 1].actual
+		effective := snapshot.trace[start + 2].effective
+		assert actual.has(native_valid_handle)
+		assert actual.handle != 0
+		assert effective.has(native_valid_handle)
+		assert effective.handle == if injected {
+			u64(0)
+		} else {
+			actual.handle
+		}
+		acceptance_index := if injected { start + 6 } else { start + 3 }
+		if injected {
+			query := native_egl_error_context_for_test(primary)
+			for offset, milestone in [NativeOperationTraceMilestone.real_call, .actual_primitive,
+				.effective_primitive] {
+				entry := snapshot.trace[start + 3 + offset]
+				assert entry.milestone == milestone
+				assert native_operation_contexts_identical(entry.context, query)
+			}
+			for evidence in [snapshot.trace[start + 4].actual, snapshot.trace[start + 5].effective] {
+				assert evidence.has(native_valid_egl_error)
+				assert evidence.egl_error == 0x3000
+			}
+		}
+		acceptance := snapshot.trace[acceptance_index]
+		assert acceptance.milestone == .acceptance
+		assert native_operation_contexts_identical(acceptance.context, primary)
+		assert acceptance.local_validation == .none
+		assert acceptance.result.disposition == if injected {
+			NativeRenderDisposition.renderer_unavailable
+		} else {
+			NativeRenderDisposition.ok
+		}
+		health := snapshot.trace[acceptance_index + 1]
+		assert health.milestone == .health_latched
+		assert native_operation_contexts_identical(health.context, primary)
+		assert health.health == if injected {
+			NativeRendererHealth.unavailable
+		} else {
+			NativeRendererHealth.ready
+		}
+		return actual.handle
+	}
+
+	fn native_assert_anchor_rollback_release_for_test(snapshot NativeAuthorityProofSnapshot, start int, domain NativeRenderDomain, ticket_id u64, target_generation u64, identity u64, expected_mode u64) int {
+		assert start >= 0
+		assert start + 5 < snapshot.trace_len
+		context := snapshot.trace[start].context
+		assert context.authority_scope == .renderer_attempt
+		assert context.renderer_attempt_token == context.authority_token
+		assert context.app_identity == snapshot.app_identity
+		assert context.presence_mask == (native_context_has_target_generation | native_context_has_target_identity)
+		assert context.domain == domain
+		assert context.operation == .surface_destroy
+		assert context.call_site == .anchor_create
+		assert context.scope == .anchor
+		assert context.window == WindowId{}
+		assert context.target_generation == target_generation
+		assert context.target_identity == identity
+		assert context.ordinal == ticket_id
+		expected := [NativeOperationTraceMilestone.real_call, .actual_primitive, .effective_primitive,
+			.acceptance, .health_latched, .authority_release]
+		for offset, milestone in expected {
+			entry := snapshot.trace[start + offset]
+			assert entry.milestone == milestone
+			assert native_operation_contexts_identical(entry.context, context)
+		}
+		actual := snapshot.trace[start + 1].actual
+		assert native_proof_evidence_equal(actual, snapshot.trace[start + 2].effective)
+		if expected_mode == 0 {
+			assert !actual.has(native_valid_observed_flags)
+		} else {
+			assert actual.has(native_valid_observed_flags)
+			assert actual.observed_flags == expected_mode
+		}
+		assert snapshot.trace[start + 3].result.disposition == .ok
+		assert snapshot.trace[start + 4].health == .unavailable
+		assert snapshot.trace[start + 5].actual == actual
+		return start + 6
+	}
+
+	fn native_assert_wayland_anchor_failure_oracle_for_test(snapshot NativeReleaseOracleSnapshot, boundary NativeWaylandAnchorBoundary, egl_surface u64, wl_egl_window u64, wl_surface u64, egl_display u64) {
+		assert !snapshot.overflow
+		assert snapshot.callback_completions.len == 0
+		assert snapshot.unticketed_releases.len == 0
+		expected_count := match boundary {
+			.wl_surface { 1 }
+			.wl_egl_window { 2 }
+			.egl_surface { 3 }
+		}
+
+		assert snapshot.records.len == expected_count
+		mut index := 0
+		if boundary == .egl_surface {
+			record := snapshot.records[index]
+			assert record.sequence == u64(index + 1)
+			assert record.domain == .egl
+			assert record.kind == 1
+			assert record.identity == egl_surface
+			assert record.parent_identity == egl_display
+			assert record.mode == 0
+			index++
+		}
+		if boundary in [.wl_egl_window, .egl_surface] {
+			record := snapshot.records[index]
+			assert record.sequence == u64(index + 1)
+			assert record.domain == .wayland
+			assert record.kind == 1
+			assert record.identity == wl_egl_window
+			assert record.parent_identity == 0
+			assert record.mode == 0
+			index++
+		}
+		record := snapshot.records[index]
+		assert record.sequence == u64(index + 1)
+		assert record.domain == .wayland
+		assert record.kind == 6
+		assert record.identity == wl_surface
+		assert record.parent_identity == 0
+		assert record.mode == wayland_anchor_release_protocol_destroy
+		index++
+		assert index == snapshot.records.len
+	}
+
+	fn native_assert_wayland_anchor_failure_for_test(app &App, boundary NativeWaylandAnchorBoundary, selector NativeOperationContext, base_ordinal u64, baseline NativeLifetimeRegistryProofSnapshot, release_oracle NativeReleaseOracleSnapshot) {
+		snapshot := native_proof_snapshot(&app.backend.native_operations)
+		assert !snapshot.trace_overflow
+		assert !app.backend.native_operations.has_pending_native_plans()
+		assert app.backend.wayland.render_health == .unavailable
+		assert app.backend.wayland.renderer_anchor_lifetime_absent()
+		native_lifetime_registry_assert_snapshots_equal(baseline, snapshot.registry)
+		display_identity := native_identity(app.backend.wayland.display)
+		egl_display_identity := native_identity(app.backend.wayland.egl_display)
+		generation := app.backend.wayland.anchor_generation
+		wl_surface := native_assert_wayland_anchor_primary_for_test(snapshot, 0, native_wayland_anchor_selector_for_test(app,
+			.wl_surface, base_ordinal), display_identity, boundary == .wl_surface)
+		mut wl_egl_window := u64(0)
+		mut egl_surface := u64(0)
+		mut release_start := 8
+		if boundary != .wl_surface {
+			wl_egl_window = native_assert_wayland_anchor_primary_for_test(snapshot, 8, native_wayland_anchor_selector_for_test(app,
+				.wl_egl_window, base_ordinal), display_identity, boundary == .wl_egl_window)
+			release_start = 16
+		}
+		if boundary == .egl_surface {
+			egl_surface = native_assert_egl_anchor_primary_for_test(snapshot, 16, native_wayland_anchor_selector_for_test(app,
+				.egl_surface, base_ordinal), true)
+			release_start = 24
+		}
+		if selector.target_identity == 0 {
+			injection_index := if boundary == .wl_egl_window { 8 } else { 16 }
+			assert native_anchor_acquisition_selector_matches(selector,
+				snapshot.trace[injection_index].context)
+		}
+		mut index := release_start
+		if boundary == .egl_surface {
+			index = native_assert_anchor_rollback_release_for_test(snapshot, index, .egl,
+
+				base_ordinal + 6, generation, egl_surface, 0)
+		}
+		if boundary in [.wl_egl_window, .egl_surface] {
+			index = native_assert_anchor_rollback_release_for_test(snapshot, index, .wayland,
+
+				base_ordinal + 7, generation, wl_egl_window, 0)
+		}
+		index = native_assert_anchor_rollback_release_for_test(snapshot, index, .wayland,
+
+			base_ordinal + 8, generation, wl_surface, wayland_anchor_release_protocol_destroy)
+		assert index == snapshot.trace_len
+		native_assert_wayland_anchor_failure_oracle_for_test(release_oracle, boundary, egl_surface,
+			wl_egl_window, wl_surface, egl_display_identity)
+		native_assert_complete_native_trace_for_test(snapshot)
+	}
+
+	fn native_assert_wayland_anchor_ticket_for_test(ticket NativeLifetimeTicketProofSnapshot, app &App, ticket_id u64, kind NativeLifetimeReleaseKind, identity u64, parent_identity u64, parent_scope NativeOperationAuthorityScope, generation u64) {
+		assert ticket.ticket_id == ticket_id
+		assert ticket.app_identity == app.instance_id
+		assert ticket.authority_scope == .renderer_attempt
+		assert ticket.authority_token == app.backend.native_operations.renderer_attempt_token
+		assert ticket.release_kind == kind
+		assert ticket.domain == native_lifetime_release_domain(kind)
+		assert ticket.native_identity == identity
+		assert ticket.required_parent_identity == parent_identity
+		assert ticket.parent_authority_scope == parent_scope
+		assert ticket.parent_authority_token == if parent_scope == .app_lifetime {
+			app.backend.native_operations.app_lifetime_token
+		} else if parent_scope == .renderer_attempt {
+			app.backend.native_operations.renderer_attempt_token
+		} else {
+			u64(0)
+		}
+		assert ticket.owner_seed.presence_mask == native_context_has_target_generation
+		assert ticket.owner_seed.call_site == .anchor_create
+		assert ticket.owner_seed.scope == .anchor
+		assert ticket.owner_seed.target_generation == generation
+		assert ticket.owner_seed.target_identity == 0
+		assert ticket.context.target_identity == identity
+		assert ticket.context.target_generation == generation
+		assert ticket.state == .bound
+	}
+
+	fn native_assert_wayland_anchor_binding_suffix_for_test(snapshot NativeAuthorityProofSnapshot, start int, expected_generation u64, expected_surface u64, expected_context u64) int {
+		assert expected_generation != 0
+		assert expected_surface != 0
+		assert expected_context != 0
+		bind := native_assert_successful_boundary_chain_in_snapshot_for_test(snapshot, start, .egl,
+			.make_current, .anchor_prepare, .anchor)
+		expected_bind := NativeOperationContext{
+			authority_scope:        .renderer_attempt
+			authority_token:        snapshot.renderer_attempt_token
+			renderer_attempt_token: snapshot.renderer_attempt_token
+			app_identity:           snapshot.app_identity
+			presence_mask:          native_context_has_target_generation | native_context_has_target_identity
+			domain:                 .egl
+			operation:              .make_current
+			call_site:              .anchor_prepare
+			scope:                  .anchor
+			target_generation:      expected_generation
+			target_identity:        expected_surface
+			ordinal:                bind.ordinal
+		}
+		assert native_operation_contexts_identical(bind, expected_bind)
+		assert snapshot.trace[start + 1].actual.has(native_valid_return_value)
+		assert snapshot.trace[start + 1].actual.return_value == 1
+		operations := [NativeRenderOperation.current_draw_query, .current_read_query,
+			.current_context_query]
+		expected_handles := [expected_surface, expected_surface, expected_context]
+		for operation_index, operation in operations {
+			query_start := start + 5 + operation_index * 5
+			query := native_assert_successful_boundary_chain_in_snapshot_for_test(snapshot,
+				query_start, .egl, operation, .anchor_prepare, .anchor)
+			expected_query := NativeOperationContext{
+				...expected_bind
+				presence_mask:   native_context_has_target_generation
+				operation:       operation
+				target_identity: 0
+				ordinal:         bind.ordinal + u64(operation_index + 2)
+			}
+			assert native_operation_contexts_identical(query, expected_query)
+			actual := snapshot.trace[query_start + 1].actual
+			assert actual.has(native_valid_handle)
+			assert actual.handle == expected_handles[operation_index]
+		}
+		return start + 20
+	}
+
+	fn native_wayland_exercise_private_anchor_acquisition_boundaries() ! {
+		for boundary in [NativeWaylandAnchorBoundary.wl_surface, .wl_egl_window, .egl_surface] {
+			mut app := native_wayland_anchor_app_for_test()!
+			assert app.backend.native_operations.arm_proof()
+			native_release_oracle_reset_for_test(.wayland)
+			baseline := native_lifetime_registry_snapshot(&app.backend.native_operations)
+			base_ordinal := app.backend.native_operations.next_ordinal
+			selector :=
+				native_wayland_arm_anchor_boundary_for_test(mut app, boundary, base_ordinal)!
+			mut failure := ''
+			app.backend.wayland.create_renderer_anchor() or { failure = err.msg() }
+			expected_error := match boundary {
+				.wl_surface { err_wayland_create_surface_failed }
+				.wl_egl_window { err_wayland_egl_surface_failed }
+				.egl_surface { err_render_native_renderer_unavailable }
+			}
+
+			assert failure == expected_error
+			release_oracle := native_release_oracle_snapshot_for_test(.wayland)
+			native_assert_wayland_anchor_failure_for_test(app, boundary, selector, base_ordinal,
+				baseline, release_oracle)
+			assert app.backend.native_operations.disarm_proof()
+			app.stop() or {}
+			assert app.status() == .stopped
+			assert !app.backend.wayland.retains_native_ownership()
+		}
+
+		mut healthy := native_wayland_anchor_app_for_test()!
+		assert healthy.backend.native_operations.arm_proof()
+		native_release_oracle_reset_for_test(.wayland)
+		before_release_oracle := native_release_oracle_snapshot_for_test(.wayland)
+		base_ordinal := healthy.backend.native_operations.next_ordinal
+		healthy.backend.wayland.create_renderer_anchor()!
+		created := native_proof_snapshot(&healthy.backend.native_operations)
+		assert !created.trace_overflow
+		assert created.trace_len >= 21
+		display_identity := native_identity(healthy.backend.wayland.display)
+		egl_display_identity := native_identity(healthy.backend.wayland.egl_display)
+		wl_surface := native_assert_wayland_anchor_primary_for_test(created, 0, native_wayland_anchor_selector_for_test(healthy,
+			.wl_surface, base_ordinal), display_identity, false)
+		wl_egl_window := native_assert_wayland_anchor_primary_for_test(created, 8, native_wayland_anchor_selector_for_test(healthy,
+			.wl_egl_window, base_ordinal), display_identity, false)
+		egl_surface := native_assert_egl_anchor_primary_for_test(created, 16, native_wayland_anchor_selector_for_test(healthy,
+			.egl_surface, base_ordinal), false)
+		assert native_identity(healthy.backend.wayland.anchor_wl_surface) == wl_surface
+		assert native_identity(healthy.backend.wayland.anchor_wl_egl_window) == wl_egl_window
+		assert native_identity(healthy.backend.wayland.anchor_surface) == egl_surface
+		generation := healthy.backend.wayland.anchor_generation
+		egl_ticket := native_lifetime_ticket_snapshot_for_test(&healthy.backend.native_operations,
+
+			base_ordinal + 6)!
+		wl_egl_ticket := native_lifetime_ticket_snapshot_for_test(&healthy.backend.native_operations,
+
+			base_ordinal + 7)!
+		wl_surface_ticket := native_lifetime_ticket_snapshot_for_test(&healthy.backend.native_operations,
+
+			base_ordinal + 8)!
+		context_ticket := native_lifetime_ticket_snapshot_for_test(&healthy.backend.native_operations,
+			healthy.backend.wayland.egl_context_ticket)!
+		display_ticket := native_lifetime_ticket_snapshot_for_test(&healthy.backend.native_operations,
+			healthy.backend.wayland.egl_display_ticket)!
+		thread_ticket := native_lifetime_ticket_snapshot_for_test(&healthy.backend.native_operations,
+			healthy.backend.wayland.egl_thread_ticket)!
+		native_assert_wayland_anchor_ticket_for_test(egl_ticket, healthy, base_ordinal + 6,
+			.egl_surface, egl_surface, egl_display_identity, .app_lifetime, generation)
+		native_assert_wayland_anchor_ticket_for_test(wl_egl_ticket, healthy, base_ordinal + 7,
+			.wayland_egl_window, wl_egl_window, wl_surface, .renderer_attempt, generation)
+		native_assert_wayland_anchor_ticket_for_test(wl_surface_ticket, healthy, base_ordinal + 8,
+			.wayland_surface, wl_surface, native_identity(healthy.backend.wayland.compositor),
+			.none, generation)
+		binding_end := native_assert_wayland_anchor_binding_suffix_for_test(created, 21,
+			generation, egl_surface, native_identity(healthy.backend.wayland.egl_context))
+		assert binding_end == created.trace_len
+		cleanup_tickets := native_lifetime_registry_snapshot(&healthy.backend.native_operations).tickets
+		proof_generation := healthy.backend.native_operations.proof.generation
+		native_reset_or_clear_proof_for_test(mut healthy.backend.native_operations)
+		assert healthy.backend.native_operations.proof.generation == proof_generation
+		assert healthy.backend.native_operations.proof.trace_len == 0
+		assert !healthy.backend.native_operations.proof.trace_overflow
+		assert !healthy.backend.native_operations.has_pending_native_plans()
+		healthy.backend.wayland.shutdown_renderer()
+		stopped := native_proof_snapshot(&healthy.backend.native_operations)
+		after_release_oracle := native_release_oracle_snapshot_for_test(.wayland)
+		mut release_cursor := 0
+		release_cursor = native_assert_lifetime_release_at_for_test(stopped, egl_ticket,
+			release_cursor)
+		release_cursor = native_assert_lifetime_release_at_for_test(stopped, wl_egl_ticket,
+			release_cursor)
+		native_assert_wayland_anchor_surface_release_mode_at_for_test(stopped, wl_surface_ticket,
+			release_cursor, wayland_anchor_release_protocol_destroy)
+		release_cursor = native_assert_lifetime_release_at_for_test(stopped, wl_surface_ticket,
+			release_cursor)
+		release_cursor = native_assert_lifetime_release_at_for_test(stopped, context_ticket,
+			release_cursor)
+		release_cursor = native_assert_lifetime_release_at_for_test(stopped, display_ticket,
+			release_cursor)
+		release_cursor = native_assert_lifetime_release_at_for_test(stopped, thread_ticket,
+			release_cursor)
+		assert release_cursor == stopped.trace_len
+		ordered_tickets := [egl_ticket, wl_egl_ticket, wl_surface_ticket, context_ticket,
+			display_ticket, thread_ticket]
+		assert cleanup_tickets.len == ordered_tickets.len
+		mut oracle_cursor := before_release_oracle.records.len
+		for ticket in ordered_tickets {
+			assert oracle_cursor < after_release_oracle.records.len
+			record := after_release_oracle.records[oracle_cursor]
+			assert native_release_oracle_record_matches_ticket_for_test(record, ticket)
+			if ticket.release_kind == .wayland_surface {
+				assert record.mode == wayland_anchor_release_protocol_destroy
+			}
+			oracle_cursor++
+		}
+		assert oracle_cursor == after_release_oracle.records.len
+		native_release_oracle_assert_cleanup_bijection_for_test(before_release_oracle,
+			after_release_oracle, cleanup_tickets)
+		assert healthy.backend.wayland.renderer_anchor_lifetime_absent()
+		assert healthy.backend.native_operations.lifetime_tickets.len == 0
+		assert !healthy.backend.native_operations.has_pending_native_plans()
+		native_assert_complete_native_trace_for_test(stopped)
+		assert healthy.backend.native_operations.disarm_proof()
+		healthy.stop() or {}
+		assert healthy.status() == .stopped
 	}
 
 	fn native_phase_a_assert_ticket_slot_for_test(snapshot NativePhaseABackendOwnershipSnapshot, ticket_id u64, release_kind NativeLifetimeReleaseKind, identity u64, parent_identity u64, authority_scope NativeOperationAuthorityScope, parent_authority_scope NativeOperationAuthorityScope, abandoned bool) {
@@ -3732,6 +4330,22 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		return start + 6
 	}
 
+	fn native_assert_wayland_anchor_surface_release_mode_at_for_test(snapshot NativeAuthorityProofSnapshot, ticket NativeLifetimeTicketProofSnapshot, start int, expected_mode u64) {
+		assert ticket.release_kind == .wayland_surface
+		assert ticket.owner_seed.call_site == .anchor_create
+		assert ticket.owner_seed.scope == .anchor
+		assert expected_mode in [wayland_anchor_release_protocol_destroy,
+			wayland_anchor_release_local_proxy_destroy]
+		assert start >= 0
+		assert start + 5 < snapshot.trace_len
+		assert native_operation_contexts_identical(snapshot.trace[start].context, ticket.context)
+		actual := snapshot.trace[start + 1].actual
+		assert actual.has(native_valid_observed_flags)
+		assert actual.observed_flags == expected_mode
+		assert snapshot.trace[start + 5].milestone == .authority_release
+		assert snapshot.trace[start + 5].actual == actual
+	}
+
 	fn native_assert_normal_egl_shutdown_for_test(backend BackendKind, snapshot NativeAuthorityProofSnapshot, tickets []NativeLifetimeTicketProofSnapshot, wayland_display_identity u64, live_window WindowId) {
 		native_assert_complete_native_trace_for_test(snapshot)
 		bind_start := 0
@@ -3861,6 +4475,10 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				assert live_window != WindowId{}
 				mut anchor_ticket := NativeLifetimeTicketProofSnapshot{}
 				mut anchor_matches := 0
+				mut anchor_wl_egl_ticket := NativeLifetimeTicketProofSnapshot{}
+				mut anchor_wl_egl_matches := 0
+				mut anchor_wl_surface_ticket := NativeLifetimeTicketProofSnapshot{}
+				mut anchor_wl_surface_matches := 0
 				mut frame_ticket := NativeLifetimeTicketProofSnapshot{}
 				mut frame_matches := 0
 				mut window_surface_ticket := NativeLifetimeTicketProofSnapshot{}
@@ -3902,12 +4520,26 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 						}
 					} else if ticket.owner_seed.window != WindowId{} {
 						assert false, 'Wayland shutdown proof found a ticket for another live window'
-					} else if ticket.release_kind == .egl_surface
-						&& ticket.owner_seed.call_site == .anchor_create
+					} else if ticket.owner_seed.call_site == .anchor_create
 						&& ticket.owner_seed.scope == .anchor {
 						assert ticket.authority_scope == .renderer_attempt
-						anchor_matches++
-						anchor_ticket = ticket
+						match ticket.release_kind {
+							.egl_surface {
+								anchor_matches++
+								anchor_ticket = ticket
+							}
+							.wayland_egl_window {
+								anchor_wl_egl_matches++
+								anchor_wl_egl_ticket = ticket
+							}
+							.wayland_surface {
+								anchor_wl_surface_matches++
+								anchor_wl_surface_ticket = ticket
+							}
+							else {
+								assert false, 'Wayland shutdown proof found an unexpected anchor ticket'
+							}
+						}
 					} else {
 						assert ticket.authority_scope == .app_lifetime
 						assert ticket.owner_seed.call_site == .renderer_start
@@ -3932,17 +4564,21 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 					}
 				}
 				assert anchor_matches == 1
+				assert anchor_wl_egl_matches == 1
+				assert anchor_wl_surface_matches == 1
 				assert frame_matches <= 1
 				assert window_surface_matches == 1
 				assert window_egl_matches == 1
 				assert context_matches == 1
 				assert display_matches == 1
 				assert thread_matches == 1
-				expected_ticket_count := 6 + frame_matches
+				expected_ticket_count := 8 + frame_matches
 				assert tickets.len == expected_ticket_count
 				assert anchor_ticket.native_identity == bind.target_identity
 				assert anchor_ticket.owner_seed.target_generation == bind.target_generation
 				assert anchor_ticket.required_parent_identity != 0
+				assert anchor_wl_egl_ticket.required_parent_identity == anchor_wl_surface_ticket.native_identity
+				assert anchor_wl_surface_ticket.required_parent_identity != 0
 				window_target_generation := window_surface_ticket.owner_seed.target_generation
 				assert window_target_generation != 0
 				assert window_target_generation == window_egl_ticket.owner_seed.target_generation
@@ -3952,6 +4588,12 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 					|| frame_ticket.required_parent_identity == window_egl_ticket.required_parent_identity
 				mut index := native_assert_lifetime_release_at_for_test(snapshot, anchor_ticket,
 					release_start)
+				index = native_assert_lifetime_release_at_for_test(snapshot, anchor_wl_egl_ticket,
+					index)
+				native_assert_wayland_anchor_surface_release_mode_at_for_test(snapshot,
+					anchor_wl_surface_ticket, index, wayland_anchor_release_protocol_destroy)
+				index = native_assert_lifetime_release_at_for_test(snapshot,
+					anchor_wl_surface_ticket, index)
 				if frame_matches == 1 {
 					index = native_assert_lifetime_release_at_for_test(snapshot, frame_ticket,
 						index)
@@ -4060,13 +4702,14 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 							domain:   .wayland
 							kind:     C.v_multiwindow_test_wayland_release_oracle_kind(index)
 							identity: C.v_multiwindow_test_wayland_release_oracle_identity(index)
+							mode:     C.v_multiwindow_test_wayland_release_oracle_mode(index)
 						}
 						if record.kind == 3 {
 							callback_completions << record
 						} else if record.kind in [u64(4), u64(5)] {
 							unticketed_releases << record
 						} else {
-							assert record.kind in [u64(1), u64(2)]
+							assert record.kind in [u64(1), u64(2), u64(6)]
 							records << record
 						}
 					}
@@ -4331,6 +4974,10 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				domain = .wayland
 				kind = 1
 			}
+			.wayland_surface {
+				domain = .wayland
+				kind = 6
+			}
 			.wayland_frame_callback {
 				domain = .wayland
 				kind = 2
@@ -4341,9 +4988,15 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		}
 
 		expected_parent := if domain == .egl { ticket.required_parent_identity } else { u64(0) }
+		mode_matches := if ticket.release_kind == .wayland_surface {
+			record.mode in [wayland_anchor_release_protocol_destroy,
+				wayland_anchor_release_local_proxy_destroy]
+		} else {
+			record.mode == 0
+		}
 		return record.domain == domain && record.kind == kind
 			&& record.identity == ticket.native_identity
-			&& record.parent_identity == expected_parent
+			&& record.parent_identity == expected_parent && mode_matches
 	}
 
 	fn native_release_oracle_assert_cleanup_bijection_for_test(before NativeReleaseOracleSnapshot, after NativeReleaseOracleSnapshot, tickets []NativeLifetimeTicketProofSnapshot) {
@@ -4411,6 +5064,18 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				if child.state == .bound && child.owner_seed.window == callback.owner_seed.window
 					&& child.release_kind in [.egl_surface, .wayland_egl_window] {
 					assert release_indices[callback.ticket_id] < release_indices[child.ticket_id]
+				}
+			}
+		}
+		for surface in tickets {
+			if surface.state != .bound || surface.release_kind != .egl_surface
+				|| surface.owner_seed.scope != .anchor {
+				continue
+			}
+			for egl_window in tickets {
+				if egl_window.state == .bound && egl_window.release_kind == .wayland_egl_window
+					&& egl_window.owner_seed.scope == .anchor {
+					assert release_indices[surface.ticket_id] < release_indices[egl_window.ticket_id]
 				}
 			}
 		}
@@ -5434,10 +6099,14 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 					app.backend.wayland.egl_display == unsafe { nil }
 						&& app.backend.wayland.egl_context == unsafe { nil }
 						&& app.backend.wayland.anchor_surface == unsafe { nil }
+						&& app.backend.wayland.anchor_wl_egl_window == unsafe { nil }
+						&& app.backend.wayland.anchor_wl_surface == unsafe { nil }
 						&& app.backend.wayland.egl_display_ticket == 0
 						&& app.backend.wayland.egl_context_ticket == 0
 						&& app.backend.wayland.egl_thread_ticket == 0
 						&& app.backend.wayland.anchor_surface_ticket == 0
+						&& app.backend.wayland.anchor_wl_egl_window_ticket == 0
+						&& app.backend.wayland.anchor_wl_surface_ticket == 0
 						&& app.backend.wayland.windows.all(it.egl_surface_ticket == 0
 						&& it.wl_egl_window_ticket == 0 && it.frame_callback_ticket == 0)
 						&& app.backend.native_operations.lifetime_tickets.len == 0
@@ -7521,6 +8190,30 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert local_release_proof.identities.len > 0
 		assert local_release_proof.pending_alias != 0
 		assert local_release_proof.pending_drop_fd >= 0
+		anchor_surface_identity := native_identity(app.backend.wayland.anchor_wl_surface)
+		anchor_surface_ticket := native_lifetime_ticket_snapshot_for_test(&app.backend.native_operations,
+			app.backend.wayland.anchor_wl_surface_ticket)!
+		window_index := app.backend.wayland.window_record_index(window) or {
+			return error(err_window_not_found)
+		}
+		window_record := app.backend.wayland.windows[window_index]
+		assert window_record.egl_surface == unsafe { nil }
+		assert window_record.egl_surface_ticket == 0
+		assert window_record.wl_egl_window == unsafe { nil }
+		assert window_record.wl_egl_window_ticket == 0
+		anchor_egl_ticket := native_lifetime_ticket_snapshot_for_test(&app.backend.native_operations,
+			app.backend.wayland.anchor_surface_ticket)!
+		anchor_wl_egl_ticket := native_lifetime_ticket_snapshot_for_test(&app.backend.native_operations,
+			app.backend.wayland.anchor_wl_egl_window_ticket)!
+		context_ticket := native_lifetime_ticket_snapshot_for_test(&app.backend.native_operations,
+			app.backend.wayland.egl_context_ticket)!
+		display_ticket := native_lifetime_ticket_snapshot_for_test(&app.backend.native_operations,
+			app.backend.wayland.egl_display_ticket)!
+		thread_ticket := native_lifetime_ticket_snapshot_for_test(&app.backend.native_operations,
+			app.backend.wayland.egl_thread_ticket)!
+		assert anchor_surface_identity != 0
+		assert anchor_surface_ticket.native_identity == anchor_surface_identity
+		assert anchor_surface_ticket.release_kind == .wayland_surface
 		flush_seed := NativeOperationSeed{
 			presence_mask:   native_context_has_target_identity
 			call_site:       .display_transport
@@ -7547,6 +8240,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert app.backend.wayland.render_health == .unavailable
 		assert app.backend.wayland.wayland_display_unavailable
 		assert app.backend.wayland.wayland_display_error == 71
+		release_trace_cursor := app.backend.native_operations.proof.trace_len
 		before_stop_oracle := native_release_oracle_snapshot_for_test(.wayland)
 		assert !before_stop_oracle.overflow
 		assert before_stop_oracle.records.len == 0
@@ -7564,10 +8258,14 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert ownership.egl_config == 0
 		assert ownership.egl_context == 0
 		assert ownership.anchor_surface == 0
+		assert ownership.anchor_wl_egl_window == 0
+		assert ownership.anchor_wl_surface == 0
 		assert ownership.egl_display_ticket == 0
 		assert ownership.egl_context_ticket == 0
 		assert ownership.egl_thread_ticket == 0
 		assert ownership.anchor_surface_ticket == 0
+		assert ownership.anchor_wl_egl_window_ticket == 0
+		assert ownership.anchor_wl_surface_ticket == 0
 		assert ownership.binding_kind == .none
 		assert ownership.binding_surface == 0
 		assert ownership.pending_drop_fd == -1
@@ -7584,6 +8282,35 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			assert identity == 0
 		}
 		after_stop_oracle := native_release_oracle_snapshot_for_test(.wayland)
+		mut release_cursor := release_trace_cursor
+		release_cursor = native_assert_lifetime_release_at_for_test(stopped, anchor_egl_ticket,
+			release_cursor)
+		release_cursor = native_assert_lifetime_release_at_for_test(stopped, anchor_wl_egl_ticket,
+			release_cursor)
+		native_assert_wayland_anchor_surface_release_mode_at_for_test(stopped,
+			anchor_surface_ticket, release_cursor, wayland_anchor_release_local_proxy_destroy)
+		release_cursor = native_assert_lifetime_release_at_for_test(stopped, anchor_surface_ticket,
+			release_cursor)
+		release_cursor = native_assert_lifetime_release_at_for_test(stopped, context_ticket,
+			release_cursor)
+		release_cursor = native_assert_lifetime_release_at_for_test(stopped, display_ticket,
+			release_cursor)
+		release_cursor = native_assert_lifetime_release_at_for_test(stopped, thread_ticket,
+			release_cursor)
+		assert release_cursor == stopped.trace_len
+		ordered_tickets := [anchor_egl_ticket, anchor_wl_egl_ticket, anchor_surface_ticket,
+			context_ticket, display_ticket, thread_ticket]
+		mut oracle_cursor := before_stop_oracle.records.len
+		for ticket in ordered_tickets {
+			assert oracle_cursor < after_stop_oracle.records.len
+			record := after_stop_oracle.records[oracle_cursor]
+			assert native_release_oracle_record_matches_ticket_for_test(record, ticket)
+			if ticket.release_kind == .wayland_surface {
+				assert record.mode == wayland_anchor_release_local_proxy_destroy
+			}
+			oracle_cursor++
+		}
+		assert oracle_cursor == after_stop_oracle.records.len
 		native_assert_wayland_local_release_oracle_for_test(after_stop_oracle, local_release_proof)
 		assert native_release_oracle_record_count_for_test(after_stop_oracle.unticketed_releases,
 			.wayland, 4, local_release_proof.pending_alias) == 1
@@ -7718,7 +8445,9 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 						native_identity(backend.wayland.egl_display),
 						native_identity(backend.wayland.egl_config),
 						native_identity(backend.wayland.egl_context),
-						native_identity(backend.wayland.anchor_surface)] {
+						native_identity(backend.wayland.anchor_surface),
+						native_identity(backend.wayland.anchor_wl_egl_window),
+						native_identity(backend.wayland.anchor_wl_surface)] {
 						assert identity == 0
 					}
 					assert backend.wayland.windows.len == 0
@@ -7741,6 +8470,8 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 					assert backend.wayland.egl_context_ticket == 0
 					assert backend.wayland.egl_thread_ticket == 0
 					assert backend.wayland.anchor_surface_ticket == 0
+					assert backend.wayland.anchor_wl_egl_window_ticket == 0
+					assert backend.wayland.anchor_wl_surface_ticket == 0
 					assert backend.wayland.egl_binding.kind == .none
 					assert backend.wayland.egl_binding.surface == unsafe { nil }
 					assert !backend.wayland.retains_native_ownership()

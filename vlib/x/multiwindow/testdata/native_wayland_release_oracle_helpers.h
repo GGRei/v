@@ -20,13 +20,15 @@ enum VMultiwindowTestWaylandReleaseKind {
 	V_MULTIWINDOW_TEST_WAYLAND_CALLBACK_DESTROY = 2,
 	V_MULTIWINDOW_TEST_WAYLAND_CALLBACK_COMPLETION = 3,
 	V_MULTIWINDOW_TEST_WAYLAND_LOCAL_PROXY_DESTROY = 4,
-	V_MULTIWINDOW_TEST_WAYLAND_DISPLAY_DISCONNECT = 5
+	V_MULTIWINDOW_TEST_WAYLAND_DISPLAY_DISCONNECT = 5,
+	V_MULTIWINDOW_TEST_WAYLAND_SURFACE_RELEASE = 6
 };
 
 typedef struct VMultiwindowTestWaylandReleaseRecord {
 	uint64_t sequence;
 	uint64_t kind;
 	uint64_t identity;
+	uint64_t mode;
 } VMultiwindowTestWaylandReleaseRecord;
 
 static VMultiwindowTestWaylandReleaseRecord
@@ -34,8 +36,8 @@ static VMultiwindowTestWaylandReleaseRecord
 static uint64_t v_multiwindow_test_wayland_release_record_count;
 static int v_multiwindow_test_wayland_release_record_overflow;
 
-static inline void v_multiwindow_test_wayland_release_record(
-		uint64_t kind, uint64_t identity) {
+static inline void v_multiwindow_test_wayland_release_record_with_mode(
+		uint64_t kind, uint64_t identity, uint64_t mode) {
 	if (v_multiwindow_test_wayland_release_record_count
 			>= V_MULTIWINDOW_TEST_WAYLAND_RELEASE_ORACLE_CAPACITY) {
 		v_multiwindow_test_wayland_release_record_overflow = 1;
@@ -47,6 +49,12 @@ static inline void v_multiwindow_test_wayland_release_record(
 	record->sequence = v_multiwindow_test_release_oracle_take_sequence();
 	record->kind = kind;
 	record->identity = identity;
+	record->mode = mode;
+}
+
+static inline void v_multiwindow_test_wayland_release_record(
+		uint64_t kind, uint64_t identity) {
+	v_multiwindow_test_wayland_release_record_with_mode(kind, identity, UINT64_C(0));
 }
 
 #if defined(SOKOL_TRACE_HOOKS) && defined(V_MULTIWINDOW_NATIVE_PROOF_TEST)
@@ -77,6 +85,12 @@ static inline void v_multiwindow_test_wayland_egl_window_destroy(
 		V_MULTIWINDOW_TEST_WAYLAND_EGL_WINDOW_RELEASE,
 		(uint64_t)(uintptr_t)window);
 	wl_egl_window_destroy(window);
+}
+
+static inline void v_multiwindow_test_wayland_anchor_surface_destroyed(
+		uint64_t identity, uint64_t mode) {
+	v_multiwindow_test_wayland_release_record_with_mode(
+		V_MULTIWINDOW_TEST_WAYLAND_SURFACE_RELEASE, identity, mode);
 }
 
 static void v_multiwindow_test_wayland_frame_destroyed_observer(
@@ -115,7 +129,7 @@ static inline void v_multiwindow_test_wayland_release_oracle_reset(void) {
 	for (uint64_t index = 0;
 			index < V_MULTIWINDOW_TEST_WAYLAND_RELEASE_ORACLE_CAPACITY; index++) {
 		v_multiwindow_test_wayland_release_records[index] =
-			(VMultiwindowTestWaylandReleaseRecord){0, 0, 0};
+			(VMultiwindowTestWaylandReleaseRecord){0, 0, 0, 0};
 	}
 	v_multiwindow_test_wayland_release_record_count = UINT64_C(0);
 	v_multiwindow_test_wayland_release_record_overflow = 0;
@@ -142,6 +156,11 @@ static inline uint64_t v_multiwindow_test_wayland_release_oracle_sequence(uint64
 static inline uint64_t v_multiwindow_test_wayland_release_oracle_identity(uint64_t index) {
 	return index < v_multiwindow_test_wayland_release_record_count
 		? v_multiwindow_test_wayland_release_records[index].identity : UINT64_C(0);
+}
+
+static inline uint64_t v_multiwindow_test_wayland_release_oracle_mode(uint64_t index) {
+	return index < v_multiwindow_test_wayland_release_record_count
+		? v_multiwindow_test_wayland_release_records[index].mode : UINT64_C(0);
 }
 
 #endif

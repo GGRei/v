@@ -18,6 +18,7 @@ fn C.v_multiwindow_linux_egl_initialize(display u64, result &C.VMultiwindowNativ
 fn C.v_multiwindow_linux_egl_query_extensions(display u64, result &C.VMultiwindowNativePrimitive)
 fn C.v_multiwindow_linux_egl_bind_opengl_api(result &C.VMultiwindowNativePrimitive)
 fn C.v_multiwindow_linux_egl_choose_config(display u64, result &C.VMultiwindowNativePrimitive)
+fn C.v_multiwindow_linux_egl_choose_wayland_config(display u64, result &C.VMultiwindowNativePrimitive)
 fn C.v_multiwindow_linux_egl_get_native_visual(display u64, config u64, result &C.VMultiwindowNativePrimitive)
 fn C.v_multiwindow_linux_egl_create_context(display u64, config u64, result &C.VMultiwindowNativePrimitive)
 fn C.v_multiwindow_linux_egl_create_window_surface(display u64, config u64, native_window u64, result &C.VMultiwindowNativePrimitive)
