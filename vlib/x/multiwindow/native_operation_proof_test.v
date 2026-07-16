@@ -92,6 +92,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			fn C.v_multiwindow_test_win32_fake_d3d_identity(index u64) u64
 			fn C.v_multiwindow_test_win32_fake_d3d_remaining(index u64) u64
 			fn C.v_multiwindow_test_win32_fake_d3d_overflow() int
+			fn C.v_multiwindow_test_win32_diag_marker(marker u64, hresult i64, pointer u64, value u64)
 		}
 	}
 
@@ -9607,8 +9608,26 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 	}
 
 	fn native_dxgi_exercise_startup_failure(operation_hresult i64, expect_null bool) ! {
+		$if windows && sokol_d3d11 ? {
+			C.v_multiwindow_test_win32_diag_marker(1, operation_hresult, 0, if expect_null {
+				u64(1)
+			} else {
+				u64(0)
+			})
+		}
 		mut app := native_dxgi_new_uninitialized_app_for_test()!
-		app.backend.native_operations.arm_proof()
+		$if windows && sokol_d3d11 ? {
+			C.v_multiwindow_test_win32_diag_marker(2, operation_hresult, app.instance_id, 0)
+			C.v_multiwindow_test_win32_diag_marker(3, operation_hresult, app.instance_id, 0)
+		}
+		proof_armed := app.backend.native_operations.arm_proof()
+		$if windows && sokol_d3d11 ? {
+			C.v_multiwindow_test_win32_diag_marker(4, operation_hresult, app.instance_id, if proof_armed {
+				u64(1)
+			} else {
+				u64(0)
+			})
+		}
 		context := native_dxgi_startup_context_for_test(app)
 		evidence := if expect_null {
 			NativePrimitiveEvidence{
@@ -9625,7 +9644,14 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		}
 		assert app.backend.native_operations.arm(context, evidence)
 		mut start_error := ''
+		$if windows && sokol_d3d11 ? {
+			C.v_multiwindow_test_win32_diag_marker(5, operation_hresult, 0, context.ordinal)
+		}
 		app.start_renderer(RendererConfig{}) or { start_error = err.msg() }
+		$if windows && sokol_d3d11 ? {
+			C.v_multiwindow_test_win32_diag_marker(12, operation_hresult,
+				native_identity(app.backend.win32.device), u64(start_error.len))
+		}
 		assert start_error != ''
 		assert app.render_bridge == unsafe { nil }
 		assert !app.renderer_is_usable()
@@ -9672,7 +9698,15 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		assert app.backend.win32.device == unsafe { nil }
 		assert app.backend.win32.device_context == unsafe { nil }
 		assert app.backend.win32.factory == unsafe { nil }
+		$if windows && sokol_d3d11 ? {
+			C.v_multiwindow_test_win32_diag_marker(13, operation_hresult, actual_device,
+				actual_context)
+		}
 		_, stopped := native_stop_twice_with_any_proof_for_test(mut app)!
+		$if windows && sokol_d3d11 ? {
+			C.v_multiwindow_test_win32_diag_marker(14, operation_hresult, actual_device,
+				u64(stopped.trace_len))
+		}
 		for index in acceptance_index + 1 .. stopped.trace_len {
 			entry := stopped.trace[index]
 			if entry.milestone == .real_call {
@@ -9683,6 +9717,10 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 		native_dxgi_assert_released_after_for_test(stopped, [actual_device, actual_context],
 			acceptance_index)
 		native_dxgi_assert_durable_slots_cleared_for_test(app)
+		$if windows && sokol_d3d11 ? {
+			C.v_multiwindow_test_win32_diag_marker(15, operation_hresult, actual_context,
+				u64(stopped.trace_len))
+		}
 	}
 
 	fn native_dxgi_exercise_startup_failures() ! {
