@@ -159,20 +159,28 @@ jobs:
             throw "runtime multiwindow example compile failed with exit code $LASTEXITCODE"
           }
 
-          $runtimeContractTest = 'vlib/gg/multiwindow_render_runtime_contract_test.v'
-          $runtimeContractDiag = Join-Path $env:RUNNER_TEMP 'multiwindow_runtime_contract_dynamic_lifecycle_diag.txt'
-          $tests = @($runtimeContractTest)
+          $tests = @(
+            'vlib/x/multiwindow/event_sequence_exhaustion_test.v',
+            'vlib/x/multiwindow/event_terminal_delivery_test.v',
+            'vlib/x/multiwindow/internal_fault_matrix_test.v',
+            'vlib/x/multiwindow/multiwindow_test.v',
+            'vlib/x/multiwindow/native_operation_proof_test.v',
+            'vlib/x/multiwindow/render_scheduler_test.v',
+            'vlib/x/multiwindow/render_target_lease_test.v',
+            'vlib/x/multiwindow/teardown_contract_test.v',
+            'vlib/x/multiwindow/win32_render_metrics_test.v',
+            'vlib/gg/multiwindow_api_d_gg_multiwindow_test.v',
+            'vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v',
+            'vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v',
+            'vlib/gg/multiwindow_render_runtime_contract_test.v',
+            'vlib/gg/frame_pacing_test.v',
+            'vlib/gg/draw_fns_api_test.v',
+            'vlib/gg/draw_rect_empty_test.v'
+          )
           foreach ($test in $tests) {
-            if ($test -eq $runtimeContractTest) {
-              Remove-Item -LiteralPath $runtimeContractDiag -Force -ErrorAction SilentlyContinue
-            }
             & $runner 300 '-' $vexe '-cc' 'msvc' '-d' 'gg_multiwindow' '-d' 'sokol_d3d11' '-d' 'gg_multiwindow_d3d11_warp' 'test' $test
-            $testExitCode = $LASTEXITCODE
-            if ($testExitCode -ne 0) {
-              if ($test -eq $runtimeContractTest -and (Test-Path -LiteralPath $runtimeContractDiag)) {
-                Get-Content -Raw -LiteralPath $runtimeContractDiag
-              }
-              throw "multiwindow D3D11 WARP test '$test' failed with exit code $testExitCode"
+            if ($LASTEXITCODE -ne 0) {
+              throw "multiwindow D3D11 WARP test '$test' failed with exit code $LASTEXITCODE"
             }
           }
 
