@@ -170,6 +170,8 @@ struct MultiWindowCleanupProofState {
 	window_buffer        WindowBufferId
 	app_buffer_native    u32
 	window_buffer_native u32
+	framebuffer_width    int
+	framebuffer_height   int
 	observation          MultiWindowCleanupObservation
 }
 
@@ -566,6 +568,8 @@ fn multiwindow_cleanup_proof_state(proof &MultiWindowCleanupErrorProof) MultiWin
 		window_buffer:        proof.window_buffer
 		app_buffer_native:    proof.app_buffer_native
 		window_buffer_native: proof.window_buffer_native
+		framebuffer_width:    proof.framebuffer_width
+		framebuffer_height:   proof.framebuffer_height
 		observation:          proof.observation
 	}
 }
