@@ -177,10 +177,19 @@ jobs:
             'vlib/gg/draw_fns_api_test.v',
             'vlib/gg/draw_rect_empty_test.v'
           )
+          $runtimeContractTest = 'vlib/gg/multiwindow_render_runtime_contract_test.v'
+          $runtimeContractDiag = Join-Path $env:RUNNER_TEMP 'multiwindow_runtime_contract_dynamic_lifecycle_diag.txt'
           foreach ($test in $tests) {
+            if ($test -eq $runtimeContractTest) {
+              Remove-Item -LiteralPath $runtimeContractDiag -Force -ErrorAction SilentlyContinue
+            }
             & $runner 300 '-' $vexe '-cc' 'msvc' '-d' 'gg_multiwindow' '-d' 'sokol_d3d11' '-d' 'gg_multiwindow_d3d11_warp' 'test' $test
-            if ($LASTEXITCODE -ne 0) {
-              throw "multiwindow D3D11 WARP test '$test' failed with exit code $LASTEXITCODE"
+            $testExitCode = $LASTEXITCODE
+            if ($testExitCode -ne 0) {
+              if ($test -eq $runtimeContractTest -and (Test-Path -LiteralPath $runtimeContractDiag)) {
+                Get-Content -Raw -LiteralPath $runtimeContractDiag
+              }
+              throw "multiwindow D3D11 WARP test '$test' failed with exit code $testExitCode"
             }
           }
 

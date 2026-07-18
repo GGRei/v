@@ -434,8 +434,10 @@ fn test_multiwindow_render_runtime_dynamic_lifecycle_probes_run_when_requested()
 			$if msvc {
 				$if gg_multiwindow_d3d11_warp ? {
 					if actual != expected {
-						eprintln('MULTIWINDOW_RUNTIME_DYNAMIC_DIAG actual_len=${actual.len} actual=${actual}\nstdout_len=${result.stdout.len}\nstdout=${result.stdout}\nstderr=${result.stderr}')
-						C.fflush(C.stderr)
+						diagnostic_path := os.join_path(os.getenv('RUNNER_TEMP'),
+							'multiwindow_runtime_contract_dynamic_lifecycle_diag.txt')
+						diagnostic := 'mode=${mode}\ntimed_out=${result.timed_out}\nexit_code=${result.exit_code}\nexpected_len=${expected.len}\nexpected=${expected}\nexpected_bytes=${expected.bytes()}\nactual_len=${actual.len}\nactual=${actual}\nactual_bytes=${actual.bytes()}\nstdout_len=${result.stdout.len}\nstdout_bytes=${result.stdout.bytes()}\nstdout_begin\n${result.stdout}\nstdout_end\nstderr_len=${result.stderr.len}\nstderr_bytes=${result.stderr.bytes()}\nstderr_begin\n${result.stderr}\nstderr_end\n'
+						os.write_file(diagnostic_path, diagnostic) or { exit(31990 + mode_index) }
 						exit(31003 + mode_index * 10)
 					}
 				}
