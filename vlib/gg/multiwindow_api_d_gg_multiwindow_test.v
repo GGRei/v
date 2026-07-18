@@ -1780,7 +1780,8 @@ fn test_multiwindow_checked_in_example_headless_mock_outputs_event_markers() {
 		vlib_dir := os.dir(@DIR)
 		example_path := os.join_path(vlib_dir, '..', 'examples', 'gg', 'multiwindow.v')
 		env_executable := os.find_abs_path_of_executable('env') or { '/usr/bin/env' }
-		mut args := ['-u', 'DISPLAY', '-u', 'WAYLAND_DISPLAY', '-u', 'XDG_SESSION_TYPE', @VEXE]
+		mut args := ['-u', 'DISPLAY', '-u', 'WAYLAND_DISPLAY', '-u', 'XDG_SESSION_TYPE', '-u',
+			'VGG_MULTIWINDOW_EXAMPLE_UNATTENDED', @VEXE]
 		args << multiwindow_child_v_flags().fields()
 		args << ['-path', '${vlib_dir}|@vlib|@vmodules', 'run', example_path]
 		_, gate_path := multiwindow_temp_paths('gg_multiwindow_checked_in_example_watchdog_gate')
