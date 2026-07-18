@@ -434,6 +434,8 @@ fn test_multiwindow_render_runtime_dynamic_lifecycle_probes_run_when_requested()
 			$if msvc {
 				$if gg_multiwindow_d3d11_warp ? {
 					if actual != expected {
+						eprintln('MULTIWINDOW_RUNTIME_DYNAMIC_DIAG actual_len=${actual.len} actual=${actual}\nstdout_len=${result.stdout.len}\nstdout=${result.stdout}\nstderr=${result.stderr}')
+						C.fflush(C.stderr)
 						exit(31003 + mode_index * 10)
 					}
 				}
