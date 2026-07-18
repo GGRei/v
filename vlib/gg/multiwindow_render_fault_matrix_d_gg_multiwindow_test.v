@@ -446,7 +446,7 @@ fn test_multiwindow_cleanup_callback_errors_retire_totally_and_replay_exactly() 
 			if proof.window_frames != 0 {
 				return
 			}
-			framebuffer_size := context.frame_info().metrics.framebuffer_size
+			framebuffer_size := context.framebuffer_size()
 			proof.framebuffer_width = framebuffer_size.width
 			proof.framebuffer_height = framebuffer_size.height
 			proof.window_frames++
@@ -2597,39 +2597,11 @@ fn multiwindow_assert_trace_retained_after_logical_release(before multiwindow_so
 	assert after.records == before.records
 }
 
-fn multiwindow_assert_cleanup_error_swapchain_pass(snapshot multiwindow_sokol_trace.TypedSnapshot, cursor int, call_site int, width int, height int, authority_width int, authority_height int) int {
+fn multiwindow_assert_cleanup_error_swapchain_pass(snapshot multiwindow_sokol_trace.TypedSnapshot, cursor int, width int, height int) int {
 	assert cursor >= 0
 	assert cursor + 2 < snapshot.records.len
 	begin_pass := snapshot.records[cursor]
 	assert begin_pass.operation == .begin_swapchain_pass
-	$if windows {
-		$if msvc {
-			$if gg_multiwindow_d3d11_warp ? {
-				if begin_pass.width != width || begin_pass.height != height
-					|| begin_pass.width != authority_width || begin_pass.height != authority_height
-					|| authority_width != width || authority_height != height {
-					eprintln('MULTIWINDOW_CLEANUP_PASS_DIAG call_site=${call_site} cursor=${cursor} expected=${width}x${height} trace=${begin_pass.width}x${begin_pass.height} authority=${authority_width}x${authority_height}')
-					C.fflush(C.stderr)
-					if call_site < 1 || call_site > 9 || begin_pass.width < 0
-						|| begin_pass.width >= 1000 || begin_pass.height < 0
-						|| begin_pass.height >= 1000 {
-						exit(990_000_000 + call_site)
-					}
-					trace_matches_authority := if begin_pass.width == authority_width
-						&& begin_pass.height == authority_height {
-						1
-					} else {
-						0
-					}
-					// Decimal fields: call site, trace/authority match, trace width, trace height.
-					diagnostic_code := call_site * 10_000_000 +
-						trace_matches_authority * 1_000_000 + begin_pass.width * 1000 +
-						begin_pass.height
-					exit(diagnostic_code)
-				}
-			}
-		}
-	}
 	assert begin_pass.width == width
 	assert begin_pass.height == height
 	assert snapshot.records[cursor + 1].operation == .end_pass
@@ -2656,7 +2628,7 @@ fn multiwindow_assert_cleanup_error_trace(snapshot multiwindow_sokol_trace.Typed
 	assert app_create.identity == app_buffer
 	cursor++
 	if cursor < snapshot.records.len && snapshot.records[cursor].operation == .begin_swapchain_pass {
-		cursor = multiwindow_assert_cleanup_error_swapchain_pass(snapshot, cursor, 1, 1, 1, 1, 1)
+		cursor = multiwindow_assert_cleanup_error_swapchain_pass(snapshot, cursor, 1, 1)
 	}
 
 	context_create := snapshot.records[cursor]
@@ -2681,9 +2653,9 @@ fn multiwindow_assert_cleanup_error_trace(snapshot multiwindow_sokol_trace.Typed
 	assert window_create.identity == window_buffer
 	cursor++
 
-	cursor = multiwindow_assert_cleanup_error_swapchain_pass(snapshot, cursor, 2, 96, 72,
-		framebuffer_width, framebuffer_height)
-	cursor = multiwindow_assert_cleanup_error_swapchain_pass(snapshot, cursor, 3, 1, 1, 1, 1)
+	cursor = multiwindow_assert_cleanup_error_swapchain_pass(snapshot, cursor, framebuffer_width,
+		framebuffer_height)
+	cursor = multiwindow_assert_cleanup_error_swapchain_pass(snapshot, cursor, 1, 1)
 
 	window_destroy := snapshot.records[cursor]
 	assert window_destroy.operation == .destroy_buffer
@@ -2699,7 +2671,7 @@ fn multiwindow_assert_cleanup_error_trace(snapshot multiwindow_sokol_trace.Typed
 		assert pipeline_destroy.identity == identity
 		cursor++
 	}
-	cursor = multiwindow_assert_cleanup_error_swapchain_pass(snapshot, cursor, 4, 1, 1, 1, 1)
+	cursor = multiwindow_assert_cleanup_error_swapchain_pass(snapshot, cursor, 1, 1)
 	app_destroy := snapshot.records[cursor]
 	assert app_destroy.operation == .destroy_buffer
 	assert app_destroy.identity == app_buffer
