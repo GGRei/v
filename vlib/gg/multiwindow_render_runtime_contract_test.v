@@ -399,12 +399,14 @@ fn test_multiwindow_render_runtime_dynamic_lifecycle_probes_run_when_requested()
 
 	for mode_index, mode in ['dynamic_job', 'init_only', 'continuous_counter', 'mixed_event'] {
 		gate_path := render_runtime_temp_binary('gg_dynamic_lifecycle_${mode}_gate')
+		completion_path := render_runtime_temp_binary('gg_dynamic_lifecycle_${mode}_completion')
 		defer {
 			os.rm(gate_path) or {}
+			os.rm(completion_path) or {}
 		}
 		result := multiwindow_probe_watchdog.run(
 			executable:  output
-			args:        [mode]
+			args:        [mode, completion_path]
 			timeout:     render_runtime_probe_timeout
 			start_file:  gate_path
 			environment: {
@@ -429,20 +431,25 @@ fn test_multiwindow_render_runtime_dynamic_lifecycle_probes_run_when_requested()
 		assert result.exit_code == 0, 'dynamic lifecycle probe `${mode}` failed with exit code ${result.exit_code}\n${result.combined_output()}'
 		assert !result.forced_cleanup, 'dynamic lifecycle probe `${mode}` required forced cleanup'
 		expected := '{"probe":"dynamic_lifecycle","mode":"${mode}","status":"PASS","cleanup":"complete"}'
+		completion := os.read_file(completion_path) or { '' }
 		actual := render_runtime_last_nonempty_line(result.stdout)
 		$if windows {
 			$if msvc {
 				$if gg_multiwindow_d3d11_warp ? {
-					if actual != expected {
+					if completion != expected || actual != expected {
 						diagnostic_path := os.join_path(os.getenv('RUNNER_TEMP'),
 							'multiwindow_runtime_contract_dynamic_lifecycle_diag.txt')
-						diagnostic := 'mode=${mode}\ntimed_out=${result.timed_out}\nexit_code=${result.exit_code}\nexpected_len=${expected.len}\nexpected=${expected}\nexpected_bytes=${expected.bytes()}\nactual_len=${actual.len}\nactual=${actual}\nactual_bytes=${actual.bytes()}\nstdout_len=${result.stdout.len}\nstdout_bytes=${result.stdout.bytes()}\nstdout_begin\n${result.stdout}\nstdout_end\nstderr_len=${result.stderr.len}\nstderr_bytes=${result.stderr.bytes()}\nstderr_begin\n${result.stderr}\nstderr_end\n'
+						diagnostic := 'mode=${mode}\ntimed_out=${result.timed_out}\nexit_code=${result.exit_code}\nexpected_len=${expected.len}\nexpected=${expected}\nexpected_bytes=${expected.bytes()}\ncompletion_len=${completion.len}\ncompletion=${completion}\ncompletion_bytes=${completion.bytes()}\nactual_len=${actual.len}\nactual=${actual}\nactual_bytes=${actual.bytes()}\nstdout_len=${result.stdout.len}\nstdout_bytes=${result.stdout.bytes()}\nstdout_begin\n${result.stdout}\nstdout_end\nstderr_len=${result.stderr.len}\nstderr_bytes=${result.stderr.bytes()}\nstderr_begin\n${result.stderr}\nstderr_end\n'
 						os.write_file(diagnostic_path, diagnostic) or { exit(31990 + mode_index) }
+						if completion != expected {
+							exit(31004 + mode_index * 10)
+						}
 						exit(31003 + mode_index * 10)
 					}
 				}
 			}
 		}
+		assert completion == expected, 'dynamic lifecycle probe `${mode}` did not persist its post-cleanup completion marker'
 		assert actual == expected, 'dynamic lifecycle probe `${mode}` final record mismatch\nexpected: ${expected}\nactual: ${actual}\n${result.combined_output()}'
 	}
 }
@@ -870,6 +877,10 @@ fn main() {
 fn run_lifecycle_probe() ! {
 	multiwindow_probe_gate.await_parent_release(lifecycle_probe_timeout)!
 	mode := if os.args.len > 1 { os.args[1] } else { \'\' }
+	completion_path := if os.args.len > 2 { os.args[2] } else { \'\' }
+	if completion_path == \'\' {
+		return error(\'dynamic lifecycle completion path is required\')
+	}
 	match mode {
 		\'dynamic_job\' { run_dynamic_job_probe()! }
 		\'init_only\' { run_init_only_probe()! }
@@ -877,7 +888,9 @@ fn run_lifecycle_probe() ! {
 		\'mixed_event\' { run_mixed_event_probe()! }
 		else { return error(\'unknown dynamic lifecycle mode: \' + mode) }
 	}
-	println(\'{"probe":"dynamic_lifecycle","mode":"\' + mode + \'","status":"PASS","cleanup":"complete"}\')
+	record := \'{"probe":"dynamic_lifecycle","mode":"\' + mode + \'","status":"PASS","cleanup":"complete"}\'
+	println(record)
+	os.write_file(completion_path, record)!
 }
 
 fn new_lifecycle_probe_app() !&gg.App {
