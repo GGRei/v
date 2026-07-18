@@ -505,6 +505,14 @@ fn (mut backend Win32Backend) collect_render_updates() ![]BackendRenderUpdate {
 						&conversion_available) != 0
 				}
 				if available {
+					if !record.render_resize_pending && record.framebuffer_width > 0
+						&& record.framebuffer_height > 0 && framebuffer_width > 0
+						&& framebuffer_height > 0 && (record.framebuffer_width != framebuffer_width
+						|| record.framebuffer_height != framebuffer_height) {
+						record.render_target_generation =
+							exhaust_backend_target_generation(record.render_target_generation)
+						record.render_resize_pending = true
+					}
 					record.width = width
 					record.height = height
 					record.framebuffer_width = framebuffer_width

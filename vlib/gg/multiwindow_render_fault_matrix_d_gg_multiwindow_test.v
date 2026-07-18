@@ -1978,7 +1978,7 @@ fn multiwindow_assert_buffer_retry_slot(registry MultiWindowMatrixRegistryState,
 	assert slot.buffer_id == native
 	assert slot.buffer_capacity == effective.size
 	assert slot.buffer_usage == effective.usage
-	multiwindow_assert_buffer_desc_semantically_equal(slot.buffer_desc, &expected_desc)
+	multiwindow_assert_desc_semantically_equal(slot.buffer_desc, &expected_desc)
 	assert slot.label == ''
 	assert slot.last_mutation_batch == mutation_batch
 	assert slot.buffer_mutation_mode == mutation
@@ -1997,7 +1997,7 @@ fn multiwindow_assert_image_retry_slot(registry MultiWindowMatrixRegistryState, 
 	assert slot.dependencies.len == 0
 	assert slot.dependents.len == 0
 	assert slot.image_id == native
-	assert slot.image_desc == multiwindow_fault_matrix_raw_bytes(&expected_desc)
+	multiwindow_assert_desc_semantically_equal(slot.image_desc, &expected_desc)
 	assert slot.image_width == effective.width
 	assert slot.image_height == effective.height
 	assert slot.image_sample_count == effective.sample_count
@@ -2038,7 +2038,7 @@ fn multiwindow_assert_shader_retry_slot(registry MultiWindowMatrixRegistryState,
 	assert slot.dependencies.len == 0
 	assert slot.dependents.len == 0
 	assert slot.shader_id == native
-	assert slot.shader_desc == multiwindow_fault_matrix_raw_bytes(&expected_desc)
+	multiwindow_assert_desc_semantically_equal(slot.shader_desc, &expected_desc)
 	assert slot.buffer_id == 0 && slot.image_id == 0 && slot.sampler_id == 0
 	assert slot.pipeline_id == 0 && slot.attachments_id == 0
 }
@@ -2061,7 +2061,7 @@ fn multiwindow_assert_pipeline_retry_slot(before MultiWindowMatrixRegistryState,
 	assert slot.dependencies == [shader_key]
 	assert slot.dependents.len == 0
 	assert slot.pipeline_id == native
-	assert slot.pipeline_desc == multiwindow_fault_matrix_raw_bytes(&expected_desc)
+	multiwindow_assert_desc_semantically_equal(slot.pipeline_desc, &expected_desc)
 	mut expected_dependents := before_shader.dependents.clone()
 	expected_dependents << pipeline_key
 	expected_shader := MultiWindowMatrixSlotState{
@@ -2106,7 +2106,7 @@ fn multiwindow_assert_sgl_recipe_retry_slot(before MultiWindowMatrixRegistryStat
 	assert slot.kind == .sgl_pipeline
 	assert slot.status == .alive
 	assert slot.app_scoped
-	assert slot.sgl_recipe == multiwindow_fault_matrix_raw_bytes(&desc)
+	multiwindow_assert_desc_semantically_equal(slot.sgl_recipe, &desc)
 	assert slot.sgl_materializations.len == 0
 	assert slot.pipeline_id == 0
 	if shader.app_instance == 0 {
@@ -2291,10 +2291,15 @@ fn multiwindow_assert_replacement_registry(before MultiWindowMatrixRegistryState
 	assert after_image.image_id == new_image
 	effective := gfx.query_image_desc_defaults(&desc)
 	expected_image_desc := pointer_free_image_desc(effective)
-	expected_image := MultiWindowMatrixSlotState{
+	multiwindow_assert_desc_semantically_equal(after_image.image_desc, &expected_image_desc)
+	actual_image_without_desc := MultiWindowMatrixSlotState{
+		...after_image
+		image_desc: []u8{}
+	}
+	expected_image_without_desc := MultiWindowMatrixSlotState{
 		...before_image
 		image_id:            new_image
-		image_desc:          multiwindow_fault_matrix_raw_bytes(&expected_image_desc)
+		image_desc:          []u8{}
 		image_width:         effective.width
 		image_height:        effective.height
 		image_sample_count:  effective.sample_count
@@ -2303,7 +2308,7 @@ fn multiwindow_assert_replacement_registry(before MultiWindowMatrixRegistryState
 		image_render_target: effective.render_target
 		last_mutation_batch: mutation_batch
 	}
-	assert after_image == expected_image
+	assert actual_image_without_desc == expected_image_without_desc
 	for index, id in attachments {
 		key := multiwindow_fault_matrix_key(attachments_resource_key(id))
 		before_attachment := multiwindow_fault_matrix_registry_slot(before, key)
@@ -2499,48 +2504,13 @@ fn multiwindow_fault_matrix_raw_bytes[T](value &T) []u8 {
 	return result
 }
 
-fn multiwindow_assert_buffer_desc_semantically_equal(actual_bytes []u8, expected &gfx.BufferDesc) {
-	assert actual_bytes.len == int(sizeof(gfx.BufferDesc))
-	mut actual := gfx.BufferDesc{}
+fn multiwindow_assert_desc_semantically_equal[T](actual_bytes []u8, expected &T) {
+	assert actual_bytes.len == int(sizeof(T))
+	mut actual := T{}
 	unsafe {
 		C.memcpy(&actual, actual_bytes.data, usize(actual_bytes.len))
 	}
-	assert actual._start_canary == expected._start_canary
-	assert actual._start_canary == 0
-	assert expected._start_canary == 0
-	assert actual.size == expected.size
-	assert actual.type == expected.type
-	assert actual.usage == expected.usage
-	assert actual.data.ptr == expected.data.ptr
-	assert actual.data.ptr == unsafe { nil }
-	assert expected.data.ptr == unsafe { nil }
-	assert actual.data.size == expected.data.size
-	assert actual.data.size == 0
-	assert expected.data.size == 0
-	assert actual.label == expected.label
-	assert actual.label == unsafe { nil }
-	assert expected.label == unsafe { nil }
-	assert actual.gl_buffers[0] == expected.gl_buffers[0]
-	assert actual.gl_buffers[1] == expected.gl_buffers[1]
-	assert actual.gl_buffers[0] == 0
-	assert actual.gl_buffers[1] == 0
-	assert expected.gl_buffers[0] == 0
-	assert expected.gl_buffers[1] == 0
-	assert actual.mtl_buffers[0] == expected.mtl_buffers[0]
-	assert actual.mtl_buffers[1] == expected.mtl_buffers[1]
-	assert actual.mtl_buffers[0] == unsafe { nil }
-	assert actual.mtl_buffers[1] == unsafe { nil }
-	assert expected.mtl_buffers[0] == unsafe { nil }
-	assert expected.mtl_buffers[1] == unsafe { nil }
-	assert actual.d3d11_buffer == expected.d3d11_buffer
-	assert actual.d3d11_buffer == unsafe { nil }
-	assert expected.d3d11_buffer == unsafe { nil }
-	assert actual.wgpu_buffer == expected.wgpu_buffer
-	assert actual.wgpu_buffer == unsafe { nil }
-	assert expected.wgpu_buffer == unsafe { nil }
-	assert actual._end_canary == expected._end_canary
-	assert actual._end_canary == 0
-	assert expected._end_canary == 0
+	assert actual == *expected
 }
 
 fn multiwindow_fault_matrix_sampler_desc_snapshot(desc gfx.SamplerDesc) MultiWindowSamplerDescSnapshot {

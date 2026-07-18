@@ -89,15 +89,6 @@ fn (mut runner NormalTestRunner) fn_fail() {
 }
 
 fn (mut runner NormalTestRunner) fn_error(line_nr int, file string, _mod string, fn_name string, errmsg string) {
-	$if windows {
-		$if msvc {
-			$if gg_multiwindow_d3d11_warp ? {
-				if os.file_name(file) == 'multiwindow_render_fault_matrix_d_gg_multiwindow_test.v' {
-					exit(10000 + line_nr)
-				}
-			}
-		}
-	}
 	filepath := if runner.use_relative_paths { file.clone() } else { os.real_path(file) }
 	mut final_filepath := filepath + ':${line_nr}:'
 	if runner.use_color {
@@ -121,15 +112,6 @@ fn (mut runner NormalTestRunner) assert_pass(_ &VAssertMetaInfo) {
 }
 
 fn (mut runner NormalTestRunner) assert_fail(i &VAssertMetaInfo) {
-	$if windows {
-		$if msvc {
-			$if gg_multiwindow_d3d11_warp ? {
-				if os.file_name(i.fpath) == 'multiwindow_render_fault_matrix_d_gg_multiwindow_test.v' {
-					exit(i.line_nr + 1)
-				}
-			}
-		}
-	}
 	runner.total_assert_fails++
 	filepath := if runner.use_relative_paths { i.fpath.clone() } else { os.real_path(i.fpath) }
 	mut final_filepath := filepath + ':${i.line_nr + 1}:'
