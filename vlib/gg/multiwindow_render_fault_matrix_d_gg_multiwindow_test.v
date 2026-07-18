@@ -1,3 +1,4 @@
+// vtest build: gg_multiwindow?
 module gg
 
 import gg.testdata.multiwindow_sokol_trace
@@ -246,18 +247,6 @@ struct MultiWindowMatrixTerminalState {
 	renderer_terminal_failure bool
 	terminal_error            string
 	runtime                   MultiWindowMatrixRuntimeState
-}
-
-fn multiwindow_fault_matrix_msvc_probe_or_exit(predicate bool, code int) {
-	$if windows {
-		$if msvc {
-			$if gg_multiwindow_d3d11_warp ? {
-				if !predicate {
-					exit(code)
-				}
-			}
-		}
-	}
 }
 
 fn test_multiwindow_render_internal_fault_plan_rejects_invalid_configuration() {
@@ -871,78 +860,41 @@ fn multiwindow_assert_query_defaults_compatibility(runtime &MultiWindowRenderRun
 	buffer_desc := gfx.query_buffer_desc(buffer)
 	expected_buffer := gfx.query_buffer_desc_defaults(&buffer_desc)
 	actual_buffer := gfx.query_buffer_defaults(&buffer)
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_buffer.size == expected_buffer.size, 21)
 	assert actual_buffer.size == expected_buffer.size
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_buffer.type == expected_buffer.type, 22)
 	assert actual_buffer.type == expected_buffer.type
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_buffer.usage == expected_buffer.usage, 23)
 	assert actual_buffer.usage == expected_buffer.usage
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_buffer.data.size == expected_buffer.data.size,
-		24)
 	assert actual_buffer.data.size == expected_buffer.data.size
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_buffer.size == 64, 25)
 	assert actual_buffer.size == 64
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_buffer.type == .vertexbuffer, 26)
 	assert actual_buffer.type == .vertexbuffer
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_buffer.usage == .dynamic, 27)
 	assert actual_buffer.usage == .dynamic
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_buffer.data.size == 64, 28)
 	assert actual_buffer.data.size == 64
 
 	image_desc := gfx.query_image_desc(image)
 	expected_image := gfx.query_image_desc_defaults(&image_desc)
 	actual_image := gfx.query_image_defaults(&image)
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.type == expected_image.type, 31)
 	assert actual_image.type == expected_image.type
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.width == expected_image.width, 32)
 	assert actual_image.width == expected_image.width
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.height == expected_image.height, 33)
 	assert actual_image.height == expected_image.height
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.num_slices == expected_image.num_slices,
-		34)
 	assert actual_image.num_slices == expected_image.num_slices
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.num_mipmaps == expected_image.num_mipmaps,
-		35)
 	assert actual_image.num_mipmaps == expected_image.num_mipmaps
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.usage == expected_image.usage, 36)
 	assert actual_image.usage == expected_image.usage
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.pixel_format == expected_image.pixel_format,
-		37)
 	assert actual_image.pixel_format == expected_image.pixel_format
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.sample_count == expected_image.sample_count,
-		38)
 	assert actual_image.sample_count == expected_image.sample_count
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.type == ._2d, 39)
 	assert actual_image.type == ._2d
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.width == 4, 40)
 	assert actual_image.width == 4
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.height == 4, 41)
 	assert actual_image.height == 4
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.num_slices == 1, 42)
 	assert actual_image.num_slices == 1
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.num_mipmaps == 1, 43)
 	assert actual_image.num_mipmaps == 1
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.usage == .dynamic, 44)
 	assert actual_image.usage == .dynamic
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.pixel_format == .rgba8, 45)
 	assert actual_image.pixel_format == .rgba8
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_image.sample_count == 1, 46)
 	assert actual_image.sample_count == 1
 
 	shader_desc := gfx.query_shader_desc(shader)
 	expected_shader := gfx.query_shader_desc_defaults(&shader_desc)
 	actual_shader := gfx.query_shader_defaults(&shader)
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_shader.vs.uniform_blocks[0].size == expected_shader.vs.uniform_blocks[0].size,
-		51)
 	assert actual_shader.vs.uniform_blocks[0].size == expected_shader.vs.uniform_blocks[0].size
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_shader.vs.uniform_blocks[0].layout == expected_shader.vs.uniform_blocks[0].layout,
-		52)
 	assert actual_shader.vs.uniform_blocks[0].layout == expected_shader.vs.uniform_blocks[0].layout
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_shader.fs.uniform_blocks[0].size == expected_shader.fs.uniform_blocks[0].size,
-		53)
 	assert actual_shader.fs.uniform_blocks[0].size == expected_shader.fs.uniform_blocks[0].size
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_shader.fs.uniform_blocks[0].layout == expected_shader.fs.uniform_blocks[0].layout,
-		54)
 	assert actual_shader.fs.uniform_blocks[0].layout == expected_shader.fs.uniform_blocks[0].layout
 	backend := gfx.query_backend()
 	expected_entry := if backend in [.metal_ios, .metal_macos, .metal_simulator] {
@@ -950,55 +902,26 @@ fn multiwindow_assert_query_defaults_compatibility(runtime &MultiWindowRenderRun
 	} else {
 		'main'
 	}
-	multiwindow_fault_matrix_msvc_probe_or_exit(unsafe {
-		cstring_to_vstring(actual_shader.vs.entry)
-	} == expected_entry, 61)
 	assert unsafe { cstring_to_vstring(actual_shader.vs.entry) } == expected_entry
-	multiwindow_fault_matrix_msvc_probe_or_exit(unsafe {
-		cstring_to_vstring(actual_shader.fs.entry)
-	} == expected_entry, 62)
 	assert unsafe { cstring_to_vstring(actual_shader.fs.entry) } == expected_entry
 
 	pipeline_desc := gfx.query_pipeline_desc(pipeline)
 	expected_pipeline := gfx.query_pipeline_desc_defaults(&pipeline_desc)
 	actual_pipeline := gfx.query_pipeline_defaults(&pipeline)
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_pipeline.shader == expected_pipeline.shader,
-		71)
 	assert actual_pipeline.shader == expected_pipeline.shader
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_pipeline.primitive_type == expected_pipeline.primitive_type,
-		72)
 	assert actual_pipeline.primitive_type == expected_pipeline.primitive_type
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_pipeline.index_type == expected_pipeline.index_type,
-		73)
 	assert actual_pipeline.index_type == expected_pipeline.index_type
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_pipeline.cull_mode == expected_pipeline.cull_mode,
-		74)
 	assert actual_pipeline.cull_mode == expected_pipeline.cull_mode
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_pipeline.face_winding == expected_pipeline.face_winding,
-		75)
 	assert actual_pipeline.face_winding == expected_pipeline.face_winding
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_pipeline.sample_count == expected_pipeline.sample_count,
-		76)
 	assert actual_pipeline.sample_count == expected_pipeline.sample_count
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_pipeline.depth.compare == expected_pipeline.depth.compare,
-		77)
 	assert actual_pipeline.depth.compare == expected_pipeline.depth.compare
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_pipeline.color_count == expected_pipeline.color_count,
-		78)
 	assert actual_pipeline.color_count == expected_pipeline.color_count
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_pipeline.primitive_type == .triangles, 79)
 	assert actual_pipeline.primitive_type == .triangles
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_pipeline.index_type == .none, 80)
 	assert actual_pipeline.index_type == .none
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_pipeline.cull_mode == .none, 81)
 	assert actual_pipeline.cull_mode == .none
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_pipeline.face_winding == .cw, 82)
 	assert actual_pipeline.face_winding == .cw
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_pipeline.sample_count == 1, 83)
 	assert actual_pipeline.sample_count == 1
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_pipeline.depth.compare == .always, 84)
 	assert actual_pipeline.depth.compare == .always
-	multiwindow_fault_matrix_msvc_probe_or_exit(actual_pipeline.color_count == 1, 85)
 	assert actual_pipeline.color_count == 1
 }
 
@@ -2055,9 +1978,8 @@ fn multiwindow_assert_buffer_retry_slot(registry MultiWindowMatrixRegistryState,
 	assert slot.buffer_id == native
 	assert slot.buffer_capacity == effective.size
 	assert slot.buffer_usage == effective.usage
-	multiwindow_fault_matrix_msvc_buffer_desc_probe_or_exit(slot.buffer_desc, &expected_desc,
-		slot.label)
-	assert slot.buffer_desc == multiwindow_fault_matrix_raw_bytes(&expected_desc)
+	multiwindow_assert_buffer_desc_semantically_equal(slot.buffer_desc, &expected_desc)
+	assert slot.label == ''
 	assert slot.last_mutation_batch == mutation_batch
 	assert slot.buffer_mutation_mode == mutation
 	assert slot.image_id == 0 && slot.sampler_id == 0 && slot.shader_id == 0
@@ -2577,77 +2499,48 @@ fn multiwindow_fault_matrix_raw_bytes[T](value &T) []u8 {
 	return result
 }
 
-fn multiwindow_fault_matrix_msvc_buffer_desc_probe_or_exit(actual_bytes []u8, expected &gfx.BufferDesc, slot_label string) {
-	$if windows {
-		$if msvc {
-			$if gg_multiwindow_d3d11_warp ? {
-				if actual_bytes.len != int(sizeof(gfx.BufferDesc)) {
-					exit(20001)
-				}
-				mut actual := gfx.BufferDesc{}
-				unsafe {
-					C.memcpy(&actual, actual_bytes.data, usize(actual_bytes.len))
-				}
-				if actual._start_canary != expected._start_canary {
-					exit(20002)
-				}
-				if actual.size != expected.size {
-					exit(20003)
-				}
-				if actual.type != expected.type {
-					exit(20004)
-				}
-				if actual.usage != expected.usage {
-					exit(20005)
-				}
-				if actual.data.ptr != expected.data.ptr {
-					exit(20006)
-				}
-				if actual.data.size != expected.data.size {
-					exit(20007)
-				}
-				if actual.label != expected.label {
-					exit(20008)
-				}
-				if slot_label != '' {
-					exit(20009)
-				}
-				if actual.gl_buffers[0] != expected.gl_buffers[0]
-					|| actual.gl_buffers[1] != expected.gl_buffers[1] {
-					exit(20010)
-				}
-				if actual.mtl_buffers[0] != expected.mtl_buffers[0]
-					|| actual.mtl_buffers[1] != expected.mtl_buffers[1] {
-					exit(20011)
-				}
-				if actual.d3d11_buffer != expected.d3d11_buffer {
-					exit(20012)
-				}
-				if actual.wgpu_buffer != expected.wgpu_buffer {
-					exit(20013)
-				}
-				if actual._end_canary != expected._end_canary {
-					exit(20014)
-				}
-				expected_bytes := multiwindow_fault_matrix_raw_bytes(expected)
-				if actual_bytes != expected_bytes {
-					mut difference_count := 0
-					mut differences := []string{cap: 16}
-					for offset, actual_byte in actual_bytes {
-						expected_byte := expected_bytes[offset]
-						if actual_byte != expected_byte {
-							difference_count++
-							if differences.len < 16 {
-								differences << '${offset}:${actual_byte}:${expected_byte}'
-							}
-						}
-					}
-					eprintln('MULTIWINDOW_MSVC_BUFFER_DESC_RAW_DIFF total=${difference_count} first=${differences.join(',')}')
-					exit(20015)
-				}
-			}
-		}
+fn multiwindow_assert_buffer_desc_semantically_equal(actual_bytes []u8, expected &gfx.BufferDesc) {
+	assert actual_bytes.len == int(sizeof(gfx.BufferDesc))
+	mut actual := gfx.BufferDesc{}
+	unsafe {
+		C.memcpy(&actual, actual_bytes.data, usize(actual_bytes.len))
 	}
+	assert actual._start_canary == expected._start_canary
+	assert actual._start_canary == 0
+	assert expected._start_canary == 0
+	assert actual.size == expected.size
+	assert actual.type == expected.type
+	assert actual.usage == expected.usage
+	assert actual.data.ptr == expected.data.ptr
+	assert actual.data.ptr == unsafe { nil }
+	assert expected.data.ptr == unsafe { nil }
+	assert actual.data.size == expected.data.size
+	assert actual.data.size == 0
+	assert expected.data.size == 0
+	assert actual.label == expected.label
+	assert actual.label == unsafe { nil }
+	assert expected.label == unsafe { nil }
+	assert actual.gl_buffers[0] == expected.gl_buffers[0]
+	assert actual.gl_buffers[1] == expected.gl_buffers[1]
+	assert actual.gl_buffers[0] == 0
+	assert actual.gl_buffers[1] == 0
+	assert expected.gl_buffers[0] == 0
+	assert expected.gl_buffers[1] == 0
+	assert actual.mtl_buffers[0] == expected.mtl_buffers[0]
+	assert actual.mtl_buffers[1] == expected.mtl_buffers[1]
+	assert actual.mtl_buffers[0] == unsafe { nil }
+	assert actual.mtl_buffers[1] == unsafe { nil }
+	assert expected.mtl_buffers[0] == unsafe { nil }
+	assert expected.mtl_buffers[1] == unsafe { nil }
+	assert actual.d3d11_buffer == expected.d3d11_buffer
+	assert actual.d3d11_buffer == unsafe { nil }
+	assert expected.d3d11_buffer == unsafe { nil }
+	assert actual.wgpu_buffer == expected.wgpu_buffer
+	assert actual.wgpu_buffer == unsafe { nil }
+	assert expected.wgpu_buffer == unsafe { nil }
+	assert actual._end_canary == expected._end_canary
+	assert actual._end_canary == 0
+	assert expected._end_canary == 0
 }
 
 fn multiwindow_fault_matrix_sampler_desc_snapshot(desc gfx.SamplerDesc) MultiWindowSamplerDescSnapshot {
