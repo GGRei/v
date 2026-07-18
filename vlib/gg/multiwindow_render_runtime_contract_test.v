@@ -397,7 +397,7 @@ fn test_multiwindow_render_runtime_dynamic_lifecycle_probes_run_when_requested()
 	}
 	render_runtime_compile_program(source_path, output, true)
 
-	for mode in ['dynamic_job', 'init_only', 'continuous_counter', 'mixed_event'] {
+	for mode_index, mode in ['dynamic_job', 'init_only', 'continuous_counter', 'mixed_event'] {
 		gate_path := render_runtime_temp_binary('gg_dynamic_lifecycle_${mode}_gate')
 		defer {
 			os.rm(gate_path) or {}
@@ -411,6 +411,18 @@ fn test_multiwindow_render_runtime_dynamic_lifecycle_probes_run_when_requested()
 				'V_MULTIWINDOW_PROBE_BACKEND': backend
 			}
 		)!
+		$if windows {
+			$if msvc {
+				$if gg_multiwindow_d3d11_warp ? {
+					if result.timed_out {
+						exit(31001 + mode_index * 10)
+					}
+					if result.exit_code != 0 {
+						exit(31002 + mode_index * 10)
+					}
+				}
+			}
+		}
 		assert !result.timed_out, 'dynamic lifecycle probe `${mode}` timed out after ${render_runtime_probe_timeout}\n${result.combined_output()}'
 		assert result.reaped, 'dynamic lifecycle probe `${mode}` was not reaped'
 		assert result.confinement_empty, 'dynamic lifecycle probe `${mode}` confinement was not proven empty'
@@ -418,6 +430,15 @@ fn test_multiwindow_render_runtime_dynamic_lifecycle_probes_run_when_requested()
 		assert !result.forced_cleanup, 'dynamic lifecycle probe `${mode}` required forced cleanup'
 		expected := '{"probe":"dynamic_lifecycle","mode":"${mode}","status":"PASS","cleanup":"complete"}'
 		actual := render_runtime_last_nonempty_line(result.stdout)
+		$if windows {
+			$if msvc {
+				$if gg_multiwindow_d3d11_warp ? {
+					if actual != expected {
+						exit(31003 + mode_index * 10)
+					}
+				}
+			}
+		}
 		assert actual == expected, 'dynamic lifecycle probe `${mode}` final record mismatch\nexpected: ${expected}\nactual: ${actual}\n${result.combined_output()}'
 	}
 }
