@@ -1262,6 +1262,9 @@ fn render_runtime_child_flags(enabled bool) string {
 			flags += ' -d sokol_d3d11'
 		}
 	}
+	$if windows {
+		flags += ' -subsystem console'
+	}
 	$if gcc {
 		flags += ' -cc gcc'
 	}
