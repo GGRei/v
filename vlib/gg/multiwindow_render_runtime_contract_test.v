@@ -21,8 +21,8 @@ fn test_multiwindow_render_runtime_enabled_disabled_public_manifests_match() {
 fn test_multiwindow_render_runtime_manifest_discovers_every_public_source() {
 	enabled_paths := render_runtime_facade_source_paths(true)
 	disabled_paths := render_runtime_facade_source_paths(false)
-	for required_shared in ['multiwindow_render_api.v', 'multiwindow_render_errors.v',
-		'multiwindow_render_sgl.v', 'multiwindow_render_types.v'] {
+	for required_shared in ['multiwindow_render_api.c.v', 'multiwindow_render_errors.v',
+		'multiwindow_render_sgl.c.v', 'multiwindow_render_types.v'] {
 		path := os.join_path(@DIR, required_shared)
 		assert path in enabled_paths, 'enabled manifest omitted shared public file `${required_shared}`'
 		assert path in disabled_paths, 'disabled manifest omitted shared public file `${required_shared}`'

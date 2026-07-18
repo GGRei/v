@@ -139,12 +139,6 @@ pub struct WindowReadbackId {
 	window       WindowId
 }
 
-pub struct WindowOffscreenPassConfig {
-pub:
-	attachments WindowAttachmentsId
-	action      gfx.PassAction
-}
-
 pub struct WindowAttachmentsConfig {
 pub:
 	colors        []WindowImageId
