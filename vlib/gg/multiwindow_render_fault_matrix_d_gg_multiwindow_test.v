@@ -2055,6 +2055,8 @@ fn multiwindow_assert_buffer_retry_slot(registry MultiWindowMatrixRegistryState,
 	assert slot.buffer_id == native
 	assert slot.buffer_capacity == effective.size
 	assert slot.buffer_usage == effective.usage
+	multiwindow_fault_matrix_msvc_buffer_desc_probe_or_exit(slot.buffer_desc, &expected_desc,
+		slot.label)
 	assert slot.buffer_desc == multiwindow_fault_matrix_raw_bytes(&expected_desc)
 	assert slot.last_mutation_batch == mutation_batch
 	assert slot.buffer_mutation_mode == mutation
@@ -2573,6 +2575,79 @@ fn multiwindow_fault_matrix_raw_bytes[T](value &T) []u8 {
 		C.memcpy(result.data, value, usize(result.len))
 	}
 	return result
+}
+
+fn multiwindow_fault_matrix_msvc_buffer_desc_probe_or_exit(actual_bytes []u8, expected &gfx.BufferDesc, slot_label string) {
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				if actual_bytes.len != int(sizeof(gfx.BufferDesc)) {
+					exit(20001)
+				}
+				mut actual := gfx.BufferDesc{}
+				unsafe {
+					C.memcpy(&actual, actual_bytes.data, usize(actual_bytes.len))
+				}
+				if actual._start_canary != expected._start_canary {
+					exit(20002)
+				}
+				if actual.size != expected.size {
+					exit(20003)
+				}
+				if actual.type != expected.type {
+					exit(20004)
+				}
+				if actual.usage != expected.usage {
+					exit(20005)
+				}
+				if actual.data.ptr != expected.data.ptr {
+					exit(20006)
+				}
+				if actual.data.size != expected.data.size {
+					exit(20007)
+				}
+				if actual.label != expected.label {
+					exit(20008)
+				}
+				if slot_label != '' {
+					exit(20009)
+				}
+				if actual.gl_buffers[0] != expected.gl_buffers[0]
+					|| actual.gl_buffers[1] != expected.gl_buffers[1] {
+					exit(20010)
+				}
+				if actual.mtl_buffers[0] != expected.mtl_buffers[0]
+					|| actual.mtl_buffers[1] != expected.mtl_buffers[1] {
+					exit(20011)
+				}
+				if actual.d3d11_buffer != expected.d3d11_buffer {
+					exit(20012)
+				}
+				if actual.wgpu_buffer != expected.wgpu_buffer {
+					exit(20013)
+				}
+				if actual._end_canary != expected._end_canary {
+					exit(20014)
+				}
+				expected_bytes := multiwindow_fault_matrix_raw_bytes(expected)
+				if actual_bytes != expected_bytes {
+					mut difference_count := 0
+					mut differences := []string{cap: 16}
+					for offset, actual_byte in actual_bytes {
+						expected_byte := expected_bytes[offset]
+						if actual_byte != expected_byte {
+							difference_count++
+							if differences.len < 16 {
+								differences << '${offset}:${actual_byte}:${expected_byte}'
+							}
+						}
+					}
+					eprintln('MULTIWINDOW_MSVC_BUFFER_DESC_RAW_DIFF total=${difference_count} first=${differences.join(',')}')
+					exit(20015)
+				}
+			}
+		}
+	}
 }
 
 fn multiwindow_fault_matrix_sampler_desc_snapshot(desc gfx.SamplerDesc) MultiWindowSamplerDescSnapshot {
