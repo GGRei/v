@@ -18,13 +18,15 @@ fn (mut app App) run_managed(config RunConfig) ! {
 	has_events := config.event_fn != unsafe { nil }
 	has_input := config.input_fn != unsafe { nil }
 	has_window_frames := app.refresh_has_window_frames(has_app_frame)!
+	has_window_initializers := app.render_runtime.has_pending_window_initializers()
 	has_app_resources := config.app_resource_init_fn != unsafe { nil }
 		|| config.app_resource_frame_fn != unsafe { nil }
 		|| config.app_resource_cleanup_fn != unsafe { nil }
-	if !has_app_frame && !has_window_frames && !has_events && !has_input && !has_app_resources {
+	if !has_app_frame && !has_window_frames && !has_window_initializers && !has_events && !has_input
+		&& !has_app_resources {
 		return error(err_multiwindow_nil_run_fn)
 	}
-	if (has_app_frame || has_window_frames || has_app_resources)
+	if (has_app_frame || has_window_frames || has_window_initializers || has_app_resources)
 		&& !app.capabilities().explicit_swapchain {
 		return error(err_multiwindow_renderer_unsupported)
 	}
@@ -34,8 +36,8 @@ fn (mut app App) run_managed(config RunConfig) ! {
 	app.render_runtime.configure_run(config)!
 	app.legacy_render_mode = has_app_frame
 	mut errors := []string{}
-	app.run_accepted_managed(config, has_app_frame, has_window_frames, has_events, has_input,
-		has_app_resources) or { errors << err.msg() }
+	app.run_accepted_managed(config, has_app_frame, has_window_frames, has_window_initializers,
+		has_events, has_input, has_app_resources) or { errors << err.msg() }
 	app.stop_now() or { errors << err.msg() }
 	app.legacy_render_mode = false
 	if app.terminal_error != '' {
@@ -55,8 +57,9 @@ fn (app &App) refresh_has_window_frames(has_app_frame bool) !bool {
 	return has_window_frames
 }
 
-fn (mut app App) run_accepted_managed(config RunConfig, has_app_frame bool, initial_has_window_frames bool, has_events bool, has_input bool, has_app_resources bool) ! {
+fn (mut app App) run_accepted_managed(config RunConfig, has_app_frame bool, initial_has_window_frames bool, initial_has_window_initializers bool, has_events bool, has_input bool, has_app_resources bool) ! {
 	mut has_window_frames := initial_has_window_frames
+	mut has_window_initializers := initial_has_window_initializers
 	mut render_initialized := false
 	mut logical_only_batch_done := false
 	for app.core.status() == .running {
@@ -71,7 +74,9 @@ fn (mut app App) run_accepted_managed(config RunConfig, has_app_frame bool, init
 			continue
 		}
 		has_window_frames = app.refresh_has_window_frames(has_app_frame)!
-		if (has_app_frame || has_window_frames || has_app_resources) && !render_initialized {
+		has_window_initializers = app.render_runtime.has_pending_window_initializers()
+		if (has_app_frame || has_window_frames || has_window_initializers || has_app_resources)
+			&& !render_initialized {
 			app.ensure_render_initialized()!
 			if has_app_frame {
 				for id in app.window_ids()! {
@@ -102,7 +107,9 @@ fn (mut app App) run_accepted_managed(config RunConfig, has_app_frame bool, init
 			continue
 		}
 		has_window_frames = app.refresh_has_window_frames(has_app_frame)!
-		if (has_app_frame || has_window_frames || has_app_resources) && !render_initialized {
+		has_window_initializers = app.render_runtime.has_pending_window_initializers()
+		if (has_app_frame || has_window_frames || has_window_initializers || has_app_resources)
+			&& !render_initialized {
 			app.ensure_render_initialized()!
 			if has_app_frame {
 				for id in app.window_ids()! {
@@ -113,7 +120,9 @@ fn (mut app App) run_accepted_managed(config RunConfig, has_app_frame bool, init
 		}
 		mut rendered := 0
 		has_window_frames = app.refresh_has_window_frames(has_app_frame)!
+		has_window_initializers = app.render_runtime.has_pending_window_initializers()
 		should_run_batch := has_app_frame || has_window_frames
+			|| has_window_initializers
 			|| config.app_resource_frame_fn != unsafe { nil }
 			|| (!logical_only_batch_done && has_app_resources)
 		if should_run_batch {
@@ -282,13 +291,17 @@ fn (mut app App) execute_render_batch(batch multiwindow.RenderBatchLease, candid
 				errors << err
 				break
 			}
-			if frame_callback == unsafe { nil } {
-				continue
-			}
 			app.ensure_window_initialized(id, candidate) or {
 				errors << err
 				app.failed_init_windows << id
 				break
+			}
+			if frame_callback == unsafe { nil } {
+				app.core.set_render_workload(id.core, false) or {
+					errors << err
+					break
+				}
+				continue
 			}
 			app.render_runtime.prepare_target_snapshot(id, candidate) or {
 				errors << err

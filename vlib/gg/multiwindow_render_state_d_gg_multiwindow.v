@@ -364,6 +364,19 @@ fn (runtime &MultiWindowRenderRuntime) has_per_window_frame_callbacks() bool {
 	return false
 }
 
+fn (runtime &MultiWindowRenderRuntime) has_pending_window_initializers() bool {
+	runtime.mutex.lock()
+	defer {
+		runtime.mutex.unlock()
+	}
+	for window in runtime.windows {
+		if window.status == .registered && !window.init_started && window.init_fn != unsafe { nil } {
+			return true
+		}
+	}
+	return false
+}
+
 fn (runtime &MultiWindowRenderRuntime) validate_backend_sample_counts(sample_count int) ! {
 	runtime.mutex.lock()
 	defer {

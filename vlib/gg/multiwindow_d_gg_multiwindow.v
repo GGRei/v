@@ -959,7 +959,8 @@ fn (config WindowConfig) to_core_with_workload(legacy_render_mode bool) multiwin
 		fullscreen:      config.fullscreen
 		sample_count:    config.sample_count
 		redraw_mode:     redraw_mode_to_core(config.redraw_mode)
-		render_workload: config.frame_fn != unsafe { nil } || legacy_render_mode
+		render_workload: config.init_fn != unsafe { nil } || config.frame_fn != unsafe { nil }
+			|| legacy_render_mode
 	}
 }
 

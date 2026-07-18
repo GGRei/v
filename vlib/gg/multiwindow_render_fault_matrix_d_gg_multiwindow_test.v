@@ -248,7 +248,37 @@ struct MultiWindowMatrixTerminalState {
 	runtime                   MultiWindowMatrixRuntimeState
 }
 
+// Temporary smoke-only probe; remove after the MSVC assertion is identified.
+struct MultiWindowFaultMatrixMsvcProbeAssertion {
+	label    string
+	passed   bool
+	actual   string
+	expected string
+}
+
+fn multiwindow_fault_matrix_msvc_probe_case(case_name string, phase string) {
+	eprintln('MSVC_FAULT_MATRIX_PROBE case=${case_name} phase=${phase}')
+}
+
+fn multiwindow_fault_matrix_msvc_probe_first_failure(case_name string, group string, assertions []MultiWindowFaultMatrixMsvcProbeAssertion) {
+	for assertion in assertions {
+		if !assertion.passed {
+			eprintln('MSVC_FAULT_MATRIX_PROBE case=${case_name} group=${group} assertion=${assertion.label} actual=${assertion.actual} expected=${assertion.expected}')
+			return
+		}
+	}
+	eprintln('MSVC_FAULT_MATRIX_PROBE case=${case_name} group=${group} assertion=PASS')
+}
+
 fn test_multiwindow_render_internal_fault_plan_rejects_invalid_configuration() {
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				multiwindow_fault_matrix_msvc_probe_case('test_multiwindow_render_internal_fault_plan_rejects_invalid_configuration',
+					'BEGIN')
+			}
+		}
+	}
 	mut runtime := new_multiwindow_render_runtime(42)
 	for config in [
 		MultiWindowInternalFaultPlan{
@@ -273,11 +303,27 @@ fn test_multiwindow_render_internal_fault_plan_rejects_invalid_configuration() {
 		}
 		assert actual == err_multiwindow_render_fault_config_invalid
 	}
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				multiwindow_fault_matrix_msvc_probe_case('test_multiwindow_render_internal_fault_plan_rejects_invalid_configuration',
+					'PASS')
+			}
+		}
+	}
 }
 
 fn test_multiwindow_real_public_operation_fault_matrix_and_retirement() {
 	if !multiwindow_fault_matrix_runtime_requested() {
 		return
+	}
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				multiwindow_fault_matrix_msvc_probe_case('test_multiwindow_real_public_operation_fault_matrix_and_retirement',
+					'BEGIN')
+			}
+		}
 	}
 	mut app := multiwindow_fault_matrix_new_app()!
 	mut proof := &MultiWindowRealOperationProof{}
@@ -386,11 +432,27 @@ fn test_multiwindow_real_public_operation_fault_matrix_and_retirement() {
 	multiwindow_assert_lifecycle_trace_equal(lifecycle, app.multiwindow_lifecycle_trace_snapshot())
 	multiwindow_sgl_load_proof_disarm_for_test(proof.sgl_load_generation)!
 	app.disarm_multiwindow_lifecycle_trace()
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				multiwindow_fault_matrix_msvc_probe_case('test_multiwindow_real_public_operation_fault_matrix_and_retirement',
+					'PASS')
+			}
+		}
+	}
 }
 
 fn test_multiwindow_sgl_setup_fault_is_terminal_through_public_run_without_fake_shutdown() {
 	if !multiwindow_fault_matrix_runtime_requested() {
 		return
+	}
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				multiwindow_fault_matrix_msvc_probe_case('test_multiwindow_sgl_setup_fault_is_terminal_through_public_run_without_fake_shutdown',
+					'BEGIN')
+			}
+		}
 	}
 	mut app := multiwindow_fault_matrix_new_app()!
 	message := 'fault:renderer_sgl_setup:public-run'
@@ -423,11 +485,27 @@ fn test_multiwindow_sgl_setup_fault_is_terminal_through_public_run_without_fake_
 	assert multiwindow_fault_matrix_terminal_state(app) == terminal
 	multiwindow_assert_lifecycle_trace_equal(lifecycle, app.multiwindow_lifecycle_trace_snapshot())
 	app.disarm_multiwindow_lifecycle_trace()
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				multiwindow_fault_matrix_msvc_probe_case('test_multiwindow_sgl_setup_fault_is_terminal_through_public_run_without_fake_shutdown',
+					'PASS')
+			}
+		}
+	}
 }
 
 fn test_multiwindow_cleanup_callback_errors_retire_totally_and_replay_exactly() {
 	if !multiwindow_fault_matrix_runtime_requested() {
 		return
+	}
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				multiwindow_fault_matrix_msvc_probe_case('test_multiwindow_cleanup_callback_errors_retire_totally_and_replay_exactly',
+					'BEGIN')
+			}
+		}
 	}
 	mut app := multiwindow_fault_matrix_new_app()!
 	mut proof := &MultiWindowCleanupErrorProof{}
@@ -522,6 +600,14 @@ fn test_multiwindow_cleanup_callback_errors_retire_totally_and_replay_exactly() 
 	assert multiwindow_sokol_trace.typed_snapshot() == released_trace
 	multiwindow_assert_lifecycle_trace_equal(lifecycle, app.multiwindow_lifecycle_trace_snapshot())
 	app.disarm_multiwindow_lifecycle_trace()
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				multiwindow_fault_matrix_msvc_probe_case('test_multiwindow_cleanup_callback_errors_retire_totally_and_replay_exactly',
+					'PASS')
+			}
+		}
+	}
 }
 
 fn multiwindow_fault_matrix_runtime_requested() bool {
@@ -845,7 +931,23 @@ fn multiwindow_fault_matrix_make_pipeline(mut resources AppResourceContext, mut 
 	], 1, 0, resources.app.render_runtime, mut proof)
 	multiwindow_assert_pipeline_retry_slot(armed.registry, retry_registry, proof.pipeline, native,
 		proof.shader, valid)
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				multiwindow_fault_matrix_msvc_probe_case('test_multiwindow_real_public_operation_fault_matrix_and_retirement',
+					'query_defaults.BEGIN')
+			}
+		}
+	}
 	multiwindow_assert_query_defaults_compatibility(resources.app.render_runtime, proof)
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				multiwindow_fault_matrix_msvc_probe_case('test_multiwindow_real_public_operation_fault_matrix_and_retirement',
+					'query_defaults.PASS')
+			}
+		}
+	}
 }
 
 fn multiwindow_assert_query_defaults_compatibility(runtime &MultiWindowRenderRuntime, proof &MultiWindowRealOperationProof) {
@@ -859,6 +961,23 @@ fn multiwindow_assert_query_defaults_compatibility(runtime &MultiWindowRenderRun
 	buffer_desc := gfx.query_buffer_desc(buffer)
 	expected_buffer := gfx.query_buffer_desc_defaults(&buffer_desc)
 	actual_buffer := gfx.query_buffer_defaults(&buffer)
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				multiwindow_fault_matrix_msvc_probe_first_failure('test_multiwindow_real_public_operation_fault_matrix_and_retirement',
+					'buffer', [
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_buffer.size == expected_buffer.size', actual_buffer.size == expected_buffer.size, actual_buffer.size.str(), expected_buffer.size.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_buffer.type == expected_buffer.type', actual_buffer.type == expected_buffer.type, actual_buffer.type.str(), expected_buffer.type.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_buffer.usage == expected_buffer.usage', actual_buffer.usage == expected_buffer.usage, actual_buffer.usage.str(), expected_buffer.usage.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_buffer.data.size == expected_buffer.data.size', actual_buffer.data.size == expected_buffer.data.size, actual_buffer.data.size.str(), expected_buffer.data.size.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_buffer.size == 64', actual_buffer.size == 64, actual_buffer.size.str(), '64'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_buffer.type == .vertexbuffer', actual_buffer.type == .vertexbuffer, actual_buffer.type.str(), 'vertexbuffer'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_buffer.usage == .dynamic', actual_buffer.usage == .dynamic, actual_buffer.usage.str(), 'dynamic'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_buffer.data.size == 64', actual_buffer.data.size == 64, actual_buffer.data.size.str(), '64'},
+				])
+			}
+		}
+	}
 	assert actual_buffer.size == expected_buffer.size
 	assert actual_buffer.type == expected_buffer.type
 	assert actual_buffer.usage == expected_buffer.usage
@@ -871,6 +990,31 @@ fn multiwindow_assert_query_defaults_compatibility(runtime &MultiWindowRenderRun
 	image_desc := gfx.query_image_desc(image)
 	expected_image := gfx.query_image_desc_defaults(&image_desc)
 	actual_image := gfx.query_image_defaults(&image)
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				multiwindow_fault_matrix_msvc_probe_first_failure('test_multiwindow_real_public_operation_fault_matrix_and_retirement',
+					'image', [
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.type == expected_image.type', actual_image.type == expected_image.type, actual_image.type.str(), expected_image.type.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.width == expected_image.width', actual_image.width == expected_image.width, actual_image.width.str(), expected_image.width.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.height == expected_image.height', actual_image.height == expected_image.height, actual_image.height.str(), expected_image.height.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.num_slices == expected_image.num_slices', actual_image.num_slices == expected_image.num_slices, actual_image.num_slices.str(), expected_image.num_slices.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.num_mipmaps == expected_image.num_mipmaps', actual_image.num_mipmaps == expected_image.num_mipmaps, actual_image.num_mipmaps.str(), expected_image.num_mipmaps.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.usage == expected_image.usage', actual_image.usage == expected_image.usage, actual_image.usage.str(), expected_image.usage.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.pixel_format == expected_image.pixel_format', actual_image.pixel_format == expected_image.pixel_format, actual_image.pixel_format.str(), expected_image.pixel_format.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.sample_count == expected_image.sample_count', actual_image.sample_count == expected_image.sample_count, actual_image.sample_count.str(), expected_image.sample_count.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.type == ._2d', actual_image.type == ._2d, actual_image.type.str(), '_2d'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.width == 4', actual_image.width == 4, actual_image.width.str(), '4'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.height == 4', actual_image.height == 4, actual_image.height.str(), '4'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.num_slices == 1', actual_image.num_slices == 1, actual_image.num_slices.str(), '1'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.num_mipmaps == 1', actual_image.num_mipmaps == 1, actual_image.num_mipmaps.str(), '1'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.usage == .dynamic', actual_image.usage == .dynamic, actual_image.usage.str(), 'dynamic'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.pixel_format == .rgba8', actual_image.pixel_format == .rgba8, actual_image.pixel_format.str(), 'rgba8'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_image.sample_count == 1', actual_image.sample_count == 1, actual_image.sample_count.str(), '1'},
+				])
+			}
+		}
+	}
 	assert actual_image.type == expected_image.type
 	assert actual_image.width == expected_image.width
 	assert actual_image.height == expected_image.height
@@ -891,6 +1035,19 @@ fn multiwindow_assert_query_defaults_compatibility(runtime &MultiWindowRenderRun
 	shader_desc := gfx.query_shader_desc(shader)
 	expected_shader := gfx.query_shader_desc_defaults(&shader_desc)
 	actual_shader := gfx.query_shader_defaults(&shader)
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				multiwindow_fault_matrix_msvc_probe_first_failure('test_multiwindow_real_public_operation_fault_matrix_and_retirement',
+					'shader-layout', [
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_shader.vs.uniform_blocks[0].size == expected_shader.vs.uniform_blocks[0].size', actual_shader.vs.uniform_blocks[0].size == expected_shader.vs.uniform_blocks[0].size, actual_shader.vs.uniform_blocks[0].size.str(), expected_shader.vs.uniform_blocks[0].size.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_shader.vs.uniform_blocks[0].layout == expected_shader.vs.uniform_blocks[0].layout', actual_shader.vs.uniform_blocks[0].layout == expected_shader.vs.uniform_blocks[0].layout, actual_shader.vs.uniform_blocks[0].layout.str(), expected_shader.vs.uniform_blocks[0].layout.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_shader.fs.uniform_blocks[0].size == expected_shader.fs.uniform_blocks[0].size', actual_shader.fs.uniform_blocks[0].size == expected_shader.fs.uniform_blocks[0].size, actual_shader.fs.uniform_blocks[0].size.str(), expected_shader.fs.uniform_blocks[0].size.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_shader.fs.uniform_blocks[0].layout == expected_shader.fs.uniform_blocks[0].layout', actual_shader.fs.uniform_blocks[0].layout == expected_shader.fs.uniform_blocks[0].layout, actual_shader.fs.uniform_blocks[0].layout.str(), expected_shader.fs.uniform_blocks[0].layout.str()},
+				])
+			}
+		}
+	}
 	assert actual_shader.vs.uniform_blocks[0].size == expected_shader.vs.uniform_blocks[0].size
 	assert actual_shader.vs.uniform_blocks[0].layout == expected_shader.vs.uniform_blocks[0].layout
 	assert actual_shader.fs.uniform_blocks[0].size == expected_shader.fs.uniform_blocks[0].size
@@ -901,12 +1058,49 @@ fn multiwindow_assert_query_defaults_compatibility(runtime &MultiWindowRenderRun
 	} else {
 		'main'
 	}
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				actual_vs_entry := unsafe { cstring_to_vstring(actual_shader.vs.entry) }
+				actual_fs_entry := unsafe { cstring_to_vstring(actual_shader.fs.entry) }
+				multiwindow_fault_matrix_msvc_probe_first_failure('test_multiwindow_real_public_operation_fault_matrix_and_retirement',
+					'shader-entry', [
+					MultiWindowFaultMatrixMsvcProbeAssertion{'cstring_to_vstring(actual_shader.vs.entry) == expected_entry', actual_vs_entry == expected_entry, actual_vs_entry, expected_entry},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'cstring_to_vstring(actual_shader.fs.entry) == expected_entry', actual_fs_entry == expected_entry, actual_fs_entry, expected_entry},
+				])
+			}
+		}
+	}
 	assert unsafe { cstring_to_vstring(actual_shader.vs.entry) } == expected_entry
 	assert unsafe { cstring_to_vstring(actual_shader.fs.entry) } == expected_entry
 
 	pipeline_desc := gfx.query_pipeline_desc(pipeline)
 	expected_pipeline := gfx.query_pipeline_desc_defaults(&pipeline_desc)
 	actual_pipeline := gfx.query_pipeline_defaults(&pipeline)
+	$if windows {
+		$if msvc {
+			$if gg_multiwindow_d3d11_warp ? {
+				multiwindow_fault_matrix_msvc_probe_first_failure('test_multiwindow_real_public_operation_fault_matrix_and_retirement',
+					'pipeline', [
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_pipeline.shader == expected_pipeline.shader', actual_pipeline.shader == expected_pipeline.shader, actual_pipeline.shader.id.str(), expected_pipeline.shader.id.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_pipeline.primitive_type == expected_pipeline.primitive_type', actual_pipeline.primitive_type == expected_pipeline.primitive_type, actual_pipeline.primitive_type.str(), expected_pipeline.primitive_type.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_pipeline.index_type == expected_pipeline.index_type', actual_pipeline.index_type == expected_pipeline.index_type, actual_pipeline.index_type.str(), expected_pipeline.index_type.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_pipeline.cull_mode == expected_pipeline.cull_mode', actual_pipeline.cull_mode == expected_pipeline.cull_mode, actual_pipeline.cull_mode.str(), expected_pipeline.cull_mode.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_pipeline.face_winding == expected_pipeline.face_winding', actual_pipeline.face_winding == expected_pipeline.face_winding, actual_pipeline.face_winding.str(), expected_pipeline.face_winding.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_pipeline.sample_count == expected_pipeline.sample_count', actual_pipeline.sample_count == expected_pipeline.sample_count, actual_pipeline.sample_count.str(), expected_pipeline.sample_count.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_pipeline.depth.compare == expected_pipeline.depth.compare', actual_pipeline.depth.compare == expected_pipeline.depth.compare, actual_pipeline.depth.compare.str(), expected_pipeline.depth.compare.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_pipeline.color_count == expected_pipeline.color_count', actual_pipeline.color_count == expected_pipeline.color_count, actual_pipeline.color_count.str(), expected_pipeline.color_count.str()},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_pipeline.primitive_type == .triangles', actual_pipeline.primitive_type == .triangles, actual_pipeline.primitive_type.str(), 'triangles'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_pipeline.index_type == .none', actual_pipeline.index_type == .none, actual_pipeline.index_type.str(), 'none'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_pipeline.cull_mode == .none', actual_pipeline.cull_mode == .none, actual_pipeline.cull_mode.str(), 'none'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_pipeline.face_winding == .cw', actual_pipeline.face_winding == .cw, actual_pipeline.face_winding.str(), 'cw'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_pipeline.sample_count == 1', actual_pipeline.sample_count == 1, actual_pipeline.sample_count.str(), '1'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_pipeline.depth.compare == .always', actual_pipeline.depth.compare == .always, actual_pipeline.depth.compare.str(), 'always'},
+					MultiWindowFaultMatrixMsvcProbeAssertion{'actual_pipeline.color_count == 1', actual_pipeline.color_count == 1, actual_pipeline.color_count.str(), '1'},
+				])
+			}
+		}
+	}
 	assert actual_pipeline.shader == expected_pipeline.shader
 	assert actual_pipeline.primitive_type == expected_pipeline.primitive_type
 	assert actual_pipeline.index_type == expected_pipeline.index_type

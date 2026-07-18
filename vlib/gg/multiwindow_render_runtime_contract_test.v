@@ -397,7 +397,7 @@ fn test_multiwindow_render_runtime_dynamic_lifecycle_probes_run_when_requested()
 	}
 	render_runtime_compile_program(source_path, output, true)
 
-	for mode in ['dynamic_job', 'continuous_counter', 'mixed_event'] {
+	for mode in ['dynamic_job', 'init_only', 'continuous_counter', 'mixed_event'] {
 		gate_path := render_runtime_temp_binary('gg_dynamic_lifecycle_${mode}_gate')
 		defer {
 			os.rm(gate_path) or {}
@@ -821,12 +821,16 @@ const lifecycle_probe_timeout = 5 * time.second
 
 struct LifecycleProof {
 mut:
-	window_keys     []string
-	frames          map[string]int
-	dynamic_created bool
-	global_frames   int
-	window_frames   int
-	counter         int
+	window_keys             []string
+	frames                  map[string]int
+	dynamic_created         bool
+	global_frames           int
+	window_frames           int
+	counter                 int
+	init_calls              int
+	cleanup_calls           int
+	init_submitted_frame    u64
+	cleanup_submitted_frame u64
 }
 
 struct ContinuousFrameSignal {
@@ -843,6 +847,7 @@ fn run_lifecycle_probe() ! {
 	mode := if os.args.len > 1 { os.args[1] } else { \'\' }
 	match mode {
 		\'dynamic_job\' { run_dynamic_job_probe()! }
+		\'init_only\' { run_init_only_probe()! }
 		\'continuous_counter\' { run_continuous_counter_probe()! }
 		\'mixed_event\' { run_mixed_event_probe()! }
 		else { return error(\'unknown dynamic lifecycle mode: \' + mode) }
@@ -946,6 +951,79 @@ fn post_lifecycle_probe_stop(mut app gg.App) ! {
 	app.post(fn (mut app gg.App) ! {
 		app.stop()!
 	})!
+}
+
+fn run_init_only_probe() ! {
+	initialized := chan bool{cap: 1}
+	driver_result := chan string{cap: 1}
+	mut proof := &LifecycleProof{}
+	mut app := new_lifecycle_probe_app()!
+	_ = app.create_window(
+		title:       \'init-only\'
+		width:       160
+		height:      120
+		redraw_mode: .on_demand
+		init_fn:     fn [initialized, mut proof] (mut context gg.WindowInitContext) ! {
+			proof.init_calls++
+			proof.init_submitted_frame = context.metrics().submitted_frame
+			if proof.init_calls == 1 {
+				initialized <- true
+			}
+		}
+		cleanup_fn:  fn [mut proof] (mut context gg.WindowCleanupContext) ! {
+			proof.cleanup_calls++
+			proof.cleanup_submitted_frame = context.metrics().submitted_frame
+		}
+	)!
+
+	driver := spawn stop_after_init_only(mut app, initialized, driver_result)
+	mut run_error := \'\'
+	app.run() or { run_error = err.msg() }
+	driver.wait()
+	driver_error := <-driver_result
+	if run_error != \'\' {
+		return error(\'init-only owner loop: \' + run_error)
+	}
+	if driver_error != \'\' {
+		return error(\'init-only driver: \' + driver_error)
+	}
+	if proof.init_calls != 1 {
+		return error(\'init-only callback count was \' + proof.init_calls.str())
+	}
+	if proof.cleanup_calls != 1 {
+		return error(\'init-only cleanup count was \' + proof.cleanup_calls.str())
+	}
+	if proof.init_submitted_frame != 0 || proof.cleanup_submitted_frame != 0 {
+		return error(\'init-only window submitted a frame\')
+	}
+	remaining_windows := app.window_ids()!
+	if remaining_windows.len != 0 {
+		return error(\'init-only cleanup left \' + remaining_windows.len.str() + \' window(s)\')
+	}
+	app.stop()!
+	if proof.init_calls != 1 || proof.cleanup_calls != 1 {
+		return error(\'init-only stop replay repeated a callback\')
+	}
+}
+
+fn stop_after_init_only(mut app gg.App, initialized chan bool, result chan string) {
+	mut message := \'\'
+	select {
+		signal := <-initialized {
+			if !signal {
+				message = \'init callback returned an invalid signal\'
+			}
+		}
+		lifecycle_probe_timeout {
+			message = \'init callback timeout\'
+		}
+	}
+	post_lifecycle_probe_stop(mut app) or {
+		prefix := if message == \'\' { \'stop admission\' } else { message + \'; stop admission\' }
+		result <- (prefix + \': \' + err.msg())
+		return
+	}
+	result <- message
 }
 
 fn run_continuous_counter_probe() ! {
