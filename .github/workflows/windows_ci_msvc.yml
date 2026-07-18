@@ -150,11 +150,11 @@ jobs:
           $interactive = Join-Path $env:RUNNER_TEMP 'gg_multiwindow.exe'
           $runtime = Join-Path $env:RUNNER_TEMP 'gg_multiwindow_render_runtime.exe'
 
-          .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp -o $interactive examples/gg/multiwindow.v
+          .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp -subsystem console -o $interactive examples/gg/multiwindow.v
           if ($LASTEXITCODE -ne 0) {
             throw "interactive multiwindow example compile failed with exit code $LASTEXITCODE"
           }
-          .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp -o $runtime examples/gg/multiwindow_render_runtime.v
+          .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp -subsystem console -o $runtime examples/gg/multiwindow_render_runtime.v
           if ($LASTEXITCODE -ne 0) {
             throw "runtime multiwindow example compile failed with exit code $LASTEXITCODE"
           }
