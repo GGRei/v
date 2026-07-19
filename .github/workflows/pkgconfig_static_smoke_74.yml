@@ -1,0 +1,201 @@
+name: Issue 74 static pkg-config smoke
+
+on:
+  push:
+    branches:
+      - smoke/gui-issue-74-static-pkgconfig
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-gcc-clang:
+    name: Linux ${{ matrix.cc }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        cc:
+          - gcc
+          - clang
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build V
+        run: make -j2 && ./v version
+      - name: Run issue 74 regressions first
+        run: |
+          set -euo pipefail
+          cc='${{ matrix.cc }}'
+          for test in \
+            vlib/v/ast/cflags_test.v \
+            vlib/v/cflag/cflags_test.v \
+            vlib/v/builder/cc_test.v \
+            vlib/v/builder/cbuilder/parallel_cc_test.v \
+            vlib/v/pkgconfig/main_test.v \
+            vlib/v/pkgconfig/pkgconfig_static_test.v \
+            vlib/v/checker/pkgconfig_static_mode_test.v \
+            vlib/v/checker/pkgconfig_cross_compile_test.v \
+            vlib/v/builder/pkgconfig_link_segment_test.v
+          do
+            ./v -cc "$cc" -no-retry-compilation test "$test"
+          done
+
+  linux-tcc:
+    name: Linux TCC dynamic isolation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build V
+        run: make -j2 && ./v version
+      - name: Run TCC no-regression first
+        run: |
+          ./v -cc tcc -no-retry-compilation test vlib/v/pkgconfig/main_test.v
+          ./v -cc tcc -no-retry-compilation test vlib/v/checker/pkgconfig_static_mode_test.v
+
+  macos-clang:
+    name: macOS Clang
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build V
+        run: make -j2 && ./v version
+      - name: Run issue 74 regressions first
+        run: |
+          set -euo pipefail
+          for test in \
+            vlib/v/ast/cflags_test.v \
+            vlib/v/cflag/cflags_test.v \
+            vlib/v/builder/cc_test.v \
+            vlib/v/builder/cbuilder/parallel_cc_test.v \
+            vlib/v/pkgconfig/main_test.v \
+            vlib/v/pkgconfig/pkgconfig_static_test.v \
+            vlib/v/checker/pkgconfig_static_mode_test.v \
+            vlib/v/checker/pkgconfig_cross_compile_test.v \
+            vlib/v/builder/pkgconfig_link_segment_test.v
+          do
+            ./v -cc clang -no-retry-compilation test "$test"
+          done
+
+  windows-ucrt64:
+    name: Windows UCRT64 ${{ matrix.cc }}
+    runs-on: windows-2025
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cc: gcc
+            compiler_package: mingw-w64-ucrt-x86_64-gcc
+          - cc: clang
+            compiler_package: mingw-w64-ucrt-x86_64-clang
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build V
+        shell: pwsh
+        run: |
+          .\makev.bat -gcc
+          if ($LASTEXITCODE -ne 0) {
+            throw "V bootstrap failed with exit code $LASTEXITCODE"
+          }
+          .\v.exe version
+      - name: Set up UCRT64 compiler
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: minimal
+          install: >-
+            ${{ matrix.compiler_package }}
+      - name: Run issue 74 regressions first
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cc='${{ matrix.cc }}'
+          if [ "$cc" = clang ]; then
+            export CFLAGS='-Wno-incompatible-pointer-types'
+          fi
+          command -v "$cc"
+          "$cc" --version
+          timeout 180 ./v.exe -cc "$cc" -no-retry-compilation \
+            test vlib/v/ast/cflags_test.v
+          timeout 180 ./v.exe -cc "$cc" -no-retry-compilation \
+            test vlib/v/cflag/cflags_test.v
+          timeout 180 ./v.exe -cc "$cc" -no-retry-compilation \
+            test vlib/v/builder/cbuilder/parallel_cc_test.v
+          timeout 180 ./v.exe -cc "$cc" -no-retry-compilation \
+            test vlib/v/pkgconfig/main_test.v
+          timeout 180 ./v.exe -cc "$cc" -no-retry-compilation \
+            test vlib/v/pkgconfig/pkgconfig_static_test.v
+          timeout 180 ./v.exe -cc "$cc" -no-retry-compilation \
+            test vlib/v/checker/pkgconfig_static_mode_test.v
+          timeout 180 ./v.exe -cc "$cc" -no-retry-compilation \
+            test vlib/v/checker/pkgconfig_cross_compile_test.v
+          timeout 180 ./v.exe -cc "$cc" -no-retry-compilation \
+            test vlib/v/builder/pkgconfig_link_segment_test.v
+
+  windows-msvc:
+    name: Windows MSVC dynamic isolation
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build V
+        shell: pwsh
+        run: |
+          .\makev.bat -msvc
+          if ($LASTEXITCODE -ne 0) {
+            throw "V bootstrap failed with exit code $LASTEXITCODE"
+          }
+          .\v.exe version
+      - name: Run issue 74 regressions first
+        shell: pwsh
+        run: |
+          $tests = @(
+            'vlib\v\ast\cflags_test.v'
+            'vlib\v\cflag\cflags_test.v'
+            'vlib\v\pkgconfig\main_test.v'
+            'vlib\v\pkgconfig\pkgconfig_static_test.v'
+            'vlib\v\checker\pkgconfig_static_mode_test.v'
+            'vlib\v\checker\pkgconfig_cross_compile_test.v'
+            'vlib\v\builder\pkgconfig_link_segment_test.v'
+            'vlib\v\builder\msvc_windows_test.v'
+          )
+          foreach ($test in $tests) {
+            .\v.exe -cc msvc -no-retry-compilation test $test
+            if ($LASTEXITCODE -ne 0) {
+              throw "issue 74 regression failed for $test with exit code $LASTEXITCODE"
+            }
+          }
+
+  windows-tcc:
+    name: Windows TCC dynamic isolation
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build V with TCC
+        shell: pwsh
+        run: |
+          .\makev.bat -tcc
+          if ($LASTEXITCODE -ne 0) {
+            throw "V bootstrap failed with exit code $LASTEXITCODE"
+          }
+          .\v.exe version
+      - name: Run TCC no-regression first
+        shell: pwsh
+        run: |
+          .\v.exe -cc tcc -no-retry-compilation test vlib\v\pkgconfig\main_test.v
+          if ($LASTEXITCODE -ne 0) {
+            throw "issue 74 TCC static CLI regression failed with exit code $LASTEXITCODE"
+          }
+          .\v.exe -cc tcc -no-retry-compilation test vlib\v\checker\pkgconfig_static_mode_test.v
+          if ($LASTEXITCODE -ne 0) {
+            throw "issue 74 TCC isolation regression failed with exit code $LASTEXITCODE"
+          }
