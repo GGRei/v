@@ -1,95 +1,33 @@
-name: CI Linux
+name: Package 2 Linux multiwindow smoke
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - master
-    paths-ignore:
-      - 'vlib/v3/**'
-      - '**.md'
-      - '**.yml'
-      - '!**/linux_ci.yml'
-      - 'cmd/tools/**'
-      - '!cmd/tools/builders/**.v'
-  pull_request:
-    paths-ignore:
-      - 'vlib/v3/**'
-      - '**.md'
-      - '**.yml'
-      - '!**/linux_ci.yml'
-      - 'cmd/tools/**'
-      - '!cmd/tools/builders/**.v'
 
 concurrency:
-  group: linux-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
+  group: package2-linux-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  tcc-linux:
+  package2-linux:
+    name: Linux ${{ matrix.compiler }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: gcc
+            vflags: '-cc gcc'
+            dependency_target: install_dependencies_for_examples_and_tools_gcc
+          - compiler: clang
+            vflags: '-cc clang'
+            dependency_target: install_dependencies_for_examples_and_tools_clang
+          - compiler: tcc
+            vflags: '-cc tcc -no-retry-compilation'
+            dependency_target: install_dependencies_for_examples_and_tools_tcc
     runs-on: ubuntu-24.04
     timeout-minutes: 121
     env:
-      VFLAGS: -cc tcc -no-retry-compilation
-      VTEST_SHOW_LONGEST_BY_RUNTIME: 3
-      VTEST_SHOW_LONGEST_BY_COMPTIME: 3
-      VTEST_SHOW_LONGEST_BY_TOTALTIME: 3
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/cache-apt-packages-action
-      - name: Build v
-        run: make -j4 && ./v symlink
-      - name: Build v with -prealloc
-        run: v run ci/linux_ci.vsh build_v_with_prealloc
-      - name: All code is formatted
-        run: v run ci/linux_ci.vsh all_code_is_formatted_tcc
-      - name: Install dependencies for examples and tools
-        run: v run ci/linux_ci.vsh install_dependencies_for_examples_and_tools_tcc
-      - name: Test v->c
-        run: v run ci/linux_ci.vsh test_v_to_c_tcc
-      - name: v self compilation
-        run: v run ci/linux_ci.vsh v_self_compilation_tcc
-      - name: v doctor
-        run: v run ci/linux_ci.vsh v_doctor_tcc
-      - name: Verify `v test` works
-        run: v run ci/linux_ci.vsh verify_v_test_works_tcc
-      - name: Test pure V math module
-        run: v run ci/linux_ci.vsh test_pure_v_math_module_tcc
-      - name: Test inline assembly on linux
-        run: v run ci/linux_ci.vsh test_inline_assembly
-      - name: Self tests
-        run: v run ci/linux_ci.vsh self_tests_tcc
-      - name: Build examples
-        run: v run ci/linux_ci.vsh build_examples_tcc
-      - name: Run the submodule example, using a relative path
-        run: v run ci/linux_ci.vsh run_submodule_example_tcc
-      - name: Build v tools
-        run: v run ci/linux_ci.vsh build_tools_tcc
-      - name: Build v binaries
-        run: v run ci/linux_ci.vsh build_vbinaries_tcc
-      - name: Build benches
-        run: v run ci/linux_ci.vsh build_benches_tcc
-      - name: Run a VSH script
-        run: v run ci/linux_ci.vsh run_vsh_script_tcc
-      - name: Test v tutorials
-        run: v run ci/linux_ci.vsh test_v_tutorials_tcc
-      - name: Build cmd/tools/fast
-        run: v run ci/linux_ci.vsh build_fast_tcc
-      - name: V self compilation with -usecache
-        run: v run ci/linux_ci.vsh v_self_compilation_usecache_tcc
-      - name: Test password input
-        run: v run ci/linux_ci.vsh test_password_input_tcc
-      - name: Test readline
-        run: v run ci/linux_ci.vsh test_readline_tcc
-      - name: Test leak detector
-        run: v run ci/linux_ci.vsh test_leak_detector_tcc
-      - name: Test leak detector not being active for normal compile
-        run: v run ci/linux_ci.vsh test_leak_detector_not_active_tcc
-
-  gcc-linux:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 121
-    env:
+      VFLAGS: ${{ matrix.vflags }}
       VTEST_SHOW_LONGEST_BY_RUNTIME: 3
       VTEST_SHOW_LONGEST_BY_COMPTIME: 3
       VTEST_SHOW_LONGEST_BY_TOTALTIME: 3
@@ -98,12 +36,10 @@ jobs:
       - uses: ./.github/actions/cache-apt-packages-action
       - name: Build V
         run: make -j4 && ./v symlink
-      - name: All code is formatted
-        run: v run ci/linux_ci.vsh all_code_is_formatted_gcc
-      - name: Install dependencies for examples and tools
-        run: v run ci/linux_ci.vsh install_dependencies_for_examples_and_tools_gcc
-      - name: Install headless Wayland compositor
-        run: v retry -- sudo apt install --quiet -y weston
+      - name: Install Package 2 native dependencies
+        run: |
+          ./v run ci/linux_ci.vsh ${{ matrix.dependency_target }}
+          ./v retry -- sudo apt install --quiet -y weston
       - name: Prepare multiwindow process-tree watchdog
         run: |
           set -euo pipefail
@@ -176,7 +112,8 @@ jobs:
               }
           }
           EOF
-          ./v -cc gcc -o "$RUNNER_TEMP/multiwindow_ci_watchdog" "$RUNNER_TEMP/multiwindow_ci_watchdog.v"
+          ./v -cc "${{ matrix.compiler }}" -o "$RUNNER_TEMP/multiwindow_ci_watchdog" \
+            "$RUNNER_TEMP/multiwindow_ci_watchdog.v"
 
           cat > "$RUNNER_TEMP/multiwindow_x11_command.sh" <<'EOF'
           #!/usr/bin/env bash
@@ -432,8 +369,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          compiler="${{ matrix.compiler }}"
           env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE \
-            ./v -cc gcc test vlib/gg/legacy_import_multiwindow_isolation_test.v
+            ./v -cc "$compiler" test vlib/gg/legacy_import_multiwindow_isolation_test.v
+
+          "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
+            env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE \
+            ./v -cc "$compiler" test vlib/gg/multiwindow_services_contract_test.v
 
           tests=(
             vlib/x/multiwindow/event_sequence_exhaustion_test.v
@@ -443,11 +385,13 @@ jobs:
             vlib/x/multiwindow/native_operation_proof_test.v
             vlib/x/multiwindow/render_scheduler_test.v
             vlib/x/multiwindow/render_target_lease_test.v
+            vlib/x/multiwindow/service_mock_test.v
             vlib/x/multiwindow/teardown_contract_test.v
             vlib/gg/multiwindow_api_d_gg_multiwindow_test.v
             vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v
             vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v
             vlib/gg/multiwindow_render_runtime_contract_test.v
+            vlib/gg/multiwindow_services_d_gg_multiwindow_test.v
             vlib/gg/frame_pacing_test.v
             vlib/gg/draw_fns_api_test.v
             vlib/gg/draw_rect_empty_test.v
@@ -455,19 +399,20 @@ jobs:
           for test in "${tests[@]}"; do
             "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
               env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE \
-              ./v -cc gcc -d gg_multiwindow test "$test"
+              ./v -cc "$compiler" -d gg_multiwindow test "$test"
           done
 
-          ./v -cc gcc -d gg_multiwindow \
-            -o /tmp/gg_multiwindow_default examples/gg/multiwindow.v
-          ./v -cc gcc -d gg_multiwindow \
-            -o /tmp/gg_multiwindow_render_runtime_default examples/gg/multiwindow_render_runtime.v
+          ./v -cc "$compiler" -d gg_multiwindow \
+            -o "/tmp/gg_multiwindow_default_$compiler" examples/gg/multiwindow.v
+          ./v -cc "$compiler" -d gg_multiwindow \
+            -o "/tmp/gg_multiwindow_render_runtime_default_$compiler" \
+            examples/gg/multiwindow_render_runtime.v
 
           env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE \
             VGG_MULTIWINDOW_EXAMPLE_UNATTENDED=mock \
             "$RUNNER_TEMP/multiwindow_ci_watchdog" 60 \
               '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
-              /tmp/gg_multiwindow_default
+              "/tmp/gg_multiwindow_default_$compiler"
       - name: Multiwindow X11 native regressions
         env:
           VGG_MULTIWINDOW_RUNTIME_PROBES: '1'
@@ -477,10 +422,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          ./v -cc gcc -d gg_multiwindow -d x_multiwindow_x11 \
-            -o /tmp/gg_multiwindow_x11 examples/gg/multiwindow.v
-          ./v -cc gcc -d gg_multiwindow -d x_multiwindow_x11 \
-            -o /tmp/gg_multiwindow_render_runtime_x11 examples/gg/multiwindow_render_runtime.v
+          compiler="${{ matrix.compiler }}"
+          ./v -cc "$compiler" -d gg_multiwindow -d x_multiwindow_x11 \
+            -o "/tmp/gg_multiwindow_x11_$compiler" examples/gg/multiwindow.v
+          ./v -cc "$compiler" -d gg_multiwindow -d x_multiwindow_x11 \
+            -o "/tmp/gg_multiwindow_render_runtime_x11_$compiler" \
+            examples/gg/multiwindow_render_runtime.v
 
           tests=(
             vlib/x/multiwindow/event_sequence_exhaustion_test.v
@@ -490,6 +437,7 @@ jobs:
             vlib/x/multiwindow/native_operation_proof_test.v
             vlib/x/multiwindow/render_scheduler_test.v
             vlib/x/multiwindow/render_target_lease_test.v
+            vlib/x/multiwindow/service_native_linux_test.v
             vlib/x/multiwindow/teardown_contract_test.v
             vlib/gg/multiwindow_api_d_gg_multiwindow_test.v
             vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v
@@ -503,20 +451,20 @@ jobs:
             "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
               "$RUNNER_TEMP/multiwindow_x11_command.sh" \
               env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true \
-              ./v -cc gcc -d gg_multiwindow -d x_multiwindow_x11 test "$test"
+              ./v -cc "$compiler" -d gg_multiwindow -d x_multiwindow_x11 test "$test"
           done
 
           "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
             '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' \
             "$RUNNER_TEMP/multiwindow_x11_command.sh" \
             env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true \
-            /tmp/gg_multiwindow_render_runtime_x11
+            "/tmp/gg_multiwindow_render_runtime_x11_$compiler"
 
           "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
             '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
             "$RUNNER_TEMP/multiwindow_x11_command.sh" \
             env -u WAYLAND_DISPLAY -u XDG_SESSION_TYPE LIBGL_ALWAYS_SOFTWARE=true \
-            /tmp/gg_multiwindow_x11
+            "/tmp/gg_multiwindow_x11_$compiler"
       - name: Multiwindow Wayland native regressions
         env:
           VGG_MULTIWINDOW_RUNTIME_PROBES: '1'
@@ -526,10 +474,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          ./v -cc gcc -d gg_multiwindow -d sokol_wayland \
-            -o /tmp/gg_multiwindow_wayland examples/gg/multiwindow.v
-          ./v -cc gcc -d gg_multiwindow -d sokol_wayland \
-            -o /tmp/gg_multiwindow_render_runtime_wayland examples/gg/multiwindow_render_runtime.v
+          compiler="${{ matrix.compiler }}"
+          ./v -cc "$compiler" -d gg_multiwindow -d sokol_wayland \
+            -o "/tmp/gg_multiwindow_wayland_$compiler" examples/gg/multiwindow.v
+          ./v -cc "$compiler" -d gg_multiwindow -d sokol_wayland \
+            -o "/tmp/gg_multiwindow_render_runtime_wayland_$compiler" \
+            examples/gg/multiwindow_render_runtime.v
 
           tests=(
             vlib/x/multiwindow/event_sequence_exhaustion_test.v
@@ -539,11 +489,13 @@ jobs:
             vlib/x/multiwindow/native_operation_proof_test.v
             vlib/x/multiwindow/render_scheduler_test.v
             vlib/x/multiwindow/render_target_lease_test.v
+            vlib/x/multiwindow/service_native_wayland_test.v
             vlib/x/multiwindow/teardown_contract_test.v
             vlib/gg/multiwindow_api_d_gg_multiwindow_test.v
             vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v
             vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v
             vlib/gg/multiwindow_render_runtime_contract_test.v
+            vlib/gg/multiwindow_wayland_services_d_gg_multiwindow_test.v
             vlib/gg/frame_pacing_test.v
             vlib/gg/draw_fns_api_test.v
             vlib/gg/draw_rect_empty_test.v
@@ -551,95 +503,15 @@ jobs:
           for test in "${tests[@]}"; do
             "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
               "$RUNNER_TEMP/multiwindow_weston_command.sh" \
-              ./v -cc gcc -d gg_multiwindow -d sokol_wayland test "$test"
+              ./v -cc "$compiler" -d gg_multiwindow -d sokol_wayland test "$test"
           done
 
           "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
             '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' \
             "$RUNNER_TEMP/multiwindow_weston_command.sh" \
-            /tmp/gg_multiwindow_render_runtime_wayland
+            "/tmp/gg_multiwindow_render_runtime_wayland_$compiler"
 
           "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
             '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
             "$RUNNER_TEMP/multiwindow_weston_command.sh" \
-            /tmp/gg_multiwindow_wayland
-      - name: Recompile V with -cstrict and gcc
-        run: v run ci/linux_ci.vsh recompile_v_with_cstrict_gcc
-      - name: Valgrind v.c
-        run: v run ci/linux_ci.vsh valgrind_v_c_gcc
-      - name: Run sanitizers
-        run: v run ci/linux_ci.vsh run_sanitizers_gcc
-      - name: v self compilation
-        run: v run ci/linux_ci.vsh v_self_compilation_gcc
-      - name: v self compilation with -usecache
-        run: v run ci/linux_ci.vsh v_self_compilation_usecache_gcc
-      - name: Verify `v test` works
-        run: v run ci/linux_ci.vsh verify_v_test_works_gcc
-      - name: Test pure V math module
-        run: v run ci/linux_ci.vsh test_pure_v_math_module_gcc
-      - name: Self tests
-        run: v run ci/linux_ci.vsh self_tests_gcc
-      - name: Self tests (-prod)
-        run: v run ci/linux_ci.vsh self_tests_prod_gcc
-      - name: Self tests (-cstrict)
-        run: v run ci/linux_ci.vsh self_tests_cstrict_gcc
-      - name: Build examples
-        run: v run ci/linux_ci.vsh build_examples_gcc
-      - name: Build tetris with -autofree
-        run: v run ci/linux_ci.vsh build_tetris_autofree_gcc
-      - name: Build blog tutorial with -autofree
-        run: v run ci/linux_ci.vsh build_blog_autofree_gcc
-      - name: Build option_test.c.v with -autofree
-        run: v run ci/linux_ci.vsh build_option_test_autofree_gcc
-      - name: V self compilation with -parallel-cc
-        run: v run ci/linux_ci.vsh v_self_compilation_parallel_cc_gcc
-      - name: Build modules
-        run: v run ci/linux_ci.vsh build_modules_gcc
-      - name: compile vdoctor.v with -prod
-        run: v run ci/linux_ci.vsh compile_vdoctor_prod_gcc
-      - name: compile vup.v with -prod
-        run: v run ci/linux_ci.vsh compile_vup_prod_gcc
-
-  clang-linux:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 121
-    env:
-      VFLAGS: -cc clang
-      VTEST_SHOW_LONGEST_BY_RUNTIME: 3
-      VTEST_SHOW_LONGEST_BY_COMPTIME: 3
-      VTEST_SHOW_LONGEST_BY_TOTALTIME: 3
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/cache-apt-packages-action
-      - name: Build V
-        run: make -j4 && ./v symlink
-      - name: All code is formatted
-        run: v run ci/linux_ci.vsh all_code_is_formatted_clang
-      - name: Install dependencies for examples and tools
-        run: v run ci/linux_ci.vsh install_dependencies_for_examples_and_tools_clang
-      - name: Recompile V with -cstrict and clang
-        run: v run ci/linux_ci.vsh recompile_v_with_cstrict_clang
-      - name: Valgrind
-        run: v run ci/linux_ci.vsh valgrind_clang
-      - name: Run sanitizers
-        run: v run ci/linux_ci.vsh run_sanitizers_clang
-      - name: v self compilation
-        run: v run ci/linux_ci.vsh v_self_compilation_clang
-      - name: v self compilation with -usecache
-        run: v run ci/linux_ci.vsh v_self_compilation_usecache_clang
-      - name: Verify `v test` works
-        run: v run ci/linux_ci.vsh verify_v_test_works_clang
-      - name: Test pure V math module
-        run: v run ci/linux_ci.vsh test_pure_v_math_module_clang
-      - name: Self tests
-        run: v run ci/linux_ci.vsh self_tests_clang
-      - name: Self tests (vprod)
-        run: v run ci/linux_ci.vsh self_tests_vprod_clang
-      - name: Self tests (-cstrict)
-        run: v run ci/linux_ci.vsh self_tests_cstrict_clang
-      - name: Build examples
-        run: v run ci/linux_ci.vsh build_examples_clang
-      - name: Build examples with -autofree
-        run: v run ci/linux_ci.vsh build_examples_autofree_clang
-      - name: Build modules
-        run: v run ci/linux_ci.vsh build_modules_clang
+            "/tmp/gg_multiwindow_wayland_$compiler"

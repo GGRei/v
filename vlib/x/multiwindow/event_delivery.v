@@ -49,17 +49,51 @@ fn (mut app App) enqueue_reserved_event_locked(event QueuedEvent, token u64) {
 
 fn (mut app App) accept_backend_event_batch(events []QueuedEvent, frame_count u64) !BackendEventAcceptance {
 	app.state_mutex.lock()
-	first_delivery_token := app.reserve_event_delivery_tokens_locked(events.len) or {
+	mut cancellation_capacity := 0
+	mut planned_teardowns := map[string]bool{}
+	for event in events {
+		if event.kind != .lifecycle || event.lifecycle.kind != .window_destroyed {
+			continue
+		}
+		id := event.lifecycle.window_id
+		key := id.str()
+		if planned_teardowns[key] || !app.backend_window_generation_present_locked(id)
+			|| app.windows[id.slot].services_cancelled {
+			continue
+		}
+		plan := app.collect_window_service_cancellation_locked(id) or {
+			app.state_mutex.unlock()
+			return err
+		}
+		cancellation_capacity += plan.service_events.len + plan.readback_events.len
+		planned_teardowns[key] = true
+	}
+	first_delivery_token := app.reserve_event_delivery_tokens_locked(events.len +
+		cancellation_capacity) or {
 		app.state_mutex.unlock()
 		return err
 	}
 	mut accepted := 0
+	mut cancellation_offset := 0
 	for event_index, event in events {
-		delivery_token := first_delivery_token + u64(event_index)
 		mut generation_valid := app.backend_event_generation_valid_locked(event)
 		if event.kind == .lifecycle && event.lifecycle.kind == .window_destroyed {
+			id := event.lifecycle.window_id
+			if app.backend_window_generation_present_locked(id)
+				&& !app.windows[id.slot].services_cancelled {
+				collected := app.collect_present_window_service_cancellation_locked(id)
+				plan := WindowServiceCancellationPlan{
+					...collected
+					first_token: first_delivery_token + u64(event_index + cancellation_offset)
+				}
+				cancellation_count := collected.service_events.len + collected.readback_events.len
+				app.commit_window_service_cancellation_locked(plan)
+				app.windows[id.slot].services_cancelled = true
+				cancellation_offset += cancellation_count
+			}
 			generation_valid = app.accept_backend_teardown_locked(event.lifecycle.window_id)
 		}
+		delivery_token := first_delivery_token + u64(event_index + cancellation_offset)
 		match event.kind {
 			.lifecycle {
 				if app.accept_lifecycle_event_locked(event.lifecycle, generation_valid,
@@ -72,6 +106,22 @@ fn (mut app App) accept_backend_event_batch(events []QueuedEvent, frame_count u6
 				if app.accept_input_event_locked(event.input, frame_count, generation_valid,
 					delivery_token)
 				{
+					accepted++
+				}
+			}
+			.service {
+				if generation_valid
+					&& app.accept_backend_service_event_locked(event.service, delivery_token) {
+					accepted++
+				}
+			}
+			.readback {
+				if generation_valid {
+					app.mark_pending_window_readback_terminal_locked(event.readback.id) or {
+						continue
+					}
+					app.enqueue_reserved_event_locked(queued_readback_event(event.readback),
+						delivery_token)
 					accepted++
 				}
 			}
@@ -101,6 +151,112 @@ fn (mut app App) accept_backend_event_batch(events []QueuedEvent, frame_count u6
 		barrier_token:  barrier_token
 		delivery_error: delivery_error
 	}
+}
+
+fn (mut app App) accept_backend_service_event_locked(event ServiceEvent, delivery_token u64) bool {
+	if event.kind == .clipboard {
+		request_id := event.clipboard.id
+		expected_kind := if event.operation == .clipboard_write {
+			PendingServiceKind.clipboard_write
+		} else if event.operation == .clipboard_read {
+			PendingServiceKind.clipboard_read
+		} else {
+			return false
+		}
+		mut matched := false
+		for index, request in app.services.pending {
+			if request.id == request_id && request.window == event.window
+				&& request.kind == expected_kind && !request.terminal {
+				app.services.pending[index].terminal = true
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	} else if event.kind == .portal_parent {
+		mut lease_matched := false
+		for lease in app.services.portal_leases {
+			if lease.id == event.portal_parent.lease && lease.window == event.window {
+				lease_matched = true
+				break
+			}
+		}
+		if !lease_matched || event.portal_parent.id.serial == 0
+			|| event.portal_parent.window != event.window {
+			return false
+		}
+		mut request_matched := false
+		for index, request in app.services.pending {
+			if request.id == event.portal_parent.id && request.window == event.window
+				&& request.kind == .portal_parent && !request.terminal {
+				app.services.pending[index].terminal = true
+				request_matched = true
+				break
+			}
+		}
+		if !request_matched {
+			return false
+		}
+		if event.portal_parent.status != .ready {
+			for index, lease in app.services.portal_leases {
+				if lease.id == event.portal_parent.lease {
+					app.services.portal_leases.delete(index)
+					break
+				}
+			}
+		}
+	}
+	mut sequenced := service_event_with_sequence(event, delivery_token)
+	if event.kind == .state {
+		index := app.services.window_index(event.window) or { return false }
+		merged := merge_service_window_state(app.services.windows[index].state, event.state)
+		if event.operation == .focus
+			&& service_window_state_observation_equal(app.services.windows[index].state, merged) {
+			return false
+		}
+		authoritative := service_window_state_with_sequence(merged, delivery_token)
+		app.services.windows[index].state = authoritative
+		sequenced = ServiceEvent{
+			...sequenced
+			state: authoritative
+		}
+	} else if event.kind == .metrics {
+		index := app.services.window_index(event.window) or { return false }
+		merged := merge_service_window_state(app.services.windows[index].state, event.state)
+		authoritative := ServiceWindowState{
+			...service_window_state_with_sequence(merged, delivery_token)
+			monitor_ids: event.state.monitor_ids.clone()
+		}
+		metrics := RenderMetricsSnapshot{
+			...event.metrics
+			metrics_sequence: delivery_token
+		}
+		app.services.windows[index].state = authoritative
+		app.services.windows[index].metrics = metrics
+		sequenced = ServiceEvent{
+			...sequenced
+			state:   authoritative
+			metrics: metrics
+		}
+	} else if event.kind == .monitor {
+		snapshot := if event.monitors.len > 0 {
+			event.monitors
+		} else if event.monitor.id.generation != 0 {
+			[event.monitor]
+		} else {
+			[]ServiceMonitorInfo{}
+		}
+		monitors := app.services.reconcile_monitor_snapshot(snapshot, delivery_token)
+		sequenced = ServiceEvent{
+			...sequenced
+			monitor:  if monitors.len > 0 { monitors[0] } else { event.monitor }
+			monitors: monitors
+		}
+	}
+	app.enqueue_reserved_event_locked(queued_service_event(sequenced), delivery_token)
+	return true
 }
 
 // harvest_backend_events_for_stop promotes a complete retained native batch
@@ -160,6 +316,37 @@ fn (app &App) validate_queued_delivery_locked(event QueuedEvent) ! {
 
 fn (mut app App) complete_queued_delivery_locked(event QueuedEvent) {
 	app.event_deliveries.delete(event.delivery_token)
+	app.release_delivered_service_storage_locked(event)
+}
+
+fn (mut app App) release_delivered_service_storage_locked(event QueuedEvent) {
+	match event.kind {
+		.service {
+			request_id := match event.service.kind {
+				.clipboard { event.service.clipboard.id }
+				.portal_parent { event.service.portal_parent.id }
+				else { ServiceRequestId{} }
+			}
+			if request_id.serial == 0 {
+				return
+			}
+			for index, request in app.services.pending {
+				if request.id == request_id && request.terminal {
+					app.services.pending.delete(index)
+					return
+				}
+			}
+		}
+		.readback {
+			for index, request in app.services.readbacks {
+				if request.id == event.readback.id && request.terminal {
+					app.services.readbacks.delete(index)
+					return
+				}
+			}
+		}
+		else {}
+	}
 }
 
 fn (mut app App) release_terminal_delivery_storage_locked() {

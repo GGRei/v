@@ -95,8 +95,11 @@ the display server, graphics device, or platform API is unavailable.
   when the running backend has the required handles and current user action;
 - `native_decorations`: native/server-side decorations are effective for the
   running backend;
-- `readback`: whether the backend exposes readback support; it is false on the
-  current native backends.
+- `readback`: whether the backend exposes at least one readback path. X11
+  exposes native window capture without a renderer. X11 and Wayland managed
+  image readback require an active GL renderer; with that renderer, window
+  capture is managed by `gg` from its owned framebuffer. Confirm both operations per
+  window through the `gg` readback capability query.
 
 Plain capability probes do not necessarily connect to the display server, so
 runtime optional globals can be unknown before startup and most of those probes
@@ -114,7 +117,11 @@ draw a client-side fallback. Wayland cursor-shape feedback uses
 pointer; this keeps cursor theme selection compositor-side. `wl_cursor_theme`
 client-side fallback is not implemented, so `app.capabilities()` reports
 `cursor_shapes == false` on Wayland compositors that do not advertise
-cursor-shape-v1.
+cursor-shape-v1. Fractional framebuffer scaling is used only when both
+fractional-scale-v1 and viewporter are present; otherwise the backend keeps the
+integer `wl_output` scale path. Clipboard requests require a seat and data
+device, clipboard writes additionally require a current input serial, and
+portal-parent identifiers require xdg-foreign-v2.
 
 Backend notes:
 
@@ -126,9 +133,10 @@ Backend notes:
   size queries after create/resize. Programmatic resize is rejected for
   non-resizable windows.
 - Wayland is Linux-only and exists only in builds compiled with
-  `-d sokol_wayland`. It requires `wl_compositor` and `xdg_wm_base`, rejects
-  `visible: false`, and currently rejects programmatic resize. Rendering uses
-  Wayland EGL/OpenGL when initialized.
+  `-d sokol_wayland`. It requires `wl_compositor` and `xdg_wm_base`, supports
+  initially hidden windows through an explicit remap/configure cycle, and
+  currently rejects programmatic resize. Rendering uses Wayland EGL/OpenGL
+  when initialized.
 - AppKit is macOS-only. It must start on the main thread and uses Metal when
   rendering is required.
 - Win32 is Windows-only and supports native lifecycle and min-size enforcement.
@@ -267,10 +275,18 @@ and its stored slot share a nonzero per-window lease epoch; zero, mismatched,
 rotated, copied, or expired epochs are rejected.
 
 Render-capable windows support exactly `sample_count: 1`; other sample counts
-are rejected. Current native backends report `Capabilities.readback == false`.
-The `gg` facade reports both window-capture and offscreen-image readback
-capabilities as false, and its readback request methods return
-`gg.multiwindow: requested readback is not supported`.
+are rejected. For X11 and Wayland GL renderers, `gg` captures its currently
+owned framebuffer before presentation and publishes it only after the producing
+frame is submitted. X11 without a renderer retains native `XGetImage` window
+capture, which observes the X server drawable but is not frame-exact compositor
+capture under XWayland. Both backends also provide managed single-sample GL
+image readback. These paths produce owned top-left RGBA8 data in the canonical
+readback queue. Capability queries
+remain authoritative because support is backend- and renderer-specific;
+unsupported paths return `gg.multiwindow: requested readback is not supported`.
+AppKit provides the same canonical asynchronous delivery when the active
+renderer is Metal and its private pre-present hook is installed. Rendererless
+and GLCore33 AppKit builds report both readback operations as unsupported.
 
 The normative graphics references are the V-vendored Sokol API and matching
 pinned upstream [sokol_gfx.h](https://raw.githubusercontent.com/floooh/sokol/c0e0563/sokol_gfx.h).
@@ -322,15 +338,19 @@ only after renderer and window cleanup completes.
   low-level lifecycle or `.mock` imports.
 - Wayland support is compiled only with `-d sokol_wayland`; without that flag,
   the Wayland backend is unsupported and Wayland libraries are not linked.
-- Wayland hidden window creation (`visible: false`) is rejected.
 - Wayland programmatic resize is currently unsupported.
 - X11 programmatic resize is rejected for non-resizable windows.
 - Native app creation can still fail even when plain capabilities report that a
   backend is supported, for example when a display cannot be opened.
 - The mock backend is not a renderer and cannot produce render targets.
 - Multi-window render targets support only `sample_count: 1`.
-- Native backends report readback capabilities as false; readback requests made
-  through `gg.App` return an unsupported error.
+- X11 native window capture is available without a renderer through
+  `XGetImage`, with the native XWayland presentation limitation described
+  above. Managed window/image readback on X11 and Wayland requires an active GL
+  renderer and is limited to the framebuffer owned by `gg`; it is not
+  compositor or desktop capture. AppKit readback requires its active Metal
+  renderer and private pre-present hook. Win32 readback remains unsupported in
+  this tranche.
 - The module has no layout, widget, text rendering, or drawing abstraction.
 
 ## Validation
@@ -348,3 +368,7 @@ and Win32 CI lanes. Each lane sets `VGG_MULTIWINDOW_RUNTIME_PROBES=1`,
 with its native renderer flags, and executes each test and runtime probe through
 the process-tree watchdog. The watchdog supplies the private parent gate,
 enforces the deadline, reaps child processes, and checks the final cleanup JSON.
+
+Real RandR or Wayland output removal/reconnection and external portal-parent
+consumption by another toolkit or desktop portal require an interactive desktop
+session and remain manual integration checks.

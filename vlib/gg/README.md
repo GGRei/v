@@ -167,7 +167,9 @@ shape feedback uses `wp_cursor_shape_manager_v1` when the compositor exposes it
 and the seat has a pointer; cursor theme selection remains compositor-side.
 `wl_cursor_theme` client-side fallback is not implemented, so
 `app.capabilities()` reports `cursor_shapes == false` on Wayland compositors
-that do not advertise cursor-shape-v1.
+that do not advertise cursor-shape-v1. Wayland uses fractional-scale-v1 only
+when viewporter is also present; otherwise framebuffer metrics follow integer
+`wl_output` scale.
 Backends must leave unsupported
 classes false instead of emulating partial support. Current native backends route
 window-scoped mouse, keyboard, focus, resize and iconified/restored events where
@@ -181,6 +183,14 @@ XIM/XIC with `Xutf8LookupString`, and X11 file drops use XDND `text/uri-list`.
 Wayland text uses xkb keymap/state for key-press characters, and Wayland file
 drops use `wl_data_device`/`wl_data_offer` `text/uri-list`; neither Linux text
 path implements full IME/composed text yet.
+
+Runtime window services are queried with `window_operation_capability()`.
+Wayland clipboard read/write uses the seat data device; writes require a recent
+input serial. `request_portal_parent()` is available only with xdg-foreign-v2,
+and its returned lease must remain live until `release_portal_parent()`.
+Relative mouse lock requires both relative-pointer and pointer-constraints.
+Wayland cannot programmatically focus, raise, or position an xdg toplevel, so
+those capabilities remain unsupported instead of being emulated.
 
 The multi-window event queue is separate from legacy `gg.Context` callbacks.
 Normal single-window applications keep using the existing `event_fn`,
@@ -206,12 +216,19 @@ subset of `WindowSglContext`. `RunConfig` also provides app-resource lifecycle
 callbacks for resources shared by multiple windows.
 
 Multi-window render targets support exactly `sample_count: 1`. A different
-sample count is rejected when a renderer is required or active. Readback is not
-available on the native backends: `Capabilities.readback`,
-`WindowReadbackCapabilities.offscreen_image`, and
-`WindowReadbackCapabilities.window_capture` are false. Calls to
-`request_window_capture()` or `request_image_readback()` return
-`gg.multiwindow: requested readback is not supported`.
+sample count is rejected when a renderer is required or active. With an X11 or
+Wayland GL renderer active, `request_window_capture()` reads the framebuffer
+owned by `gg` after drawing and publishes it only after the producing frame is
+submitted. `request_image_readback()` reads a managed single-sample 2D render
+target. Without an active X11 renderer, window capture falls back to the native
+`XGetImage` path; that path reflects the X server drawable and cannot guarantee
+frame-exact compositor presentation under XWayland. Neither path is desktop or
+compositor capture. Results are owned top-left RGBA8 values delivered through
+`RunConfig.readback_fn` and support bounded pixel regions. Query
+`window_readback_capabilities()` before either operation. AppKit exposes the
+same asynchronous contract when its Metal renderer and private pre-present
+hook are active; GLCore33 and rendererless AppKit builds report unsupported.
+Win32 readback remains unsupported in this tranche.
 
 Managed IDs are scoped to their app and, where applicable, their window. Stale,
 foreign, or expired IDs and callback leases return errors instead of exposing

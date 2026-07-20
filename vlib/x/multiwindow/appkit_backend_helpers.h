@@ -10,6 +10,15 @@ extern "C" {
 
 #define V_MULTIWINDOW_APPKIT_EVENT_LIFECYCLE 1
 #define V_MULTIWINDOW_APPKIT_EVENT_INPUT 2
+#define V_MULTIWINDOW_APPKIT_EVENT_SERVICE 3
+
+#define V_MULTIWINDOW_APPKIT_SERVICE_EVENT_STATE 1
+#define V_MULTIWINDOW_APPKIT_SERVICE_EVENT_METRICS 2
+
+#define V_MULTIWINDOW_APPKIT_SERVICE_RESULT_OK 1
+#define V_MULTIWINDOW_APPKIT_SERVICE_RESULT_UNAVAILABLE 0
+#define V_MULTIWINDOW_APPKIT_SERVICE_RESULT_FAILED -1
+#define V_MULTIWINDOW_APPKIT_SERVICE_RESULT_CAPACITY -2
 
 #define V_MULTIWINDOW_APPKIT_LIFECYCLE_CLOSE_REQUESTED 1
 #define V_MULTIWINDOW_APPKIT_LIFECYCLE_DESTROYED 2
@@ -66,6 +75,22 @@ typedef struct VMultiwindowAppKitQueuedEvent {
 	int window_height;
 	int framebuffer_width;
 	int framebuffer_height;
+	int service_snapshot_valid;
+	int service_kind;
+	int service_operation;
+	int service_mapping;
+	int service_visibility;
+	int service_active;
+	int service_focused;
+	int service_minimized;
+	int service_maximized;
+	int service_fullscreen;
+	int service_mouse_locked;
+	int service_position_known;
+	int service_x;
+	int service_y;
+	uint64_t service_monitor_native_id;
+	float service_scale;
 	int dropped_file_count;
 	char **dropped_files;
 	int touch_count;

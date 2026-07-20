@@ -137,6 +137,7 @@ pub struct WindowReadbackId {
 	slot         int
 	generation   u32
 	window       WindowId
+	serial       u64
 }
 
 pub struct WindowAttachmentsConfig {
@@ -287,6 +288,9 @@ pub struct NativeWindowLease {
 	app_instance u64
 	window       WindowId
 	lease_epoch  u64
+	backend      MultiWindowBackend
+	primary      voidptr
+	secondary    u64
 }
 
 pub type WindowInitFn = fn (mut WindowInitContext) !

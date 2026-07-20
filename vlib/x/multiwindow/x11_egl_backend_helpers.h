@@ -41,6 +41,10 @@
 #define V_MULTIWINDOW_CURSOR_SHAPE_NWSE_RESIZE 14
 #define V_MULTIWINDOW_CURSOR_SHAPE_GRAB 15
 #define V_MULTIWINDOW_CURSOR_SHAPE_GRABBING 16
+#define V_MULTIWINDOW_CURSOR_SHAPE_TEXT 17
+#define V_MULTIWINDOW_CURSOR_SHAPE_CROSSHAIR 18
+#define V_MULTIWINDOW_CURSOR_SHAPE_NOT_ALLOWED 19
+#define V_MULTIWINDOW_CURSOR_SHAPE_RESIZE_ALL 20
 
 typedef struct {
 	unsigned long flags;
@@ -54,6 +58,47 @@ typedef struct {
 	int key;
 	char name[XkbKeyNameLength];
 } VMultiwindowX11KeymapEntry;
+
+typedef struct {
+	int mapped;
+	int focused;
+	int minimized;
+	int maximized;
+	int fullscreen;
+	int position_known;
+	int x;
+	int y;
+} VMultiwindowX11ServiceState;
+
+typedef struct {
+	unsigned long name;
+	int primary;
+	int x;
+	int y;
+	int width;
+	int height;
+	int width_mm;
+	int height_mm;
+} VMultiwindowX11MonitorInfo;
+
+typedef struct {
+	int known;
+	int x;
+	int y;
+	int width;
+	int height;
+} VMultiwindowX11WorkArea;
+
+typedef struct {
+	int attributes_available;
+	int map_state;
+	int actual_width;
+	int actual_height;
+	int requested_width;
+	int requested_height;
+	size_t pixels_length;
+	size_t expected_pixels_length;
+} VMultiwindowX11ReadbackProbe;
 
 #define V_MULTIWINDOW_X11_KEYMAP_ENTRY(key, a, b, c, d) { key, { a, b, c, d } }
 
@@ -90,6 +135,10 @@ static inline unsigned long v_multiwindow_x11_event_window(XEvent *event) {
 		return (unsigned long)event->xclient.window;
 	case ConfigureNotify:
 		return (unsigned long)event->xconfigure.window;
+	case MapNotify:
+		return (unsigned long)event->xmap.window;
+	case UnmapNotify:
+		return (unsigned long)event->xunmap.window;
 	case DestroyNotify:
 		return (unsigned long)event->xdestroywindow.window;
 	case PropertyNotify:
@@ -274,7 +323,14 @@ static inline unsigned int v_multiwindow_x11_cursor_font_shape(int shape) {
 	case V_MULTIWINDOW_CURSOR_SHAPE_MOVE:
 	case V_MULTIWINDOW_CURSOR_SHAPE_GRAB:
 	case V_MULTIWINDOW_CURSOR_SHAPE_GRABBING:
+	case V_MULTIWINDOW_CURSOR_SHAPE_RESIZE_ALL:
 		return XC_fleur;
+	case V_MULTIWINDOW_CURSOR_SHAPE_TEXT:
+		return XC_xterm;
+	case V_MULTIWINDOW_CURSOR_SHAPE_CROSSHAIR:
+		return XC_crosshair;
+	case V_MULTIWINDOW_CURSOR_SHAPE_NOT_ALLOWED:
+		return XC_X_cursor;
 	case V_MULTIWINDOW_CURSOR_SHAPE_N_RESIZE:
 		return XC_top_side;
 	case V_MULTIWINDOW_CURSOR_SHAPE_S_RESIZE:
@@ -915,6 +971,499 @@ static inline int v_multiwindow_x11_apply_config_hints(Display *display, unsigne
 		XChangeProperty(display, (Window)window, state_atom, XA_ATOM, 32, PropModeReplace, (unsigned char *)&fullscreen_atom, 1);
 	}
 
+	return 1;
+}
+
+static inline int v_multiwindow_x11_apply_owner_modal(Display *display, unsigned long window, unsigned long owner, int modal) {
+	if (display == NULL || window == 0) {
+		return 0;
+	}
+	if (owner != 0 && XSetTransientForHint(display, (Window)window, (Window)owner) == 0) {
+		return 0;
+	}
+	if (modal) {
+		Atom state_atom = XInternAtom(display, "_NET_WM_STATE", False);
+		Atom modal_atom = XInternAtom(display, "_NET_WM_STATE_MODAL", False);
+		if (state_atom == None || modal_atom == None) {
+			return 0;
+		}
+		XChangeProperty(display, (Window)window, state_atom, XA_ATOM, 32, PropModeAppend, (unsigned char *)&modal_atom, 1);
+	}
+	return 1;
+}
+
+static inline int v_multiwindow_x11_property_has_atom(Display *display, Window window, Atom property, Atom expected) {
+	Atom actual_type = None;
+	int actual_format = 0;
+	unsigned long item_count = 0;
+	unsigned long bytes_after = 0;
+	unsigned char *data = NULL;
+	int found = 0;
+	if (property == None || expected == None) {
+		return 0;
+	}
+	if (XGetWindowProperty(display, window, property, 0, 1024, False, XA_ATOM,
+			&actual_type, &actual_format, &item_count, &bytes_after, &data) == Success
+		&& actual_type == XA_ATOM && actual_format == 32 && data != NULL) {
+		Atom *atoms = (Atom *)data;
+		for (unsigned long i = 0; i < item_count; i++) {
+			if (atoms[i] == expected) {
+				found = 1;
+				break;
+			}
+		}
+	}
+	if (data != NULL) {
+		XFree(data);
+	}
+	return found;
+}
+
+static inline int v_multiwindow_x11_root_supports_atom(Display *display,
+	unsigned long root, unsigned long atom) {
+	if (display == NULL || root == 0 || atom == 0) {
+		return 0;
+	}
+	Atom supported = XInternAtom(display, "_NET_SUPPORTED", True);
+	return supported != None
+		&& v_multiwindow_x11_property_has_atom(display, (Window)root, supported, (Atom)atom);
+}
+
+static inline int v_multiwindow_x11_query_service_state(Display *display, unsigned long root, unsigned long window, VMultiwindowX11ServiceState *out) {
+	if (display == NULL || window == 0 || out == NULL) {
+		return 0;
+	}
+	memset(out, 0, sizeof(*out));
+	XWindowAttributes attrs;
+	if (!XGetWindowAttributes(display, (Window)window, &attrs)) {
+		return 0;
+	}
+	out->mapped = attrs.map_state != IsUnmapped;
+	Window focus = None;
+	int revert_to = 0;
+	XGetInputFocus(display, &focus, &revert_to);
+	out->focused = focus == (Window)window;
+	Window child = None;
+	int root_x = 0;
+	int root_y = 0;
+	if (root != 0 && XTranslateCoordinates(display, (Window)window, (Window)root, 0, 0,
+			&root_x, &root_y, &child)) {
+		out->position_known = 1;
+		out->x = root_x;
+		out->y = root_y;
+	}
+	Atom wm_state = XInternAtom(display, "WM_STATE", False);
+	Atom actual_type = None;
+	int actual_format = 0;
+	unsigned long item_count = 0;
+	unsigned long bytes_after = 0;
+	unsigned char *state_data = NULL;
+	if (wm_state != None && XGetWindowProperty(display, (Window)window, wm_state, 0, 2, False,
+			wm_state, &actual_type, &actual_format, &item_count, &bytes_after, &state_data) == Success
+		&& actual_type == wm_state && actual_format == 32 && item_count >= 1 && state_data != NULL) {
+		long state = ((long *)state_data)[0];
+		out->minimized = state == IconicState;
+	}
+	if (state_data != NULL) {
+		XFree(state_data);
+	}
+	Atom net_state = XInternAtom(display, "_NET_WM_STATE", False);
+	Atom max_h = XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
+	Atom max_v = XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_VERT", False);
+	Atom fullscreen = XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", False);
+	out->maximized = v_multiwindow_x11_property_has_atom(display, (Window)window, net_state, max_h)
+		&& v_multiwindow_x11_property_has_atom(display, (Window)window, net_state, max_v);
+	out->fullscreen = v_multiwindow_x11_property_has_atom(display, (Window)window, net_state, fullscreen);
+	return 1;
+}
+
+static inline int v_multiwindow_x11_send_net_wm_state(Display *display, unsigned long root, unsigned long window, int action, const char *first_name, const char *second_name) {
+	if (display == NULL || root == 0 || window == 0 || first_name == NULL) {
+		return 0;
+	}
+	Atom state = XInternAtom(display, "_NET_WM_STATE", False);
+	Atom first = XInternAtom(display, first_name, False);
+	Atom second = second_name == NULL ? None : XInternAtom(display, second_name, False);
+	if (state == None || first == None || (second_name != NULL && second == None)) {
+		return 0;
+	}
+	XEvent event;
+	memset(&event, 0, sizeof(event));
+	event.xclient.type = ClientMessage;
+	event.xclient.window = (Window)window;
+	event.xclient.message_type = state;
+	event.xclient.format = 32;
+	event.xclient.data.l[0] = action;
+	event.xclient.data.l[1] = (long)first;
+	event.xclient.data.l[2] = (long)second;
+	event.xclient.data.l[3] = 1;
+	return XSendEvent(display, (Window)root, False, SubstructureRedirectMask | SubstructureNotifyMask,
+		&event) != 0;
+}
+
+static inline int v_multiwindow_x11_request_focus(Display *display, unsigned long root, unsigned long window) {
+	if (display == NULL || root == 0 || window == 0) {
+		return 0;
+	}
+	Atom active = XInternAtom(display, "_NET_ACTIVE_WINDOW", False);
+	if (active == None) {
+		return 0;
+	}
+	XEvent event;
+	memset(&event, 0, sizeof(event));
+	event.xclient.type = ClientMessage;
+	event.xclient.window = (Window)window;
+	event.xclient.message_type = active;
+	event.xclient.format = 32;
+	event.xclient.data.l[0] = 1;
+	event.xclient.data.l[1] = CurrentTime;
+	XRaiseWindow(display, (Window)window);
+	return XSendEvent(display, (Window)root, False, SubstructureRedirectMask | SubstructureNotifyMask,
+		&event) != 0;
+}
+
+static inline int v_multiwindow_x11_send_selection_notify(Display *display,
+	unsigned long requestor, unsigned long selection, unsigned long target,
+	unsigned long property, unsigned long time) {
+	if (display == NULL || requestor == 0) {
+		return 0;
+	}
+	XEvent event;
+	memset(&event, 0, sizeof(event));
+	event.xselection.type = SelectionNotify;
+	event.xselection.display = display;
+	event.xselection.requestor = (Window)requestor;
+	event.xselection.selection = (Atom)selection;
+	event.xselection.target = (Atom)target;
+	event.xselection.property = (Atom)property;
+	event.xselection.time = (Time)time;
+	return XSendEvent(display, (Window)requestor, False, 0, &event) != 0;
+}
+
+static inline int v_multiwindow_x11_select_property_changes(Display *display,
+	unsigned long window) {
+	if (display == NULL || window == 0) {
+		return 0;
+	}
+	XWindowAttributes attrs;
+	if (!XGetWindowAttributes(display, (Window)window, &attrs)) {
+		return 0;
+	}
+	return XSelectInput(display, (Window)window,
+		attrs.your_event_mask | PropertyChangeMask) != 0;
+}
+
+static inline int v_multiwindow_x11_has_property_changes(Display *display,
+	unsigned long window) {
+	if (display == NULL || window == 0) {
+		return 0;
+	}
+	XWindowAttributes attrs;
+	return XGetWindowAttributes(display, (Window)window, &attrs) != 0 &&
+		(attrs.your_event_mask & PropertyChangeMask) != 0;
+}
+
+static inline int v_multiwindow_x11_set_mouse_lock(Display *display, unsigned long window, int enabled) {
+	if (display == NULL || window == 0) {
+		return 0;
+	}
+	if (!enabled) {
+		XUngrabPointer(display, CurrentTime);
+		return 1;
+	}
+	int status = XGrabPointer(display, (Window)window, True,
+		ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+		GrabModeAsync, GrabModeAsync, (Window)window, None, CurrentTime);
+	return status == GrabSuccess;
+}
+
+static inline int v_multiwindow_x11_center_pointer(Display *display, unsigned long window,
+		int *center_x, int *center_y) {
+	if (display == NULL || window == 0 || center_x == NULL || center_y == NULL) {
+		return 0;
+	}
+	XWindowAttributes attrs;
+	if (!XGetWindowAttributes(display, (Window)window, &attrs)
+		|| attrs.map_state != IsViewable || attrs.width <= 0 || attrs.height <= 0) {
+		return 0;
+	}
+	*center_x = attrs.width / 2;
+	*center_y = attrs.height / 2;
+	XWarpPointer(display, None, (Window)window, 0, 0, 0, 0, *center_x, *center_y);
+	XFlush(display);
+	return 1;
+}
+
+#ifdef V_MULTIWINDOW_NATIVE_PROOF_TEST
+static inline int v_multiwindow_x11_send_focus_out_for_test(Display *display,
+		unsigned long window) {
+	if (display == NULL || window == 0) {
+		return 0;
+	}
+	XEvent event;
+	memset(&event, 0, sizeof(event));
+	event.xfocus.type = FocusOut;
+	event.xfocus.display = display;
+	event.xfocus.window = (Window)window;
+	event.xfocus.mode = NotifyNormal;
+	event.xfocus.detail = NotifyNonlinear;
+	return XSendEvent(display, (Window)window, False, FocusChangeMask, &event) != 0;
+}
+
+static inline int v_multiwindow_x11_warp_pointer_offset_for_test(Display *display,
+		unsigned long window, int center_x, int center_y, int dx, int dy) {
+	if (display == NULL || window == 0) {
+		return 0;
+	}
+	XWarpPointer(display, None, (Window)window, 0, 0, 0, 0,
+		center_x + dx, center_y + dy);
+	XFlush(display);
+	return 1;
+}
+
+static inline int v_multiwindow_x11_pointer_position_for_test(Display *display,
+		unsigned long window, int *x, int *y) {
+	if (display == NULL || window == 0 || x == NULL || y == NULL) {
+		return 0;
+	}
+	Window root = None;
+	Window child = None;
+	int root_x = 0;
+	int root_y = 0;
+	unsigned int mask = 0;
+	return XQueryPointer(display, (Window)window, &root, &child, &root_x, &root_y,
+		x, y, &mask) != 0;
+}
+#endif
+
+static inline int v_multiwindow_x11_screen_width(Display *display, int screen) {
+	return display == NULL ? 0 : DisplayWidth(display, screen);
+}
+
+static inline int v_multiwindow_x11_screen_height(Display *display, int screen) {
+	return display == NULL ? 0 : DisplayHeight(display, screen);
+}
+
+static inline int v_multiwindow_x11_monitor_snapshot(Display *display, unsigned long root,
+	VMultiwindowX11MonitorInfo *out, int capacity) {
+	if (display == NULL || root == 0 || capacity < 0) {
+		return -1;
+	}
+	int count = 0;
+	XRRMonitorInfo *monitors = XRRGetMonitors(display, (Window)root, True, &count);
+	if (monitors == NULL) {
+		return count == 0 ? 0 : -1;
+	}
+	if (out != NULL) {
+		int limit = count < capacity ? count : capacity;
+		for (int i = 0; i < limit; i++) {
+			out[i].name = (unsigned long)monitors[i].name;
+			out[i].primary = monitors[i].primary ? 1 : 0;
+			out[i].x = monitors[i].x;
+			out[i].y = monitors[i].y;
+			out[i].width = monitors[i].width;
+			out[i].height = monitors[i].height;
+			out[i].width_mm = monitors[i].mwidth;
+			out[i].height_mm = monitors[i].mheight;
+		}
+	}
+	XRRFreeMonitors(monitors);
+	return count;
+}
+
+static inline VMultiwindowX11WorkArea v_multiwindow_x11_work_area(
+	Display *display, unsigned long root) {
+	VMultiwindowX11WorkArea result;
+	memset(&result, 0, sizeof(result));
+	if (display == NULL || root == 0) {
+		return result;
+	}
+	Atom current_desktop_atom = XInternAtom(display, "_NET_CURRENT_DESKTOP", True);
+	Atom work_area_atom = XInternAtom(display, "_NET_WORKAREA", True);
+	if (work_area_atom == None) {
+		return result;
+	}
+	unsigned long desktop = 0;
+	if (current_desktop_atom != None) {
+		Atom type = None;
+		int format = 0;
+		unsigned long count = 0;
+		unsigned long after = 0;
+		unsigned char *data = NULL;
+		if (XGetWindowProperty(display, (Window)root, current_desktop_atom, 0, 1,
+				False, XA_CARDINAL, &type, &format, &count, &after, &data) == Success
+			&& type == XA_CARDINAL && format == 32 && count == 1 && data != NULL) {
+			desktop = ((unsigned long *)data)[0];
+		}
+		if (data != NULL) {
+			XFree(data);
+		}
+	}
+	Atom type = None;
+	int format = 0;
+	unsigned long count = 0;
+	unsigned long after = 0;
+	unsigned char *data = NULL;
+	long offset = (long)(desktop * 4);
+	if (XGetWindowProperty(display, (Window)root, work_area_atom, offset, 4,
+			False, XA_CARDINAL, &type, &format, &count, &after, &data) == Success
+		&& type == XA_CARDINAL && format == 32 && count == 4 && data != NULL) {
+		unsigned long *values = (unsigned long *)data;
+		result.x = (int)values[0];
+		result.y = (int)values[1];
+		result.width = (int)values[2];
+		result.height = (int)values[3];
+		result.known = result.width > 0 && result.height > 0;
+	}
+	if (data != NULL) {
+		XFree(data);
+	}
+	return result;
+}
+
+static inline int v_multiwindow_x11_subscribe_randr(Display *display, unsigned long root,
+		int *event_base, int *error_base) {
+	if (display == NULL || root == 0 || event_base == NULL || error_base == NULL
+		|| !XRRQueryExtension(display, event_base, error_base)) {
+		return 0;
+	}
+	XRRSelectInput(display, (Window)root,
+		RRScreenChangeNotifyMask | RRCrtcChangeNotifyMask |
+		RROutputChangeNotifyMask | RROutputPropertyNotifyMask |
+		RRProviderChangeNotifyMask | RRResourceChangeNotifyMask);
+	XSync(display, False);
+	return 1;
+}
+
+static inline int v_multiwindow_x11_is_randr_event(int event_type, int event_base) {
+	return event_base > 0
+		&& (event_type == event_base + RRScreenChangeNotify
+			|| event_type == event_base + RRNotify);
+}
+
+static inline void v_multiwindow_x11_update_randr_configuration(XEvent *event,
+		int event_base) {
+	if (event != NULL && event_base > 0
+		&& event->type == event_base + RRScreenChangeNotify) {
+		XRRUpdateConfiguration(event);
+	}
+}
+
+static inline unsigned char v_multiwindow_x11_scale_mask(unsigned long pixel, unsigned long mask) {
+	if (mask == 0) {
+		return 0;
+	}
+	unsigned int shift = 0;
+	while (((mask >> shift) & 1UL) == 0UL) {
+		shift++;
+	}
+	unsigned long max_value = mask >> shift;
+	unsigned long value = (pixel & mask) >> shift;
+	return (unsigned char)((value * 255UL + max_value / 2UL) / max_value);
+}
+
+static inline int v_multiwindow_x11_readback_rgba8(Display *display, unsigned long window,
+		int x, int y, int width, int height, unsigned char *pixels, size_t pixels_len) {
+	if (display == NULL || window == 0 || x < 0 || y < 0 || width <= 0 || height <= 0 || pixels == NULL
+		|| pixels_len != (size_t)width * (size_t)height * 4U) {
+		return 0;
+	}
+	XWindowAttributes attrs;
+	if (!XGetWindowAttributes(display, (Window)window, &attrs) || attrs.map_state != IsViewable
+		|| x + width > attrs.width || y + height > attrs.height) {
+		return 0;
+	}
+	XImage *image = XGetImage(display, (Drawable)window, x, y, (unsigned int)width,
+		(unsigned int)height, AllPlanes, ZPixmap);
+	if (image == NULL) {
+		return 0;
+	}
+	for (int y = 0; y < height; y++) {
+		for (int x = 0; x < width; x++) {
+			unsigned long pixel = XGetPixel(image, x, y);
+			size_t offset = ((size_t)y * (size_t)width + (size_t)x) * 4U;
+			pixels[offset] = v_multiwindow_x11_scale_mask(pixel, image->red_mask);
+			pixels[offset + 1] = v_multiwindow_x11_scale_mask(pixel, image->green_mask);
+			pixels[offset + 2] = v_multiwindow_x11_scale_mask(pixel, image->blue_mask);
+			pixels[offset + 3] = 255;
+		}
+	}
+	XDestroyImage(image);
+	return 1;
+}
+
+#ifdef V_MULTIWINDOW_NATIVE_PROOF_TEST
+static inline int v_multiwindow_x11_paint_rgba8_test_pattern(Display *display,
+	unsigned long window, int x, int y) {
+	if (display == NULL || window == 0 || x < 0 || y < 0) {
+		return 0;
+	}
+	XWindowAttributes attrs;
+	if (!XGetWindowAttributes(display, (Window)window, &attrs)
+			|| x + 2 > attrs.width || y + 2 > attrs.height) {
+		return 0;
+	}
+	XColor colors[4];
+	memset(colors, 0, sizeof(colors));
+	colors[0].red = 0xffff;
+	colors[1].green = 0xffff;
+	colors[2].blue = 0xffff;
+	colors[3].red = 0xffff;
+	colors[3].green = 0xffff;
+	colors[3].blue = 0xffff;
+	for (int i = 0; i < 4; i++) {
+		colors[i].flags = DoRed | DoGreen | DoBlue;
+		if (!XAllocColor(display, attrs.colormap, &colors[i])) {
+			return 0;
+		}
+	}
+	GC gc = XCreateGC(display, (Drawable)window, 0, NULL);
+	if (gc == NULL) {
+		return 0;
+	}
+	for (int i = 0; i < 4; i++) {
+		XSetForeground(display, gc, colors[i].pixel);
+		XFillRectangle(display, (Drawable)window, gc, x + (i & 1), y + (i >> 1), 1, 1);
+	}
+	XFreeGC(display, gc);
+	XSync(display, False);
+	return 1;
+}
+#endif
+
+static inline VMultiwindowX11ReadbackProbe v_multiwindow_x11_readback_probe(Display *display,
+	unsigned long window, int width, int height, size_t pixels_len) {
+	VMultiwindowX11ReadbackProbe probe;
+	memset(&probe, 0, sizeof(probe));
+	probe.requested_width = width;
+	probe.requested_height = height;
+	probe.pixels_length = pixels_len;
+	if (width > 0 && height > 0) {
+		probe.expected_pixels_length = (size_t)width * (size_t)height * 4U;
+	}
+	XWindowAttributes attrs;
+	if (display != NULL && window != 0 && XGetWindowAttributes(display, (Window)window, &attrs)) {
+		probe.attributes_available = 1;
+		probe.map_state = attrs.map_state;
+		probe.actual_width = attrs.width;
+		probe.actual_height = attrs.height;
+	}
+	return probe;
+}
+
+static inline int v_multiwindow_x11_owner_modal_matches(Display *display, unsigned long window, unsigned long owner, int modal) {
+	Window actual_owner = None;
+	if (owner != 0 && (!XGetTransientForHint(display, (Window)window, &actual_owner)
+			|| actual_owner != (Window)owner)) {
+		return 0;
+	}
+	if (modal) {
+		Atom state = XInternAtom(display, "_NET_WM_STATE", False);
+		Atom modal_atom = XInternAtom(display, "_NET_WM_STATE_MODAL", False);
+		if (!v_multiwindow_x11_property_has_atom(display, (Window)window, state, modal_atom)) {
+			return 0;
+		}
+	}
 	return 1;
 }
 

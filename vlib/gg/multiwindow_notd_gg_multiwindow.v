@@ -53,6 +53,10 @@ pub enum WindowCursorShape {
 	nwse_resize
 	grab
 	grabbing
+	text
+	crosshair
+	not_allowed
+	resize_all
 }
 
 // WindowId identifies a window managed by gg.App.
@@ -73,6 +77,7 @@ pub:
 	backend          MultiWindowBackend = .auto
 	queue_size       int                = 128
 	require_renderer bool
+	app_id           string
 }
 
 // WindowConfig describes one window at creation time.
@@ -97,6 +102,8 @@ pub:
 	init_fn      WindowInitFn     = unsafe { nil }
 	frame_fn     WindowFrameFn    = unsafe { nil }
 	cleanup_fn   WindowCleanupFn  = unsafe { nil }
+	owner        ?WindowId
+	modal        bool
 }
 
 // WindowInfo is a snapshot of a live gg.App window.
@@ -187,6 +194,7 @@ pub:
 	frame_fn                AppFrameFn           = unsafe { nil }
 	event_fn                AppEventFn           = unsafe { nil }
 	input_fn                AppInputFn           = unsafe { nil }
+	window_service_fn       WindowServiceFn      = unsafe { nil }
 	app_resource_init_fn    AppResourceInitFn    = unsafe { nil }
 	app_resource_frame_fn   AppResourceFrameFn   = unsafe { nil }
 	app_resource_cleanup_fn AppResourceCleanupFn = unsafe { nil }
@@ -318,6 +326,174 @@ pub fn (mut app App) drain_events() ![]WindowEvent {
 // drain_input_events returns and clears pending window-scoped input events.
 pub fn (mut app App) drain_input_events() ![]WindowInputEvent {
 	_ = app
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (app &App) window_state(id WindowId) !WindowState {
+	_ = app
+	_ = id
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (app &App) monitor_ids() ![]WindowMonitorId {
+	_ = app
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (app &App) monitor_info(id WindowMonitorId) !WindowMonitorInfo {
+	_ = app
+	_ = id
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (app &App) window_operation_capability(id WindowId, operation WindowOperation) !WindowOperationCapability {
+	_ = app
+	_ = id
+	_ = operation
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (app &App) supports_window_cursor(id WindowId, shape WindowCursorShape) !WindowSupportLevel {
+	_ = app
+	_ = id
+	_ = shape
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) with_native_window(id WindowId, f NativeWindowBorrowFn) ! {
+	_ = app
+	_ = id
+	_ = f
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) show_window(id WindowId) ! {
+	_ = app
+	_ = id
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) hide_window(id WindowId) ! {
+	_ = app
+	_ = id
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) request_window_focus(id WindowId) ! {
+	_ = app
+	_ = id
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) raise_window(id WindowId) ! {
+	_ = app
+	_ = id
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) set_window_position(id WindowId, x int, y int) ! {
+	_ = app
+	_ = id
+	_ = x
+	_ = y
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) minimize_window(id WindowId) ! {
+	_ = app
+	_ = id
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) maximize_window(id WindowId) ! {
+	_ = app
+	_ = id
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) restore_window(id WindowId) ! {
+	_ = app
+	_ = id
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) set_window_fullscreen(id WindowId, enabled bool) ! {
+	_ = app
+	_ = id
+	_ = enabled
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) request_clipboard_text(id WindowId) !ClipboardRequestId {
+	_ = app
+	_ = id
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) set_clipboard_text(id WindowId, text string) !ClipboardRequestId {
+	_ = app
+	_ = id
+	_ = text
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) request_portal_parent(id WindowId) !PortalParentRequestId {
+	_ = app
+	_ = id
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) release_portal_parent(id PortalParentLeaseId) ! {
+	_ = app
+	_ = id
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) set_window_mouse_lock(id WindowId, enabled bool) ! {
+	_ = app
+	_ = id
+	_ = enabled
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) set_window_titlebar_appearance(id WindowId, appearance WindowTitlebarAppearance) ! {
+	_ = app
+	_ = id
+	_ = appearance
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) drain_window_service_events() ![]WindowServiceEvent {
+	_ = app
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut app App) drain_window_queued_events() ![]WindowQueuedEvent {
+	_ = app
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut lease NativeWindowLease) with_win32(f Win32NativeWindowFn) ! {
+	_ = lease
+	_ = f
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut lease NativeWindowLease) with_appkit(f AppKitNativeWindowFn) ! {
+	_ = lease
+	_ = f
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut lease NativeWindowLease) with_x11(f X11NativeWindowFn) ! {
+	_ = lease
+	_ = f
+	return error(err_multiwindow_not_enabled)
+}
+
+pub fn (mut lease NativeWindowLease) with_wayland(f WaylandNativeWindowFn) ! {
+	_ = lease
+	_ = f
 	return error(err_multiwindow_not_enabled)
 }
 

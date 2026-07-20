@@ -72,8 +72,17 @@ pub fn (mut app App) seal_window_destroy(ticket WindowDestroyTicket) ! {
 	if message := app.take_internal_fault(.teardown_seal) {
 		return error(message)
 	}
-	app.windows[index].destroy_stage = .sealed
+	plan := if app.windows[index].services_cancelled {
+		WindowServiceCancellationPlan{}
+	} else {
+		app.prepare_window_service_cancellation_locked(ticket.window)!
+	}
 	app.seal_render_window_close_locked(ticket.window)!
+	if !app.windows[index].services_cancelled {
+		app.commit_window_service_cancellation_locked(plan)
+		app.windows[index].services_cancelled = true
+	}
+	app.windows[index].destroy_stage = .sealed
 }
 
 // seal_window_destroy_terminal_for_stop is the irreversible fallback used only
@@ -102,14 +111,23 @@ fn (mut app App) seal_window_destroy_terminal_locked(id WindowId) !WindowDestroy
 	return app.seal_window_destroy_terminal_index_locked(id.slot)
 }
 
-fn (mut app App) seal_window_destroy_terminal_index_locked(index int) WindowDestroyTicket {
+fn (mut app App) seal_window_destroy_terminal_index_locked(index int) !WindowDestroyTicket {
 	mut slot := &app.windows[index]
 	id := slot.id
 	serial := terminal_destroy_serial(slot)
+	plan := if slot.services_cancelled {
+		WindowServiceCancellationPlan{}
+	} else {
+		app.prepare_window_service_cancellation_locked(id)!
+	}
+	app.seal_render_window_terminal_locked(id)
+	if !slot.services_cancelled {
+		app.commit_window_service_cancellation_locked(plan)
+		slot.services_cancelled = true
+	}
 	slot.destroy_stage = .sealed
 	slot.destroy_serial = serial
 	slot.backend_destroyed = false
-	app.seal_render_window_terminal_locked(id)
 	return WindowDestroyTicket{
 		app_instance: app.instance_id
 		window:       id
@@ -155,6 +173,10 @@ pub fn (mut app App) finish_window_destroy(ticket WindowDestroyTicket, prior_err
 		}
 		return err
 	}
+	app.services.ensure_no_active_borrows(ticket.window) or {
+		app.state_mutex.unlock()
+		return err
+	}
 	backend_destroyed := app.windows[index].backend_destroyed
 	mut destroy_event_delivery_token := u64(0)
 	if !app.windows[index].destroy_event_queued && !app.windows[index].destroy_event_emitted {
@@ -174,6 +196,7 @@ pub fn (mut app App) finish_window_destroy(ticket WindowDestroyTicket, prior_err
 	if index < app.windows.len && app.windows[index].id == ticket.window
 		&& app.windows[index].destroy_serial == ticket.serial {
 		mut slot := &app.windows[index]
+		app.services.remove_window(ticket.window) or { errors << err.msg() }
 		slot.status = .destroyed
 		slot.destroy_stage = .finished
 		slot.backend_destroyed = backend_destroyed
@@ -479,7 +502,11 @@ pub fn (mut app App) finish_stop(ticket AppStopTicket, prior_errors []string) ! 
 
 		// This is the final core guard. Higher layers get the same fallback earlier so
 		// their cleanup callbacks still run while renderer/native state is available.
-		for destroy_ticket in app.seal_remaining_windows_terminal_for_stop() {
+		terminal_tickets := app.seal_remaining_windows_terminal_for_stop() or {
+			errors << err.msg()
+			[]WindowDestroyTicket{}
+		}
+		for destroy_ticket in terminal_tickets {
 			app.finish_window_destroy(destroy_ticket, []string{}) or { errors << err.msg() }
 		}
 		pending_backend_error := app.backend.retained_delivery_error_for_stop()
@@ -538,27 +565,34 @@ fn (app &App) return_stop_terminal() ! {
 	}
 }
 
-fn (app &App) live_window_ids_for_stop() []WindowId {
+fn (app &App) live_window_ids_for_stop() ![]WindowId {
 	app.state_mutex.lock()
+	defer {
+		app.state_mutex.unlock()
+	}
 	mut ids := []WindowId{}
-	for slot in app.windows {
+	for id in app.services.child_first_all()! {
+		slot := app.windows[id.slot]
 		if slot.status == .alive && slot.destroy_stage in [.none, .prepared] {
 			ids << slot.id
 		}
 	}
-	app.state_mutex.unlock()
 	return ids
 }
 
-fn (mut app App) seal_remaining_windows_terminal_for_stop() []WindowDestroyTicket {
+fn (mut app App) seal_remaining_windows_terminal_for_stop() ![]WindowDestroyTicket {
 	app.state_mutex.lock()
+	defer {
+		app.state_mutex.unlock()
+	}
 	mut tickets := []WindowDestroyTicket{}
-	for i, slot in app.windows {
+	for id in app.services.child_first_all()! {
+		i := id.slot
+		slot := app.windows[i]
 		if slot.status == .alive && slot.destroy_stage != .finished {
-			tickets << app.seal_window_destroy_terminal_index_locked(i)
+			tickets << app.seal_window_destroy_terminal_index_locked(i)!
 		}
 	}
-	app.state_mutex.unlock()
 	return tickets
 }
 

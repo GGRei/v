@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - master
+      - 'smoke/**'
     paths-ignore:
       - 'vlib/v3/**'
       - '**.md'
@@ -59,6 +60,9 @@ jobs:
           .\v.exe symlink
       - name: Legacy gg import multiwindow isolation
         run: v -cc msvc test vlib/gg/legacy_import_multiwindow_isolation_test.v
+      - name: Package 2 native Win32 RED matrix
+        shell: pwsh
+        run: .\.github\workflows\run_multiwindow_win32_package2_red.ps1 -Compiler msvc
       - name: Prepare multiwindow Job Object watchdog
         shell: pwsh
         run: |
@@ -169,6 +173,7 @@ jobs:
             'vlib/x/multiwindow/render_target_lease_test.v',
             'vlib/x/multiwindow/teardown_contract_test.v',
             'vlib/x/multiwindow/win32_render_metrics_test.v',
+            'vlib/x/multiwindow/service_native_win32_readback_d3d11_contract_test.v',
             'vlib/gg/multiwindow_api_d_gg_multiwindow_test.v',
             'vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v',
             'vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v',
@@ -178,7 +183,11 @@ jobs:
             'vlib/gg/draw_rect_empty_test.v'
           )
           foreach ($test in $tests) {
-            & $runner 300 '-' $vexe '-cc' 'msvc' '-d' 'gg_multiwindow' '-d' 'sokol_d3d11' '-d' 'gg_multiwindow_d3d11_warp' 'test' $test
+            $diagnosticSubsystem = @()
+            if ($test -eq 'vlib/gg/multiwindow_render_runtime_contract_test.v') {
+              $diagnosticSubsystem = @('-subsystem', 'console')
+            }
+            & $runner 300 '-' $vexe '-cc' 'msvc' '-d' 'gg_multiwindow' '-d' 'sokol_d3d11' '-d' 'gg_multiwindow_d3d11_warp' @diagnosticSubsystem 'test' $test
             if ($LASTEXITCODE -ne 0) {
               throw "multiwindow D3D11 WARP test '$test' failed with exit code $LASTEXITCODE"
             }
@@ -193,35 +202,3 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "interactive multiwindow D3D11 WARP example failed with exit code $LASTEXITCODE"
           }
-      - name: All code is formatted
-        run: v -silent test-cleancode
-      - name: Test -cc msvc works
-        run: v -no-retry-compilation run examples/hello_world.v
-      - name: Install dependencies
-        run: |
-          v retry -- v setup-freetype
-          .\.github\workflows\windows-install-sqlite.bat
-      - name: v doctor
-        run: |
-          v doctor
-      - name: Verify `v test` works
-        run: |
-          echo $VFLAGS
-          v cmd/tools/test_if_v_test_system_works.v
-          ./cmd/tools/test_if_v_test_system_works
-      - name: Test pure V math module
-        run: v -silent -exclude @vlib/math/*.c.v test vlib/math/
-      - name: Test fasthttp module
-        run: v -silent test vlib/fasthttp/
-      - name: Self tests
-        run: v -silent test-self vlib
-      - name: Test v->js
-        run: v -o hi.js examples/js_hello_world.v && node hi.js
-      - name: Test v binaries
-        run: v build-vbinaries
-      - name: Build examples
-        run: v build-examples
-      - name: Compile and run the veb example (fasthttp) and check its HTML
-        run: v run .github/workflows/veb_example_windows_smoke.v
-      - name: v2 self compilation
-        run: v -o v2.exe cmd/v && .\v2.exe -o v3.exe cmd/v

@@ -70,6 +70,8 @@ pub enum InputEventKind {
 pub enum QueuedEventKind {
 	lifecycle
 	input
+	service
+	readback
 }
 
 const input_event_invalid_mouse_button = 256
@@ -107,6 +109,10 @@ pub enum CursorShape {
 	nwse_resize
 	grab
 	grabbing
+	text
+	crosshair
+	not_allowed
+	resize_all
 }
 
 // WindowId is an opaque generation-checked handle to a window.
@@ -135,6 +141,7 @@ pub:
 	backend          BackendKind = .mock
 	queue_size       int         = 128
 	require_renderer bool
+	app_id           string
 }
 
 // WindowConfig describes one window at creation time.
@@ -153,6 +160,8 @@ pub:
 	fullscreen   bool
 	sample_count int              = 1
 	redraw_mode  RenderRedrawMode = .on_demand
+	owner        ?WindowId
+	modal        bool
 	// render_workload is set by the gg facade. A window without work is never
 	// claimed merely because it was exposed or marked dirty.
 	render_workload bool
@@ -259,9 +268,12 @@ pub:
 pub struct QueuedEvent {
 	delivery_token u64
 pub:
+	sequence  u64
 	kind      QueuedEventKind
 	lifecycle Event
 	input     InputEvent
+	service   ServiceEvent
+	readback  ServiceReadbackResult
 }
 
 @[markused]
@@ -283,17 +295,37 @@ fn queued_input_event(event InputEvent) QueuedEvent {
 fn queued_event_with_delivery_token(event QueuedEvent, delivery_token u64) QueuedEvent {
 	return QueuedEvent{
 		delivery_token: delivery_token
+		sequence:       delivery_token
 		kind:           event.kind
 		lifecycle:      event.lifecycle
 		input:          event.input
+		service:        event.service
+		readback:       event.readback
 	}
 }
 
 fn queued_event_without_delivery_token(event QueuedEvent) QueuedEvent {
 	return QueuedEvent{
+		sequence:  event.sequence
 		kind:      event.kind
 		lifecycle: event.lifecycle
 		input:     event.input
+		service:   event.service
+		readback:  event.readback
+	}
+}
+
+fn queued_service_event(event ServiceEvent) QueuedEvent {
+	return QueuedEvent{
+		kind:    .service
+		service: event
+	}
+}
+
+fn queued_readback_event(event ServiceReadbackResult) QueuedEvent {
+	return QueuedEvent{
+		kind:     .readback
+		readback: event
 	}
 }
 
@@ -317,6 +349,7 @@ mut:
 	teardown_notice_pending bool
 	destroy_event_queued    bool
 	destroy_event_ready     bool
+	services_cancelled      bool
 }
 
 fn window_size_for_config(config WindowConfig, width int, height int) WindowSize {

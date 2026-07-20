@@ -384,7 +384,7 @@ fn test_input_event_default_mouse_button_is_invalid() {
 	assert source.contains('mouse_button       int = input_event_invalid_mouse_button')
 }
 
-fn test_drain_input_events_does_not_consume_lifecycle_events() {
+fn test_specialized_input_drain_does_not_overtake_lifecycle_events() {
 	mut app := new_app()!
 	win := app.create_window(title: 'Lifecycle remains')!
 
@@ -397,14 +397,16 @@ fn test_drain_input_events_does_not_consume_lifecycle_events() {
 
 	assert app.poll_events()! == 1
 	input_events := app.drain_input_events()!
-	assert input_events.len == 1
-	assert input_events[0].kind == .mouse_move
-	assert input_events[0].window_id == win
+	assert input_events.len == 0
 
 	lifecycle_events := app.drain_events()!
 	assert lifecycle_events.len == 1
 	assert lifecycle_events[0].kind == .window_created
 	assert lifecycle_events[0].window_id == win
+	remaining_input := app.drain_input_events()!
+	assert remaining_input.len == 1
+	assert remaining_input[0].kind == .mouse_move
+	assert remaining_input[0].window_id == win
 	assert app.drain_events()!.len == 0
 	assert app.drain_input_events()!.len == 0
 	app.stop()!
@@ -2381,14 +2383,17 @@ fn test_wayland_capabilities_for_backend_do_not_require_display_on_linux() {
 	}
 }
 
-fn test_wayland_hidden_windows_are_rejected_before_mapping() {
+fn test_wayland_hidden_windows_are_created_for_later_mapping() {
 	wayland_source := multiwindow_source_file('wayland_backend.c.v')
 	create_window_body :=
 		wayland_source.all_after('fn (mut backend WaylandBackend) create_window').all_before('fn (mut backend WaylandBackend) destroy_window')
-	assert create_window_body.contains('if !config.visible')
-	assert create_window_body.contains('return error(err_capability_unsupported)')
-	assert_source_order(create_window_body, 'if !config.visible',
-		'surface := C.wl_compositor_create_surface')
+	assert create_window_body.contains('requested_visible:   config.visible')
+	assert create_window_body.contains('else if !config.visible')
+	assert_source_order(create_window_body, 'else if !config.visible',
+		'record.enqueue_service_state(.hide)')
+	assert wayland_source.contains('fn (mut backend WaylandBackend) service_show_window')
+	assert wayland_source.contains('fn (mut backend WaylandBackend) service_hide_window')
+	assert wayland_source.contains('C.v_multiwindow_wayland_unmap_surface')
 	assert_source_order(create_window_body, 'C.wl_surface_commit(surface)',
 		'backend.attempt_wayland_flush(window_seed)')
 	assert_source_order(create_window_body, 'backend.attempt_wayland_flush(window_seed)',

@@ -13,10 +13,26 @@
 #include <unistd.h>
 #include <wayland-client.h>
 #include <wayland-egl.h>
+#include "pointer-constraints-unstable-v1-client-protocol.h"
+#include "relative-pointer-unstable-v1-client-protocol.h"
+#include "xdg-foreign-unstable-v2-client-protocol.h"
+#include "fractional-scale-v1-client-protocol.h"
+#include "viewporter-client-protocol.h"
 #include "linux_egl_native_helpers.h"
 
 #define V_MULTIWINDOW_WAYLAND_ANCHOR_RELEASE_PROTOCOL_DESTROY UINT64_C(1)
 #define V_MULTIWINDOW_WAYLAND_ANCHOR_RELEASE_LOCAL_PROXY_DESTROY UINT64_C(2)
+
+void v_multiwindow_wayland_output_geometry(void *data, void *output, int x, int y,
+	int physical_width, int physical_height, int subpixel, char *make, char *model,
+	int transform);
+void v_multiwindow_wayland_output_mode(void *data, void *output, uint32_t flags,
+	int width, int height, int refresh);
+void v_multiwindow_wayland_output_done(void *data, void *output);
+void v_multiwindow_wayland_output_scale(void *data, void *output, int factor);
+void v_multiwindow_wayland_output_name(void *data, void *output, char *name);
+void v_multiwindow_wayland_output_description(void *data, void *output,
+	char *description);
 
 static inline void v_multiwindow_wayland_result(VMultiwindowNativePrimitive *out_result,
 		int result, int native_errno) {
@@ -183,6 +199,13 @@ void v_multiwindow_wayland_xdg_wm_base_ping(void *data, void *wm_base, uint32_t 
 void v_multiwindow_wayland_xdg_surface_configure(void *data, void *xdg_surface, uint32_t serial);
 void v_multiwindow_wayland_xdg_toplevel_configure(void *data, void *toplevel, int width, int height, struct wl_array *states);
 void v_multiwindow_wayland_xdg_toplevel_close(void *data, void *toplevel);
+void v_multiwindow_wayland_surface_enter(void *data, void *surface, void *output);
+void v_multiwindow_wayland_surface_leave(void *data, void *surface, void *output);
+void v_multiwindow_wayland_locked_pointer_locked(void *data, void *locked_pointer);
+void v_multiwindow_wayland_locked_pointer_unlocked(void *data, void *locked_pointer);
+void v_multiwindow_wayland_relative_pointer_motion(void *data, void *relative_pointer,
+	uint32_t time_hi, uint32_t time_lo, double dx, double dy,
+	double dx_unaccelerated, double dy_unaccelerated);
 void v_multiwindow_wayland_xdg_toplevel_decoration_configure(void *data, void *decoration, uint32_t mode);
 void v_multiwindow_wayland_seat_capabilities(void *data, void *seat, uint32_t caps);
 void v_multiwindow_wayland_seat_name(void *data, void *seat, char *name);
@@ -212,7 +235,14 @@ void v_multiwindow_wayland_data_device_leave(void *data, void *device);
 void v_multiwindow_wayland_data_device_motion(void *data, void *device, uint32_t time, double x, double y);
 void v_multiwindow_wayland_data_device_drop(void *data, void *device);
 void v_multiwindow_wayland_data_device_selection(void *data, void *device, void *offer);
+void v_multiwindow_wayland_data_source_target(void *data, void *source, char *mime_type);
+void v_multiwindow_wayland_data_source_send(void *data, void *source, char *mime_type, int32_t fd);
+void v_multiwindow_wayland_data_source_cancelled(void *data, void *source);
 void v_multiwindow_wayland_buffer_release(void *data, void *buffer);
+void v_multiwindow_wayland_exported_handle(void *data, void *exported,
+	char *handle);
+void v_multiwindow_wayland_fractional_scale_preferred(void *data,
+	void *fractional_scale, uint32_t scale);
 
 #if !defined(XDG_SHELL_CLIENT_PROTOCOL_H)
 struct xdg_wm_base;
@@ -257,17 +287,32 @@ struct xdg_toplevel_listener {
 #ifndef XDG_TOPLEVEL_SET_TITLE
 #define XDG_TOPLEVEL_SET_TITLE 2
 #endif
+#ifndef XDG_TOPLEVEL_SET_PARENT
+#define XDG_TOPLEVEL_SET_PARENT 1
+#endif
 #ifndef XDG_TOPLEVEL_SET_APP_ID
 #define XDG_TOPLEVEL_SET_APP_ID 3
 #endif
 #ifndef XDG_TOPLEVEL_SET_MAX_SIZE
 #define XDG_TOPLEVEL_SET_MAX_SIZE 7
 #endif
+#ifndef XDG_TOPLEVEL_SET_MAXIMIZED
+#define XDG_TOPLEVEL_SET_MAXIMIZED 9
+#endif
+#ifndef XDG_TOPLEVEL_UNSET_MAXIMIZED
+#define XDG_TOPLEVEL_UNSET_MAXIMIZED 10
+#endif
 #ifndef XDG_TOPLEVEL_SET_MIN_SIZE
 #define XDG_TOPLEVEL_SET_MIN_SIZE 8
 #endif
 #ifndef XDG_TOPLEVEL_SET_FULLSCREEN
 #define XDG_TOPLEVEL_SET_FULLSCREEN 11
+#endif
+#ifndef XDG_TOPLEVEL_UNSET_FULLSCREEN
+#define XDG_TOPLEVEL_UNSET_FULLSCREEN 12
+#endif
+#ifndef XDG_TOPLEVEL_SET_MINIMIZED
+#define XDG_TOPLEVEL_SET_MINIMIZED 13
 #endif
 #ifndef XDG_TOPLEVEL_MOVE
 #define XDG_TOPLEVEL_MOVE 5
@@ -525,8 +570,96 @@ static void v_multiwindow_wayland_data_device_selection_trampoline(void *data, s
 	v_multiwindow_wayland_data_device_selection(data, (void *)device, (void *)offer);
 }
 
+static void v_multiwindow_wayland_data_source_target_trampoline(void *data, struct wl_data_source *source, const char *mime_type) {
+	v_multiwindow_wayland_data_source_target(data, (void *)source, (char *)mime_type);
+}
+
+static void v_multiwindow_wayland_data_source_send_trampoline(void *data, struct wl_data_source *source, const char *mime_type, int32_t fd) {
+	v_multiwindow_wayland_data_source_send(data, (void *)source, (char *)mime_type, fd);
+}
+
+static void v_multiwindow_wayland_data_source_cancelled_trampoline(void *data, struct wl_data_source *source) {
+	v_multiwindow_wayland_data_source_cancelled(data, (void *)source);
+}
+
+static void v_multiwindow_wayland_data_source_dnd_drop_performed_trampoline(void *data, struct wl_data_source *source) {
+	(void)data;
+	(void)source;
+}
+
+static void v_multiwindow_wayland_data_source_dnd_finished_trampoline(void *data, struct wl_data_source *source) {
+	(void)data;
+	(void)source;
+}
+
+static void v_multiwindow_wayland_data_source_action_trampoline(void *data, struct wl_data_source *source, uint32_t action) {
+	(void)data;
+	(void)source;
+	(void)action;
+}
+
 static void v_multiwindow_wayland_xdg_toplevel_decoration_configure_trampoline(void *data, struct zxdg_toplevel_decoration_v1 *decoration, uint32_t mode) {
 	v_multiwindow_wayland_xdg_toplevel_decoration_configure(data, (void *)decoration, mode);
+}
+
+static void v_multiwindow_wayland_surface_enter_trampoline(void *data,
+		struct wl_surface *surface, struct wl_output *output) {
+	v_multiwindow_wayland_surface_enter(data, (void *)surface, (void *)output);
+}
+
+static void v_multiwindow_wayland_surface_leave_trampoline(void *data,
+		struct wl_surface *surface, struct wl_output *output) {
+	v_multiwindow_wayland_surface_leave(data, (void *)surface, (void *)output);
+}
+
+static void v_multiwindow_wayland_locked_pointer_locked_trampoline(void *data,
+		struct zwp_locked_pointer_v1 *locked_pointer) {
+	v_multiwindow_wayland_locked_pointer_locked(data, (void *)locked_pointer);
+}
+
+static void v_multiwindow_wayland_locked_pointer_unlocked_trampoline(void *data,
+		struct zwp_locked_pointer_v1 *locked_pointer) {
+	v_multiwindow_wayland_locked_pointer_unlocked(data, (void *)locked_pointer);
+}
+
+static void v_multiwindow_wayland_relative_pointer_motion_trampoline(void *data,
+		struct zwp_relative_pointer_v1 *relative_pointer, uint32_t time_hi,
+		uint32_t time_lo, wl_fixed_t dx, wl_fixed_t dy, wl_fixed_t dx_unaccelerated,
+		wl_fixed_t dy_unaccelerated) {
+	v_multiwindow_wayland_relative_pointer_motion(data, (void *)relative_pointer,
+		time_hi, time_lo, wl_fixed_to_double(dx), wl_fixed_to_double(dy),
+		wl_fixed_to_double(dx_unaccelerated), wl_fixed_to_double(dy_unaccelerated));
+}
+
+static void v_multiwindow_wayland_output_geometry_trampoline(void *data, struct wl_output *output,
+		int32_t x, int32_t y, int32_t physical_width, int32_t physical_height, int32_t subpixel,
+		const char *make, const char *model, int32_t transform) {
+	v_multiwindow_wayland_output_geometry(data, (void *)output, x, y, physical_width,
+		physical_height, subpixel, (char *)make, (char *)model, transform);
+}
+
+static void v_multiwindow_wayland_output_mode_trampoline(void *data, struct wl_output *output,
+		uint32_t flags, int32_t width, int32_t height, int32_t refresh) {
+	v_multiwindow_wayland_output_mode(data, (void *)output, flags, width, height, refresh);
+}
+
+static void v_multiwindow_wayland_output_done_trampoline(void *data, struct wl_output *output) {
+	v_multiwindow_wayland_output_done(data, (void *)output);
+}
+
+static void v_multiwindow_wayland_output_scale_trampoline(void *data, struct wl_output *output,
+		int32_t factor) {
+	v_multiwindow_wayland_output_scale(data, (void *)output, factor);
+}
+
+static void v_multiwindow_wayland_output_name_trampoline(void *data, struct wl_output *output,
+		const char *name) {
+	v_multiwindow_wayland_output_name(data, (void *)output, (char *)name);
+}
+
+static void v_multiwindow_wayland_output_description_trampoline(void *data,
+		struct wl_output *output, const char *description) {
+	v_multiwindow_wayland_output_description(data, (void *)output, (char *)description);
 }
 
 static void v_multiwindow_wayland_buffer_release_trampoline(void *data, struct wl_buffer *buffer) {
@@ -556,6 +689,20 @@ static const struct xdg_wm_base_listener v_multiwindow_wayland_xdg_wm_base_liste
 
 static const struct xdg_surface_listener v_multiwindow_wayland_xdg_surface_listener = {
 	v_multiwindow_wayland_xdg_surface_configure_trampoline,
+};
+
+static const struct wl_surface_listener v_multiwindow_wayland_surface_listener = {
+	v_multiwindow_wayland_surface_enter_trampoline,
+	v_multiwindow_wayland_surface_leave_trampoline,
+};
+
+static const struct zwp_locked_pointer_v1_listener v_multiwindow_wayland_locked_pointer_listener = {
+	v_multiwindow_wayland_locked_pointer_locked_trampoline,
+	v_multiwindow_wayland_locked_pointer_unlocked_trampoline,
+};
+
+static const struct zwp_relative_pointer_v1_listener v_multiwindow_wayland_relative_pointer_listener = {
+	v_multiwindow_wayland_relative_pointer_motion_trampoline,
 };
 
 static const struct xdg_toplevel_listener v_multiwindow_wayland_xdg_toplevel_listener = {
@@ -614,6 +761,15 @@ static const struct wl_data_device_listener v_multiwindow_wayland_data_device_li
 	v_multiwindow_wayland_data_device_selection_trampoline,
 };
 
+static const struct wl_data_source_listener v_multiwindow_wayland_data_source_listener = {
+	v_multiwindow_wayland_data_source_target_trampoline,
+	v_multiwindow_wayland_data_source_send_trampoline,
+	v_multiwindow_wayland_data_source_cancelled_trampoline,
+	v_multiwindow_wayland_data_source_dnd_drop_performed_trampoline,
+	v_multiwindow_wayland_data_source_dnd_finished_trampoline,
+	v_multiwindow_wayland_data_source_action_trampoline,
+};
+
 static const struct wl_buffer_listener v_multiwindow_wayland_buffer_listener = {
 	v_multiwindow_wayland_buffer_release_trampoline,
 };
@@ -626,12 +782,45 @@ static const struct zxdg_toplevel_decoration_v1_listener v_multiwindow_wayland_x
 	v_multiwindow_wayland_xdg_toplevel_decoration_configure_trampoline,
 };
 
+static void v_multiwindow_wayland_exported_handle_trampoline(void *data,
+		struct zxdg_exported_v2 *exported, const char *handle) {
+	v_multiwindow_wayland_exported_handle(data, (void *)exported, (char *)handle);
+}
+
+static const struct zxdg_exported_v2_listener v_multiwindow_wayland_exported_listener = {
+	v_multiwindow_wayland_exported_handle_trampoline,
+};
+
+static void v_multiwindow_wayland_fractional_scale_preferred_trampoline(
+		void *data, struct wp_fractional_scale_v1 *fractional_scale,
+		uint32_t scale) {
+	v_multiwindow_wayland_fractional_scale_preferred(data,
+		(void *)fractional_scale, scale);
+}
+
+static const struct wp_fractional_scale_v1_listener v_multiwindow_wayland_fractional_scale_listener = {
+	v_multiwindow_wayland_fractional_scale_preferred_trampoline,
+};
+
+static const struct wl_output_listener v_multiwindow_wayland_output_listener = {
+	v_multiwindow_wayland_output_geometry_trampoline,
+	v_multiwindow_wayland_output_mode_trampoline,
+	v_multiwindow_wayland_output_done_trampoline,
+	v_multiwindow_wayland_output_scale_trampoline,
+	v_multiwindow_wayland_output_name_trampoline,
+	v_multiwindow_wayland_output_description_trampoline,
+};
+
 static inline uint32_t v_multiwindow_wayland_compositor_bind_version(uint32_t version) {
 	return version < 4 ? version : 4;
 }
 
 static inline uint32_t v_multiwindow_wayland_seat_bind_version(uint32_t version) {
 	return version < 5 ? version : 5;
+}
+
+static inline uint32_t v_multiwindow_wayland_output_bind_version(uint32_t version) {
+	return version < 4 ? version : 4;
 }
 
 static uint64_t v_multiwindow_wayland_event_sequence = 1;
@@ -677,6 +866,24 @@ static inline void *v_multiwindow_wayland_bind_cursor_shape_manager(struct wl_re
 	return wl_registry_bind(registry, name, &v_multiwindow_wp_cursor_shape_manager_v1_interface, 1);
 }
 
+static inline void *v_multiwindow_wayland_bind_relative_pointer_manager(
+		struct wl_registry *registry, uint32_t name, uint32_t version) {
+	if (version < 1) {
+		return NULL;
+	}
+	return wl_registry_bind(registry, name,
+		&zwp_relative_pointer_manager_v1_interface, 1);
+}
+
+static inline void *v_multiwindow_wayland_bind_pointer_constraints(
+		struct wl_registry *registry, uint32_t name, uint32_t version) {
+	if (version < 1) {
+		return NULL;
+	}
+	return wl_registry_bind(registry, name,
+		&zwp_pointer_constraints_v1_interface, 1);
+}
+
 static inline void *v_multiwindow_wayland_bind_seat(struct wl_registry *registry, uint32_t name, uint32_t version) {
 	return wl_registry_bind(registry, name, &wl_seat_interface, v_multiwindow_wayland_seat_bind_version(version));
 }
@@ -692,8 +899,52 @@ static inline void *v_multiwindow_wayland_bind_shm(struct wl_registry *registry,
 	return wl_registry_bind(registry, name, &wl_shm_interface, 1);
 }
 
+static inline void *v_multiwindow_wayland_bind_xdg_foreign_exporter(
+		struct wl_registry *registry, uint32_t name, uint32_t version) {
+	if (version < 1) {
+		return NULL;
+	}
+	return wl_registry_bind(registry, name, &zxdg_exporter_v2_interface, 1);
+}
+
+static inline void *v_multiwindow_wayland_bind_fractional_scale_manager(
+		struct wl_registry *registry, uint32_t name, uint32_t version) {
+	if (version < 1) {
+		return NULL;
+	}
+	return wl_registry_bind(registry, name,
+		&wp_fractional_scale_manager_v1_interface, 1);
+}
+
+static inline void *v_multiwindow_wayland_bind_viewporter(
+		struct wl_registry *registry, uint32_t name, uint32_t version) {
+	if (version < 1) {
+		return NULL;
+	}
+	return wl_registry_bind(registry, name, &wp_viewporter_interface, 1);
+}
+
+static inline void *v_multiwindow_wayland_bind_output(struct wl_registry *registry, uint32_t name,
+		uint32_t version) {
+	return wl_registry_bind(registry, name, &wl_output_interface,
+		v_multiwindow_wayland_output_bind_version(version));
+}
+
 static inline int v_multiwindow_wayland_add_registry_listener(struct wl_registry *registry, void *data) {
 	return wl_registry_add_listener(registry, &v_multiwindow_wayland_registry_listener, data);
+}
+
+static inline int v_multiwindow_wayland_add_output_listener(struct wl_output *output, void *data) {
+	return wl_output_add_listener(output, &v_multiwindow_wayland_output_listener, data);
+}
+
+static inline void v_multiwindow_wayland_output_destroy(struct wl_output *output,
+		uint32_t bound_version) {
+	if (bound_version >= 3) {
+		wl_output_release(output);
+	} else {
+		wl_output_destroy(output);
+	}
 }
 
 static inline int v_multiwindow_wayland_add_xdg_wm_base_listener(struct xdg_wm_base *wm_base, void *data) {
@@ -702,6 +953,62 @@ static inline int v_multiwindow_wayland_add_xdg_wm_base_listener(struct xdg_wm_b
 
 static inline int v_multiwindow_wayland_add_xdg_surface_listener(struct xdg_surface *xdg_surface, void *data) {
 	return wl_proxy_add_listener((struct wl_proxy *)xdg_surface, (void (**)(void))&v_multiwindow_wayland_xdg_surface_listener, data);
+}
+
+static inline int v_multiwindow_wayland_add_surface_listener(struct wl_surface *surface, void *data) {
+	return wl_surface_add_listener(surface, &v_multiwindow_wayland_surface_listener, data);
+}
+
+static inline void *v_multiwindow_wayland_get_relative_pointer(
+		struct zwp_relative_pointer_manager_v1 *manager, struct wl_pointer *pointer) {
+	return (void *)zwp_relative_pointer_manager_v1_get_relative_pointer(manager, pointer);
+}
+
+static inline int v_multiwindow_wayland_add_relative_pointer_listener(
+		struct zwp_relative_pointer_v1 *relative_pointer, void *data) {
+	return zwp_relative_pointer_v1_add_listener(relative_pointer,
+		&v_multiwindow_wayland_relative_pointer_listener, data);
+}
+
+static inline void *v_multiwindow_wayland_lock_pointer(
+		struct zwp_pointer_constraints_v1 *constraints, struct wl_surface *surface,
+		struct wl_pointer *pointer) {
+	return (void *)zwp_pointer_constraints_v1_lock_pointer(constraints, surface, pointer,
+		NULL, ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT);
+}
+
+static inline int v_multiwindow_wayland_add_locked_pointer_listener(
+		struct zwp_locked_pointer_v1 *locked_pointer, void *data) {
+	return zwp_locked_pointer_v1_add_listener(locked_pointer,
+		&v_multiwindow_wayland_locked_pointer_listener, data);
+}
+
+static inline void v_multiwindow_wayland_relative_pointer_destroy(
+		struct zwp_relative_pointer_v1 *relative_pointer) {
+	if (relative_pointer != NULL) {
+		zwp_relative_pointer_v1_destroy(relative_pointer);
+	}
+}
+
+static inline void v_multiwindow_wayland_locked_pointer_destroy(
+		struct zwp_locked_pointer_v1 *locked_pointer) {
+	if (locked_pointer != NULL) {
+		zwp_locked_pointer_v1_destroy(locked_pointer);
+	}
+}
+
+static inline void v_multiwindow_wayland_relative_pointer_manager_destroy(
+		struct zwp_relative_pointer_manager_v1 *manager) {
+	if (manager != NULL) {
+		zwp_relative_pointer_manager_v1_destroy(manager);
+	}
+}
+
+static inline void v_multiwindow_wayland_pointer_constraints_destroy(
+		struct zwp_pointer_constraints_v1 *constraints) {
+	if (constraints != NULL) {
+		zwp_pointer_constraints_v1_destroy(constraints);
+	}
 }
 
 static inline int v_multiwindow_wayland_add_xdg_toplevel_listener(struct xdg_toplevel *toplevel, void *data) {
@@ -730,6 +1037,10 @@ static inline void *v_multiwindow_wayland_seat_get_touch(struct wl_seat *seat) {
 
 static inline void *v_multiwindow_wayland_data_device_manager_get_data_device(struct wl_data_device_manager *manager, struct wl_seat *seat) {
 	return (void *)wl_data_device_manager_get_data_device(manager, seat);
+}
+
+static inline void *v_multiwindow_wayland_data_device_manager_create_data_source(struct wl_data_device_manager *manager) {
+	return (void *)wl_data_device_manager_create_data_source(manager);
 }
 
 static inline void *v_multiwindow_wayland_cursor_shape_manager_get_pointer(struct wp_cursor_shape_manager_v1 *manager, struct wl_pointer *pointer) {
@@ -807,6 +1118,24 @@ static inline int v_multiwindow_wayland_add_data_offer_listener(struct wl_data_o
 	return wl_data_offer_add_listener(offer, &v_multiwindow_wayland_data_offer_listener, data);
 }
 
+static inline int v_multiwindow_wayland_add_data_source_listener(struct wl_data_source *source, void *data) {
+	return wl_data_source_add_listener(source, &v_multiwindow_wayland_data_source_listener, data);
+}
+
+static inline void v_multiwindow_wayland_data_source_offer(struct wl_data_source *source, const char *mime_type) {
+	wl_data_source_offer(source, mime_type);
+}
+
+static inline void v_multiwindow_wayland_data_source_destroy(struct wl_data_source *source) {
+	if (source != NULL) {
+		wl_data_source_destroy(source);
+	}
+}
+
+static inline void v_multiwindow_wayland_data_device_set_selection(struct wl_data_device *device, struct wl_data_source *source, uint32_t serial) {
+	wl_data_device_set_selection(device, source, serial);
+}
+
 static inline void v_multiwindow_wayland_data_offer_accept(struct wl_data_offer *offer, uint32_t serial, const char *mime_type) {
 	wl_data_offer_accept(offer, serial, mime_type);
 }
@@ -829,6 +1158,22 @@ static inline int v_multiwindow_wayland_fd_set_nonblocking(int fd) {
 
 static inline int v_multiwindow_wayland_read_would_block(void) {
 	return errno == EAGAIN || errno == EWOULDBLOCK;
+}
+
+static inline int v_multiwindow_wayland_toplevel_state_contains(
+		const struct wl_array *states, uint32_t expected) {
+	if (states == NULL || states->data == NULL ||
+		states->size % sizeof(uint32_t) != 0) {
+		return 0;
+	}
+	const uint32_t *items = (const uint32_t *)states->data;
+	const size_t count = states->size / sizeof(uint32_t);
+	for (size_t i = 0; i < count; i++) {
+		if (items[i] == expected) {
+			return 1;
+		}
+	}
+	return 0;
 }
 
 static inline void v_multiwindow_wayland_data_offer_finish(struct wl_data_offer *offer) {
@@ -927,10 +1272,109 @@ static inline int v_multiwindow_wayland_add_buffer_listener(struct wl_buffer *bu
 	return wl_buffer_add_listener(buffer, &v_multiwindow_wayland_buffer_listener, data);
 }
 
+static inline void *v_multiwindow_wayland_export_toplevel(
+		struct zxdg_exporter_v2 *exporter, struct wl_surface *surface) {
+	if (exporter == NULL || surface == NULL) {
+		return NULL;
+	}
+	return zxdg_exporter_v2_export_toplevel(exporter, surface);
+}
+
+static inline int v_multiwindow_wayland_add_exported_listener(
+		struct zxdg_exported_v2 *exported, void *data) {
+	if (exported == NULL) {
+		return -1;
+	}
+	return zxdg_exported_v2_add_listener(exported,
+		&v_multiwindow_wayland_exported_listener, data);
+}
+
+static inline void v_multiwindow_wayland_exported_destroy(
+		struct zxdg_exported_v2 *exported) {
+	if (exported != NULL) {
+		zxdg_exported_v2_destroy(exported);
+	}
+}
+
+static inline void v_multiwindow_wayland_exporter_destroy(
+		struct zxdg_exporter_v2 *exporter) {
+	if (exporter != NULL) {
+		zxdg_exporter_v2_destroy(exporter);
+	}
+}
+
+static inline void *v_multiwindow_wayland_get_fractional_scale(
+		struct wp_fractional_scale_manager_v1 *manager,
+		struct wl_surface *surface) {
+	if (manager == NULL || surface == NULL) {
+		return NULL;
+	}
+	return wp_fractional_scale_manager_v1_get_fractional_scale(manager, surface);
+}
+
+static inline int v_multiwindow_wayland_add_fractional_scale_listener(
+		struct wp_fractional_scale_v1 *fractional_scale, void *data) {
+	if (fractional_scale == NULL) {
+		return -1;
+	}
+	return wp_fractional_scale_v1_add_listener(fractional_scale,
+		&v_multiwindow_wayland_fractional_scale_listener, data);
+}
+
+static inline void v_multiwindow_wayland_fractional_scale_destroy(
+		struct wp_fractional_scale_v1 *fractional_scale) {
+	if (fractional_scale != NULL) {
+		wp_fractional_scale_v1_destroy(fractional_scale);
+	}
+}
+
+static inline void v_multiwindow_wayland_fractional_scale_manager_destroy(
+		struct wp_fractional_scale_manager_v1 *manager) {
+	if (manager != NULL) {
+		wp_fractional_scale_manager_v1_destroy(manager);
+	}
+}
+
+static inline void *v_multiwindow_wayland_get_viewport(
+		struct wp_viewporter *viewporter, struct wl_surface *surface) {
+	if (viewporter == NULL || surface == NULL) {
+		return NULL;
+	}
+	return wp_viewporter_get_viewport(viewporter, surface);
+}
+
+static inline void v_multiwindow_wayland_viewport_set_destination(
+		struct wp_viewport *viewport, int32_t width, int32_t height) {
+	if (viewport != NULL) {
+		wp_viewport_set_destination(viewport, width, height);
+	}
+}
+
+static inline void v_multiwindow_wayland_viewport_destroy(
+		struct wp_viewport *viewport) {
+	if (viewport != NULL) {
+		wp_viewport_destroy(viewport);
+	}
+}
+
+static inline void v_multiwindow_wayland_viewporter_destroy(
+		struct wp_viewporter *viewporter) {
+	if (viewporter != NULL) {
+		wp_viewporter_destroy(viewporter);
+	}
+}
+
 static inline void v_multiwindow_wayland_attach_buffer(struct wl_surface *surface, struct wl_buffer *buffer, int width, int height) {
 	if (surface != NULL && buffer != NULL) {
 		wl_surface_attach(surface, buffer, 0, 0);
 		wl_surface_damage(surface, 0, 0, width, height);
+		wl_surface_commit(surface);
+	}
+}
+
+static inline void v_multiwindow_wayland_unmap_surface(struct wl_surface *surface) {
+	if (surface != NULL) {
+		wl_surface_attach(surface, NULL, 0, 0);
 		wl_surface_commit(surface);
 	}
 }
@@ -1031,7 +1475,38 @@ static inline void v_multiwindow_wayland_xdg_toplevel_set_title(struct xdg_tople
 	wl_proxy_marshal_flags((struct wl_proxy *)toplevel, XDG_TOPLEVEL_SET_TITLE, NULL, wl_proxy_get_version((struct wl_proxy *)toplevel), 0, title);
 }
 
+#if defined(V_MULTIWINDOW_NATIVE_PROOF_TEST)
+static char v_multiwindow_wayland_last_marshaled_app_id[256];
+static uintptr_t v_multiwindow_wayland_last_parent_child;
+static uintptr_t v_multiwindow_wayland_last_parent_owner;
+
+static inline const char *v_multiwindow_wayland_get_last_marshaled_app_id(void) {
+	return v_multiwindow_wayland_last_marshaled_app_id;
+}
+
+static inline uintptr_t v_multiwindow_wayland_get_last_parent_child(void) {
+	return v_multiwindow_wayland_last_parent_child;
+}
+
+static inline uintptr_t v_multiwindow_wayland_get_last_parent_owner(void) {
+	return v_multiwindow_wayland_last_parent_owner;
+}
+#endif
+
+static inline void v_multiwindow_wayland_xdg_toplevel_set_parent(struct xdg_toplevel *toplevel, struct xdg_toplevel *parent) {
+#if defined(V_MULTIWINDOW_NATIVE_PROOF_TEST)
+	v_multiwindow_wayland_last_parent_child = (uintptr_t)toplevel;
+	v_multiwindow_wayland_last_parent_owner = (uintptr_t)parent;
+#endif
+	wl_proxy_marshal_flags((struct wl_proxy *)toplevel, XDG_TOPLEVEL_SET_PARENT, NULL, wl_proxy_get_version((struct wl_proxy *)toplevel), 0, parent);
+}
+
 static inline void v_multiwindow_wayland_xdg_toplevel_set_app_id(struct xdg_toplevel *toplevel, const char *app_id) {
+#if defined(V_MULTIWINDOW_NATIVE_PROOF_TEST)
+	snprintf(v_multiwindow_wayland_last_marshaled_app_id,
+		sizeof(v_multiwindow_wayland_last_marshaled_app_id), "%s",
+		app_id != NULL ? app_id : "");
+#endif
 	wl_proxy_marshal_flags((struct wl_proxy *)toplevel, XDG_TOPLEVEL_SET_APP_ID, NULL, wl_proxy_get_version((struct wl_proxy *)toplevel), 0, app_id);
 }
 
@@ -1045,6 +1520,22 @@ static inline void v_multiwindow_wayland_xdg_toplevel_set_max_size(struct xdg_to
 
 static inline void v_multiwindow_wayland_xdg_toplevel_set_fullscreen(struct xdg_toplevel *toplevel, struct wl_output *output) {
 	wl_proxy_marshal_flags((struct wl_proxy *)toplevel, XDG_TOPLEVEL_SET_FULLSCREEN, NULL, wl_proxy_get_version((struct wl_proxy *)toplevel), 0, output);
+}
+
+static inline void v_multiwindow_wayland_xdg_toplevel_unset_fullscreen(struct xdg_toplevel *toplevel) {
+	wl_proxy_marshal_flags((struct wl_proxy *)toplevel, XDG_TOPLEVEL_UNSET_FULLSCREEN, NULL, wl_proxy_get_version((struct wl_proxy *)toplevel), 0);
+}
+
+static inline void v_multiwindow_wayland_xdg_toplevel_set_maximized(struct xdg_toplevel *toplevel) {
+	wl_proxy_marshal_flags((struct wl_proxy *)toplevel, XDG_TOPLEVEL_SET_MAXIMIZED, NULL, wl_proxy_get_version((struct wl_proxy *)toplevel), 0);
+}
+
+static inline void v_multiwindow_wayland_xdg_toplevel_unset_maximized(struct xdg_toplevel *toplevel) {
+	wl_proxy_marshal_flags((struct wl_proxy *)toplevel, XDG_TOPLEVEL_UNSET_MAXIMIZED, NULL, wl_proxy_get_version((struct wl_proxy *)toplevel), 0);
+}
+
+static inline void v_multiwindow_wayland_xdg_toplevel_set_minimized(struct xdg_toplevel *toplevel) {
+	wl_proxy_marshal_flags((struct wl_proxy *)toplevel, XDG_TOPLEVEL_SET_MINIMIZED, NULL, wl_proxy_get_version((struct wl_proxy *)toplevel), 0);
 }
 
 static inline void v_multiwindow_wayland_xdg_toplevel_move(struct xdg_toplevel *toplevel, struct wl_seat *seat, uint32_t serial) {

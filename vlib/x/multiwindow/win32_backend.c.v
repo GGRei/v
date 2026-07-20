@@ -663,6 +663,12 @@ fn new_win32_backend() Win32Backend {
 	return Win32Backend{}
 }
 
+fn (backend &Win32Backend) cursor_support(shape CursorShape) ServiceSupportLevel {
+	_ = backend
+	_ = shape
+	return .available
+}
+
 fn (backend &Win32Backend) ensure_supported() ! {
 	$if windows {
 		return

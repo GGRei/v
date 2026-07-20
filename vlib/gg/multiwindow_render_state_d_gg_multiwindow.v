@@ -1132,12 +1132,49 @@ fn (runtime &MultiWindowRenderRuntime) attachments_support_sgl(id WindowAttachme
 	return recipe.colors.len == 1 && recipe.resolves.len <= 1
 }
 
+fn (runtime &MultiWindowRenderRuntime) readback_images_for_attachments(id WindowAttachmentsId, window WindowId) ![]WindowImageId {
+	runtime.mutex.lock()
+	defer {
+		runtime.mutex.unlock()
+	}
+	index :=
+		runtime.resources.validate(attachments_resource_key(id), .attachments, window, .window)!
+	recipe := runtime.resources.slots[index].attachments_recipe
+	mut images := []WindowImageId{cap: recipe.colors.len}
+	for key in recipe.colors {
+		images << window_image_id(key)
+	}
+	return images
+}
+
 fn (runtime &MultiWindowRenderRuntime) validate_readback_image(id WindowImageId, window WindowId) ! {
 	runtime.mutex.lock()
 	defer {
 		runtime.mutex.unlock()
 	}
 	runtime.resources.validate(image_resource_key(id), .image, window, .window)!
+}
+
+struct MultiWindowReadbackImageSnapshot {
+	image gfx.Image
+	desc  gfx.ImageDesc
+}
+
+fn (runtime &MultiWindowRenderRuntime) readback_image_snapshot(id WindowImageId, window WindowId) !MultiWindowReadbackImageSnapshot {
+	runtime.mutex.lock()
+	defer {
+		runtime.mutex.unlock()
+	}
+	index := runtime.resources.validate(image_resource_key(id), .image, window, .window)!
+	slot := runtime.resources.slots[index]
+	if slot.image.id == 0 || slot.image_desc.width <= 0 || slot.image_desc.height <= 0
+		|| !slot.image_desc.render_target || slot.image_desc.sample_count != 1 {
+		return error(err_multiwindow_render_readback_unsupported)
+	}
+	return MultiWindowReadbackImageSnapshot{
+		image: slot.image
+		desc:  slot.image_desc
+	}
 }
 
 fn (mut runtime MultiWindowRenderRuntime) finish_window_lease(id WindowId, lease_epoch u64, phase MultiWindowRenderPhase) ! {
