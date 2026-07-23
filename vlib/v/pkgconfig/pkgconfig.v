@@ -66,6 +66,9 @@ pub mut:
 	requires_private []string
 	conflicts        []string
 	loaded           []string
+mut:
+	define_prefix_source string
+	define_prefix_target string
 }
 
 fn (mut pc PkgConfig) parse_list_no_comma(s string) []string {
@@ -74,7 +77,8 @@ fn (mut pc PkgConfig) parse_list_no_comma(s string) []string {
 
 fn (mut pc PkgConfig) parse_list(s string) []string {
 	operators := ['=', '<', '>', '>=', '<=']
-	r := pc.parse_line(s.replace('  ', ' ').replace(', ', ' ')).split(' ')
+	value := pc.parse_line(s.replace('  ', ' ').replace(', ', ' '))
+	r := split_list_with_protected_fragment(value, pc.define_prefix_target)
 	mut res := []string{}
 	mut skip := false
 	for a in r {
@@ -88,6 +92,32 @@ fn (mut pc PkgConfig) parse_list(s string) []string {
 		}
 	}
 	return res
+}
+
+fn split_list_with_protected_fragment(value string, protected string) []string {
+	if protected == '' || !protected.contains(' ') || !value.contains(protected) {
+		return value.split(' ')
+	}
+	mut fragments := []string{}
+	mut current := []u8{}
+	mut i := 0
+	for i < value.len {
+		if value[i..].starts_with(protected) {
+			current << protected.bytes()
+			i += protected.len
+			continue
+		}
+		if value[i] == ` ` {
+			fragments << current.bytestr()
+			current = []u8{}
+			i++
+			continue
+		}
+		current << value[i]
+		i++
+	}
+	fragments << current.bytestr()
+	return fragments
 }
 
 fn fold_static_continued_lines(data string) []string {
@@ -182,13 +212,19 @@ fn normalize_static_link_field(s string) string {
 	return normalized.bytestr()
 }
 
-fn tokenize_static_list(value string) ![]string {
+fn tokenize_static_list_with_protected_fragment(value string, protected string) ![]string {
 	mut fragments := []string{}
 	mut current := []u8{}
 	mut quote := u8(0)
 	mut has_fragment := false
 	mut i := 0
 	for i < value.len {
+		if protected != '' && value[i..].starts_with(protected) {
+			current << protected.bytes()
+			has_fragment = true
+			i += protected.len
+			continue
+		}
 		ch := value[i]
 		if quote == 0 && ch in [` `, `\t`, `\r`, `\n`] {
 			if has_fragment {
@@ -239,10 +275,14 @@ fn tokenize_static_list(value string) ![]string {
 	return fragments
 }
 
+fn tokenize_static_list(value string) ![]string {
+	return tokenize_static_list_with_protected_fragment(value, '')
+}
+
 fn (mut pc PkgConfig) parse_static_link_list(s string) ![]string {
 	raw_value := static_link_field_without_comment(normalize_static_link_field(s))
 	value := pc.expand_static_link_variables(raw_value)
-	return tokenize_static_list(value)
+	return tokenize_static_list_with_protected_fragment(value, pc.define_prefix_target)
 }
 
 fn (mut pc PkgConfig) expand_static_link_variables(s string) string {
@@ -269,12 +309,74 @@ fn (mut pc PkgConfig) parse_line(s string) string {
 	return r.trim_space()
 }
 
+fn trim_define_prefix_path(path string) string {
+	mut end := path.len
+	for end > 1 && path[end - 1] in [`/`, `\\`] {
+		end--
+	}
+	return path[..end]
+}
+
+fn define_prefix_from_pcfiledir(pcfiledir string) ?string {
+	if os.base(pcfiledir).to_lower_ascii() != 'pkgconfig' {
+		return none
+	}
+	metadata_parent := os.dir(pcfiledir)
+	if metadata_parent == '' || metadata_parent == '.' {
+		return none
+	}
+	prefix := os.dir(metadata_parent)
+	if prefix == '' || prefix == '.' {
+		return none
+	}
+	return trim_define_prefix_path(prefix)
+}
+
+fn has_define_prefix_path(value string, prefix string) bool {
+	if prefix == '' || value.len < prefix.len
+		|| value[..prefix.len].to_lower_ascii() != prefix.to_lower_ascii() {
+		return false
+	}
+	if value.len == prefix.len || prefix.ends_with('/') || prefix.ends_with('\\') {
+		return true
+	}
+	return value[prefix.len] in [`/`, `\\`]
+}
+
+fn (pc &PkgConfig) relocate_define_prefix_value(value string) string {
+	if !has_define_prefix_path(value, pc.define_prefix_source) {
+		return value
+	}
+	return pc.define_prefix_target + value[pc.define_prefix_source.len..]
+}
+
+fn (mut pc PkgConfig) set_variable(key string, raw_value string) {
+	parsed_value := pc.parse_line(raw_value)
+	value := pc.parse_line(parsed_value)
+	if key == 'prefix' {
+		pc.define_prefix_source = ''
+		pc.define_prefix_target = ''
+		$if windows {
+			source := trim_define_prefix_path(value)
+			if source.starts_with('/') && !source.starts_with('//') {
+				if target := define_prefix_from_pcfiledir(pc.vars['pcfiledir']) {
+					pc.define_prefix_source = source
+					pc.define_prefix_target = target
+					pc.vars[key] = target
+					return
+				}
+			}
+		}
+		pc.vars[key] = value
+		return
+	}
+	pc.vars[key] = pc.relocate_define_prefix_value(value)
+}
+
 fn (mut pc PkgConfig) setvar(line string) {
 	kv := line.trim_space().split('=')
 	if kv.len == 2 {
-		k := kv[0]
-		v := pc.parse_line(kv[1])
-		pc.vars[k] = pc.parse_line(v)
+		pc.set_variable(kv[0], kv[1])
 	}
 }
 
@@ -303,8 +405,7 @@ fn (mut pc PkgConfig) set_static_var(line string) bool {
 	if !is_variable {
 		return false
 	}
-	parsed_value := pc.parse_line(value)
-	pc.vars[key] = pc.parse_line(parsed_value)
+	pc.set_variable(key, value)
 	return true
 }
 

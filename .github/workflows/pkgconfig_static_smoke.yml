@@ -1,9 +1,9 @@
-name: Issue 74 static pkg-config smoke
+name: Static pkg-config smoke
 
 on:
   push:
     branches:
-      - smoke/gui-issue-74-static-pkgconfig
+      - 'smoke/*pkgconfig*'
   workflow_dispatch:
 
 permissions:
@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Build V
         run: make -j2 && ./v version
-      - name: Run issue 74 regressions first
+      - name: Run pkg-config regressions first
         run: |
           set -euo pipefail
           cc='${{ matrix.cc }}'
@@ -63,7 +63,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Build V
         run: make -j2 && ./v version
-      - name: Run issue 74 regressions first
+      - name: Run pkg-config regressions first
         run: |
           set -euo pipefail
           for test in \
@@ -110,7 +110,7 @@ jobs:
           path-type: minimal
           install: >-
             ${{ matrix.compiler_package }}
-      - name: Run issue 74 regressions first
+      - name: Run pkg-config regressions first
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -120,6 +120,17 @@ jobs:
           fi
           command -v "$cc"
           "$cc" --version
+          (
+            export VTMP='D:\pkg-config smoke temp'
+            vtmp_unix="$(cygpath -u "$VTMP")"
+            mkdir -p "$vtmp_unix"
+            test "${VTMP:0:2}" != 'C:'
+            test "$VTMP" != "${VTMP% *}"
+            timeout 180 ./v.exe -cc "$cc" -no-retry-compilation \
+              test vlib/v/pkgconfig/pkgconfig_define_prefix_test.v
+            timeout 300 ./v.exe -cc "$cc" -no-retry-compilation \
+              test vlib/v/pkgconfig/pkgconfig_define_prefix_compile_test.v
+          )
           timeout 180 ./v.exe -cc "$cc" -no-retry-compilation \
             test vlib/v/ast/cflags_test.v
           timeout 180 ./v.exe -cc "$cc" -no-retry-compilation \
@@ -154,7 +165,7 @@ jobs:
             throw "V bootstrap failed with exit code $LASTEXITCODE"
           }
           .\v.exe version
-      - name: Run issue 74 regressions first
+      - name: Run pkg-config regressions first
         shell: pwsh
         run: |
           $tests = @(
@@ -170,7 +181,7 @@ jobs:
           foreach ($test in $tests) {
             .\v.exe -cc msvc -no-retry-compilation test $test
             if ($LASTEXITCODE -ne 0) {
-              throw "issue 74 regression failed for $test with exit code $LASTEXITCODE"
+              throw "pkg-config regression failed for $test with exit code $LASTEXITCODE"
             }
           }
 
@@ -193,9 +204,9 @@ jobs:
         run: |
           .\v.exe -cc tcc -no-retry-compilation test vlib\v\pkgconfig\main_test.v
           if ($LASTEXITCODE -ne 0) {
-            throw "issue 74 TCC static CLI regression failed with exit code $LASTEXITCODE"
+            throw "pkg-config TCC static CLI regression failed with exit code $LASTEXITCODE"
           }
           .\v.exe -cc tcc -no-retry-compilation test vlib\v\checker\pkgconfig_static_mode_test.v
           if ($LASTEXITCODE -ne 0) {
-            throw "issue 74 TCC isolation regression failed with exit code $LASTEXITCODE"
+            throw "pkg-config TCC isolation regression failed with exit code $LASTEXITCODE"
           }

@@ -311,6 +311,16 @@ fn test_cross_module_repeated_ordered_flag_epochs_link_and_run() {
 	root := os.join_path(os.vtmp_dir(), 'issue74_cross_module_epochs')
 	archive_a := os.join_path(root, 'libissue74_epoch_a.a')
 	archive_b := os.join_path(root, 'libissue74_epoch_b.a')
+	expected_archive_a := if archive_a.contains_any(' \t\r\n') {
+		'"${archive_a}"'
+	} else {
+		archive_a
+	}
+	expected_archive_b := if archive_b.contains_any(' \t\r\n') {
+		'"${archive_b}"'
+	} else {
+		archive_b
+	}
 	mut table := ast.new_table()
 	modules := ['issue74_epoch_a', 'issue74_epoch_b']
 	archives := [archive_a, archive_b]
@@ -334,10 +344,10 @@ fn test_cross_module_repeated_ordered_flag_epochs_link_and_run() {
 	assert legacy == []
 	assert ordered == [
 		'-Wl,--whole-archive',
-		archive_a,
+		expected_archive_a,
 		'-Wl,--no-whole-archive',
 		'-Wl,--whole-archive',
-		archive_b,
+		expected_archive_b,
 		'-Wl,--no-whole-archive',
 	]
 
@@ -828,9 +838,10 @@ fn test_static_pkgconfig_spaced_wl_rpath_links_direct_and_response_file() {
 fn test_windows_gnu_static_pkgconfig_converts_only_bare_import_libs() {
 	lib_dir := os.join_path(os.vtmp_dir(), 'issue74_windows_gnu_libs')
 	path_lib := os.join_path(lib_dir, 'issue74_path.lib')
+	expected_path_lib := if path_lib.contains_any(' \t\r\n') { '"${path_lib}"' } else { path_lib }
 	flags := ['-L${lib_dir}', 'issue74_direct.lib', '-lissue74_anchor', 'issue74_repeat.lib',
 		path_lib, 'issue74_upper.LIB', 'issue74_direct.lib', 'issue74_repeat.lib']
-	expected_tail := ['-lissue74_direct', '-lissue74_anchor', '-lissue74_repeat', path_lib,
+	expected_tail := ['-lissue74_direct', '-lissue74_anchor', '-lissue74_repeat', expected_path_lib,
 		'-lissue74_upper', '-lissue74_direct', '-lissue74_repeat']
 	for compiler_type in [pref.CompilerType.gcc, .mingw] {
 		args := issue74_ordered_pkgconfig_args_for_target(flags, .windows, compiler_type)
