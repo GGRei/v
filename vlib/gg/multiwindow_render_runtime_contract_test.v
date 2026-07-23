@@ -1,4 +1,4 @@
-// vtest build: !(windows && tinyc) && !musl?
+// vtest build: (!(windows && tinyc)) && !musl?
 
 module gg
 

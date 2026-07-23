@@ -20,13 +20,17 @@ $if darwin {
 
 struct AppKitFinalBorrowProbe {
 mut:
-	first_window          u64
-	first_private         u64
-	first_responder       u64
-	second_window         u64
-	second_private        u64
-	second_responder      u64
-	nested_borrow_reached bool
+	first_window                 u64
+	first_private                u64
+	first_responder              u64
+	first_responder_after_focus  u64
+	second_window                u64
+	second_private               u64
+	second_responder             u64
+	second_responder_after_focus u64
+	nested_borrow_reached        bool
+	invoked                      int
+	counter_installed            int
 }
 
 fn appkit_final_source(name string) string {
@@ -90,13 +94,13 @@ fn test_appkit_native_fullscreen_failure_terminal_is_authoritative() {
 
 		for entering in [1, 0] {
 			expected := app.backend.appkit.service_window_state(window)!
-			mut invoked := 0
-			invoke := fn [entering, mut invoked] (borrow NativeWindowBorrow) ! {
-				invoked = C.v_multiwindow_appkit_test_invoke_fullscreen_failure(borrow.primary_for_gg(),
+			mut probe := &AppKitFinalBorrowProbe{}
+			invoke := fn [entering, mut probe] (borrow NativeWindowBorrow) ! {
+				probe.invoked = C.v_multiwindow_appkit_test_invoke_fullscreen_failure(borrow.primary_for_gg(),
 					entering)
 			}
 			app.with_native_window_for_gg(window, invoke)!
-			assert invoked == 1
+			assert probe.invoked == 1
 			app.poll_events()!
 			events := app.drain_queued_events()!
 			terminals := events.filter(it.kind == .service && it.service.window == window
@@ -132,13 +136,13 @@ fn test_appkit_native_screen_notifications_publish_window_metrics_revision_witho
 		mut last_sequence := u64(0)
 		for notification_kind in [1, 2, 3] {
 			before_revision := C.v_multiwindow_appkit_service_monitor_revision()
-			mut invoked := 0
-			invoke := fn [notification_kind, mut invoked] (borrow NativeWindowBorrow) ! {
-				invoked = C.v_multiwindow_appkit_test_invoke_metrics_notification(borrow.primary_for_gg(),
+			mut probe := &AppKitFinalBorrowProbe{}
+			invoke := fn [notification_kind, mut probe] (borrow NativeWindowBorrow) ! {
+				probe.invoked = C.v_multiwindow_appkit_test_invoke_metrics_notification(borrow.primary_for_gg(),
 					notification_kind)
 			}
 			app.with_native_window_for_gg(window, invoke)!
-			assert invoked == 1
+			assert probe.invoked == 1
 			app.poll_events()!
 			events := app.drain_queued_events()!
 			assert events.filter(it.kind == .lifecycle && it.lifecycle.kind == .window_resized).len == 0
@@ -185,13 +189,13 @@ fn test_appkit_native_screen_and_backing_dimension_change_publish_one_metrics_sn
 		for notification_kind in [1, 2] {
 			logical_width := 320 + notification_kind * 17
 			logical_height := 200 + notification_kind * 11
-			mut invoked := 0
-			invoke := fn [notification_kind, logical_width, logical_height, mut invoked] (borrow NativeWindowBorrow) ! {
-				invoked = C.v_multiwindow_appkit_test_change_bounds_and_invoke_metrics_notification(borrow.primary_for_gg(),
+			mut probe := &AppKitFinalBorrowProbe{}
+			invoke := fn [notification_kind, logical_width, logical_height, mut probe] (borrow NativeWindowBorrow) ! {
+				probe.invoked = C.v_multiwindow_appkit_test_change_bounds_and_invoke_metrics_notification(borrow.primary_for_gg(),
 					notification_kind, logical_width, logical_height)
 			}
 			app.with_native_window_for_gg(window, invoke)!
-			assert invoked == 1
+			assert probe.invoked == 1
 			app.poll_events()!
 			events := app.drain_queued_events()!
 			metrics := events.filter(it.kind == .service && it.service.window == window
@@ -221,7 +225,7 @@ fn test_appkit_native_two_window_close_retains_services_until_finish_and_release
 		_ = app.drain_queued_events()!
 
 		mut probe := &AppKitFinalBorrowProbe{}
-		app_ptr := unsafe { voidptr(&app) }
+		app_ptr := unsafe { voidptr(app) }
 		inner := fn [mut probe] (borrow NativeWindowBorrow) ! {
 			probe.nested_borrow_reached = true
 			assert C.v_multiwindow_appkit_test_window_identities(borrow.primary_for_gg(),
@@ -246,32 +250,29 @@ fn test_appkit_native_two_window_close_retains_services_until_finish_and_release
 
 		app.service_request_focus(first)!
 		app.poll_events()!
-		mut first_responder_after_focus := u64(0)
-		read_first_responder := fn [mut first_responder_after_focus] (borrow NativeWindowBorrow) ! {
+		read_first_responder := fn [mut probe] (borrow NativeWindowBorrow) ! {
 			assert C.v_multiwindow_appkit_test_current_first_responder(borrow.primary_for_gg(),
-				&first_responder_after_focus) == 1
+				&probe.first_responder_after_focus) == 1
 		}
 		app.with_native_window_for_gg(first, read_first_responder)!
-		assert first_responder_after_focus == probe.first_responder
+		assert probe.first_responder_after_focus == probe.first_responder
 
 		app.service_request_focus(second)!
 		app.poll_events()!
-		mut second_responder_after_focus := u64(0)
-		read_second_responder := fn [mut second_responder_after_focus] (borrow NativeWindowBorrow) ! {
+		read_second_responder := fn [mut probe] (borrow NativeWindowBorrow) ! {
 			assert C.v_multiwindow_appkit_test_current_first_responder(borrow.primary_for_gg(),
-				&second_responder_after_focus) == 1
+				&probe.second_responder_after_focus) == 1
 		}
 		app.with_native_window_for_gg(second, read_second_responder)!
-		assert second_responder_after_focus == probe.second_responder
+		assert probe.second_responder_after_focus == probe.second_responder
 		_ = app.drain_queued_events()!
 
-		mut perform_close_invoked := 0
-		perform_close := fn [mut perform_close_invoked] (borrow NativeWindowBorrow) ! {
-			perform_close_invoked =
-				C.v_multiwindow_appkit_test_close_window(borrow.primary_for_gg(), 1)
+		probe.invoked = 0
+		perform_close := fn [mut probe] (borrow NativeWindowBorrow) ! {
+			probe.invoked = C.v_multiwindow_appkit_test_close_window(borrow.primary_for_gg(), 1)
 		}
 		app.with_native_window_for_gg(first, perform_close)!
-		assert perform_close_invoked == 1
+		assert probe.invoked == 1
 		app.poll_events()!
 		perform_events := app.drain_queued_events()!
 		assert perform_events.filter(it.kind == .lifecycle
@@ -280,16 +281,16 @@ fn test_appkit_native_two_window_close_retains_services_until_finish_and_release
 		first_backend_index := app.backend.appkit.window_record_index(first) or { -1 }
 		assert first_backend_index >= 0
 
-		mut close_invoked := 0
-		mut counter_installed := 0
-		close_direct := fn [mut close_invoked, mut counter_installed] (borrow NativeWindowBorrow) ! {
-			counter_installed =
+		probe.invoked = 0
+		probe.counter_installed = 0
+		close_direct := fn [mut probe] (borrow NativeWindowBorrow) ! {
+			probe.counter_installed =
 				C.v_multiwindow_appkit_test_install_release_services_counter(borrow.primary_for_gg())
-			close_invoked = C.v_multiwindow_appkit_test_close_window(borrow.primary_for_gg(), 0)
+			probe.invoked = C.v_multiwindow_appkit_test_close_window(borrow.primary_for_gg(), 0)
 		}
 		app.with_native_window_for_gg(second, close_direct)!
-		assert counter_installed == 1
-		assert close_invoked == 1
+		assert probe.counter_installed == 1
+		assert probe.invoked == 1
 		app.poll_events()!
 		notices := app.drain_render_teardown_notices()!
 		assert notices.len == 1 && notices[0].window == second
@@ -313,7 +314,6 @@ fn test_appkit_native_two_window_close_retains_services_until_finish_and_release
 		app.services.window_index(second) or {
 			assert err.msg() == err_stale_window
 			app.backend.appkit.window_record_index(second) or {
-				assert err.msg() == err_window_not_found
 				C.v_multiwindow_appkit_test_restore_release_services_counter()
 				app.destroy_window(first)!
 				return

@@ -121,6 +121,7 @@ jobs:
             vlib/x/multiwindow/native_operation_proof_test.v
             vlib/x/multiwindow/render_scheduler_test.v
             vlib/x/multiwindow/render_target_lease_test.v
+            vlib/x/multiwindow/service_native_appkit_contract_red_test.v
             vlib/x/multiwindow/service_native_appkit_final_nonreadback_red_test.v
             vlib/x/multiwindow/service_native_appkit_nonreadback_test.v
             vlib/x/multiwindow/service_native_appkit_readback_metal_red_test.v

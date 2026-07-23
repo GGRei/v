@@ -340,11 +340,6 @@ v_multiwindow_test_appkit_oracle_record_get(uint64_t index) {
 #define V_MULTIWINDOW_APPKIT_READBACK_FAILED 3
 
 #if defined(SOKOL_METAL) && defined(V_SOKOL_MTL_END_PASS_HOOK)
-typedef void (*VMultiwindowSokolMetalEndPassHook)(const void *command_buffer,
-	const void *drawable, void *user_data);
-extern bool v_sokol_mtl_set_end_pass_hook(VMultiwindowSokolMetalEndPassHook callback,
-	void *user_data);
-
 typedef NS_ENUM(NSInteger, VMultiwindowAppKitReadbackKind) {
 	VMultiwindowAppKitReadbackWindow = 1,
 	VMultiwindowAppKitReadbackImage = 2,

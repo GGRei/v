@@ -1658,9 +1658,47 @@ fn test_appkit_sharedlive_source_excludes_objc_implementation() {
 		'#include "@VMODROOT/vlib/x/multiwindow/appkit_backend.m"')
 }
 
+fn appkit_service_v_declaration_names(source string) []string {
+	marker := 'fn C.v_multiwindow_appkit_service_'
+	mut names := []string{}
+	for line in source.split_into_lines() {
+		declaration := line.trim_space()
+		if !declaration.starts_with(marker) {
+			continue
+		}
+		open_parenthesis := declaration.index('(') or { continue }
+		names << declaration['fn C.'.len..open_parenthesis]
+	}
+	names.sort()
+	return names
+}
+
+fn appkit_header_prototype_names(header string) []string {
+	prefix := 'v_multiwindow_appkit_'
+	mut names := []string{}
+	for statement in header.split(';') {
+		name_start := statement.index(prefix) or { continue }
+		candidate := statement[name_start..]
+		open_parenthesis := candidate.index('(') or { continue }
+		names << candidate[..open_parenthesis].trim_space()
+	}
+	names.sort()
+	return names
+}
+
 fn test_appkit_prototype_header_is_c_only_and_shared_with_implementation() {
+	backend := multiwindow_source_file('appkit_backend.c.v')
 	header := multiwindow_source_file('appkit_backend_helpers.h')
 	implementation := multiwindow_source_file('appkit_backend.m')
+	service_declarations := appkit_service_v_declaration_names(backend)
+	header_prototypes := appkit_header_prototype_names(header)
+	service_prototypes := header_prototypes.filter(it.starts_with('v_multiwindow_appkit_service_'))
+	render_prototypes := [
+		'v_multiwindow_appkit_logical_to_pixel_rect',
+		'v_multiwindow_appkit_pixel_to_logical_rect',
+		'v_multiwindow_appkit_render_snapshot',
+	]
+	render_header_prototypes := header_prototypes.filter(it in render_prototypes)
 
 	assert header.contains('int v_multiwindow_appkit_is_main_thread(void);')
 	assert header.contains('VMultiwindowNativePrimitive v_multiwindow_appkit_create_window(void *device_ptr, const char *title, int width, int height, int min_width, int min_height, int resizable, int visible, int high_dpi, int borderless, int fullscreen, int *out_width, int *out_height, int *out_framebuffer_width, int *out_framebuffer_height);')
@@ -1676,6 +1714,14 @@ fn test_appkit_prototype_header_is_c_only_and_shared_with_implementation() {
 	assert !header.contains('@implementation')
 	assert !header.contains('VMultiwindowAppKitWindowState')
 	assert !header.contains('NSWindow')
+	assert service_declarations.len == 35
+	assert service_prototypes.len == service_declarations.len
+	assert service_prototypes == service_declarations
+	assert service_declarations.len + render_prototypes.len == 38
+	for prototype in render_prototypes {
+		assert backend.contains('fn C.${prototype}(')
+	}
+	assert render_header_prototypes == render_prototypes
 
 	assert implementation.contains('#include "appkit_backend_helpers.h"')
 	assert_source_order(implementation, '#include <stdint.h>',
@@ -1708,7 +1754,7 @@ pub fn appkit_sharedlive_probe() {
 }
 '
 		os.write_file(source_path, source)!
-		cmd := '${os.quoted_path(@VEXE)} -nocolor -cc clang -sharedlive -shared -o ${os.quoted_path(dylib_path)} ${os.quoted_path(source_path)}'
+		cmd := '${os.quoted_path(@VEXE)} -nocolor -cc clang -d gg_multiwindow -d sokol_metal -sharedlive -shared -o ${os.quoted_path(dylib_path)} ${os.quoted_path(source_path)}'
 		build_res := os.execute(cmd)
 		assert build_res.exit_code == 0, 'appkit sharedlive build failed
 command: ${cmd}

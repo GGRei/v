@@ -414,6 +414,35 @@ fn main() {
 	assert !compilation.output.contains('__atomic_fetch_add')
 }
 
+fn test_windows_closure_virtualprotect_uses_native_dword_pointer() {
+	os.chdir(vroot) or {}
+	test_source := os.join_path(os.vtmp_dir(), 'coutput_windows_closure_virtualprotect.vv')
+	os.write_file(test_source, 'module main
+
+fn main() {
+	value := 41
+	add := fn [value] (delta int) int {
+		return value + delta
+	}
+	println(add(1))
+}
+')!
+	defer {
+		os.rm(test_source) or {}
+	}
+	cmd := '${os.quoted_path(vexe)} -o - -os windows ${os.quoted_path(test_source)}'
+	compilation := os.execute(cmd)
+	ensure_compilation_succeeded(compilation, cmd)
+	assert compilation.output.contains('#define C__DWORD DWORD')
+	assert compilation.output.contains('C__DWORD tmp = ((C__DWORD)(0));')
+	assert !compilation.output.contains('u32 tmp = ((u32)(0));')
+	assert compilation.output.contains('C__DWORD chars_written = ((C__DWORD)(0));')
+	assert !compilation.output.contains('u32 chars_written = ((u32)(0));')
+	assert compilation.output.contains('WriteConsoleW(console_handle, wide_ptr, ((u32)(remaining_chars)), &chars_written, ((void*)0))')
+	assert compilation.output.contains('VirtualProtect(ptr, size, PAGE_EXECUTE_READ, &tmp);')
+	assert compilation.output.contains('VirtualProtect(ptr, size, PAGE_READWRITE, &tmp);')
+}
+
 fn test_windows_tcc_boehm_prod_does_not_emit_gc_remove_roots() {
 	os.chdir(vroot) or {}
 	cc := windows_tcc_ccompiler_for_coutput_test()

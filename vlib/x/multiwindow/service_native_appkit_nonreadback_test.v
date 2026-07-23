@@ -16,6 +16,11 @@ $if darwin {
 	fn C.v_multiwindow_appkit_test_release_accessibility_child()
 }
 
+struct AppKitNonreadbackCallbackState {
+mut:
+	result int
+}
+
 fn appkit_nonreadback_source(name string) string {
 	return os.read_file(os.join_path(@DIR, name)) or { panic(err) }
 }
@@ -237,20 +242,21 @@ fn test_appkit_hide_failure_rolls_back_before_window_hide() {
 			app.stop() or {}
 		}
 		window := app.create_window(title: 'AppKit hide rollback', visible: true)!
-		mut installed := 0
-		install := fn [mut installed] (borrow NativeWindowBorrow) ! {
-			installed =
+		mut install_state := &AppKitNonreadbackCallbackState{}
+		install := fn [mut install_state] (borrow NativeWindowBorrow) ! {
+			install_state.result =
 				C.v_multiwindow_appkit_test_install_release_mouse_lock_failure(borrow.primary_for_gg())
 		}
 		app.with_native_window_for_gg(window, install)!
-		assert installed == 1
+		assert install_state.result == 1
 		app.service_hide_window(window) or {
-			mut visible := 0
-			inspect := fn [mut visible] (borrow NativeWindowBorrow) ! {
-				visible = C.v_multiwindow_appkit_test_window_is_visible(borrow.primary_for_gg())
+			mut visibility_state := &AppKitNonreadbackCallbackState{}
+			inspect := fn [mut visibility_state] (borrow NativeWindowBorrow) ! {
+				visibility_state.result =
+					C.v_multiwindow_appkit_test_window_is_visible(borrow.primary_for_gg())
 			}
 			app.with_native_window_for_gg(window, inspect)!
-			assert visible == 1
+			assert visibility_state.result == 1
 			return
 		}
 		assert false, 'AppKit hide unexpectedly succeeded after mouse reassociation failure'
@@ -285,13 +291,13 @@ fn test_appkit_accessibility_detaches_children_and_parent_links() {
 			app.stop() or {}
 		}
 		window := app.create_window(title: 'AppKit accessibility detach', visible: false)!
-		mut attached := 0
-		attach := fn [mut attached] (borrow NativeWindowBorrow) ! {
-			attached =
+		mut attach_state := &AppKitNonreadbackCallbackState{}
+		attach := fn [mut attach_state] (borrow NativeWindowBorrow) ! {
+			attach_state.result =
 				C.v_multiwindow_appkit_test_attach_accessibility_child(borrow.primary_for_gg())
 		}
 		app.with_native_window_for_gg(window, attach)!
-		assert attached == 1
+		assert attach_state.result == 1
 		app.destroy_window(window)!
 		assert C.v_multiwindow_appkit_test_accessibility_child_is_detached() == 1
 	}

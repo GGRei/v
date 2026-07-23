@@ -559,6 +559,7 @@ fn appkit_titlebar_appearance_code(appearance ServiceTitlebarAppearance) int {
 	}
 }
 
+@[markused]
 fn appkit_service_events_from_observation(record AppKitWindowRecord, input_kind InputEventKind, state ServiceWindowState, scale f32) []QueuedEvent {
 	if input_kind == .resized {
 		metrics_available := record.width > 0 && record.height > 0 && record.framebuffer_width > 0
@@ -596,6 +597,7 @@ fn appkit_service_events_from_observation(record AppKitWindowRecord, input_kind 
 	]
 }
 
+@[markused]
 fn appkit_service_events_from_snapshot(record AppKitWindowRecord, snapshot AppKitServiceQueuedSnapshot, monitors []AppKitServiceMonitorRecord, app_instance u64) []QueuedEvent {
 	if !snapshot.valid {
 		return []QueuedEvent{}
@@ -638,6 +640,7 @@ fn appkit_service_events_from_snapshot(record AppKitWindowRecord, snapshot AppKi
 	]
 }
 
+@[markused]
 fn appkit_service_transition_operations(record AppKitWindowRecord, state ServiceWindowState) []ServiceOperation {
 	if !record.service_state_observed {
 		return []ServiceOperation{}
@@ -687,6 +690,7 @@ fn appkit_record_observed_service_state(mut record AppKitWindowRecord, state Ser
 		|| state.fullscreen != .unknown || record.service_state_observed
 }
 
+@[markused]
 fn appkit_append_unique_state_transition(mut events []QueuedEvent, window WindowId, state ServiceWindowState, operation ServiceOperation) {
 	for event in events {
 		if event.kind == .service && event.service.kind == .state
@@ -1876,6 +1880,7 @@ $if darwin {
 		return files
 	}
 
+	@[markused]
 	fn appkit_service_snapshot_from_native(native_event C.VMultiwindowAppKitQueuedEvent) AppKitServiceQueuedSnapshot {
 		return AppKitServiceQueuedSnapshot{
 			valid:              native_event.service_snapshot_valid == 1
@@ -2059,6 +2064,7 @@ fn (mut backend AppKitBackend) poll_queued_events() ![]QueuedEvent {
 }
 
 $if darwin {
+	@[markused]
 	fn (mut backend AppKitBackend) observed_service_events(index int, native_event C.VMultiwindowAppKitQueuedEvent) ![]QueuedEvent {
 		if !backend.service_bridge_ready() || index < 0 || index >= backend.windows.len {
 			return []QueuedEvent{}
@@ -2962,7 +2968,7 @@ fn (mut backend AppKitBackend) release_window_services(mut record &AppKitWindowR
 		return true
 	}
 	if record.state == unsafe { nil } {
-		return appkit_complete_window_service_release(mut record)
+		return appkit_complete_window_service_release(mut *record)
 	}
 	$if darwin {
 		if backend.native_operations == unsafe { nil }
@@ -2974,7 +2980,7 @@ fn (mut backend AppKitBackend) release_window_services(mut record &AppKitWindowR
 			if record.owner != none || record.modal {
 				return false
 			}
-			return appkit_complete_window_service_release(mut record)
+			return appkit_complete_window_service_release(mut *record)
 		}
 		if C.v_multiwindow_appkit_service_cancel_all_readbacks(record.state) < 0
 			|| C.v_multiwindow_appkit_service_set_mouse_lock(record.state, 0) <= 0
@@ -2983,7 +2989,7 @@ fn (mut backend AppKitBackend) release_window_services(mut record &AppKitWindowR
 			|| C.v_multiwindow_appkit_service_release_window_services(record.state) <= 0 {
 			return false
 		}
-		return appkit_complete_window_service_release(mut record)
+		return appkit_complete_window_service_release(mut *record)
 	} $else {
 		return false
 	}
