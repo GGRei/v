@@ -25,6 +25,7 @@ struct Win32WindowRecord {
 	id WindowId
 mut:
 	hwnd                      voidptr
+	service_state             voidptr
 	config                    WindowConfig
 	width                     int
 	height                    int
@@ -823,6 +824,17 @@ fn (mut backend Win32Backend) create_window(id WindowId, config WindowConfig) !W
 			return error(err_win32_create_window_failed)
 		}
 		record.hwnd = hwnd
+		record.service_state = C.v_multiwindow_win32_service_create(hwnd, record_data,
+			win32_bool_to_int(config.fullscreen), config.width, config.height,
+			win32_bool_to_int(config.resizable), win32_bool_to_int(config.borderless))
+		if record.service_state == unsafe { nil } {
+			if C.v_multiwindow_win32_destroy_window(hwnd) == 0 {
+				return error(err_win32_destroy_window_failed)
+			}
+			record.hwnd = unsafe { nil }
+			backend.windows.delete(index)
+			return error(err_win32_create_window_failed)
+		}
 		actual_width := C.v_multiwindow_win32_client_width(hwnd)
 		actual_height := C.v_multiwindow_win32_client_height(hwnd)
 		if actual_width > 0 {
@@ -866,6 +878,10 @@ fn (mut backend Win32Backend) finish_window_teardown(id WindowId) ! {
 				return error(err_win32_destroy_window_failed)
 			}
 			record.hwnd = unsafe { nil }
+		}
+		if record.service_state != unsafe { nil } {
+			win32_service_result(C.v_multiwindow_win32_service_release(record.service_state))!
+			record.service_state = unsafe { nil }
 		}
 		backend.windows.delete(index)
 		return
@@ -1023,6 +1039,17 @@ fn (mut backend Win32Backend) stop() ! {
 					return error(backend.retained_stop_error(err_win32_destroy_window_failed))
 				}
 				record.hwnd = unsafe { nil }
+			}
+			if record.service_state != unsafe { nil } {
+				service_result := C.v_multiwindow_win32_service_release(record.service_state)
+				if service_result != win32_service_ok {
+					return error(backend.retained_stop_error(if service_result == win32_service_wrong_thread {
+						err_owner_thread_required
+					} else {
+						err_window_not_found
+					}))
+				}
+				record.service_state = unsafe { nil }
 			}
 			backend.windows.delete(0)
 		}

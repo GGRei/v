@@ -666,6 +666,10 @@ fn main() {
 
 $core = 'vlib/x/multiwindow/service_native_win32_contract_red_test.v'
 $gg = 'vlib/gg/multiwindow_win32_services_red_d_gg_multiwindow_test.v'
+$w1GreenCases = @(
+    'test_win32_w1_native_authority_show_focus_and_fullscreen_contract'
+    'test_win32_w1_native_borrow_is_bounded_and_epoch_checked'
+)
 $cases = @(
     @{ File = $core; Name = 'test_win32_native_controls_state_and_independent_window_oracles_red'; Marker = 'controls_state'; Terminal = 'behavioral_red:controls_state' }
     @{ File = $core; Name = 'test_win32_native_modal_reenable_and_child_first_hwnd_destruction_red'; Marker = 'modal_child_first'; Terminal = 'behavioral_red:modal_child_first' }
@@ -684,6 +688,11 @@ $terminals = @($cases | ForEach-Object { $_.Terminal } | Sort-Object -Unique)
 if ($names.Count -ne $cases.Count -or $markers.Count -ne $cases.Count `
     -or $terminals.Count -ne $cases.Count) {
     throw 'Package 2 RED case names, family markers, and terminals must be unique'
+}
+$w1GreenNames = @($w1GreenCases | Sort-Object -Unique)
+$w1GreenInRed = @($w1GreenNames | Where-Object { $_ -in $names })
+if ($w1GreenNames.Count -ne 2 -or $w1GreenInRed.Count -ne 0) {
+    throw 'Package 2 W1 GREEN cases must be exactly two unique cases outside the RED matrix'
 }
 
 $vexe = (Resolve-Path '.\v.exe').Path
@@ -734,6 +743,56 @@ if ($noFlagFailure) {
 }
 Write-Host "NO_FLAG_GATE_PASS compiler=$Compiler passed=1 total=1"
 Write-Host '::endgroup::'
+
+foreach ($testName in $w1GreenCases) {
+    Write-Host "::group::Package 2 W1 GREEN $Compiler $testName"
+    try {
+        Write-Host "PACKAGE2_W1_GREEN_START compiler=$Compiler case=$testName file=$core"
+        $greenArguments = @(
+            '-cc', $Compiler,
+            '-no-retry-compilation',
+            '-no-parallel',
+            '-subsystem', 'console',
+            '-d', 'gg_multiwindow',
+            '-run-only', $testName,
+            'test', $core
+        )
+        $greenResult = Invoke-Package2Process -FileName $vexe -Arguments $greenArguments
+        Write-Package2ProcessOutput -Result $greenResult
+        $greenLines = @(
+            $greenResult.Output | ForEach-Object { ([string]$_).Trim() }
+        )
+        $greenText = $greenLines -join "`n"
+        $greenSummaryLines = @(
+            $greenLines |
+                Where-Object { $_ -cmatch '^Summary for all V _test\.v files:' }
+        )
+        $greenExactSummary = $greenSummaryLines.Count -eq 1 `
+            -and $greenSummaryLines[0] -cmatch '^Summary for all V _test\.v files: 1 passed, 1 total\.'
+        $greenFailure = if ($greenResult.TimedOut -or $greenText -match $timeoutPattern) {
+            'timeout'
+        } elseif ($greenResult.InfrastructureError -or $greenText -match $infrastructurePattern) {
+            'infrastructure'
+        } elseif ($null -eq $greenResult.ExitCode) {
+            'unknown-no-exit'
+        } elseif ($greenResult.ExitCode -in $crashExitCodes -or $greenText -match $fatalPattern) {
+            'crash-or-panic'
+        } elseif ($greenResult.ExitCode -ne 0) {
+            "unexpected-exit-$($greenResult.ExitCode)"
+        } elseif (-not $greenExactSummary) {
+            'unexpected-summary'
+        } else {
+            ''
+        }
+        if ($greenFailure) {
+            Write-Host "PACKAGE2_W1_GREEN_FAILURE compiler=$Compiler case=$testName kind=$greenFailure exit=$($greenResult.ExitCode)"
+            throw "Package 2 W1 GREEN gate failed for ${Compiler}/${testName}: $greenFailure"
+        }
+        Write-Host "PACKAGE2_W1_GREEN_PASS compiler=$Compiler case=$testName passed=1 total=1"
+    } finally {
+        Write-Host '::endgroup::'
+    }
+}
 
 Write-Host "::group::Package 2 controlled failure-exit probe $Compiler"
 $expectedFailureExitCode = Get-Package2ExpectedFailureExitCode -VExe $vexe -Compiler $Compiler

@@ -7,20 +7,37 @@ import time
 const win32_red_clipboard_max_bytes = 16 * 1024 * 1024
 const win32_red_ws_caption = u64(0x00c00000)
 
+#flag windows -DV_MULTIWINDOW_WIN32_SERVICE_TEST
+
 $if windows {
 	#include "@VMODROOT/vlib/x/multiwindow/testdata/win32_nonreadback_test_oracle.h"
 
+	fn C.v_multiwindow_win32_service_test_set_focus_refused(refused int)
+	fn C.v_multiwindow_win32_service_test_set_fullscreen_exit_failure(failure int)
+	fn C.v_multiwindow_win32_service_test_set_fullscreen_rollback_failure(failure_mask int)
+	fn C.v_multiwindow_win32_service_test_fullscreen_rollback_attempts() int
 	fn C.v_multiwindow_test_win32_is_window(hwnd voidptr) int
 	fn C.v_multiwindow_test_win32_is_visible(hwnd voidptr) int
 	fn C.v_multiwindow_test_win32_is_enabled(hwnd voidptr) int
 	fn C.v_multiwindow_test_win32_is_iconic(hwnd voidptr) int
 	fn C.v_multiwindow_test_win32_is_zoomed(hwnd voidptr) int
 	fn C.v_multiwindow_test_win32_foreground() voidptr
+	fn C.v_multiwindow_test_win32_focus() voidptr
+	fn C.v_multiwindow_test_win32_establish_foreground_focus(hwnd voidptr) int
+	fn C.v_multiwindow_test_win32_swap_user_data(hwnd voidptr, replacement voidptr) voidptr
 	fn C.v_multiwindow_test_win32_owner(hwnd voidptr) voidptr
 	fn C.v_multiwindow_test_win32_style(hwnd voidptr) u64
 	fn C.v_multiwindow_test_win32_ex_style(hwnd voidptr) u64
 	fn C.v_multiwindow_test_win32_rect(hwnd voidptr, left &int, top &int, right &int, bottom &int) int
 	fn C.v_multiwindow_test_win32_is_above(upper voidptr, lower voidptr) int
+	fn C.v_multiwindow_test_win32_window_snapshot_new(hwnd voidptr) voidptr
+	fn C.v_multiwindow_test_win32_window_snapshot_free(snapshot voidptr)
+	fn C.v_multiwindow_test_win32_window_snapshot_matches(snapshot voidptr, hwnd voidptr) int
+	fn C.v_multiwindow_test_win32_synthesized_windowed_matches(hwnd voidptr, resizable int, borderless int, requested_width int, requested_height int, expected_visible int, expected_show_command u32) int
+	fn C.v_multiwindow_test_win32_service_wrong_thread_rejected(service_state voidptr) int
+	fn C.v_multiwindow_test_win32_service_wrong_thread_timing(worker_delay u32, wait_timeout u32)
+	fn C.v_multiwindow_test_win32_service_wrong_thread_active_count() int
+	fn C.v_multiwindow_test_win32_service_wrong_thread_wait_cleanup(timeout u32) int
 	fn C.v_multiwindow_test_win32_dpi(hwnd voidptr) u32
 	fn C.v_multiwindow_test_win32_monitor_snapshot_new() voidptr
 	fn C.v_multiwindow_test_win32_monitor_snapshot_free(snapshot voidptr)
@@ -71,6 +88,14 @@ fn win32_red_capability_matches(actual ServiceOperationCapability, support Servi
 		&& actual.state_observable == state_observable
 }
 
+fn win32_w1_wrong_thread_service_state(backend_pointer voidptr, id WindowId) string {
+	unsafe {
+		backend := &Win32Backend(backend_pointer)
+		backend.service_window_state(id) or { return err.msg() }
+	}
+	return ''
+}
+
 fn win32_red_utf16_units(text string) usize {
 	mut units := usize(1)
 	for codepoint in text.runes() {
@@ -95,6 +120,299 @@ fn win32_red_clipboard_terminals(mut app App, request ServiceRequestId, attempts
 		time.sleep(5 * time.millisecond)
 	}
 	return terminals
+}
+
+fn test_win32_w1_native_authority_show_focus_and_fullscreen_contract() {
+	$if windows {
+		mut app := new_app(backend: .win32)!
+		defer {
+			app.stop() or {}
+		}
+		target := app.create_window(
+			title:   'Win32 W1 target'
+			width:   220
+			height:  140
+			visible: false
+		)!
+		peer := app.create_window(
+			title:  'Win32 W1 visible peer'
+			width:  180
+			height: 120
+		)!
+		_ = app.drain_queued_events()!
+		index := app.backend.win32.window_record_index(target) or {
+			assert false, 'W1 target has no Win32 record'
+			return
+		}
+		record := app.backend.win32.windows[index]
+		peer_index := app.backend.win32.window_record_index(peer) or {
+			assert false, 'W1 peer has no Win32 record'
+			return
+		}
+		peer_record := app.backend.win32.windows[peer_index]
+		hwnd := record.hwnd
+		peer_hwnd := peer_record.hwnd
+		assert hwnd != unsafe { nil }
+		assert peer_hwnd != unsafe { nil }
+		assert record.service_state != unsafe { nil }
+
+		assert C.v_multiwindow_test_win32_service_wrong_thread_rejected(record.service_state) == 1
+		C.v_multiwindow_test_win32_service_wrong_thread_timing(25, 1)
+		assert C.v_multiwindow_test_win32_service_wrong_thread_rejected(record.service_state) == 0
+		assert C.v_multiwindow_test_win32_service_wrong_thread_active_count() == 1
+		assert C.v_multiwindow_test_win32_service_wrong_thread_wait_cleanup(1000) == 1
+		assert C.v_multiwindow_test_win32_service_wrong_thread_active_count() == 0
+		C.v_multiwindow_test_win32_service_wrong_thread_timing(0, 5000)
+		backend_pointer := unsafe { voidptr(&app.backend.win32) }
+		wrong_thread := spawn win32_w1_wrong_thread_service_state(backend_pointer, target)
+		assert wrong_thread.wait() == err_owner_thread_required
+
+		show_capability := app.backend.win32.service_operation_capability(target, .show)
+		assert win32_red_capability_matches(show_capability, .available, false, false, true)
+		focus_capability := app.backend.win32.service_operation_capability(target, .focus)
+		assert win32_red_capability_matches(focus_capability, .conditional, false, true, true)
+		fullscreen_capability := app.backend.win32.service_operation_capability(target, .fullscreen)
+		assert win32_red_capability_matches(fullscreen_capability, .available, false, false, true)
+
+		foreground_before_show := C.v_multiwindow_test_win32_foreground()
+		first_show := app.backend.win32.service_show_window(target)!
+		second_show := app.backend.win32.service_show_window(target)!
+		assert C.v_multiwindow_test_win32_is_visible(hwnd) == 1
+		assert first_show.mapping == .mapped && first_show.visibility == .visible
+		assert second_show.mapping == .mapped && second_show.visibility == .visible
+		if foreground_before_show != unsafe { nil } && foreground_before_show != hwnd {
+			assert C.v_multiwindow_test_win32_foreground() != hwnd, 'idempotent show unexpectedly activated the target window'
+		}
+
+		hidden_before_focus := app.backend.win32.service_hide_window(target)!
+		assert hidden_before_focus.active == .off
+		assert hidden_before_focus.focused == .off
+		assert C.v_multiwindow_test_win32_establish_foreground_focus(peer_hwnd) == 1
+		foreground_before_refusal := C.v_multiwindow_test_win32_foreground()
+		focus_before_refusal := C.v_multiwindow_test_win32_focus()
+		assert foreground_before_refusal == peer_hwnd
+		assert focus_before_refusal == peer_hwnd
+		C.v_multiwindow_win32_service_test_set_focus_refused(1)
+		focus_after := app.backend.win32.service_focus_window(target)!
+		C.v_multiwindow_win32_service_test_set_focus_refused(0)
+		assert focus_after.active == .off
+		assert focus_after.focused == .off
+		assert focus_after.focused != .on || focus_after.active == .on
+		assert C.v_multiwindow_test_win32_foreground() == foreground_before_refusal
+		assert C.v_multiwindow_test_win32_focus() == focus_before_refusal
+		_ = app.backend.win32.service_show_window(target)!
+
+		replacement_data := unsafe { voidptr(peer_record) }
+		expected_data := unsafe { voidptr(record) }
+		original_data := C.v_multiwindow_test_win32_swap_user_data(hwnd, replacement_data)
+		mut replaced_state_error := ''
+		if _ := app.backend.win32.service_window_state(target) {
+			replaced_state_error = 'replaced GWLP_USERDATA unexpectedly retained authority'
+		} else {
+			replaced_state_error = err.msg()
+		}
+		mut replaced_borrow_error := ''
+		if _ := app.backend.win32.service_native_window_borrow(target) {
+			replaced_borrow_error = 'recycled GWLP_USERDATA unexpectedly retained HWND borrow authority'
+		} else {
+			replaced_borrow_error = err.msg()
+		}
+		replaced_data := C.v_multiwindow_test_win32_swap_user_data(hwnd, original_data)
+		assert original_data == expected_data
+		assert replaced_data == replacement_data
+		assert replaced_state_error == err_window_not_found
+		assert replaced_borrow_error == err_window_not_found
+		_ = app.backend.win32.service_window_state(target)!
+
+		windowed_snapshot := C.v_multiwindow_test_win32_window_snapshot_new(hwnd)
+		assert windowed_snapshot != unsafe { nil }
+		defer {
+			C.v_multiwindow_test_win32_window_snapshot_free(windowed_snapshot)
+		}
+		first_fullscreen := app.backend.win32.service_set_fullscreen(target, true)!
+		assert first_fullscreen.fullscreen == .on
+		fullscreen_snapshot := C.v_multiwindow_test_win32_window_snapshot_new(hwnd)
+		assert fullscreen_snapshot != unsafe { nil }
+		defer {
+			C.v_multiwindow_test_win32_window_snapshot_free(fullscreen_snapshot)
+		}
+		second_fullscreen := app.backend.win32.service_set_fullscreen(target, true)!
+		assert second_fullscreen.fullscreen == .on
+		assert C.v_multiwindow_test_win32_window_snapshot_matches(fullscreen_snapshot, hwnd) == 1, 'idempotent fullscreen enter changed native state'
+
+		for failure in 1 .. 4 {
+			C.v_multiwindow_win32_service_test_set_fullscreen_exit_failure(failure)
+			mut failure_error := ''
+			if _ := app.backend.win32.service_set_fullscreen(target, false) {
+				failure_error = 'injected fullscreen exit failure unexpectedly succeeded'
+			} else {
+				failure_error = err.msg()
+			}
+			C.v_multiwindow_win32_service_test_set_fullscreen_exit_failure(0)
+			assert failure_error == err_capability_unsupported
+			rollback_state := app.backend.win32.service_window_state(target)!
+			assert rollback_state.fullscreen == .on
+			assert C.v_multiwindow_test_win32_window_snapshot_matches(fullscreen_snapshot, hwnd) == 1, 'fullscreen exit failure ${failure} left partial native state'
+		}
+
+		first_restore := app.backend.win32.service_set_fullscreen(target, false)!
+		assert first_restore.fullscreen == .off
+		assert C.v_multiwindow_test_win32_window_snapshot_matches(windowed_snapshot, hwnd) == 1, 'fullscreen exit did not restore style/exstyle/WINDOWPLACEMENT'
+		second_restore := app.backend.win32.service_set_fullscreen(target, false)!
+		assert second_restore.fullscreen == .off
+		assert C.v_multiwindow_test_win32_window_snapshot_matches(windowed_snapshot, hwnd) == 1, 'idempotent fullscreen exit changed restored native state'
+
+		rollback_target := app.create_window(
+			title:  'Win32 W1 rollback failure'
+			width:  240
+			height: 160
+		)!
+		rollback_index := app.backend.win32.window_record_index(rollback_target) or {
+			assert false, 'W1 rollback target has no Win32 record'
+			return
+		}
+		rollback_hwnd := app.backend.win32.windows[rollback_index].hwnd
+		_ = app.backend.win32.service_set_fullscreen(rollback_target, true)!
+		rollback_fullscreen_snapshot :=
+			C.v_multiwindow_test_win32_window_snapshot_new(rollback_hwnd)
+		assert rollback_fullscreen_snapshot != unsafe { nil }
+		defer {
+			C.v_multiwindow_test_win32_window_snapshot_free(rollback_fullscreen_snapshot)
+		}
+		C.v_multiwindow_win32_service_test_set_fullscreen_rollback_failure(1)
+		C.v_multiwindow_win32_service_test_set_fullscreen_exit_failure(1)
+		mut rollback_failure_error := ''
+		if _ := app.backend.win32.service_set_fullscreen(rollback_target, false) {
+			rollback_failure_error = 'injected rollback failure unexpectedly succeeded'
+		} else {
+			rollback_failure_error = err.msg()
+		}
+		C.v_multiwindow_win32_service_test_set_fullscreen_exit_failure(0)
+		rollback_attempts := C.v_multiwindow_win32_service_test_fullscreen_rollback_attempts()
+		C.v_multiwindow_win32_service_test_set_fullscreen_rollback_failure(0)
+		assert rollback_failure_error == err_capability_unsupported
+		assert rollback_attempts == 15
+		unknown_rollback_state := app.backend.win32.service_window_state(rollback_target)!
+		assert unknown_rollback_state.fullscreen == .unknown
+		assert C.v_multiwindow_test_win32_window_snapshot_matches(rollback_fullscreen_snapshot,
+			rollback_hwnd) == 0, 'injected rollback failure unexpectedly restored an exact native snapshot'
+
+		initial_fullscreen := app.create_window(
+			title:      'Win32 W1 initial fullscreen'
+			width:      320
+			height:     200
+			resizable:  true
+			borderless: false
+			fullscreen: true
+		)!
+		initial_index := app.backend.win32.window_record_index(initial_fullscreen) or {
+			assert false, 'W1 initial-fullscreen window has no Win32 record'
+			return
+		}
+		initial_hwnd := app.backend.win32.windows[initial_index].hwnd
+		initial_state := app.backend.win32.service_window_state(initial_fullscreen)!
+		assert initial_state.fullscreen == .on
+		synthesized_restore := app.backend.win32.service_set_fullscreen(initial_fullscreen, false)!
+		assert synthesized_restore.fullscreen == .off
+		assert C.v_multiwindow_test_win32_synthesized_windowed_matches(initial_hwnd, 1, 0, 320,
+			200, 1, 3) == 1
+		synthesized_snapshot := C.v_multiwindow_test_win32_window_snapshot_new(initial_hwnd)
+		assert synthesized_snapshot != unsafe { nil }
+		defer {
+			C.v_multiwindow_test_win32_window_snapshot_free(synthesized_snapshot)
+		}
+		second_synthesized_restore := app.backend.win32.service_set_fullscreen(initial_fullscreen,
+			false)!
+		assert second_synthesized_restore.fullscreen == .off
+		assert C.v_multiwindow_test_win32_window_snapshot_matches(synthesized_snapshot,
+			initial_hwnd) == 1, 'idempotent synthesized restore changed native state'
+
+		hidden_initial_fullscreen := app.create_window(
+			title:      'Win32 W1 hidden initial fullscreen'
+			width:      320
+			height:     200
+			resizable:  true
+			borderless: false
+			fullscreen: true
+			visible:    false
+		)!
+		hidden_initial_index := app.backend.win32.window_record_index(hidden_initial_fullscreen) or {
+			assert false, 'W1 hidden initial-fullscreen window has no Win32 record'
+			return
+		}
+		hidden_initial_hwnd := app.backend.win32.windows[hidden_initial_index].hwnd
+		assert C.v_multiwindow_test_win32_is_visible(hidden_initial_hwnd) == 0
+		hidden_initial_state := app.backend.win32.service_window_state(hidden_initial_fullscreen)!
+		assert hidden_initial_state.fullscreen == .on
+		hidden_synthesized_restore := app.backend.win32.service_set_fullscreen(hidden_initial_fullscreen,
+			false)!
+		assert hidden_synthesized_restore.fullscreen == .off
+		assert hidden_synthesized_restore.visibility == .hidden
+		assert C.v_multiwindow_test_win32_is_visible(hidden_initial_hwnd) == 0
+		assert C.v_multiwindow_test_win32_synthesized_windowed_matches(hidden_initial_hwnd, 1, 0,
+			320, 200, 0, 1) == 1
+
+		stale := app.create_window(title: 'Win32 W1 stale generation', visible: false)!
+		app.destroy_window(stale)!
+		replacement := app.create_window(title: 'Win32 W1 replacement', visible: false)!
+		assert replacement.slot == stale.slot
+		assert replacement.generation == stale.generation + 1
+		mut stale_error := ''
+		if _ := app.backend.win32.service_window_state(stale) {
+			stale_error = 'stale WindowId unexpectedly resolved'
+		} else {
+			stale_error = err.msg()
+		}
+		assert stale_error == err_window_not_found
+	}
+}
+
+fn test_win32_w1_native_borrow_is_bounded_and_epoch_checked() {
+	$if windows {
+		mut app := new_app(backend: .win32)!
+		defer {
+			app.stop() or {}
+		}
+		window := app.create_window(title: 'Win32 W1 native borrow')!
+		_ = app.drain_queued_events()!
+		raw := app.backend.win32.service_native_window_borrow(window)!
+		assert raw.backend == .win32
+		assert raw.primary != unsafe { nil }
+		assert raw.secondary == 0
+		assert C.v_multiwindow_test_win32_is_window(raw.primary) == 1
+
+		mut copied := NativeWindowBorrow{}
+		copy_callback := fn [mut copied, window, raw] (borrow NativeWindowBorrow) ! {
+			assert borrow.window_for_gg() == window
+			assert borrow.backend_for_gg() == .win32
+			assert borrow.primary_for_gg() == raw.primary
+			copied = borrow
+		}
+		app.with_native_window_borrow(window, raw.backend, raw.primary, raw.secondary,
+			copy_callback)!
+		mut epoch_error := ''
+		if _ := app.validate_native_borrow_for_gg(window, copied.epoch_for_gg()) {
+			epoch_error = 'borrow epoch remained valid after callback'
+		} else {
+			epoch_error = err.msg()
+		}
+		assert epoch_error == err_native_borrow_stale
+
+		bounded := app.backend.win32.service_native_window_borrow(window)!
+		app_pointer := unsafe { voidptr(&app) }
+		destroy_callback := fn [app_pointer, window, bounded] (borrow NativeWindowBorrow) ! {
+			mut owner := unsafe { &App(app_pointer) }
+			assert owner.validate_native_borrow_for_gg(window, borrow.epoch_for_gg())! == .win32
+			assert borrow.primary_for_gg() == bounded.primary
+			owner.destroy_window(window)!
+			assert owner.window_exists(window)
+			assert C.v_multiwindow_test_win32_is_window(bounded.primary) == 1
+		}
+		app.with_native_window_borrow(window, bounded.backend, bounded.primary, bounded.secondary,
+			destroy_callback)!
+		assert !app.window_exists(window)
+		assert C.v_multiwindow_test_win32_is_window(bounded.primary) == 0
+	}
 }
 
 fn test_win32_native_controls_state_and_independent_window_oracles_red() {

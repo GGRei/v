@@ -45,8 +45,15 @@ fn (backend &Backend) service_operation_capability(id WindowId, operation Servic
 			backend.appkit.service_operation_capability(id, operation)
 		}
 		.win32 {
-			ServiceOperationCapability{}
+			backend.win32.service_operation_capability(id, operation)
 		}
+	}
+}
+
+fn (backend &Backend) service_window_state(id WindowId) !ServiceWindowState {
+	return match backend.kind {
+		.win32 { backend.win32.service_window_state(id)! }
+		else { error(err_capability_unsupported) }
 	}
 }
 
@@ -73,6 +80,7 @@ fn (mut backend Backend) service_show_window(id WindowId) !ServiceWindowState {
 		.x11 { backend.x11.service_show_window(id)! }
 		.wayland { backend.wayland.service_show_window(id)! }
 		.appkit { backend.appkit.service_show_window(id)! }
+		.win32 { backend.win32.service_show_window(id)! }
 		else { error(err_capability_unsupported) }
 	}
 }
@@ -82,6 +90,7 @@ fn (mut backend Backend) service_hide_window(id WindowId) !ServiceWindowState {
 		.x11 { backend.x11.service_hide_window(id)! }
 		.wayland { backend.wayland.service_hide_window(id)! }
 		.appkit { backend.appkit.service_hide_window(id)! }
+		.win32 { backend.win32.service_hide_window(id)! }
 		else { error(err_capability_unsupported) }
 	}
 }
@@ -90,6 +99,7 @@ fn (mut backend Backend) service_focus_window(id WindowId) !ServiceWindowState {
 	return match backend.kind {
 		.x11 { backend.x11.service_focus_window(id)! }
 		.appkit { backend.appkit.service_focus_window(id)! }
+		.win32 { backend.win32.service_focus_window(id)! }
 		else { error(err_capability_unsupported) }
 	}
 }
@@ -98,6 +108,7 @@ fn (mut backend Backend) service_raise_window(id WindowId) !ServiceWindowState {
 	return match backend.kind {
 		.x11 { backend.x11.service_raise_window(id)! }
 		.appkit { backend.appkit.service_raise_window(id)! }
+		.win32 { backend.win32.service_raise_window(id)! }
 		else { error(err_capability_unsupported) }
 	}
 }
@@ -106,6 +117,7 @@ fn (mut backend Backend) service_set_window_position(id WindowId, x int, y int) 
 	return match backend.kind {
 		.x11 { backend.x11.service_set_window_position(id, x, y)! }
 		.appkit { backend.appkit.service_set_window_position(id, x, y)! }
+		.win32 { backend.win32.service_set_window_position(id, x, y)! }
 		else { error(err_capability_unsupported) }
 	}
 }
@@ -115,6 +127,7 @@ fn (mut backend Backend) service_minimize_window(id WindowId) !ServiceWindowStat
 		.x11 { backend.x11.service_minimize_window(id)! }
 		.wayland { backend.wayland.service_minimize_window(id)! }
 		.appkit { backend.appkit.service_minimize_window(id)! }
+		.win32 { backend.win32.service_minimize_window(id)! }
 		else { error(err_capability_unsupported) }
 	}
 }
@@ -124,6 +137,7 @@ fn (mut backend Backend) service_maximize_window(id WindowId) !ServiceWindowStat
 		.x11 { backend.x11.service_maximize_window(id)! }
 		.wayland { backend.wayland.service_maximize_window(id)! }
 		.appkit { backend.appkit.service_maximize_window(id)! }
+		.win32 { backend.win32.service_maximize_window(id)! }
 		else { error(err_capability_unsupported) }
 	}
 }
@@ -133,6 +147,7 @@ fn (mut backend Backend) service_restore_window(id WindowId) !ServiceWindowState
 		.x11 { backend.x11.service_restore_window(id)! }
 		.wayland { backend.wayland.service_restore_window(id)! }
 		.appkit { backend.appkit.service_restore_window(id)! }
+		.win32 { backend.win32.service_restore_window(id)! }
 		else { error(err_capability_unsupported) }
 	}
 }
@@ -142,6 +157,7 @@ fn (mut backend Backend) service_set_fullscreen(id WindowId, enabled bool) !Serv
 		.x11 { backend.x11.service_set_fullscreen(id, enabled)! }
 		.wayland { backend.wayland.service_set_fullscreen(id, enabled)! }
 		.appkit { backend.appkit.service_set_fullscreen(id, enabled)! }
+		.win32 { backend.win32.service_set_fullscreen(id, enabled)! }
 		else { error(err_capability_unsupported) }
 	}
 }
@@ -160,6 +176,7 @@ fn (backend &Backend) service_native_window_borrow(id WindowId) !BackendNativeWi
 		.x11 { backend.x11.service_native_window_borrow(id)! }
 		.wayland { backend.wayland.service_native_window_borrow(id)! }
 		.appkit { backend.appkit.service_native_window_borrow(id)! }
+		.win32 { backend.win32.service_native_window_borrow(id)! }
 		else { error(err_capability_unsupported) }
 	}
 }

@@ -8,6 +8,8 @@
 #include <string.h>
 #include <wchar.h>
 
+#include "../win32_service_native.h"
+
 typedef HRESULT(WINAPI *VMultiwindowTestDwmGetWindowAttribute)(HWND, DWORD, PVOID, DWORD);
 typedef UINT(WINAPI *VMultiwindowTestGetDpiForWindow)(HWND);
 typedef UINT(WINAPI *VMultiwindowTestGetRegisteredRawInputDevices)(
@@ -21,10 +23,29 @@ typedef struct VMultiwindowTestMonitorSnapshot {
 	int count;
 } VMultiwindowTestMonitorSnapshot;
 
+typedef struct VMultiwindowTestWin32WindowSnapshot {
+	LONG_PTR style;
+	LONG_PTR ex_style;
+	WINDOWPLACEMENT placement;
+	RECT rect;
+	int visible;
+} VMultiwindowTestWin32WindowSnapshot;
+
+typedef struct VMultiwindowTestWin32WrongThreadProbe {
+	void *service_state;
+	int authority;
+	int window_state;
+	void *native_window;
+	volatile LONG references;
+} VMultiwindowTestWin32WrongThreadProbe;
+
 static HANDLE v_multiwindow_test_clipboard_ready;
 static HANDLE v_multiwindow_test_clipboard_release;
 static HANDLE v_multiwindow_test_clipboard_thread;
 static volatile LONG v_multiwindow_test_clipboard_held;
+static volatile LONG v_multiwindow_test_win32_wrong_thread_active;
+static DWORD v_multiwindow_test_win32_wrong_thread_worker_delay;
+static DWORD v_multiwindow_test_win32_wrong_thread_wait_timeout = 5000;
 
 static inline int v_multiwindow_test_win32_is_window(void *hwnd) {
 	return hwnd && IsWindow((HWND)hwnd) ? 1 : 0;
@@ -48,6 +69,35 @@ static inline int v_multiwindow_test_win32_is_zoomed(void *hwnd) {
 
 static inline void *v_multiwindow_test_win32_foreground(void) {
 	return (void *)GetForegroundWindow();
+}
+
+static inline void *v_multiwindow_test_win32_focus(void) {
+	return (void *)GetFocus();
+}
+
+static inline int v_multiwindow_test_win32_establish_foreground_focus(
+	void *hwnd_ptr) {
+	HWND hwnd = (HWND)hwnd_ptr;
+	if (!hwnd || !IsWindow(hwnd)) {
+		return 0;
+	}
+	ShowWindow(hwnd, SW_SHOW);
+	SetForegroundWindow(hwnd);
+	if (GetForegroundWindow() != hwnd) {
+		return 0;
+	}
+	SetFocus(hwnd);
+	return GetForegroundWindow() == hwnd && GetFocus() == hwnd;
+}
+
+static inline void *v_multiwindow_test_win32_swap_user_data(void *hwnd_ptr,
+	void *replacement) {
+	HWND hwnd = (HWND)hwnd_ptr;
+	if (!hwnd || !IsWindow(hwnd)) {
+		return NULL;
+	}
+	return (void *)SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+		(LONG_PTR)replacement);
 }
 
 static inline void *v_multiwindow_test_win32_owner(void *hwnd) {
@@ -86,6 +136,192 @@ static inline int v_multiwindow_test_win32_is_above(void *upper, void *lower) {
 		}
 	}
 	return 0;
+}
+
+static inline void *v_multiwindow_test_win32_window_snapshot_new(void *hwnd_ptr) {
+	HWND hwnd = (HWND)hwnd_ptr;
+	VMultiwindowTestWin32WindowSnapshot *snapshot =
+		(VMultiwindowTestWin32WindowSnapshot *)calloc(1, sizeof(*snapshot));
+	if (!snapshot || !hwnd || !IsWindow(hwnd)) {
+		free(snapshot);
+		return NULL;
+	}
+	snapshot->placement.length = sizeof(snapshot->placement);
+	if (!GetWindowPlacement(hwnd, &snapshot->placement)
+		|| !GetWindowRect(hwnd, &snapshot->rect)) {
+		free(snapshot);
+		return NULL;
+	}
+	snapshot->style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+	snapshot->ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+	snapshot->visible = IsWindowVisible(hwnd) != 0;
+	return snapshot;
+}
+
+static inline void v_multiwindow_test_win32_window_snapshot_free(
+	void *snapshot_ptr) {
+	free(snapshot_ptr);
+}
+
+static inline int v_multiwindow_test_win32_window_snapshot_matches(
+	void *snapshot_ptr, void *hwnd_ptr) {
+	const VMultiwindowTestWin32WindowSnapshot *snapshot =
+		(const VMultiwindowTestWin32WindowSnapshot *)snapshot_ptr;
+	HWND hwnd = (HWND)hwnd_ptr;
+	if (!snapshot || !hwnd || !IsWindow(hwnd)
+		|| GetWindowLongPtrW(hwnd, GWL_STYLE) != snapshot->style
+		|| GetWindowLongPtrW(hwnd, GWL_EXSTYLE) != snapshot->ex_style) {
+		return 0;
+	}
+	WINDOWPLACEMENT current;
+	RECT rect;
+	ZeroMemory(&current, sizeof(current));
+	ZeroMemory(&rect, sizeof(rect));
+	current.length = sizeof(current);
+	if (!GetWindowPlacement(hwnd, &current) || !GetWindowRect(hwnd, &rect)) {
+		return 0;
+	}
+	return current.flags == snapshot->placement.flags
+		&& current.showCmd == snapshot->placement.showCmd
+		&& current.ptMinPosition.x == snapshot->placement.ptMinPosition.x
+		&& current.ptMinPosition.y == snapshot->placement.ptMinPosition.y
+		&& current.ptMaxPosition.x == snapshot->placement.ptMaxPosition.x
+		&& current.ptMaxPosition.y == snapshot->placement.ptMaxPosition.y
+		&& EqualRect(&current.rcNormalPosition,
+			&snapshot->placement.rcNormalPosition)
+		&& EqualRect(&rect, &snapshot->rect)
+		&& (IsWindowVisible(hwnd) != 0) == snapshot->visible;
+}
+
+static inline int v_multiwindow_test_win32_synthesized_windowed_matches(
+	void *hwnd_ptr, int resizable, int borderless, int requested_width,
+	int requested_height, int expected_visible, UINT expected_show_command) {
+	HWND hwnd = (HWND)hwnd_ptr;
+	if (!hwnd || !IsWindow(hwnd)) {
+		return 0;
+	}
+	LONG_PTR expected_style = (LONG_PTR)v_multiwindow_win32_service_windowed_style(
+		resizable, borderless);
+	LONG_PTR expected_ex_style =
+		(LONG_PTR)v_multiwindow_win32_service_windowed_ex_style(borderless);
+	LONG_PTR style_mask = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
+		| WS_SIZEBOX | WS_MAXIMIZEBOX | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
+	LONG_PTR ex_style_mask = WS_EX_APPWINDOW | WS_EX_WINDOWEDGE;
+	LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+	LONG_PTR ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+	WINDOWPLACEMENT placement;
+	RECT rect;
+	RECT frame = {0, 0, requested_width > 0 ? requested_width : 1,
+		requested_height > 0 ? requested_height : 1};
+	HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+	MONITORINFO monitor_info;
+	ZeroMemory(&placement, sizeof(placement));
+	ZeroMemory(&rect, sizeof(rect));
+	ZeroMemory(&monitor_info, sizeof(monitor_info));
+	placement.length = sizeof(placement);
+	monitor_info.cbSize = sizeof(monitor_info);
+	if (!AdjustWindowRectEx(&frame, (DWORD)expected_style, FALSE,
+		(DWORD)expected_ex_style) || !monitor
+		|| !GetMonitorInfoW(monitor, &monitor_info)) {
+		return 0;
+	}
+	int width = frame.right - frame.left;
+	int height = frame.bottom - frame.top;
+	int screen_x = monitor_info.rcWork.left
+		+ ((monitor_info.rcWork.right - monitor_info.rcWork.left) - width) / 2;
+	int screen_y = monitor_info.rcWork.top
+		+ ((monitor_info.rcWork.bottom - monitor_info.rcWork.top) - height) / 2;
+	int workspace_x =
+		screen_x + monitor_info.rcMonitor.left - monitor_info.rcWork.left;
+	int workspace_y =
+		screen_y + monitor_info.rcMonitor.top - monitor_info.rcWork.top;
+	return (style & style_mask) == (expected_style & style_mask)
+		&& (ex_style & ex_style_mask) == (expected_ex_style & ex_style_mask)
+		&& GetWindowPlacement(hwnd, &placement)
+		&& placement.showCmd == expected_show_command
+		&& placement.rcNormalPosition.left == workspace_x
+		&& placement.rcNormalPosition.top == workspace_y
+		&& placement.rcNormalPosition.right == workspace_x + width
+		&& placement.rcNormalPosition.bottom == workspace_y + height
+		&& (IsWindowVisible(hwnd) != 0) == (expected_visible != 0)
+		&& GetWindowRect(hwnd, &rect) && rect.right > rect.left
+		&& rect.bottom > rect.top;
+}
+
+static inline void v_multiwindow_test_win32_wrong_thread_release(
+	VMultiwindowTestWin32WrongThreadProbe *context) {
+	if (context && InterlockedDecrement(&context->references) == 0) {
+		InterlockedDecrement(&v_multiwindow_test_win32_wrong_thread_active);
+		free(context);
+	}
+}
+
+static DWORD WINAPI v_multiwindow_test_win32_service_wrong_thread_worker(
+	void *context_ptr) {
+	VMultiwindowTestWin32WrongThreadProbe *context =
+		(VMultiwindowTestWin32WrongThreadProbe *)context_ptr;
+	if (v_multiwindow_test_win32_wrong_thread_worker_delay > 0) {
+		Sleep(v_multiwindow_test_win32_wrong_thread_worker_delay);
+	}
+	context->authority =
+		v_multiwindow_win32_service_authority(context->service_state);
+	context->window_state = v_multiwindow_win32_service_window_state(
+		context->service_state, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		NULL, NULL);
+	context->native_window =
+		v_multiwindow_win32_service_native_window(context->service_state);
+	v_multiwindow_test_win32_wrong_thread_release(context);
+	return 0;
+}
+
+static inline void v_multiwindow_test_win32_service_wrong_thread_timing(
+	DWORD worker_delay, DWORD wait_timeout) {
+	v_multiwindow_test_win32_wrong_thread_worker_delay = worker_delay;
+	v_multiwindow_test_win32_wrong_thread_wait_timeout = wait_timeout;
+}
+
+static inline int v_multiwindow_test_win32_service_wrong_thread_active_count(void) {
+	return (int)InterlockedCompareExchange(
+		&v_multiwindow_test_win32_wrong_thread_active, 0, 0);
+}
+
+static inline int v_multiwindow_test_win32_service_wrong_thread_wait_cleanup(
+	DWORD timeout) {
+	DWORD waited = 0;
+	while (v_multiwindow_test_win32_service_wrong_thread_active_count() != 0
+		&& waited < timeout) {
+		Sleep(1);
+		waited++;
+	}
+	return v_multiwindow_test_win32_service_wrong_thread_active_count() == 0;
+}
+
+static inline int v_multiwindow_test_win32_service_wrong_thread_rejected(
+	void *service_state) {
+	VMultiwindowTestWin32WrongThreadProbe *context =
+		(VMultiwindowTestWin32WrongThreadProbe *)calloc(1, sizeof(*context));
+	if (!context) {
+		return 0;
+	}
+	context->service_state = service_state;
+	context->references = 2;
+	InterlockedIncrement(&v_multiwindow_test_win32_wrong_thread_active);
+	HANDLE thread = CreateThread(NULL, 0,
+		v_multiwindow_test_win32_service_wrong_thread_worker, context, 0, NULL);
+	if (!thread) {
+		InterlockedDecrement(&v_multiwindow_test_win32_wrong_thread_active);
+		free(context);
+		return 0;
+	}
+	DWORD wait = WaitForSingleObject(thread,
+		v_multiwindow_test_win32_wrong_thread_wait_timeout);
+	int rejected = wait == WAIT_OBJECT_0
+		&& context->authority == V_MULTIWINDOW_WIN32_SERVICE_WRONG_THREAD
+		&& context->window_state == V_MULTIWINDOW_WIN32_SERVICE_WRONG_THREAD
+		&& context->native_window == NULL;
+	CloseHandle(thread);
+	v_multiwindow_test_win32_wrong_thread_release(context);
+	return rejected;
 }
 
 static inline UINT v_multiwindow_test_win32_dpi(void *hwnd) {

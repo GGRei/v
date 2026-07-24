@@ -44,6 +44,11 @@ pub fn (app &App) service_window_state(id WindowId) !ServiceWindowState {
 	app.ensure_running_locked()!
 	index := app.services.window_index(id)!
 	state := app.services.windows[index].state
+	if app.backend.kind == .win32 {
+		observed := app.backend.service_window_state(id)!
+		return service_window_state_with_sequence(merge_service_window_state(state, observed),
+			state.sequence)
+	}
 	return service_window_state_with_sequence(state, state.sequence)
 }
 

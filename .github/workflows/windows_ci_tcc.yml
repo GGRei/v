@@ -70,8 +70,12 @@ jobs:
           Write-Host "Pinned TCC command: $resolvedTcc"
       - name: Legacy gg import multiwindow isolation
         run: v test vlib/gg/legacy_import_multiwindow_isolation_test.v
+      - name: Public gg Win32 services no-flag contract
+        run: v test vlib/gg/multiwindow_win32_public_services_contract_windows_test.v
       - name: Multiwindow render runtime contract
         run: .\v.exe -silent vlib\gg\multiwindow_render_runtime_contract_test.v
+      - name: Public gg Win32 services enabled contract
+        run: .\v.exe -d gg_multiwindow test vlib\gg\multiwindow_win32_public_services_contract_windows_test.v
       - name: Package 2 native Win32 RED matrix
         shell: pwsh
         run: .\.github\workflows\run_multiwindow_win32_package2_red.ps1 -Compiler tcc

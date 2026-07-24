@@ -45,6 +45,8 @@ jobs:
           .\v.exe symlink
       - name: Legacy gg import multiwindow isolation
         run: v -cc gcc test vlib/gg/legacy_import_multiwindow_isolation_test.v
+      - name: Public gg Win32 services no-flag contract
+        run: v -cc gcc test vlib/gg/multiwindow_win32_public_services_contract_windows_test.v
       - name: Package 2 native Win32 RED matrix
         shell: pwsh
         run: .\.github\workflows\run_multiwindow_win32_package2_red.ps1 -Compiler gcc
@@ -194,6 +196,7 @@ jobs:
             vlib/x/multiwindow/service_native_win32_readback_d3d11_contract_test.v
             vlib/gg/multiwindow_api_d_gg_multiwindow_test.v
             vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v
+            vlib/gg/multiwindow_win32_public_services_contract_windows_test.v
             vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v
             vlib/gg/multiwindow_render_runtime_contract_test.v
             vlib/gg/frame_pacing_test.v
