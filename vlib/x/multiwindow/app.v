@@ -185,6 +185,7 @@ pub fn (mut app App) create_window(config WindowConfig) !WindowId {
 // destroy_window destroys one live window. The app remains alive when any window,
 // including the last one, is destroyed.
 pub fn (mut app App) destroy_window(id WindowId) ! {
+	app.assert_owner_thread()!
 	if app.window_destroy_finished(id) {
 		return app.return_window_terminal(id)
 	}

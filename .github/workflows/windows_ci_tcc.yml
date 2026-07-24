@@ -74,8 +74,206 @@ jobs:
         run: v test vlib/gg/multiwindow_win32_public_services_contract_windows_test.v
       - name: Multiwindow render runtime contract
         run: .\v.exe -silent vlib\gg\multiwindow_render_runtime_contract_test.v
-      - name: Public gg Win32 services enabled contract
-        run: .\v.exe -d gg_multiwindow test vlib\gg\multiwindow_win32_public_services_contract_windows_test.v
+      - name: Public gg Win32 proven W1 services enabled contract
+        shell: pwsh
+        run: |
+          $testFile = (Resolve-Path `
+            '.\vlib\gg\multiwindow_win32_public_services_contract_windows_test.v').Path
+          $discoveredTests = @(
+            Select-String -LiteralPath $testFile -Pattern '^fn (test_[A-Za-z0-9_]+)\(\)' |
+              ForEach-Object { $_.Matches[0].Groups[1].Value }
+          )
+          if ($discoveredTests.Count -eq 0) {
+            throw "no public Win32 service tests were discovered in $testFile"
+          }
+          $noFlagOnlyTest = 'test_win32_public_services_stay_disabled_without_opt_in'
+          $diagnosticTest = 'test_win32_public_controls_publish_observed_state_red'
+          $tests = @(
+            'test_win32_public_hwnd_borrow_route_red'
+            'test_win32_public_conditional_focus_refusal_is_not_a_capability_error_red'
+            'test_win32_public_partial_focus_is_never_reported_as_success_red'
+          )
+          $classifiedTests = @($noFlagOnlyTest) + $tests + @($diagnosticTest)
+          $missingTests = @(
+            $classifiedTests | Where-Object { $discoveredTests -cnotcontains $_ }
+          )
+          $unclassifiedTests = @(
+            $discoveredTests | Where-Object { $classifiedTests -cnotcontains $_ }
+          )
+          if ($missingTests.Count -ne 0 -or $unclassifiedTests.Count -ne 0) {
+            throw "public Win32 service test classification mismatch: missing=$($missingTests -join ',') unclassified=$($unclassifiedTests -join ',')"
+          }
+
+          foreach ($test in $tests) {
+            Write-Host "W1_TCC_CASE_BEGIN name=$test"
+            $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = (Resolve-Path '.\v.exe').Path
+            $startInfo.UseShellExecute = $false
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            $startInfo.CreateNoWindow = $true
+            foreach ($argument in @(
+              '-d', 'gg_multiwindow',
+              '-run-only', $test,
+              'test', $testFile
+            )) {
+              [void]$startInfo.ArgumentList.Add($argument)
+            }
+
+            $process = [System.Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            try {
+              if (-not $process.Start()) {
+                throw "failed to start public Win32 service test $test"
+              }
+              $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+              $stderrTask = $process.StandardError.ReadToEndAsync()
+              $timedOut = -not $process.WaitForExit(45000)
+              if ($timedOut) {
+                $process.Kill($true)
+                [void]$process.WaitForExit(5000)
+              } else {
+                $process.WaitForExit()
+              }
+              $stdout = $stdoutTask.GetAwaiter().GetResult()
+              $stderr = $stderrTask.GetAwaiter().GetResult()
+              if ($stdout) {
+                Write-Host $stdout.TrimEnd()
+              }
+              if ($stderr) {
+                [Console]::Error.WriteLine($stderr.TrimEnd())
+              }
+              $exitCode = if ($timedOut) { 'timeout' } else { [string]$process.ExitCode }
+              Write-Host "W1_TCC_CASE_END name=$test timeout=$timedOut exit=$exitCode"
+              if ($timedOut) {
+                throw "public Win32 service test timed out: $test"
+              }
+              if ($process.ExitCode -ne 0) {
+                throw "first failing public Win32 service test: $test (exit $($process.ExitCode))"
+              }
+              $summaryLines = @(
+                ([string]$stdout -split "\r?\n") |
+                  Where-Object { $_ -cmatch '^Summary for all V _test\.v files:' }
+              )
+              $combinedOutput = ([string]$stdout) + "`n" + ([string]$stderr)
+              $selectionAnomalies = @(
+                ($combinedOutput -split "\r?\n") |
+                  Where-Object { $_ -match '(?i)\bretrying\b|\bSKIP(?:PED)?\b' }
+              )
+              $summaryMatchesSelection = (
+                $summaryLines.Count -eq 1 -and
+                $summaryLines[0] -cmatch '^Summary for all V _test\.v files: 1 passed, 1 total\.' -and
+                $selectionAnomalies.Count -eq 0
+              )
+              if (-not $summaryMatchesSelection) {
+                $foundSummary = if ($summaryLines.Count -eq 0) {
+                  '<none>'
+                } else {
+                  $summaryLines -join ' | '
+                }
+                $foundAnomalies = if ($selectionAnomalies.Count -eq 0) {
+                  '<none>'
+                } else {
+                  $selectionAnomalies -join ' | '
+                }
+                throw "selection/summary mismatch for ${test}: expected exactly one '1 passed, 1 total' summary without skip/retry; summary=$foundSummary anomalies=$foundAnomalies"
+              }
+            } finally {
+              $process.Dispose()
+            }
+          }
       - name: Package 2 native Win32 RED matrix
+        if: ${{ always() }}
         shell: pwsh
         run: .\.github\workflows\run_multiwindow_win32_package2_red.ps1 -Compiler tcc
+      - name: Public gg Win32 controls/state native diagnostic
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $testFile = (Resolve-Path `
+            '.\vlib\gg\multiwindow_win32_public_services_contract_windows_test.v').Path
+          $test = 'test_win32_public_controls_publish_observed_state_red'
+          $discoveredTests = @(
+            Select-String -LiteralPath $testFile -Pattern '^fn (test_[A-Za-z0-9_]+)\(\)' |
+              ForEach-Object { $_.Matches[0].Groups[1].Value }
+          )
+          if ($discoveredTests -cnotcontains $test) {
+            throw "controls/state native diagnostic test was not discovered: $test"
+          }
+
+          Write-Host "W1_TCC_NATIVE_DIAG_BEGIN name=$test"
+          $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+          $startInfo.FileName = (Resolve-Path '.\v.exe').Path
+          $startInfo.UseShellExecute = $false
+          $startInfo.RedirectStandardOutput = $true
+          $startInfo.RedirectStandardError = $true
+          $startInfo.CreateNoWindow = $true
+          foreach ($argument in @(
+            '-d', 'gg_multiwindow',
+            '-run-only', $test,
+            'test', $testFile
+          )) {
+            [void]$startInfo.ArgumentList.Add($argument)
+          }
+
+          $process = [System.Diagnostics.Process]::new()
+          $process.StartInfo = $startInfo
+          try {
+            if (-not $process.Start()) {
+              throw "failed to start controls/state native diagnostic $test"
+            }
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            $timedOut = -not $process.WaitForExit(45000)
+            if ($timedOut) {
+              $process.Kill($true)
+              [void]$process.WaitForExit(5000)
+            } else {
+              $process.WaitForExit()
+            }
+            $stdout = $stdoutTask.GetAwaiter().GetResult()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+            if ($stdout) {
+              Write-Host $stdout.TrimEnd()
+            }
+            if ($stderr) {
+              [Console]::Error.WriteLine($stderr.TrimEnd())
+            }
+            $exitCode = if ($timedOut) { 'timeout' } else { [string]$process.ExitCode }
+            Write-Host "W1_TCC_NATIVE_DIAG_END name=$test timeout=$timedOut exit=$exitCode"
+            if ($timedOut) {
+              throw "controls/state native diagnostic timed out: $test"
+            }
+            if ($process.ExitCode -ne 0) {
+              throw "controls/state native diagnostic failed: $test (exit $($process.ExitCode))"
+            }
+            $summaryLines = @(
+              ([string]$stdout -split "\r?\n") |
+                Where-Object { $_ -cmatch '^Summary for all V _test\.v files:' }
+            )
+            $combinedOutput = ([string]$stdout) + "`n" + ([string]$stderr)
+            $selectionAnomalies = @(
+              ($combinedOutput -split "\r?\n") |
+                Where-Object { $_ -match '(?i)\bretrying\b|\bSKIP(?:PED)?\b' }
+            )
+            $summaryMatchesSelection = (
+              $summaryLines.Count -eq 1 -and
+              $summaryLines[0] -cmatch '^Summary for all V _test\.v files: 1 passed, 1 total\.' -and
+              $selectionAnomalies.Count -eq 0
+            )
+            if (-not $summaryMatchesSelection) {
+              $foundSummary = if ($summaryLines.Count -eq 0) {
+                '<none>'
+              } else {
+                $summaryLines -join ' | '
+              }
+              $foundAnomalies = if ($selectionAnomalies.Count -eq 0) {
+                '<none>'
+              } else {
+                $selectionAnomalies -join ' | '
+              }
+              throw "selection/summary mismatch for ${test}: expected exactly one '1 passed, 1 total' summary without skip/retry; summary=$foundSummary anomalies=$foundAnomalies"
+            }
+          } finally {
+            $process.Dispose()
+          }

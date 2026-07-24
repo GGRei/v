@@ -22,6 +22,11 @@ mut:
 	first_lease    NativeWindowLease
 }
 
+struct Win32PublicHwndProbe {
+mut:
+	hwnd voidptr
+}
+
 fn record_disabled_public_service(label string, err IError, expected string, count int) int {
 	assert err.msg() == expected, '${label} returned `${err.msg()}` without -d gg_multiwindow'
 	return count + 1
@@ -34,17 +39,17 @@ fn win32_public_state_is_observed(state WindowState) bool {
 }
 
 fn win32_public_hwnd(mut app App, window WindowId) !voidptr {
-	mut hwnd := voidptr(unsafe { nil })
-	callback := fn [mut hwnd] (mut lease NativeWindowLease) ! {
-		lease.with_win32(fn [mut hwnd] (borrowed voidptr) ! {
-			hwnd = borrowed
+	mut probe := &Win32PublicHwndProbe{}
+	callback := fn [mut probe] (mut lease NativeWindowLease) ! {
+		lease.with_win32(fn [mut probe] (borrowed voidptr) ! {
+			probe.hwnd = borrowed
 		})!
 	}
 	app.with_native_window(window, callback)!
-	if hwnd == unsafe { nil } {
+	if probe.hwnd == unsafe { nil } {
 		return error('gg.App.with_native_window returned a nil HWND')
 	}
-	return hwnd
+	return probe.hwnd
 }
 
 fn win32_public_request_refused_focus(mut app App, window WindowId) ! {

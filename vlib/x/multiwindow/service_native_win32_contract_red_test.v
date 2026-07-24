@@ -96,6 +96,12 @@ fn win32_w1_wrong_thread_service_state(backend_pointer voidptr, id WindowId) str
 	return ''
 }
 
+struct Win32W1BorrowEpochProof {
+mut:
+	epoch        u64
+	valid_inside bool
+}
+
 fn win32_red_utf16_units(text string) usize {
 	mut units := usize(1)
 	for codepoint in text.runes() {
@@ -381,17 +387,28 @@ fn test_win32_w1_native_borrow_is_bounded_and_epoch_checked() {
 		assert raw.secondary == 0
 		assert C.v_multiwindow_test_win32_is_window(raw.primary) == 1
 
-		mut copied := NativeWindowBorrow{}
-		copy_callback := fn [mut copied, window, raw] (borrow NativeWindowBorrow) ! {
+		app_pointer := unsafe { voidptr(app) }
+		shared epoch_proof := Win32W1BorrowEpochProof{}
+		copy_callback := fn [app_pointer, shared epoch_proof, window, raw] (borrow NativeWindowBorrow) ! {
+			owner := unsafe { &App(app_pointer) }
 			assert borrow.window_for_gg() == window
 			assert borrow.backend_for_gg() == .win32
 			assert borrow.primary_for_gg() == raw.primary
-			copied = borrow
+			backend := owner.validate_native_borrow_for_gg(window, borrow.epoch_for_gg())!
+			lock epoch_proof {
+				epoch_proof.epoch = borrow.epoch_for_gg()
+				epoch_proof.valid_inside = backend == .win32
+			}
 		}
 		app.with_native_window_borrow(window, raw.backend, raw.primary, raw.secondary,
 			copy_callback)!
+		epoch, valid_inside := rlock epoch_proof {
+			epoch_proof.epoch, epoch_proof.valid_inside
+		}
+		assert epoch != 0
+		assert valid_inside
 		mut epoch_error := ''
-		if _ := app.validate_native_borrow_for_gg(window, copied.epoch_for_gg()) {
+		if _ := app.validate_native_borrow_for_gg(window, epoch) {
 			epoch_error = 'borrow epoch remained valid after callback'
 		} else {
 			epoch_error = err.msg()
@@ -399,7 +416,31 @@ fn test_win32_w1_native_borrow_is_bounded_and_epoch_checked() {
 		assert epoch_error == err_native_borrow_stale
 
 		bounded := app.backend.win32.service_native_window_borrow(window)!
-		app_pointer := unsafe { voidptr(&app) }
+		foreign_callback := fn [app_pointer, window] (borrow NativeWindowBorrow) ! {
+			mut owner := unsafe { &App(app_pointer) }
+			assert owner.validate_native_borrow_for_gg(window, borrow.epoch_for_gg())! == .win32
+			result := chan string{cap: 1}
+			worker := spawn fn [app_pointer, result, window] () {
+				mut foreign := unsafe { &App(app_pointer) }
+				foreign.destroy_window(window) or {
+					result <- err.msg()
+					return
+				}
+				result <- 'accepted'
+			}()
+			assert <-result == err_owner_thread_required
+			worker.wait()
+			owner.state_mutex.lock()
+			queued := window in owner.deferred_native_windows
+			owner.state_mutex.unlock()
+			assert !queued
+			assert owner.window_exists(window)
+		}
+		app.with_native_window_borrow(window, bounded.backend, bounded.primary, bounded.secondary,
+			foreign_callback)!
+		assert app.window_exists(window)
+		assert C.v_multiwindow_test_win32_is_window(bounded.primary) == 1
+
 		destroy_callback := fn [app_pointer, window, bounded] (borrow NativeWindowBorrow) ! {
 			mut owner := unsafe { &App(app_pointer) }
 			assert owner.validate_native_borrow_for_gg(window, borrow.epoch_for_gg())! == .win32
@@ -412,6 +453,14 @@ fn test_win32_w1_native_borrow_is_bounded_and_epoch_checked() {
 			destroy_callback)!
 		assert !app.window_exists(window)
 		assert C.v_multiwindow_test_win32_is_window(bounded.primary) == 0
+		mut destroyed_events := 0
+		for event in app.drain_queued_events()! {
+			if event.kind == .lifecycle && event.lifecycle.kind == .window_destroyed
+				&& event.lifecycle.window_id == window {
+				destroyed_events++
+			}
+		}
+		assert destroyed_events == 1
 	}
 }
 
