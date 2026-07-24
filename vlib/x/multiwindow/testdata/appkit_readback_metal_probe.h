@@ -222,6 +222,17 @@ static int v_multiwindow_appkit_readback_probe_commit_command_buffer(
 	return 1;
 }
 
+static int v_multiwindow_appkit_readback_probe_wait_command_buffer(
+		void *command_buffer_ptr) {
+	if (command_buffer_ptr == NULL || ![NSThread isMainThread]) {
+		return 0;
+	}
+	id<MTLCommandBuffer> command_buffer =
+		(__bridge id<MTLCommandBuffer>)command_buffer_ptr;
+	[command_buffer waitUntilCompleted];
+	return command_buffer.status == MTLCommandBufferStatusCompleted ? 1 : 0;
+}
+
 static void v_multiwindow_appkit_readback_probe_release_object(void *object_ptr) {
 	if (object_ptr != NULL) {
 		CFBridgingRelease(object_ptr);
