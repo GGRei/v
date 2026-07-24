@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - smoke/x-multiwindow-windows-20260717
+      - diag/appkit-readback-rgba-20260724
 
 concurrency:
   group: package2-macos-${{ github.workflow }}-${{ github.ref }}
@@ -107,46 +107,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          ./v -cc clang -d gg_multiwindow -d sokol_metal \
-            -o /tmp/gg_multiwindow_metal examples/gg/multiwindow.v
-          ./v -cc clang -d gg_multiwindow -d sokol_metal \
-            -o /tmp/gg_multiwindow_render_runtime_metal \
-            examples/gg/multiwindow_render_runtime.v
-
           tests=(
-            vlib/x/multiwindow/event_sequence_exhaustion_test.v
-            vlib/x/multiwindow/event_terminal_delivery_test.v
-            vlib/x/multiwindow/internal_fault_matrix_test.v
-            vlib/x/multiwindow/multiwindow_test.v
-            vlib/x/multiwindow/native_operation_proof_test.v
-            vlib/x/multiwindow/render_scheduler_test.v
-            vlib/x/multiwindow/render_target_lease_test.v
-            vlib/x/multiwindow/service_native_appkit_contract_red_test.v
-            vlib/x/multiwindow/service_native_appkit_final_nonreadback_red_test.v
-            vlib/x/multiwindow/service_native_appkit_nonreadback_test.v
-            vlib/x/multiwindow/service_native_appkit_readback_metal_red_test.v
-            vlib/x/multiwindow/teardown_contract_test.v
-            vlib/sokol/gfx/metal_private_hook_contract_test.v
-            vlib/gg/multiwindow_api_d_gg_multiwindow_test.v
             vlib/gg/multiwindow_appkit_readback_d_gg_multiwindow_test.v
-            vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v
-            vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v
-            vlib/gg/multiwindow_render_runtime_contract_test.v
-            vlib/gg/frame_pacing_test.v
-            vlib/gg/draw_fns_api_test.v
-            vlib/gg/draw_rect_empty_test.v
           )
           for test in "${tests[@]}"; do
             "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
-              ./v -cc clang -d gg_multiwindow -d sokol_metal test "$test"
+              ./v -cc clang -d gg_multiwindow -d sokol_metal \
+                -cflags -DV_MULTIWINDOW_APPKIT_READBACK_TRACE test "$test"
           done
-
-          "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
-            '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' \
-            /tmp/gg_multiwindow_render_runtime_metal
-
-          "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
-            '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
-            /tmp/gg_multiwindow_metal
       - name: Test AppKit GLCore rejection guard
         run: ./v -d gg_multiwindow -d darwin_sokol_glcore33 test vlib/x/multiwindow/multiwindow_test.v

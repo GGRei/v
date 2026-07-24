@@ -73,6 +73,7 @@ fn appkit_public_readback_frame(mut context WindowContext, mut state AppKitPubli
 			height: 3
 		}
 	})!
+	eprintln('APPKIT_RB public request=pre serial=${state.pre_pass_image_readback.serial}')
 	context.with_offscreen_sgl(WindowOffscreenPassConfig{
 		attachments: state.attachments
 		action:      gfx.create_clear_pass_action(0, 0, 0, 1)
@@ -96,6 +97,7 @@ fn appkit_public_readback_frame(mut context WindowContext, mut state AppKitPubli
 			height: 3
 		}
 	})!
+	eprintln('APPKIT_RB public request=post serial=${state.post_pass_image_readback.serial}')
 	mut app := context.app
 	state.window_readback = app.request_window_capture(context.window_id(), WindowReadbackConfig{
 		rect: WindowPixelRect{
@@ -105,6 +107,7 @@ fn appkit_public_readback_frame(mut context WindowContext, mut state AppKitPubli
 			height: 2
 		}
 	})!
+	eprintln('APPKIT_RB public request=window serial=${state.window_readback.serial}')
 	premature := app.core.drain_readback_events()!
 	if premature.len != 0 {
 		return error('AppKit readback became observable before its producing submission')
@@ -250,6 +253,9 @@ fn test_multiwindow_appkit_public_readbacks_are_per_window_and_post_submit() {
 		mut completion := &AppKitPublicReadbackCompletion{}
 		app.run(
 			readback_fn: fn [results, mut completion] (result WindowReadbackResult, mut app App) ! {
+				if result.pixels_rgba8.len >= 4 {
+					eprintln('APPKIT_RB public result serial=${result.id.serial} rgba=${result.pixels_rgba8[0]},${result.pixels_rgba8[1]},${result.pixels_rgba8[2]},${result.pixels_rgba8[3]}')
+				}
 				results <- result
 				completion.count++
 				if completion.count == 6 {

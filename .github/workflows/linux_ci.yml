@@ -2,7 +2,6 @@ name: Package 2 Linux multiwindow smoke
 
 on:
   workflow_dispatch:
-  push:
 
 concurrency:
   group: package2-linux-${{ github.workflow }}-${{ github.ref }}

@@ -13,6 +13,9 @@
 #endif
 #include <stdbool.h>
 #include <stdint.h>
+#if defined(V_MULTIWINDOW_APPKIT_READBACK_TRACE)
+#include <stdio.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include "appkit_backend_helpers.h"
@@ -1009,6 +1012,23 @@ static BOOL v_multiwindow_appkit_readback_is_bgra(MTLPixelFormat format) {
 		|| format == MTLPixelFormatBGRA8Unorm_sRGB;
 }
 
+#if defined(V_MULTIWINDOW_APPKIT_READBACK_TRACE)
+static const char *v_multiwindow_appkit_readback_format_name(MTLPixelFormat format) {
+	switch (format) {
+	case MTLPixelFormatBGRA8Unorm:
+		return "BGRA8Unorm";
+	case MTLPixelFormatBGRA8Unorm_sRGB:
+		return "BGRA8Unorm_sRGB";
+	case MTLPixelFormatRGBA8Unorm:
+		return "RGBA8Unorm";
+	case MTLPixelFormatRGBA8Unorm_sRGB:
+		return "RGBA8Unorm_sRGB";
+	default:
+		return "other";
+	}
+}
+#endif
+
 static NSData *v_multiwindow_appkit_bgra_to_rgba(const void *source_bytes,
 		NSUInteger source_bytes_per_row, NSUInteger width, NSUInteger height,
 		MTLPixelFormat source_format) {
@@ -1136,6 +1156,22 @@ static BOOL v_multiwindow_appkit_offscreen_slot_has_active_record(
 		? v_multiwindow_appkit_bgra_to_rgba(buffer.contents, self.gpuBytesPerRow,
 			self.width, self.height, self.sourcePixelFormat)
 		: nil;
+#if defined(V_MULTIWINDOW_APPKIT_READBACK_TRACE)
+	const uint8_t *raw = should_normalize ? (const uint8_t *)buffer.contents : NULL;
+	const uint8_t *normalized = pixels != nil ? (const uint8_t *)pixels.bytes : NULL;
+	fprintf(stderr,
+		"APPKIT_RB complete request=%llu texture=%p format=%s(%lu) bgra=%d raw=%u,%u,%u,%u rgba=%u,%u,%u,%u\n",
+		(unsigned long long)self.request, (__bridge void *)source,
+		v_multiwindow_appkit_readback_format_name(self.sourcePixelFormat),
+		(unsigned long)self.sourcePixelFormat,
+		v_multiwindow_appkit_readback_is_bgra(self.sourcePixelFormat) ? 1 : 0,
+		raw != NULL ? raw[0] : 0, raw != NULL ? raw[1] : 0,
+		raw != NULL ? raw[2] : 0, raw != NULL ? raw[3] : 0,
+		normalized != NULL ? normalized[0] : 0,
+		normalized != NULL ? normalized[1] : 0,
+		normalized != NULL ? normalized[2] : 0,
+		normalized != NULL ? normalized[3] : 0);
+#endif
 	@synchronized (self) {
 		if (!self.released && !self.cancelRequested && self.status == 0) {
 			self.publicPixels = pixels;
@@ -1185,6 +1221,16 @@ static void v_multiwindow_appkit_readback_end_pass_hook(const void *command_buff
 				|| pending_offscreen.expectedTexture == nil) {
 			return;
 		}
+#if defined(V_MULTIWINDOW_APPKIT_READBACK_TRACE)
+		fprintf(stderr,
+			"APPKIT_RB hook kind=image pass=%llu frame=%llu texture=%p format=%s(%lu)\n",
+			(unsigned long long)pending_offscreen.passSerial,
+			(unsigned long long)pending_offscreen.producingFrame,
+			(__bridge void *)pending_offscreen.expectedTexture,
+			v_multiwindow_appkit_readback_format_name(
+				pending_offscreen.expectedTexture.pixelFormat),
+			(unsigned long)pending_offscreen.expectedTexture.pixelFormat);
+#endif
 		[state encodeReadbacksWithCommandBuffer:native_command_buffer
 			drawable:nil expectedTexture:pending_offscreen.expectedTexture
 			producingFrame:pending_offscreen.producingFrame];
@@ -1306,6 +1352,16 @@ static void v_multiwindow_appkit_readback_end_pass_hook(const void *command_buff
 		}
 		id<MTLTexture> source = record.kind == VMultiwindowAppKitReadbackWindow
 			? drawable.texture : record.sourceTexture;
+#if defined(V_MULTIWINDOW_APPKIT_READBACK_TRACE)
+		fprintf(stderr,
+			"APPKIT_RB encode request=%llu kind=%ld frame=%llu texture=%p format=%s(%lu)\n",
+			(unsigned long long)record.request, (long)record.kind,
+			(unsigned long long)record.producingFrame, (__bridge void *)source,
+			source != nil
+				? v_multiwindow_appkit_readback_format_name(source.pixelFormat)
+				: "nil",
+			source != nil ? (unsigned long)source.pixelFormat : 0UL);
+#endif
 		BOOL valid = source != nil && source.device == device
 			&& v_multiwindow_appkit_readback_pixel_format(source.pixelFormat)
 			&& record.width > 0 && record.height > 0
@@ -4051,6 +4107,15 @@ static int v_multiwindow_appkit_stage_readback(
 	record.producingFrame = producing_frame;
 	record.sourceTexture = source;
 	[state.serviceReadbacks addObject:record];
+#if defined(V_MULTIWINDOW_APPKIT_READBACK_TRACE)
+	fprintf(stderr,
+		"APPKIT_RB stage request=%llu kind=%ld frame=%llu texture=%p format=%s(%lu)\n",
+		(unsigned long long)request, (long)kind,
+		(unsigned long long)producing_frame, (__bridge void *)source,
+		source != nil ? v_multiwindow_appkit_readback_format_name(source.pixelFormat)
+					  : "window",
+		source != nil ? (unsigned long)source.pixelFormat : 0UL);
+#endif
 	return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_OK;
 }
 
@@ -4113,6 +4178,14 @@ int v_multiwindow_appkit_service_arm_offscreen_readback_pass(void *state_ptr,
 		slot.producingFrame = producing_frame;
 		slot.expectedTexture = texture;
 		v_multiwindow_appkit_offscreen_readback_slot = slot;
+#if defined(V_MULTIWINDOW_APPKIT_READBACK_TRACE)
+		fprintf(stderr,
+			"APPKIT_RB arm pass=%llu frame=%llu texture=%p format=%s(%lu)\n",
+			(unsigned long long)pass_serial, (unsigned long long)producing_frame,
+			(__bridge void *)texture,
+			v_multiwindow_appkit_readback_format_name(texture.pixelFormat),
+			(unsigned long)texture.pixelFormat);
+#endif
 		return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_OK;
 	}
 }
