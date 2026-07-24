@@ -50,20 +50,11 @@ fn appkit_public_readback_frame(mut context WindowContext, mut state AppKitPubli
 	}
 	state.requested = true
 	state.expected_submitted_frame = context.info.submitted_frame + 1
-	context.with_offscreen_sgl(WindowOffscreenPassConfig{
+	context.with_offscreen(WindowOffscreenPassConfig{
 		attachments: state.attachments
-		action:      gfx.create_clear_pass_action(0, 0, 0, 1)
-	}, fn (mut drawing WindowSglContext) ! {
-		drawing.defaults()
-		drawing.matrix_mode_projection()
-		drawing.load_identity()
-		drawing.ortho(0, 5, 3, 0, -1, 1)
-		drawing.begin_quads()
-		drawing.v2f_c4b(0, 0, 0, 0, 255, 255)
-		drawing.v2f_c4b(5, 0, 0, 0, 255, 255)
-		drawing.v2f_c4b(5, 3, 0, 0, 255, 255)
-		drawing.v2f_c4b(0, 3, 0, 0, 255, 255)
-		drawing.end()
+		action:      gfx.create_clear_pass_action(0, 0, 1, 1)
+	}, fn (mut pass WindowPassContext) ! {
+		_ = pass
 	})!
 	state.pre_pass_image_readback = context.request_image_readback(state.image, WindowReadbackConfig{
 		rect: WindowPixelRect{
@@ -73,20 +64,11 @@ fn appkit_public_readback_frame(mut context WindowContext, mut state AppKitPubli
 			height: 3
 		}
 	})!
-	context.with_offscreen_sgl(WindowOffscreenPassConfig{
+	context.with_offscreen(WindowOffscreenPassConfig{
 		attachments: state.attachments
-		action:      gfx.create_clear_pass_action(0, 0, 0, 1)
-	}, fn (mut drawing WindowSglContext) ! {
-		drawing.defaults()
-		drawing.matrix_mode_projection()
-		drawing.load_identity()
-		drawing.ortho(0, 5, 3, 0, -1, 1)
-		drawing.begin_quads()
-		drawing.v2f_c4b(0, 0, 255, 0, 0, 255)
-		drawing.v2f_c4b(5, 0, 255, 0, 0, 255)
-		drawing.v2f_c4b(5, 3, 255, 0, 0, 255)
-		drawing.v2f_c4b(0, 3, 255, 0, 0, 255)
-		drawing.end()
+		action:      gfx.create_clear_pass_action(1, 0, 0, 1)
+	}, fn (mut pass WindowPassContext) ! {
+		_ = pass
 	})!
 	state.post_pass_image_readback = context.request_image_readback(state.image, WindowReadbackConfig{
 		rect: WindowPixelRect{

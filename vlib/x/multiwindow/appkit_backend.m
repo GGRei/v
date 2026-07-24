@@ -339,13 +339,13 @@ v_multiwindow_test_appkit_oracle_record_get(uint64_t index) {
 #define V_MULTIWINDOW_APPKIT_READBACK_READY 1
 #define V_MULTIWINDOW_APPKIT_READBACK_FAILED 3
 
+@class VMultiwindowAppKitWindowState;
+
 #if defined(SOKOL_METAL) && defined(V_SOKOL_MTL_END_PASS_HOOK)
 typedef NS_ENUM(NSInteger, VMultiwindowAppKitReadbackKind) {
 	VMultiwindowAppKitReadbackWindow = 1,
 	VMultiwindowAppKitReadbackImage = 2,
 };
-
-@class VMultiwindowAppKitWindowState;
 
 @interface VMultiwindowAppKitReadbackRecord : NSObject
 @property(assign) uint64_t request;

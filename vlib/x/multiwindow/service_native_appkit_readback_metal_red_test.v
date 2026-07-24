@@ -27,6 +27,7 @@ $if darwin {
 	fn C.v_multiwindow_appkit_readback_probe_arm_offscreen(state voidptr, texture voidptr, pass_serial u64, producing_frame u64) int
 	fn C.v_multiwindow_appkit_readback_probe_make_command_buffer(window voidptr) voidptr
 	fn C.v_multiwindow_appkit_readback_probe_commit_command_buffer(command_buffer voidptr, wait int) int
+	fn C.v_multiwindow_appkit_readback_probe_wait_command_buffer(command_buffer voidptr) int
 	fn C.v_multiwindow_appkit_readback_probe_release_object(object voidptr)
 	fn C.v_multiwindow_appkit_readback_probe_stage_window(state voidptr, request u64, x int, y int, width int, height int, producing_frame u64) int
 	fn C.v_multiwindow_appkit_readback_probe_stage_image(state voidptr, texture voidptr, request u64, x int, y int, width int, height int, producing_frame u64) int
@@ -332,6 +333,14 @@ fn test_appkit_metal_readback_common_result_validation() {
 	native_cancelled := appkit_backend_readback_result(id, 2, 0, 0, 0, 0, []u8{}, false)
 	assert native_cancelled.status == .failed
 	assert native_cancelled.status != .cancelled
+	native_failed_region := appkit_backend_readback_result(id, service_appkit_readback_failed, 602,
+		1, 1, 0, []u8{}, false)
+	assert native_failed_region.status == .failed
+	assert native_failed_region.submitted_frame == 602
+	assert native_failed_region.width == 0
+	assert native_failed_region.height == 0
+	assert native_failed_region.stride == 0
+	assert native_failed_region.pixels_rgba8.len == 0
 	release_failed := appkit_backend_finalize_readback_release(valid, false)
 	assert release_failed.status == .failed
 	assert release_failed.pixels_rgba8.len == 0
@@ -581,772 +590,727 @@ fn test_appkit_nonmetal_readback_abi_stubs_are_available() {
 	assert stubs.count('return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_UNAVAILABLE;') >= 9
 }
 
-$if darwin {
-	$if sokol_metal ? {
-		$if gg_multiwindow ? {
-			@[markused]
-			fn appkit_readback_wait_until_eligible(mut app App, window WindowId) ! {
-				deadline := time.now().add(5 * time.second)
-				for {
-					app.poll_events()!
-					if app.render_window_eligible(window)! {
-						return
-					}
-					if time.now() >= deadline {
-						return error('AppKit readback window did not become render eligible')
-					}
-					time.sleep(5 * time.millisecond)
-				}
+$if darwin && sokol_metal ? && gg_multiwindow ? {
+	@[markused]
+	fn appkit_readback_wait_until_eligible(mut app App, window WindowId) ! {
+		deadline := time.now().add(5 * time.second)
+		for {
+			app.poll_events()!
+			if app.render_window_eligible(window)! {
+				return
 			}
-
-			@[markused]
-			fn appkit_readback_window_native(mut app App, window WindowId) !(voidptr, voidptr, int) {
-				mut pointers := []voidptr{len: 2, init: unsafe { nil }}
-				mut framebuffer_only := []int{len: 1, init: -2}
-				inspect := fn [mut pointers, mut framebuffer_only] (borrow NativeWindowBorrow) ! {
-					pointers[1] = borrow.primary_for_gg()
-					pointers[0] = C.v_multiwindow_appkit_readback_probe_state(pointers[1])
-					framebuffer_only[0] =
-						C.v_multiwindow_appkit_readback_probe_framebuffer_only(pointers[1])
-				}
-				app.with_native_window_for_gg(window, inspect)!
-				if pointers[0] == unsafe { nil } || pointers[1] == unsafe { nil } {
-					return error('AppKit readback probe did not receive the live NSWindow/state')
-				}
-				return pointers[0], pointers[1], framebuffer_only[0]
+			if time.now() >= deadline {
+				return error('AppKit readback window did not become render eligible')
 			}
+			time.sleep(5 * time.millisecond)
+		}
+	}
 
-			@[markused]
-			fn appkit_readback_take(state voidptr) AppKitReadbackProbeResult {
-				mut result := AppKitReadbackProbeResult{}
-				result.take_status = C.v_multiwindow_appkit_readback_probe_take(state,
-					&result.request, &result.status, &result.width, &result.height, &result.stride,
-					&result.submitted_frame, &result.byte_length)
+	@[markused]
+	fn appkit_readback_window_native(mut app App, window WindowId) !(voidptr, voidptr, int) {
+		mut pointers := []voidptr{len: 2, init: unsafe { nil }}
+		mut framebuffer_only := []int{len: 1, init: -2}
+		inspect := fn [mut pointers, mut framebuffer_only] (borrow NativeWindowBorrow) ! {
+			pointers[1] = borrow.primary_for_gg()
+			pointers[0] = C.v_multiwindow_appkit_readback_probe_state(pointers[1])
+			framebuffer_only[0] =
+				C.v_multiwindow_appkit_readback_probe_framebuffer_only(pointers[1])
+		}
+		app.with_native_window_for_gg(window, inspect)!
+		if pointers[0] == unsafe { nil } || pointers[1] == unsafe { nil } {
+			return error('AppKit readback probe did not receive the live NSWindow/state')
+		}
+		return pointers[0], pointers[1], framebuffer_only[0]
+	}
+
+	@[markused]
+	fn appkit_readback_take(state voidptr) AppKitReadbackProbeResult {
+		mut result := AppKitReadbackProbeResult{}
+		result.take_status = C.v_multiwindow_appkit_readback_probe_take(state, &result.request,
+			&result.status, &result.width, &result.height, &result.stride, &result.submitted_frame,
+			&result.byte_length)
+		return result
+	}
+
+	@[markused]
+	fn appkit_readback_wait_result(state voidptr) !AppKitReadbackProbeResult {
+		deadline := time.now().add(5 * time.second)
+		for {
+			result := appkit_readback_take(state)
+			if result.take_status == 1 {
 				return result
 			}
-
-			@[markused]
-			fn appkit_readback_wait_result(mut app App, state voidptr) !AppKitReadbackProbeResult {
-				deadline := time.now().add(5 * time.second)
-				for {
-					result := appkit_readback_take(state)
-					if result.take_status == 1 {
-						return result
-					}
-					if result.take_status != 0 {
-						return error('AppKit native take returned ${result.take_status}')
-					}
-					app.poll_events()!
-					if time.now() >= deadline {
-						return error('AppKit Metal completion did not become owner-thread observable')
-					}
-					time.sleep(5 * time.millisecond)
-				}
-				return error('AppKit Metal completion wait ended unexpectedly')
+			if result.take_status != 0 {
+				return error('AppKit native take returned ${result.take_status}')
 			}
-
-			@[markused]
-			fn appkit_readback_wait_ready_count(mut app App, state voidptr, expected int) ! {
-				deadline := time.now().add(5 * time.second)
-				for {
-					if C.v_multiwindow_appkit_readback_test_ready_count(state) == expected {
-						return
-					}
-					app.poll_events()!
-					if time.now() >= deadline {
-						return error('AppKit ready readback count did not reach ${expected}')
-					}
-					time.sleep(5 * time.millisecond)
-				}
+			if time.now() >= deadline {
+				return error('AppKit Metal completion did not become owner-thread observable')
 			}
-
-			@[markused]
-			fn appkit_readback_copy_once(state voidptr, result AppKitReadbackProbeResult) ![]u8 {
-				assert result.width > 0
-				assert result.height > 0
-				assert result.stride == result.width * 4
-				assert result.byte_length == usize(result.stride * result.height)
-				mut pixels := []u8{len: int(result.byte_length)}
-				if pixels.len > 1 {
-					assert C.v_multiwindow_appkit_readback_probe_copy(state, result.request,
-						pixels.data, usize(pixels.len - 1)) <= 0
-				}
-				assert C.v_multiwindow_appkit_readback_probe_copy(state, result.request,
-					pixels.data, usize(pixels.len)) == 1
-				assert C.v_multiwindow_appkit_readback_probe_copy(state, result.request,
-					pixels.data, usize(pixels.len)) == 0
-				assert C.v_multiwindow_appkit_readback_probe_release(state, result.request) == 1
-				assert C.v_multiwindow_appkit_readback_probe_release(state, result.request) == 0
-				return pixels
-			}
-
-			@[markused]
-			fn appkit_readback_submit_window(mut app App, window WindowId, state voidptr, texture voidptr, window_request u64, image_request u64, frame u64) ![]int {
-				mut capture := []int{len: 3}
-				outcome := app.with_scheduled_render_batch(fn [mut app, window, state, texture, window_request, image_request, frame, mut capture] (batch RenderBatchLease, candidates []RenderWindowSnapshot) ! {
-					assert candidates.any(it.window == window)
-					acquisition := app.acquire_render_target(batch, window)!
-					assert acquisition.status == .ready
-					app.with_render_target_pass(acquisition.lease, gfx.PassAction{}, fn [state, texture, window_request, image_request, frame, mut capture] () ! {
-						if image_request == 0 {
-							capture[0] = C.v_multiwindow_appkit_readback_probe_stage_window(state,
-								window_request, 0, 0, 1, 1, frame)
-							return
-						}
-						capture[0] = C.v_multiwindow_appkit_readback_probe_stage_window(state,
-							window_request, 0, 0, 2, 2, frame)
-						capture[1] = C.v_multiwindow_appkit_readback_probe_stage_image(state,
-							texture, image_request, 1, 0, 2, 2, frame)
-						capture[2] = appkit_readback_take(state).take_status
-					})!
-				})!
-				assert capture[0] == 1
-				if image_request != 0 {
-					assert capture[1] == 1
-					assert capture[2] == 0
-				}
-				assert outcome.committed
-				if image_request != 0 {
-					assert outcome.finalized_submissions == 1
-				}
-				assert C.v_multiwindow_appkit_readback_probe_resolve(state, frame, 1) == 1
-				return capture
-			}
-
-			@[markused]
-			fn appkit_readback_wait_native_result(state voidptr) !AppKitReadbackProbeResult {
-				deadline := time.now().add(5 * time.second)
-				for {
-					result := appkit_readback_take(state)
-					if result.take_status == 1 {
-						return result
-					}
-					if result.take_status != 0 {
-						return error('AppKit native take returned ${result.take_status}')
-					}
-					if time.now() >= deadline {
-						return error('AppKit mixed-submit readback did not complete')
-					}
-					time.sleep(5 * time.millisecond)
-				}
-				return error('AppKit mixed-submit wait ended unexpectedly')
-			}
-
-			@[markused]
-			fn appkit_readback_mixed_callback_batch(mut app App, success_window WindowId, failed_window WindowId, success_state voidptr, failed_state voidptr, success_request u64, failed_request u64, clear_red f32, clear_green f32, clear_blue f32, clear_alpha f32, callback_message string) !(u64, u64) {
-				mut capture := []u64{len: 2}
-				action := gfx.create_clear_pass_action(clear_red, clear_green, clear_blue,
-					clear_alpha)
-				outcome := app.with_scheduled_render_batch(fn [mut app, success_window, failed_window, success_state, failed_state, success_request, failed_request, action, callback_message, mut capture] (batch RenderBatchLease, candidates []RenderWindowSnapshot) ! {
-					mut success_candidate := RenderWindowSnapshot{}
-					mut failed_candidate := RenderWindowSnapshot{}
-					for candidate in candidates {
-						if candidate.window == success_window {
-							success_candidate = candidate
-						} else if candidate.window == failed_window {
-							failed_candidate = candidate
-						}
-					}
-					assert success_candidate.window == success_window
-					assert failed_candidate.window == failed_window
-					capture[0] = success_candidate.submitted_frame + 1
-					capture[1] = failed_candidate.submitted_frame + 1
-					success_target := app.acquire_render_target(batch, success_window)!
-					failed_target := app.acquire_render_target(batch, failed_window)!
-					assert success_target.status == .ready
-					assert failed_target.status == .ready
-					assert C.v_multiwindow_appkit_readback_probe_stage_window(success_state,
-						success_request, 0, 0, 1, 1, capture[0]) == 1
-					assert C.v_multiwindow_appkit_readback_probe_stage_window(failed_state,
-						failed_request, 0, 0, 1, 1, capture[1]) == 1
-					app.with_render_target_pass(success_target.lease, action, fn () ! {})!
-					return error(callback_message)
-				})!
-				assert outcome.committed
-				assert outcome.finalized_submissions == 1
-				assert outcome.error.contains(callback_message)
-				return capture[0], capture[1]
-			}
-
-			@[markused]
-			fn appkit_readback_assert_mixed_terminals(success_state voidptr, failed_state voidptr, success_request u64, failed_request u64, success_frame u64, expected_pixel []u8) ! {
-				success := appkit_readback_wait_native_result(success_state)!
-				assert success.request == success_request
-				assert success.status == 1
-				assert success.submitted_frame == success_frame
-				assert success.width == 1
-				assert success.height == 1
-				assert success.stride == 4
-				pixels := appkit_readback_copy_once(success_state, success)!
-				assert pixels == expected_pixel
-
-				failed := appkit_readback_wait_native_result(failed_state)!
-				assert failed.request == failed_request
-				assert failed.status == 3
-				assert failed.submitted_frame == 0
-				assert failed.width == 0
-				assert failed.height == 0
-				assert failed.stride == 0
-				assert failed.byte_length == 0
-				assert C.v_multiwindow_appkit_readback_probe_release(failed_state, failed_request) == 1
-			}
+			time.sleep(5 * time.millisecond)
 		}
+		return error('AppKit Metal completion wait ended unexpectedly')
+	}
+
+	@[markused]
+	fn appkit_readback_wait_ready_count(mut app App, state voidptr, expected int) ! {
+		deadline := time.now().add(5 * time.second)
+		for {
+			if C.v_multiwindow_appkit_readback_test_ready_count(state) == expected {
+				return
+			}
+			app.poll_events()!
+			if time.now() >= deadline {
+				return error('AppKit ready readback count did not reach ${expected}')
+			}
+			time.sleep(5 * time.millisecond)
+		}
+	}
+
+	@[markused]
+	fn appkit_readback_copy_once(state voidptr, result AppKitReadbackProbeResult) ![]u8 {
+		assert result.width > 0
+		assert result.height > 0
+		assert result.stride == result.width * 4
+		assert result.byte_length == usize(result.stride * result.height)
+		mut pixels := []u8{len: int(result.byte_length)}
+		if pixels.len > 1 {
+			assert C.v_multiwindow_appkit_readback_probe_copy(state, result.request, pixels.data,
+				usize(pixels.len - 1)) <= 0
+		}
+		assert C.v_multiwindow_appkit_readback_probe_copy(state, result.request, pixels.data,
+			usize(pixels.len)) == 1
+		assert C.v_multiwindow_appkit_readback_probe_copy(state, result.request, pixels.data,
+			usize(pixels.len)) == 0
+		assert C.v_multiwindow_appkit_readback_probe_release(state, result.request) == 1
+		assert C.v_multiwindow_appkit_readback_probe_release(state, result.request) == 0
+		return pixels
+	}
+
+	@[markused]
+	fn appkit_readback_submit_window(mut app App, window WindowId, state voidptr, texture voidptr, window_request u64, image_request u64, frame u64) ![]int {
+		mut capture := []int{len: 3}
+		outcome := app.with_scheduled_render_batch(fn [mut app, window, state, texture, window_request, image_request, frame, mut capture] (batch RenderBatchLease, candidates []RenderWindowSnapshot) ! {
+			assert candidates.any(it.window == window)
+			acquisition := app.acquire_render_target(batch, window)!
+			assert acquisition.status == .ready
+			app.with_render_target_pass(acquisition.lease, gfx.PassAction{}, fn [state, texture, window_request, image_request, frame, mut capture] () ! {
+				if image_request == 0 {
+					capture[0] = C.v_multiwindow_appkit_readback_probe_stage_window(state,
+						window_request, 0, 0, 1, 1, frame)
+					return
+				}
+				capture[0] = C.v_multiwindow_appkit_readback_probe_stage_window(state,
+					window_request, 0, 0, 2, 2, frame)
+				capture[1] = C.v_multiwindow_appkit_readback_probe_stage_image(state, texture,
+					image_request, 1, 0, 2, 2, frame)
+				capture[2] = appkit_readback_take(state).take_status
+			})!
+		})!
+		assert capture[0] == 1
+		if image_request != 0 {
+			assert capture[1] == 1
+			assert capture[2] == 0
+		}
+		assert outcome.committed
+		if image_request != 0 {
+			assert outcome.finalized_submissions == 1
+		}
+		assert C.v_multiwindow_appkit_readback_probe_resolve(state, frame, 1) == 1
+		return capture
+	}
+
+	@[markused]
+	fn appkit_readback_wait_native_result(state voidptr) !AppKitReadbackProbeResult {
+		deadline := time.now().add(5 * time.second)
+		for {
+			result := appkit_readback_take(state)
+			if result.take_status == 1 {
+				return result
+			}
+			if result.take_status != 0 {
+				return error('AppKit native take returned ${result.take_status}')
+			}
+			if time.now() >= deadline {
+				return error('AppKit mixed-submit readback did not complete')
+			}
+			time.sleep(5 * time.millisecond)
+		}
+		return error('AppKit mixed-submit wait ended unexpectedly')
+	}
+
+	@[markused]
+	fn appkit_readback_mixed_callback_batch(mut app App, success_window WindowId, failed_window WindowId, success_state voidptr, failed_state voidptr, success_request u64, failed_request u64, clear_red f32, clear_green f32, clear_blue f32, clear_alpha f32, callback_message string) !(u64, u64) {
+		mut capture := []u64{len: 2}
+		action := gfx.create_clear_pass_action(clear_red, clear_green, clear_blue, clear_alpha)
+		outcome := app.with_scheduled_render_batch(fn [mut app, success_window, failed_window, success_state, failed_state, success_request, failed_request, action, callback_message, mut capture] (batch RenderBatchLease, candidates []RenderWindowSnapshot) ! {
+			mut success_candidate := RenderWindowSnapshot{}
+			mut failed_candidate := RenderWindowSnapshot{}
+			for candidate in candidates {
+				if candidate.window == success_window {
+					success_candidate = candidate
+				} else if candidate.window == failed_window {
+					failed_candidate = candidate
+				}
+			}
+			assert success_candidate.window == success_window
+			assert failed_candidate.window == failed_window
+			capture[0] = success_candidate.submitted_frame + 1
+			capture[1] = failed_candidate.submitted_frame + 1
+			success_target := app.acquire_render_target(batch, success_window)!
+			failed_target := app.acquire_render_target(batch, failed_window)!
+			assert success_target.status == .ready
+			assert failed_target.status == .ready
+			assert C.v_multiwindow_appkit_readback_probe_stage_window(success_state,
+				success_request, 0, 0, 1, 1, capture[0]) == 1
+			assert C.v_multiwindow_appkit_readback_probe_stage_window(failed_state, failed_request,
+				0, 0, 1, 1, capture[1]) == 1
+			app.with_render_target_pass(success_target.lease, action, fn () ! {})!
+			return error(callback_message)
+		})!
+		assert outcome.committed
+		assert outcome.finalized_submissions == 1
+		assert outcome.error.contains(callback_message)
+		return capture[0], capture[1]
+	}
+
+	@[markused]
+	fn appkit_readback_assert_mixed_terminals(success_state voidptr, failed_state voidptr, success_request u64, failed_request u64, success_frame u64, expected_pixel []u8) ! {
+		success := appkit_readback_wait_native_result(success_state)!
+		assert success.request == success_request
+		assert success.status == 1
+		assert success.submitted_frame == success_frame
+		assert success.width == 1
+		assert success.height == 1
+		assert success.stride == 4
+		pixels := appkit_readback_copy_once(success_state, success)!
+		assert pixels == expected_pixel
+
+		failed := appkit_readback_wait_native_result(failed_state)!
+		assert failed.request == failed_request
+		assert failed.status == 3
+		assert failed.submitted_frame == 0
+		assert failed.width == 1
+		assert failed.height == 1
+		assert failed.stride == 0
+		assert failed.byte_length == 0
+		assert C.v_multiwindow_appkit_readback_probe_release(failed_state, failed_request) == 1
 	}
 }
 
 fn test_appkit_metal_readback_rendererless_honesty_red() {
-	$if darwin {
-		$if sokol_metal ? {
-			$if gg_multiwindow ? {
-				if !appkit_readback_runtime_requested() {
-					return
-				}
-				// Root Result payload types used only from markused runtime helpers for CGen.
-				_ = RenderBatchOutcome{}
-				_ = RenderTargetAcquisition{}
-				assert C.v_multiwindow_appkit_readback_probe_symbol_mask() == u32(0xff)
-				mut app := new_app(backend: .appkit, require_renderer: false)!
-				defer {
-					app.stop() or {}
-				}
-				window := app.create_window(title: 'rendererless readback honesty', visible: false)!
-				state, _, framebuffer_only := appkit_readback_window_native(mut app, window)!
-				assert framebuffer_only == -1
-				assert C.v_multiwindow_appkit_service_capability(state,
-					int(ServiceOperation.window_capture), 0) == 0
-				assert C.v_multiwindow_appkit_readback_probe_stage_window(state, 1, 0, 0, 1, 1, 1) <= 0
-			}
+	$if darwin && sokol_metal ? && gg_multiwindow ? {
+		if !appkit_readback_runtime_requested() {
+			return
 		}
+		// Root Result payload types used only from markused runtime helpers for CGen.
+		_ = RenderBatchOutcome{}
+		_ = RenderTargetAcquisition{}
+		assert C.v_multiwindow_appkit_readback_probe_symbol_mask() == u32(0xff)
+		mut app := new_app(backend: .appkit, require_renderer: false)!
+		defer {
+			app.stop() or {}
+		}
+		window := app.create_window(title: 'rendererless readback honesty', visible: false)!
+		state, _, framebuffer_only := appkit_readback_window_native(mut app, window)!
+		assert framebuffer_only == -1
+		assert C.v_multiwindow_appkit_service_capability(state,
+			int(ServiceOperation.window_capture), 0) == 0
+		assert C.v_multiwindow_appkit_readback_probe_stage_window(state, 1, 0, 0, 1, 1, 1) <= 0
 	}
 }
 
 fn test_appkit_metal_readback_frame_region_and_exactly_once_red() {
-	$if darwin {
-		$if sokol_metal ? {
-			$if gg_multiwindow ? {
-				if !appkit_readback_runtime_requested() {
-					return
-				}
-				assert C.v_multiwindow_appkit_readback_probe_symbol_mask() == u32(0xff)
-				mut app := new_app(backend: .appkit, queue_size: 32, require_renderer: true)!
-				defer {
-					app.stop() or {}
-				}
-				app.start_renderer(RendererConfig{})!
-				window := app.create_window(
-					title:           'AppKit Metal readback RED'
-					width:           96
-					height:          64
-					visible:         true
-					redraw_mode:     .on_demand
-					render_workload: true
-				)!
-				appkit_readback_wait_until_eligible(mut app, window)!
-				state, native_window, framebuffer_only := appkit_readback_window_native(mut app,
-					window)!
-				assert framebuffer_only == 0
-				capability := app.service_operation_capability(window, .window_capture)!
-				assert capability.support == .available
-				assert C.v_multiwindow_appkit_service_capability(state,
-					int(ServiceOperation.window_capture), 1) == 1
-				texture := C.v_multiwindow_appkit_readback_probe_make_pattern_texture(native_window)
-				assert texture != unsafe { nil }
-				defer {
-					C.v_multiwindow_appkit_readback_probe_release_texture(texture)
-				}
+	$if darwin && sokol_metal ? && gg_multiwindow ? {
+		if !appkit_readback_runtime_requested() {
+			return
+		}
+		assert C.v_multiwindow_appkit_readback_probe_symbol_mask() == u32(0xff)
+		mut app := new_app(backend: .appkit, queue_size: 32, require_renderer: true)!
+		defer {
+			app.stop() or {}
+		}
+		app.start_renderer(RendererConfig{})!
+		window := app.create_window(
+			title:           'AppKit Metal readback RED'
+			width:           96
+			height:          64
+			visible:         true
+			redraw_mode:     .on_demand
+			render_workload: true
+		)!
+		appkit_readback_wait_until_eligible(mut app, window)!
+		state, native_window, framebuffer_only := appkit_readback_window_native(mut app, window)!
+		assert framebuffer_only == 0
+		capability := app.service_operation_capability(window, .window_capture)!
+		assert capability.support == .available
+		assert C.v_multiwindow_appkit_service_capability(state,
+			int(ServiceOperation.window_capture), 1) == 1
+		texture := C.v_multiwindow_appkit_readback_probe_make_pattern_texture(native_window)
+		assert texture != unsafe { nil }
+		defer {
+			C.v_multiwindow_appkit_readback_probe_release_texture(texture)
+		}
 
-				producing_frame := u64(41)
-				capture := appkit_readback_submit_window(mut app, window, state, texture, 101, 102,
-					producing_frame)!
-				assert capture[0] == 1
-				assert capture[1] == 1
-				assert capture[2] == 0
+		producing_frame := u64(41)
+		capture := appkit_readback_submit_window(mut app, window, state, texture, 101, 102,
+			producing_frame)!
+		assert capture[0] == 1
+		assert capture[1] == 1
+		assert capture[2] == 0
 
-				mut seen_window := false
-				mut seen_image := false
-				for _ in 0 .. 2 {
-					result := appkit_readback_wait_result(mut app, state)!
-					assert result.status == 1
-					assert result.submitted_frame == producing_frame
-					match result.request {
-						101 {
-							assert !seen_window
-							seen_window = true
-							assert result.width == 2
-							assert result.height == 2
-							_ = appkit_readback_copy_once(state, result)!
-						}
-						102 {
-							assert !seen_image
-							seen_image = true
-							pixels := appkit_readback_copy_once(state, result)!
-							assert pixels == [u8(17), 18, 19, 20, 33, 34, 35, 36, 81, 82, 83, 84,
-								97, 98, 99, 100]
-						}
-						else {
-							assert false, 'unexpected AppKit readback request ${result.request}'
-						}
-					}
+		mut seen_window := false
+		mut seen_image := false
+		for _ in 0 .. 2 {
+			result := appkit_readback_wait_result(state)!
+			assert result.status == 1
+			assert result.submitted_frame == producing_frame
+			match result.request {
+				101 {
+					assert !seen_window
+					seen_window = true
+					assert result.width == 2
+					assert result.height == 2
+					_ = appkit_readback_copy_once(state, result)!
 				}
-				assert seen_window
-				assert seen_image
-				assert appkit_readback_take(state).take_status == 0
+				102 {
+					assert !seen_image
+					seen_image = true
+					pixels := appkit_readback_copy_once(state, result)!
+					assert pixels == [u8(17), 18, 19, 20, 33, 34, 35, 36, 81, 82, 83, 84, 97, 98,
+						99, 100]
+				}
+				else {
+					assert false, 'unexpected AppKit readback request ${result.request}'
+				}
 			}
 		}
+		assert seen_window
+		assert seen_image
+		assert appkit_readback_take(state).take_status == 0
 	}
 }
 
 fn test_appkit_metal_readback_cancel_exactly_once_red() {
-	$if darwin {
-		$if sokol_metal ? {
-			$if gg_multiwindow ? {
-				if !appkit_readback_runtime_requested() {
-					return
-				}
-				assert C.v_multiwindow_appkit_readback_probe_symbol_mask() == u32(0xff)
-				mut app := new_app(backend: .appkit, queue_size: 16, require_renderer: true)!
-				defer {
-					app.stop() or {}
-				}
-				app.start_renderer(RendererConfig{})!
-				window := app.create_window(title: 'AppKit readback cancellation', visible: false)!
-				state, _, _ := appkit_readback_window_native(mut app, window)!
-				assert C.v_multiwindow_appkit_readback_probe_stage_window(state, 201, 0, 0, 1, 1, 9) == 1
-				assert C.v_multiwindow_appkit_readback_probe_cancel(state, 201) == 1
-				assert C.v_multiwindow_appkit_readback_probe_cancel(state, 201) == 0
-				assert appkit_readback_take(state).take_status == 0
-				assert C.v_multiwindow_appkit_readback_probe_release(state, 201) == 0
-
-				assert C.v_multiwindow_appkit_readback_probe_stage_window(state, 202, 0, 0, 1, 1,
-					10) == 1
-				assert C.v_multiwindow_appkit_readback_probe_stage_window(state, 203, 0, 0, 1, 1,
-					10) == 1
-				assert C.v_multiwindow_appkit_readback_probe_cancel_all(state) > 0
-				assert appkit_readback_take(state).take_status == 0
-				assert C.v_multiwindow_appkit_readback_test_record_count(state) == 0
-				assert C.v_multiwindow_appkit_readback_probe_cancel_all(state) == 0
-			}
+	$if darwin && sokol_metal ? && gg_multiwindow ? {
+		if !appkit_readback_runtime_requested() {
+			return
 		}
+		assert C.v_multiwindow_appkit_readback_probe_symbol_mask() == u32(0xff)
+		mut app := new_app(backend: .appkit, queue_size: 16, require_renderer: true)!
+		defer {
+			app.stop() or {}
+		}
+		app.start_renderer(RendererConfig{})!
+		window := app.create_window(title: 'AppKit readback cancellation', visible: false)!
+		state, _, _ := appkit_readback_window_native(mut app, window)!
+		assert C.v_multiwindow_appkit_readback_probe_stage_window(state, 201, 0, 0, 1, 1, 9) == 1
+		assert C.v_multiwindow_appkit_readback_probe_cancel(state, 201) == 1
+		assert C.v_multiwindow_appkit_readback_probe_cancel(state, 201) == 0
+		assert appkit_readback_take(state).take_status == 0
+		assert C.v_multiwindow_appkit_readback_probe_release(state, 201) == 0
+
+		assert C.v_multiwindow_appkit_readback_probe_stage_window(state, 202, 0, 0, 1, 1, 10) == 1
+		assert C.v_multiwindow_appkit_readback_probe_stage_window(state, 203, 0, 0, 1, 1, 10) == 1
+		assert C.v_multiwindow_appkit_readback_probe_cancel_all(state) > 0
+		assert appkit_readback_take(state).take_status == 0
+		assert C.v_multiwindow_appkit_readback_test_record_count(state) == 0
+		assert C.v_multiwindow_appkit_readback_probe_cancel_all(state) == 0
 	}
 }
 
 fn test_appkit_metal_readback_cancel_preserves_matching_sibling_slot_runtime_red() {
-	$if darwin {
-		$if sokol_metal ? {
-			$if gg_multiwindow ? {
-				if !appkit_readback_runtime_requested() {
-					return
-				}
-				mut app := new_app(backend: .appkit, queue_size: 16, require_renderer: true)!
-				defer {
-					app.stop() or {}
-				}
-				app.start_renderer(RendererConfig{})!
-				window := app.create_window(
-					title:           'readback sibling cancellation'
-					width:           80
-					height:          60
-					visible:         true
-					redraw_mode:     .on_demand
-					render_workload: true
-				)!
-				appkit_readback_wait_until_eligible(mut app, window)!
-				state, native_window, _ := appkit_readback_window_native(mut app, window)!
-				texture := C.v_multiwindow_appkit_readback_probe_make_pattern_texture(native_window)
-				assert texture != unsafe { nil }
-				defer {
-					C.v_multiwindow_appkit_readback_probe_release_texture(texture)
-				}
-
-				assert C.v_multiwindow_appkit_readback_probe_stage_image(state, texture, 901, 0, 0,
-					3, 2, 901) == 1
-				assert C.v_multiwindow_appkit_readback_probe_stage_image(state, texture, 902, 0, 0,
-					3, 2, 901) == 1
-				assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state, texture, 901, 901) == 1
-				assert C.v_multiwindow_appkit_readback_probe_cancel(state, 901) == 1
-				assert C.v_multiwindow_appkit_readback_test_offscreen_slot_present() == 1
-				assert C.v_multiwindow_appkit_readback_test_record_count(state) == 1
-				command := C.v_multiwindow_appkit_readback_probe_make_command_buffer(native_window)
-				assert command != unsafe { nil }
-				assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(command, unsafe { nil }) == 1
-				assert C.v_multiwindow_appkit_readback_probe_commit_command_buffer(command, 1) == 1
-				assert C.v_multiwindow_appkit_readback_probe_resolve(state, 901, 1) == 1
-				result := appkit_readback_wait_result(mut app, state)!
-				assert result.request == 902
-				assert result.status == 1
-				_ = appkit_readback_copy_once(state, result)!
-				C.v_multiwindow_appkit_readback_probe_release_object(command)
-
-				assert C.v_multiwindow_appkit_readback_probe_stage_image(state, texture, 903, 0, 0,
-					3, 2, 903) == 1
-				assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state, texture, 903, 903) == 1
-				assert C.v_multiwindow_appkit_readback_probe_cancel(state, 903) == 1
-				assert C.v_multiwindow_appkit_readback_test_offscreen_slot_present() == 0
-				assert C.v_multiwindow_appkit_readback_test_record_count(state) == 0
-
-				assert C.v_multiwindow_appkit_readback_probe_stage_image(state, texture, 904, 0, 0,
-					3, 2, 904) == 1
-				assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state, texture, 904, 904) == 1
-				assert C.v_multiwindow_appkit_readback_test_offscreen_slot_present() == 1
-				assert C.v_multiwindow_appkit_service_release_window_services(state) == 1
-				assert C.v_multiwindow_appkit_readback_test_offscreen_slot_present() == 0
-				assert C.v_multiwindow_appkit_readback_test_record_count(state) == 0
-			}
+	$if darwin && sokol_metal ? && gg_multiwindow ? {
+		if !appkit_readback_runtime_requested() {
+			return
 		}
+		mut app := new_app(backend: .appkit, queue_size: 16, require_renderer: true)!
+		defer {
+			app.stop() or {}
+		}
+		app.start_renderer(RendererConfig{})!
+		window := app.create_window(
+			title:           'readback sibling cancellation'
+			width:           80
+			height:          60
+			visible:         true
+			redraw_mode:     .on_demand
+			render_workload: true
+		)!
+		appkit_readback_wait_until_eligible(mut app, window)!
+		state, native_window, _ := appkit_readback_window_native(mut app, window)!
+		texture := C.v_multiwindow_appkit_readback_probe_make_pattern_texture(native_window)
+		assert texture != unsafe { nil }
+		defer {
+			C.v_multiwindow_appkit_readback_probe_release_texture(texture)
+		}
+
+		assert C.v_multiwindow_appkit_readback_probe_stage_image(state, texture, 901, 0, 0, 3, 2,
+			901) == 1
+		assert C.v_multiwindow_appkit_readback_probe_stage_image(state, texture, 902, 0, 0, 3, 2,
+			901) == 1
+		assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state, texture, 901, 901) == 1
+		assert C.v_multiwindow_appkit_readback_probe_cancel(state, 901) == 1
+		assert C.v_multiwindow_appkit_readback_test_offscreen_slot_present() == 1
+		assert C.v_multiwindow_appkit_readback_test_record_count(state) == 1
+		command := C.v_multiwindow_appkit_readback_probe_make_command_buffer(native_window)
+		assert command != unsafe { nil }
+		assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(command, unsafe { nil }) == 1
+		assert C.v_multiwindow_appkit_readback_probe_commit_command_buffer(command, 1) == 1
+		assert C.v_multiwindow_appkit_readback_probe_resolve(state, 901, 1) == 1
+		result := appkit_readback_wait_result(state)!
+		assert result.request == 902
+		assert result.status == 1
+		_ = appkit_readback_copy_once(state, result)!
+		C.v_multiwindow_appkit_readback_probe_release_object(command)
+
+		assert C.v_multiwindow_appkit_readback_probe_stage_image(state, texture, 903, 0, 0, 3, 2,
+			903) == 1
+		assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state, texture, 903, 903) == 1
+		assert C.v_multiwindow_appkit_readback_probe_cancel(state, 903) == 1
+		assert C.v_multiwindow_appkit_readback_test_offscreen_slot_present() == 0
+		assert C.v_multiwindow_appkit_readback_test_record_count(state) == 0
+
+		assert C.v_multiwindow_appkit_readback_probe_stage_image(state, texture, 904, 0, 0, 3, 2,
+			904) == 1
+		assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state, texture, 904, 904) == 1
+		assert C.v_multiwindow_appkit_readback_test_offscreen_slot_present() == 1
+		assert C.v_multiwindow_appkit_service_release_window_services(state) == 1
+		assert C.v_multiwindow_appkit_readback_test_offscreen_slot_present() == 0
+		assert C.v_multiwindow_appkit_readback_test_record_count(state) == 0
 	}
 }
 
 fn test_appkit_metal_readback_offscreen_slot_two_windows_and_odd_widths_red() {
-	$if darwin {
-		$if sokol_metal ? {
-			$if gg_multiwindow ? {
-				if !appkit_readback_runtime_requested() {
-					return
-				}
-				mut app := new_app(backend: .appkit, queue_size: 32, require_renderer: true)!
-				defer {
-					app.stop() or {}
-				}
-				app.start_renderer(RendererConfig{})!
-				window_a := app.create_window(
-					title:           'readback slot A'
-					width:           80
-					height:          60
-					visible:         true
-					redraw_mode:     .on_demand
-					render_workload: true
-				)!
-				window_b := app.create_window(
-					title:           'readback slot B'
-					width:           80
-					height:          60
-					visible:         true
-					redraw_mode:     .on_demand
-					render_workload: true
-				)!
-				appkit_readback_wait_until_eligible(mut app, window_a)!
-				appkit_readback_wait_until_eligible(mut app, window_b)!
-				state_a, native_a, _ := appkit_readback_window_native(mut app, window_a)!
-				state_b, native_b, _ := appkit_readback_window_native(mut app, window_b)!
-				texture_a := C.v_multiwindow_appkit_readback_probe_make_pattern_texture_size(native_a,
-					1, 1)
-				texture_b := C.v_multiwindow_appkit_readback_probe_make_pattern_texture_size(native_b,
-					3, 1)
-				assert texture_a != unsafe { nil }
-				assert texture_b != unsafe { nil }
-				defer {
-					C.v_multiwindow_appkit_readback_probe_release_texture(texture_a)
-					C.v_multiwindow_appkit_readback_probe_release_texture(texture_b)
-				}
-				command_buffer :=
-					C.v_multiwindow_appkit_readback_probe_make_command_buffer(native_a)
-				assert command_buffer != unsafe { nil }
-				defer {
-					C.v_multiwindow_appkit_readback_probe_release_object(command_buffer)
-				}
-				assert C.v_multiwindow_appkit_readback_probe_stage_image(state_a, texture_a, 301,
-					0, 0, 1, 1, 301) == 1
-				assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state_a, texture_a, 11,
-					301) == 1
-				assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(command_buffer,
-					unsafe { nil }) == 1
-				assert C.v_multiwindow_appkit_readback_test_offscreen_slot_present() == 0
-				assert C.v_multiwindow_appkit_readback_probe_stage_image(state_b, texture_b, 302,
-					0, 0, 3, 1, 302) == 1
-				assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state_b, texture_b, 12,
-					302) == 1
-				assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(command_buffer,
-					unsafe { nil }) == 1
-				assert C.v_multiwindow_appkit_readback_probe_commit_command_buffer(command_buffer,
-					1) == 1
-				assert C.v_multiwindow_appkit_readback_probe_resolve(state_a, 301, 1) == 1
-				assert C.v_multiwindow_appkit_readback_probe_resolve(state_b, 302, 1) == 1
-				result_a := appkit_readback_wait_result(mut app, state_a)!
-				result_b := appkit_readback_wait_result(mut app, state_b)!
-				assert result_a.request == 301
-				assert result_a.stride == 4
-				assert result_b.request == 302
-				assert result_b.stride == 12
-				_ = appkit_readback_copy_once(state_a, result_a)!
-				_ = appkit_readback_copy_once(state_b, result_b)!
-
-				for width in [1, 3, 257] {
-					texture := C.v_multiwindow_appkit_readback_probe_make_pattern_texture_size(native_a,
-						usize(width), 1)
-					assert texture != unsafe { nil }
-					request := u64(400 + width)
-					command := C.v_multiwindow_appkit_readback_probe_make_command_buffer(native_a)
-					assert command != unsafe { nil }
-					assert C.v_multiwindow_appkit_readback_probe_stage_image(state_a, texture,
-						request, 0, 0, width, 1, request) == 1
-					assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state_a, texture,
-						request, request) == 1
-					assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(command,
-						unsafe { nil }) == 1
-					assert C.v_multiwindow_appkit_readback_probe_commit_command_buffer(command, 1) == 1
-					assert C.v_multiwindow_appkit_readback_probe_resolve(state_a, request, 1) == 1
-					result := appkit_readback_wait_result(mut app, state_a)!
-					assert result.stride == width * 4
-					_ = appkit_readback_copy_once(state_a, result)!
-					C.v_multiwindow_appkit_readback_probe_release_object(command)
-					C.v_multiwindow_appkit_readback_probe_release_texture(texture)
-				}
-
-				no_slot_texture := C.v_multiwindow_appkit_readback_probe_make_pattern_texture_size(native_a,
-					1, 1)
-				no_slot_command :=
-					C.v_multiwindow_appkit_readback_probe_make_command_buffer(native_a)
-				assert C.v_multiwindow_appkit_readback_probe_stage_image(state_a, no_slot_texture,
-					501, 0, 0, 1, 1, 501) == 1
-				assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(no_slot_command,
-					unsafe { nil }) == 1
-				assert C.v_multiwindow_appkit_readback_probe_commit_command_buffer(no_slot_command,
-					1) == 1
-				assert C.v_multiwindow_appkit_readback_probe_resolve(state_a, 501, 1) == 1
-				no_slot := appkit_readback_take(state_a)
-				assert no_slot.take_status == 1
-				assert no_slot.status == 3
-				assert C.v_multiwindow_appkit_readback_probe_release(state_a, 501) == 1
-				C.v_multiwindow_appkit_readback_probe_release_object(no_slot_command)
-				C.v_multiwindow_appkit_readback_probe_release_texture(no_slot_texture)
-
-				stale_texture := C.v_multiwindow_appkit_readback_probe_make_pattern_texture_size(native_a,
-					1, 1)
-				stale_command := C.v_multiwindow_appkit_readback_probe_make_command_buffer(native_a)
-				assert C.v_multiwindow_appkit_readback_probe_stage_image(state_a, stale_texture,
-					502, 0, 0, 1, 1, 502) == 1
-				assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state_a, stale_texture,
-					502, 502) == 1
-				assert C.v_multiwindow_appkit_readback_test_make_offscreen_slot_stale() == 1
-				assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(stale_command,
-					unsafe { nil }) == 1
-				assert C.v_multiwindow_appkit_readback_test_offscreen_slot_present() == 0
-				assert C.v_multiwindow_appkit_readback_probe_commit_command_buffer(stale_command, 1) == 1
-				assert C.v_multiwindow_appkit_readback_probe_resolve(state_a, 502, 1) == 1
-				stale := appkit_readback_take(state_a)
-				assert stale.take_status == 1
-				assert stale.status == 3
-				assert C.v_multiwindow_appkit_readback_probe_release(state_a, 502) == 1
-				C.v_multiwindow_appkit_readback_probe_release_object(stale_command)
-				C.v_multiwindow_appkit_readback_probe_release_texture(stale_texture)
-			}
+	$if darwin && sokol_metal ? && gg_multiwindow ? {
+		if !appkit_readback_runtime_requested() {
+			return
 		}
+		mut app := new_app(backend: .appkit, queue_size: 32, require_renderer: true)!
+		defer {
+			app.stop() or {}
+		}
+		app.start_renderer(RendererConfig{})!
+		window_a := app.create_window(
+			title:           'readback slot A'
+			width:           80
+			height:          60
+			visible:         true
+			redraw_mode:     .on_demand
+			render_workload: true
+		)!
+		window_b := app.create_window(
+			title:           'readback slot B'
+			width:           80
+			height:          60
+			visible:         true
+			redraw_mode:     .on_demand
+			render_workload: true
+		)!
+		appkit_readback_wait_until_eligible(mut app, window_a)!
+		appkit_readback_wait_until_eligible(mut app, window_b)!
+		state_a, native_a, _ := appkit_readback_window_native(mut app, window_a)!
+		state_b, native_b, _ := appkit_readback_window_native(mut app, window_b)!
+		texture_a := C.v_multiwindow_appkit_readback_probe_make_pattern_texture_size(native_a, 1, 1)
+		texture_b := C.v_multiwindow_appkit_readback_probe_make_pattern_texture_size(native_b, 3, 1)
+		assert texture_a != unsafe { nil }
+		assert texture_b != unsafe { nil }
+		defer {
+			C.v_multiwindow_appkit_readback_probe_release_texture(texture_a)
+			C.v_multiwindow_appkit_readback_probe_release_texture(texture_b)
+		}
+		command_buffer := C.v_multiwindow_appkit_readback_probe_make_command_buffer(native_a)
+		assert command_buffer != unsafe { nil }
+		defer {
+			C.v_multiwindow_appkit_readback_probe_release_object(command_buffer)
+		}
+		assert C.v_multiwindow_appkit_readback_probe_stage_image(state_a, texture_a, 301, 0, 0, 1,
+			1, 301) == 1
+		assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state_a, texture_a, 11, 301) == 1
+		assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(command_buffer, unsafe { nil }) == 1
+		assert C.v_multiwindow_appkit_readback_test_offscreen_slot_present() == 0
+		assert C.v_multiwindow_appkit_readback_probe_stage_image(state_b, texture_b, 302, 0, 0, 3,
+			1, 302) == 1
+		assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state_b, texture_b, 12, 302) == 1
+		assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(command_buffer, unsafe { nil }) == 1
+		assert C.v_multiwindow_appkit_readback_probe_commit_command_buffer(command_buffer, 1) == 1
+		assert C.v_multiwindow_appkit_readback_probe_resolve(state_a, 301, 1) == 1
+		assert C.v_multiwindow_appkit_readback_probe_resolve(state_b, 302, 1) == 1
+		result_a := appkit_readback_wait_result(state_a)!
+		result_b := appkit_readback_wait_result(state_b)!
+		assert result_a.request == 301
+		assert result_a.stride == 4
+		assert result_b.request == 302
+		assert result_b.stride == 12
+		_ = appkit_readback_copy_once(state_a, result_a)!
+		_ = appkit_readback_copy_once(state_b, result_b)!
+
+		for width in [1, 3, 257] {
+			texture := C.v_multiwindow_appkit_readback_probe_make_pattern_texture_size(native_a,
+				usize(width), 1)
+			assert texture != unsafe { nil }
+			request := u64(400 + width)
+			command := C.v_multiwindow_appkit_readback_probe_make_command_buffer(native_a)
+			assert command != unsafe { nil }
+			assert C.v_multiwindow_appkit_readback_probe_stage_image(state_a, texture, request, 0,
+				0, width, 1, request) == 1
+			assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state_a, texture, request,
+				request) == 1
+			assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(command, unsafe { nil }) == 1
+			assert C.v_multiwindow_appkit_readback_probe_commit_command_buffer(command, 1) == 1
+			assert C.v_multiwindow_appkit_readback_probe_resolve(state_a, request, 1) == 1
+			result := appkit_readback_wait_result(state_a)!
+			assert result.stride == width * 4
+			_ = appkit_readback_copy_once(state_a, result)!
+			C.v_multiwindow_appkit_readback_probe_release_object(command)
+			C.v_multiwindow_appkit_readback_probe_release_texture(texture)
+		}
+
+		no_slot_texture := C.v_multiwindow_appkit_readback_probe_make_pattern_texture_size(native_a,
+			1, 1)
+		no_slot_command := C.v_multiwindow_appkit_readback_probe_make_command_buffer(native_a)
+		assert C.v_multiwindow_appkit_readback_probe_stage_image(state_a, no_slot_texture, 501, 0,
+			0, 1, 1, 501) == 1
+		assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(no_slot_command, unsafe { nil }) == 1
+		assert C.v_multiwindow_appkit_readback_probe_commit_command_buffer(no_slot_command, 1) == 1
+		assert C.v_multiwindow_appkit_readback_probe_resolve(state_a, 501, 1) == 1
+		no_slot := appkit_readback_take(state_a)
+		assert no_slot.take_status == 1
+		assert no_slot.status == 3
+		assert C.v_multiwindow_appkit_readback_probe_release(state_a, 501) == 1
+		C.v_multiwindow_appkit_readback_probe_release_object(no_slot_command)
+		C.v_multiwindow_appkit_readback_probe_release_texture(no_slot_texture)
+
+		stale_texture := C.v_multiwindow_appkit_readback_probe_make_pattern_texture_size(native_a,
+			1, 1)
+		stale_command := C.v_multiwindow_appkit_readback_probe_make_command_buffer(native_a)
+		assert C.v_multiwindow_appkit_readback_probe_stage_image(state_a, stale_texture, 502, 0, 0,
+			1, 1, 502) == 1
+		assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state_a, stale_texture, 502, 502) == 1
+		assert C.v_multiwindow_appkit_readback_test_make_offscreen_slot_stale() == 1
+		assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(stale_command, unsafe { nil }) == 1
+		assert C.v_multiwindow_appkit_readback_test_offscreen_slot_present() == 0
+		assert C.v_multiwindow_appkit_readback_probe_commit_command_buffer(stale_command, 1) == 1
+		assert C.v_multiwindow_appkit_readback_probe_resolve(state_a, 502, 1) == 1
+		stale := appkit_readback_take(state_a)
+		assert stale.take_status == 1
+		assert stale.status == 3
+		assert C.v_multiwindow_appkit_readback_probe_release(state_a, 502) == 1
+		C.v_multiwindow_appkit_readback_probe_release_object(stale_command)
+		C.v_multiwindow_appkit_readback_probe_release_texture(stale_texture)
 	}
 }
 
 fn test_appkit_metal_readback_mixed_window_submit_and_callback_error_red() {
-	$if darwin {
-		$if sokol_metal ? {
-			$if gg_multiwindow ? {
-				if !appkit_readback_runtime_requested() {
-					return
-				}
-				mut app := new_app(backend: .appkit, queue_size: 32, require_renderer: true)!
-				defer {
-					app.stop() or {}
-				}
-				app.start_renderer(RendererConfig{})!
-				window_a := app.create_window(
-					title:           'readback callback A'
-					width:           48
-					height:          32
-					visible:         true
-					redraw_mode:     .on_demand
-					render_workload: true
-				)!
-				window_b := app.create_window(
-					title:           'readback callback B'
-					width:           48
-					height:          32
-					visible:         true
-					redraw_mode:     .on_demand
-					render_workload: true
-				)!
-				appkit_readback_wait_until_eligible(mut app, window_a)!
-				appkit_readback_wait_until_eligible(mut app, window_b)!
-				state_a, _, _ := appkit_readback_window_native(mut app, window_a)!
-				state_b, _, _ := appkit_readback_window_native(mut app, window_b)!
-
-				frame_a, _ := appkit_readback_mixed_callback_batch(mut app, window_a, window_b,
-					state_a, state_b, 1001, 1002, 0, 0, 1, 1,
-					'injected callback failure A succeeds')!
-				appkit_readback_assert_mixed_terminals(state_a, state_b, 1001, 1002, frame_a, [
-					u8(0),
-					0,
-					255,
-					255,
-				])!
-
-				app.request_redraw(window_a)!
-				app.request_redraw(window_b)!
-				appkit_readback_wait_until_eligible(mut app, window_a)!
-				appkit_readback_wait_until_eligible(mut app, window_b)!
-				frame_b, _ := appkit_readback_mixed_callback_batch(mut app, window_b, window_a,
-					state_b, state_a, 1003, 1004, 1, 0, 0, 1,
-					'injected callback failure B succeeds')!
-				appkit_readback_assert_mixed_terminals(state_b, state_a, 1003, 1004, frame_b, [
-					u8(255),
-					0,
-					0,
-					255,
-				])!
-			}
+	$if darwin && sokol_metal ? && gg_multiwindow ? {
+		if !appkit_readback_runtime_requested() {
+			return
 		}
+		mut app := new_app(backend: .appkit, queue_size: 32, require_renderer: true)!
+		defer {
+			app.stop() or {}
+		}
+		app.start_renderer(RendererConfig{})!
+		window_a := app.create_window(
+			title:           'readback callback A'
+			width:           48
+			height:          32
+			visible:         true
+			redraw_mode:     .on_demand
+			render_workload: true
+		)!
+		window_b := app.create_window(
+			title:           'readback callback B'
+			width:           48
+			height:          32
+			visible:         true
+			redraw_mode:     .on_demand
+			render_workload: true
+		)!
+		appkit_readback_wait_until_eligible(mut app, window_a)!
+		appkit_readback_wait_until_eligible(mut app, window_b)!
+		state_a, _, _ := appkit_readback_window_native(mut app, window_a)!
+		state_b, _, _ := appkit_readback_window_native(mut app, window_b)!
+
+		frame_a, _ := appkit_readback_mixed_callback_batch(mut app, window_a, window_b, state_a,
+			state_b, 1001, 1002, 0, 0, 1, 1, 'injected callback failure A succeeds')!
+		appkit_readback_assert_mixed_terminals(state_a, state_b, 1001, 1002, frame_a, [
+			u8(0),
+			0,
+			255,
+			255,
+		])!
+
+		app.request_redraw(window_a)!
+		app.request_redraw(window_b)!
+		appkit_readback_wait_until_eligible(mut app, window_a)!
+		appkit_readback_wait_until_eligible(mut app, window_b)!
+		frame_b, _ := appkit_readback_mixed_callback_batch(mut app, window_b, window_a, state_b,
+			state_a, 1003, 1004, 1, 0, 0, 1, 'injected callback failure B succeeds')!
+		appkit_readback_assert_mixed_terminals(state_b, state_a, 1003, 1004, frame_b, [
+			u8(255),
+			0,
+			0,
+			255,
+		])!
 	}
 }
 
 fn test_appkit_metal_readback_completion_barrier_and_deferred_failure_red() {
-	$if darwin {
-		$if sokol_metal ? {
-			$if gg_multiwindow ? {
-				if !appkit_readback_runtime_requested() {
-					return
-				}
-				mut app := new_app(backend: .appkit, queue_size: 16, require_renderer: true)!
-				defer {
-					app.stop() or {}
-				}
-				app.start_renderer(RendererConfig{})!
-				window := app.create_window(
-					title:           'readback completion barrier'
-					width:           80
-					height:          60
-					visible:         true
-					redraw_mode:     .on_demand
-					render_workload: true
-				)!
-				appkit_readback_wait_until_eligible(mut app, window)!
-				state, native_window, _ := appkit_readback_window_native(mut app, window)!
-				texture := C.v_multiwindow_appkit_readback_probe_make_pattern_texture_size(native_window,
-					257, 4)
-				command := C.v_multiwindow_appkit_readback_probe_make_command_buffer(native_window)
-				assert texture != unsafe { nil }
-				assert command != unsafe { nil }
-				defer {
-					C.v_multiwindow_appkit_readback_test_release_completion()
-					C.v_multiwindow_appkit_readback_probe_release_object(command)
-					C.v_multiwindow_appkit_readback_probe_release_texture(texture)
-				}
-				assert C.v_multiwindow_appkit_readback_probe_stage_image(state, texture, 601, 0, 0,
-					257, 4, 601) == 1
-				assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state, texture, 601, 601) == 1
-				assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(command, unsafe { nil }) == 1
-				assert C.v_multiwindow_appkit_readback_test_pause_completion() == 1
-				assert C.v_multiwindow_appkit_readback_probe_commit_command_buffer(command, 0) == 1
-				assert C.v_multiwindow_appkit_readback_test_wait_completion_paused() == 1
-				assert C.v_multiwindow_appkit_readback_test_gpu_completed(state, 601) == 0
-				assert C.v_multiwindow_appkit_readback_probe_resolve(state, 601, 1) == 1
-				assert appkit_readback_take(state).take_status == 0
-				C.v_multiwindow_appkit_readback_test_release_completion()
-				result := appkit_readback_wait_result(mut app, state)!
-				assert result.status == 1
-				assert result.submitted_frame == 601
-				_ = appkit_readback_copy_once(state, result)!
-
-				assert C.v_multiwindow_appkit_readback_probe_stage_window(state, 602, 0, 0, 1, 1,
-					602) == 1
-				assert C.v_multiwindow_appkit_readback_test_mark_encoding_failed(state, 602) == 1
-				assert appkit_readback_take(state).take_status == 0
-				assert C.v_multiwindow_appkit_readback_probe_resolve(state, 602, 1) == 1
-				failed := appkit_readback_take(state)
-				assert failed.take_status == 1
-				assert failed.status == 3
-				assert failed.submitted_frame == 602
-				assert C.v_multiwindow_appkit_readback_probe_release(state, 602) == 1
-
-				assert C.v_multiwindow_appkit_readback_probe_stage_window(state, 603, 0, 0, 1, 1,
-					603) == 1
-				assert C.v_multiwindow_appkit_readback_test_mark_encoding_failed(state, 603) == 1
-				assert C.v_multiwindow_appkit_readback_probe_resolve(state, 603, 0) == 1
-				failed_submit := appkit_readback_take(state)
-				assert failed_submit.take_status == 1
-				assert failed_submit.status == 3
-				assert failed_submit.submitted_frame == 0
-				assert C.v_multiwindow_appkit_readback_probe_release(state, 603) == 1
-			}
+	$if darwin && sokol_metal ? && gg_multiwindow ? {
+		if !appkit_readback_runtime_requested() {
+			return
 		}
+		mut app := new_app(backend: .appkit, queue_size: 16, require_renderer: true)!
+		defer {
+			app.stop() or {}
+		}
+		app.start_renderer(RendererConfig{})!
+		window := app.create_window(
+			title:           'readback completion barrier'
+			width:           80
+			height:          60
+			visible:         true
+			redraw_mode:     .on_demand
+			render_workload: true
+		)!
+		appkit_readback_wait_until_eligible(mut app, window)!
+		state, native_window, _ := appkit_readback_window_native(mut app, window)!
+		texture := C.v_multiwindow_appkit_readback_probe_make_pattern_texture_size(native_window,
+			257, 4)
+		command := C.v_multiwindow_appkit_readback_probe_make_command_buffer(native_window)
+		assert texture != unsafe { nil }
+		assert command != unsafe { nil }
+		defer {
+			C.v_multiwindow_appkit_readback_test_release_completion()
+			C.v_multiwindow_appkit_readback_probe_release_object(command)
+			C.v_multiwindow_appkit_readback_probe_release_texture(texture)
+		}
+		assert C.v_multiwindow_appkit_readback_probe_stage_image(state, texture, 601, 0, 0, 257, 4,
+			601) == 1
+		assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state, texture, 601, 601) == 1
+		assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(command, unsafe { nil }) == 1
+		assert C.v_multiwindow_appkit_readback_test_pause_completion() == 1
+		assert C.v_multiwindow_appkit_readback_probe_commit_command_buffer(command, 0) == 1
+		assert C.v_multiwindow_appkit_readback_test_wait_completion_paused() == 1
+		assert C.v_multiwindow_appkit_readback_test_gpu_completed(state, 601) == 0
+		assert C.v_multiwindow_appkit_readback_probe_resolve(state, 601, 1) == 1
+		assert appkit_readback_take(state).take_status == 0
+		C.v_multiwindow_appkit_readback_test_release_completion()
+		assert C.v_multiwindow_appkit_readback_probe_wait_command_buffer(command) == 1
+		assert C.v_multiwindow_appkit_readback_test_gpu_completed(state, 601) == 1
+		assert C.v_multiwindow_appkit_readback_test_ready_count(state) == 1
+		result := appkit_readback_wait_native_result(state)!
+		assert result.status == 1
+		assert result.submitted_frame == 601
+		_ = appkit_readback_copy_once(state, result)!
+
+		assert C.v_multiwindow_appkit_readback_probe_stage_window(state, 602, 0, 0, 1, 1, 602) == 1
+		assert C.v_multiwindow_appkit_readback_test_mark_encoding_failed(state, 602) == 1
+		assert appkit_readback_take(state).take_status == 0
+		assert C.v_multiwindow_appkit_readback_probe_resolve(state, 602, 1) == 1
+		failed := appkit_readback_take(state)
+		assert failed.take_status == 1
+		assert failed.status == 3
+		assert failed.submitted_frame == 602
+		assert failed.width == 1
+		assert failed.height == 1
+		assert failed.stride == 0
+		assert failed.byte_length == 0
+		assert C.v_multiwindow_appkit_readback_probe_release(state, 602) == 1
+
+		assert C.v_multiwindow_appkit_readback_probe_stage_window(state, 603, 0, 0, 1, 1, 603) == 1
+		assert C.v_multiwindow_appkit_readback_test_mark_encoding_failed(state, 603) == 1
+		assert C.v_multiwindow_appkit_readback_probe_resolve(state, 603, 0) == 1
+		failed_submit := appkit_readback_take(state)
+		assert failed_submit.take_status == 1
+		assert failed_submit.status == 3
+		assert failed_submit.submitted_frame == 0
+		assert failed_submit.width == 1
+		assert failed_submit.height == 1
+		assert failed_submit.stride == 0
+		assert failed_submit.byte_length == 0
+		assert C.v_multiwindow_appkit_readback_probe_release(state, 603) == 1
 	}
 }
 
 fn test_appkit_metal_readback_ready_result_is_reaped_on_teardown_red() {
-	$if darwin {
-		$if sokol_metal ? {
-			$if gg_multiwindow ? {
-				if !appkit_readback_runtime_requested() {
-					return
-				}
-				mut app := new_app(backend: .appkit, queue_size: 16, require_renderer: true)!
-				defer {
-					app.stop() or {}
-				}
-				app.start_renderer(RendererConfig{})!
-				window := app.create_window(
-					title:           'readback teardown'
-					width:           80
-					height:          60
-					visible:         true
-					redraw_mode:     .on_demand
-					render_workload: true
-				)!
-				appkit_readback_wait_until_eligible(mut app, window)!
-				state, native_window, _ := appkit_readback_window_native(mut app, window)!
-				texture := C.v_multiwindow_appkit_readback_probe_make_pattern_texture(native_window)
-				command := C.v_multiwindow_appkit_readback_probe_make_command_buffer(native_window)
-				assert C.v_multiwindow_appkit_readback_probe_stage_image(state, texture, 701, 0, 0,
-					3, 2, 701) == 1
-				assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state, texture, 701, 701) == 1
-				assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(command, unsafe { nil }) == 1
-				assert C.v_multiwindow_appkit_readback_probe_commit_command_buffer(command, 1) == 1
-				assert C.v_multiwindow_appkit_readback_probe_resolve(state, 701, 1) == 1
-				appkit_readback_wait_ready_count(mut app, state, 1)!
-				assert C.v_multiwindow_appkit_service_release_window_services(state) == 1
-				assert C.v_multiwindow_appkit_readback_test_record_count(state) == 0
-				assert appkit_readback_take(state).take_status == 0
-				C.v_multiwindow_appkit_readback_probe_release_object(command)
-				C.v_multiwindow_appkit_readback_probe_release_texture(texture)
-			}
+	$if darwin && sokol_metal ? && gg_multiwindow ? {
+		if !appkit_readback_runtime_requested() {
+			return
 		}
+		mut app := new_app(backend: .appkit, queue_size: 16, require_renderer: true)!
+		defer {
+			app.stop() or {}
+		}
+		app.start_renderer(RendererConfig{})!
+		window := app.create_window(
+			title:           'readback teardown'
+			width:           80
+			height:          60
+			visible:         true
+			redraw_mode:     .on_demand
+			render_workload: true
+		)!
+		appkit_readback_wait_until_eligible(mut app, window)!
+		state, native_window, _ := appkit_readback_window_native(mut app, window)!
+		texture := C.v_multiwindow_appkit_readback_probe_make_pattern_texture(native_window)
+		command := C.v_multiwindow_appkit_readback_probe_make_command_buffer(native_window)
+		assert C.v_multiwindow_appkit_readback_probe_stage_image(state, texture, 701, 0, 0, 3, 2,
+			701) == 1
+		assert C.v_multiwindow_appkit_readback_probe_arm_offscreen(state, texture, 701, 701) == 1
+		assert C.v_multiwindow_appkit_readback_test_invoke_end_pass(command, unsafe { nil }) == 1
+		assert C.v_multiwindow_appkit_readback_probe_commit_command_buffer(command, 1) == 1
+		assert C.v_multiwindow_appkit_readback_probe_resolve(state, 701, 1) == 1
+		appkit_readback_wait_ready_count(mut app, state, 1)!
+		assert C.v_multiwindow_appkit_service_release_window_services(state) == 1
+		assert C.v_multiwindow_appkit_readback_test_record_count(state) == 0
+		assert appkit_readback_take(state).take_status == 0
+		C.v_multiwindow_appkit_readback_probe_release_object(command)
+		C.v_multiwindow_appkit_readback_probe_release_texture(texture)
 	}
 }
 
 fn test_appkit_metal_readback_hook_reinstalls_after_renderer_restart_red() {
-	$if darwin {
-		$if sokol_metal ? {
-			$if gg_multiwindow ? {
-				if !appkit_readback_runtime_requested() {
-					return
-				}
-				mut app := new_app(backend: .appkit, queue_size: 16, require_renderer: true)!
-				defer {
-					app.stop() or {}
-				}
-				app.start_renderer(RendererConfig{})!
-				window := app.create_window(
-					title:           'readback renderer restart'
-					width:           80
-					height:          60
-					visible:         true
-					redraw_mode:     .on_demand
-					render_workload: true
-				)!
-				appkit_readback_wait_until_eligible(mut app, window)!
-				state_before, _, _ := appkit_readback_window_native(mut app, window)!
-				_ = appkit_readback_submit_window(mut app, window, state_before, unsafe { nil },
-					801, 0, 801)!
-				before := appkit_readback_wait_result(mut app, state_before)!
-				assert before.status == 1
-				_ = appkit_readback_copy_once(state_before, before)!
-				app.shutdown_renderer()!
-				app.start_renderer(RendererConfig{})!
-				appkit_readback_wait_until_eligible(mut app, window)!
-				state_after, _, framebuffer_only := appkit_readback_window_native(mut app, window)!
-				assert framebuffer_only == 0
-				_ = appkit_readback_submit_window(mut app, window, state_after, unsafe { nil },
-					802, 0, 802)!
-				after := appkit_readback_wait_result(mut app, state_after)!
-				assert after.status == 1
-				_ = appkit_readback_copy_once(state_after, after)!
-			}
+	$if darwin && sokol_metal ? && gg_multiwindow ? {
+		if !appkit_readback_runtime_requested() {
+			return
 		}
+		mut app := new_app(backend: .appkit, queue_size: 16, require_renderer: true)!
+		defer {
+			app.stop() or {}
+		}
+		app.start_renderer(RendererConfig{})!
+		window := app.create_window(
+			title:           'readback renderer restart'
+			width:           80
+			height:          60
+			visible:         true
+			redraw_mode:     .on_demand
+			render_workload: true
+		)!
+		appkit_readback_wait_until_eligible(mut app, window)!
+		state_before, _, _ := appkit_readback_window_native(mut app, window)!
+		_ =
+			appkit_readback_submit_window(mut app, window, state_before, unsafe { nil }, 801, 0, 801)!
+		before := appkit_readback_wait_native_result(state_before)!
+		assert before.status == 1
+		_ = appkit_readback_copy_once(state_before, before)!
+		app.shutdown_renderer()!
+		quiesced := app.service_operation_capability(window, .window_capture)!
+		assert quiesced.support == .unsupported
+		app.start_renderer(RendererConfig{})!
+		app.request_redraw(window)!
+		state_after, _, framebuffer_only := appkit_readback_window_native(mut app, window)!
+		assert framebuffer_only == 0
+		capability := app.service_operation_capability(window, .window_capture)!
+		assert capability.support == .available
+		assert C.v_multiwindow_appkit_service_capability(state_after,
+			int(ServiceOperation.window_capture), 1) == 1
+		appkit_readback_wait_until_eligible(mut app, window)!
+		_ =
+			appkit_readback_submit_window(mut app, window, state_after, unsafe { nil }, 802, 0, 802)!
+		after := appkit_readback_wait_native_result(state_after)!
+		assert after.status == 1
+		_ = appkit_readback_copy_once(state_after, after)!
 	}
 }

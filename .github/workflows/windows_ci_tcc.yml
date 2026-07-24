@@ -15,7 +15,6 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 60
     env:
-      VFLAGS: -cc tcc -no-retry-compilation
       VTEST_SHOW_LONGEST_BY_RUNTIME: 3
       VTEST_SHOW_LONGEST_BY_COMPTIME: 3
       VTEST_SHOW_LONGEST_BY_TOTALTIME: 3
@@ -25,6 +24,50 @@ jobs:
         run: |
           .\makev.bat -tcc
           .\v.exe symlink
+      - name: Checkout pinned Windows TCC bundle
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: GGRei/tccbin
+          ref: 382e677172cbe7103b0c6d913ee282e2d0fb1fca
+          path: .ci/tccbin-windows-amd64
+          persist-credentials: false
+      - name: Route TCC validation to pinned bundle
+        shell: pwsh
+        run: |
+          $expectedSha = '382e677172cbe7103b0c6d913ee282e2d0fb1fca'
+          $bundle = (Resolve-Path '.\.ci\tccbin-windows-amd64').Path
+          $actualSha = (git -C $bundle rev-parse HEAD).Trim()
+          if ($actualSha -cne $expectedSha) {
+            throw "expected tccbin $expectedSha, got $actualSha"
+          }
+
+          $tcc = Join-Path $bundle 'tcc.exe'
+          if (-not (Test-Path -LiteralPath $tcc -PathType Leaf)) {
+            throw "pinned TCC executable is missing: $tcc"
+          }
+
+          $tccLink = Join-Path $env:GITHUB_WORKSPACE 'thirdparty\tcc'
+          if (Test-Path -LiteralPath $tccLink) {
+            Remove-Item -LiteralPath $tccLink -Recurse -Force
+          }
+          New-Item -ItemType Junction -Path $tccLink -Target $bundle | Out-Null
+          $junctionTarget = [string](Get-Item -LiteralPath $tccLink).Target
+          if ([IO.Path]::GetFullPath($junctionTarget) -cne [IO.Path]::GetFullPath($bundle)) {
+            throw "thirdparty/tcc does not target the pinned bundle: $junctionTarget"
+          }
+
+          Add-Content -Path $env:GITHUB_PATH -Value $bundle
+          Add-Content -Path $env:GITHUB_ENV -Value "PINNED_TCC=$tcc"
+          Add-Content -Path $env:GITHUB_ENV `
+            -Value "VFLAGS=-cc $tcc -no-retry-compilation"
+      - name: Verify pinned TCC command resolution
+        shell: pwsh
+        run: |
+          $resolvedTcc = (Get-Command tcc.exe -CommandType Application -ErrorAction Stop).Source
+          if ([IO.Path]::GetFullPath($resolvedTcc) -cne [IO.Path]::GetFullPath($env:PINNED_TCC)) {
+            throw "tcc.exe resolved to '$resolvedTcc', expected '$env:PINNED_TCC'"
+          }
+          Write-Host "Pinned TCC command: $resolvedTcc"
       - name: Legacy gg import multiwindow isolation
         run: v test vlib/gg/legacy_import_multiwindow_isolation_test.v
       - name: Multiwindow render runtime contract
