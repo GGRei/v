@@ -645,20 +645,32 @@ fn test_readlink() {
 }
 
 fn test_exists_symlink_dangling() {
-	$if msvc {
-		eprintln('skipping ${@METHOD} on windows + msvc; TODO: investigate why os.lstat/1 behaves differently than for gcc/clang')
-		return
+	target := 'nonexistent'
+	link := 'dangling_symlink'
+	os.rm(link) or {}
+	os.rm(target) or {}
+	defer {
+		os.rm(link) or {}
+		os.rm(target) or {}
 	}
-	os.symlink('nonexistent', 'dangling_symlink') or { handle_privilege_error(err) or { return } }
-	// sanity check that the symlink truly does exist.  the lack of error alone is the check.
-	// (on linux, `.get_filetype() == os.FileType.symbolic_link` is true, but on windows, a dangling symlink is reported as a regular file.)
-	os.lstat('dangling_symlink')!
+	assert !os.exists(target)
+	if _ := os.lstat(target) {
+		assert false, 'os.lstat should fail for a path that does not exist'
+	}
+	os.symlink(target, link) or { handle_privilege_error(err) or { return } }
+	assert os.is_link(link)
+	link_stat := os.lstat(link)!
+	$if windows {
+		assert link_stat.get_filetype() == .regular
+	} $else {
+		assert link_stat.get_filetype() == .symbolic_link
+	}
 	// the exists function says false in this scenario... on linux and linux-like systems.
 	// it says true on windows!
 	$if windows {
-		assert os.exists('dangling_symlink') == true
+		assert os.exists(link) == true
 	} $else {
-		assert os.exists('dangling_symlink') == false
+		assert os.exists(link) == false
 	}
 }
 

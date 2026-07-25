@@ -1,5 +1,8 @@
 module os
 
+const windows_file_attribute_reparse_point = u32(0x00000400)
+const windows_io_reparse_tag_symlink = u32(0xa000000c)
+
 // stat returns metadata for the given file/folder.
 // It will return a POSIX error message, if it can not do so.
 // C._wstat64() can be used on 32- and 64-bit Windows per
@@ -27,10 +30,47 @@ pub fn stat(path string) !Stat {
 	}
 }
 
-// lstat is the same as stat() for Windows.
+// lstat is the same as stat() for Windows, including reporting symbolic links as regular files.
+// Unlike stat(), it can also report a dangling symbolic link.
 @[inline]
 pub fn lstat(path string) !Stat {
-	return stat(path)
+	return stat(path) or {
+		if link_stat := windows_dangling_symlink_stat(path) {
+			return link_stat
+		}
+		return err
+	}
+}
+
+fn windows_dangling_symlink_stat(path string) ?Stat {
+	normalized_path := path.replace('/', '\\')
+	w_path := normalized_path.to_wide()
+	defer {
+		unsafe { free(voidptr(w_path)) }
+	}
+
+	mut find_data := Win32finddata{}
+	find_handle := C.FindFirstFileW(w_path, voidptr(&find_data))
+	if find_handle == C.INVALID_HANDLE_VALUE {
+		return none
+	}
+	defer {
+		C.FindClose(find_handle)
+	}
+	if find_data.dw_file_attributes & windows_file_attribute_reparse_point == 0
+		|| find_data.dw_file_attributes & u32(C.FILE_ATTRIBUTE_DIRECTORY) != 0
+		|| find_data.dw_reserved0 != windows_io_reparse_tag_symlink {
+		return none
+	}
+
+	mut mode := u32(C.S_IFREG) | u32(C.S_IREAD)
+	if find_data.dw_file_attributes & u32(C.FILE_ATTRIBUTE_READONLY) == 0 {
+		mode |= u32(C.S_IWRITE)
+	}
+	return Stat{
+		mode: mode
+		size: (u64(find_data.n_file_size_high) << 32) | u64(find_data.n_file_size_low)
+	}
 }
 
 // get_filetype returns the FileType from the Stat struct.

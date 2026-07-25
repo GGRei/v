@@ -27,6 +27,7 @@ concurrency:
 
 jobs:
   space-paths-linux:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -55,6 +56,7 @@ jobs:
           ./v test vlib/builtin vlib/os
 
   space-paths-macos:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
     runs-on: macos-14
     timeout-minutes: 30
     steps:
@@ -86,6 +88,7 @@ jobs:
           ./v test vlib/builtin vlib/os
 
   space-paths-windows:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
     runs-on: windows-2022
     timeout-minutes: 30
     ## NB: the following paths do not work for now:
@@ -117,3 +120,346 @@ jobs:
         run: |
           cd 'path with some $punctuation, and some spaces'
           ./v test vlib/builtin vlib/os
+
+  dangling-symlink-windows:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: Dangling file symlink acceptance (${{ matrix.cc }})
+    runs-on: windows-2022
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        cc:
+          - tcc
+          - gcc
+          - msvc
+    env:
+      PROBE_CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Configure MSVC
+        if: matrix.cc == 'msvc'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build V with the selected native compiler
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          & .\makev.bat "-$env:PROBE_CC"
+          if ($LASTEXITCODE -ne 0) {
+            throw "makev.bat failed for $env:PROBE_CC"
+          }
+          & .\v.exe version
+          if ($LASTEXITCODE -ne 0) {
+            throw 'v.exe version failed'
+          }
+
+      - name: Prepare acceptance probes
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $probeDir = Join-Path $env:RUNNER_TEMP "dangling-symlink-$env:PROBE_CC"
+          New-Item -ItemType Directory -Force -Path $probeDir | Out-Null
+          "PROBE_DIR=$probeDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          @'
+          #define _CRT_SECURE_NO_WARNINGS
+          #define UNICODE
+          #define _UNICODE
+          #define _WIN32_WINNT 0x0A00
+
+          #include <stdio.h>
+          #include <string.h>
+          #include <windows.h>
+
+          #ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+          #define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 0x2
+          #endif
+
+          #ifndef IO_REPARSE_TAG_SYMLINK
+          #define IO_REPARSE_TAG_SYMLINK 0xA000000C
+          #endif
+
+          #if defined(__TINYC__)
+          #define PROBE_COMPILER "tcc"
+          #elif defined(_MSC_VER)
+          #define PROBE_COMPILER "msvc"
+          #elif defined(__GNUC__)
+          #define PROBE_COMPILER "gcc"
+          #else
+          #define PROBE_COMPILER "unknown"
+          #endif
+
+          static int validate(const char *name, int condition) {
+              printf("CHECK %-34s %s\n", name, condition ? "PASS" : "FAIL");
+              return condition ? 0 : 1;
+          }
+
+          int main(void) {
+              const wchar_t *link_path = L"native_dangling_file_link";
+              const wchar_t *target_path = L"native_missing_target";
+              WIN32_FIND_DATAW find_data;
+              HANDLE find_handle;
+              DWORD find_attributes;
+              DWORD create_error;
+              DWORD find_error;
+              DWORD reparse_tag;
+              int create_ok;
+              int reparse_point;
+              int directory;
+              int find_ok;
+              int tag_is_symlink;
+              int failures = 0;
+
+              DeleteFileW(link_path);
+              DeleteFileW(target_path);
+              printf("NATIVE compiler=%s\n", PROBE_COMPILER);
+
+              SetLastError(ERROR_SUCCESS);
+              create_ok = CreateSymbolicLinkW(link_path, target_path,
+                  SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE) != 0;
+              create_error = create_ok ? ERROR_SUCCESS : GetLastError();
+              printf("NATIVE CreateSymbolicLinkW ok=%d error=%lu flags=0x%X\n",
+                  create_ok, (unsigned long)create_error,
+                  SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE);
+              failures += validate("dangling file symlink creation", create_ok);
+
+              memset(&find_data, 0, sizeof(find_data));
+              SetLastError(ERROR_SUCCESS);
+              find_handle = FindFirstFileW(link_path, &find_data);
+              find_ok = find_handle != INVALID_HANDLE_VALUE;
+              find_error = find_ok ? ERROR_SUCCESS : GetLastError();
+              find_attributes = find_ok ? find_data.dwFileAttributes : 0;
+              reparse_point = find_ok
+                  && (find_attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+              directory = find_ok
+                  && (find_attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+              reparse_tag = find_ok ? find_data.dwReserved0 : 0;
+              tag_is_symlink = find_ok && reparse_tag == IO_REPARSE_TAG_SYMLINK;
+              printf("NATIVE FindFirstFileW ok=%d error=%lu attrs=0x%08lX reparse=%d directory=%d tag=0x%08lX symlink_tag=%d\n",
+                  find_ok, (unsigned long)find_error, (unsigned long)find_attributes,
+                  reparse_point, directory, (unsigned long)reparse_tag, tag_is_symlink);
+              if (find_ok) {
+                  FindClose(find_handle);
+              }
+              failures += validate("FindFirstFileW sees link", find_ok);
+              failures += validate("reparse attribute visible", reparse_point);
+              failures += validate("file symlink attribute", find_ok && !directory);
+              failures += validate("exact symlink tag", tag_is_symlink);
+
+              printf("NATIVE SUMMARY failures=%d\n", failures);
+              return failures == 0 ? 0 : 1;
+          }
+          '@ | Set-Content -Encoding utf8 (Join-Path $probeDir 'native_probe.c')
+
+          @'
+          module main
+
+          import os
+
+          fn probe_wildcard_lstat(label string, path string) {
+              println('WILDCARD CALL case=${label} path="${path}"')
+              if wildcard_stat := os.lstat(path) {
+                  println('WILDCARD RESULT case=${label} ok=1 mode=${wildcard_stat.mode} type=${wildcard_stat.get_filetype()}')
+                  println('WILDCARD VERDICT case=${label} false_stat=1 result=FALSE_STAT_RETURNED')
+              } else {
+                  println('WILDCARD RESULT case=${label} ok=0 error="${err.msg()}"')
+                  println('WILDCARD VERDICT case=${label} false_stat=0 result=ORIGINAL_ERROR_PRESERVED')
+              }
+          }
+
+          fn probe_extended_exact_lstat(path string) {
+              println('EXTENDED CALL case=exact path="${path}"')
+              if exact_stat := os.lstat(path) {
+                  println('EXTENDED RESULT case=exact ok=1 mode=${exact_stat.mode} type=${exact_stat.get_filetype()}')
+                  println('EXTENDED VERDICT case=exact result=EXACT_PATH_RESOLVED')
+              } else {
+                  println('EXTENDED RESULT case=exact ok=0 error="${err.msg()}"')
+                  println('EXTENDED VERDICT case=exact result=EXACT_PATH_REJECTED')
+              }
+          }
+
+          fn main() {
+              link_path := 'native_dangling_file_link'
+              absent_path := 'native_absent_control'
+              wildcard_dir := 'wildcard_lstat_dir'
+              wildcard_link := os.join_path(wildcard_dir, 'only_dangling_link')
+              wildcard_star_pattern := os.join_path(wildcard_dir, '*')
+              wildcard_question_pattern := os.join_path(wildcard_dir, 'only_dangling_lin?')
+              absolute_wildcard_dir := os.join_path(os.getwd(), wildcard_dir)
+              extended_prefix := '\\\\?\\'
+              extended_exact_path := extended_prefix + os.join_path(absolute_wildcard_dir,
+                  os.file_name(wildcard_link))
+              extended_wildcard_pattern := extended_prefix + os.join_path(absolute_wildcard_dir,
+                  '*')
+              os.rm(absent_path) or {}
+              os.rmdir_all(wildcard_dir) or {}
+              defer {
+                  os.rm(link_path) or {}
+                  os.rm(absent_path) or {}
+                  os.rm(wildcard_link) or {}
+                  os.rmdir(wildcard_dir) or {}
+              }
+
+              mut failures := []string{}
+              os.mkdir(wildcard_dir) or {
+                  eprintln('WILDCARD SETUP mkdir ok=0 error="${err.msg()}"')
+                  exit(1)
+              }
+              os.symlink('missing_target', wildcard_link) or {
+                  eprintln('WILDCARD SETUP symlink ok=0 error="${err.msg()}"')
+                  exit(1)
+              }
+              entries := os.ls(wildcard_dir) or {
+                  eprintln('WILDCARD SETUP ls ok=0 error="${err.msg()}"')
+                  exit(1)
+              }
+              setup_ok := entries == [os.file_name(wildcard_link)] && os.is_link(wildcard_link)
+              println('WILDCARD SETUP dir="${wildcard_dir}" entries=${entries} only_dangling_file_symlink=${setup_ok}')
+              if !setup_ok {
+                  eprintln('WILDCARD SETUP invalid fixture')
+                  exit(1)
+              }
+
+              if lstat_result := os.lstat(link_path) {
+                  is_regular := lstat_result.get_filetype() == .regular
+                  println('VAPI os.lstat dangling ok=1 mode=${lstat_result.mode} type=${lstat_result.get_filetype()}')
+                  if is_regular {
+                      println('CHECK os.lstat dangling regular PASS')
+                  } else {
+                      println('CHECK os.lstat dangling regular FAIL')
+                      failures << 'os.lstat dangling regular'
+                  }
+              } else {
+                  println('VAPI os.lstat dangling ok=0 error="${err.msg()}"')
+                  println('CHECK os.lstat dangling regular FAIL')
+                  failures << 'os.lstat dangling regular'
+              }
+
+              if absent_lstat := os.lstat(absent_path) {
+                  println('VAPI os.lstat absent ok=1 mode=${absent_lstat.mode} type=${absent_lstat.get_filetype()}')
+                  println('CHECK os.lstat absent control FAIL')
+                  failures << 'os.lstat absent control'
+              } else {
+                  println('VAPI os.lstat absent ok=0 error="${err.msg()}"')
+                  println('CHECK os.lstat absent control PASS')
+              }
+
+              println('WILDCARD MATRIX compiler=${os.getenv('PROBE_CC')}')
+              probe_wildcard_lstat('star', wildcard_star_pattern)
+              probe_wildcard_lstat('question_mark', wildcard_question_pattern)
+              probe_extended_exact_lstat(extended_exact_path)
+              probe_wildcard_lstat('extended_star', extended_wildcard_pattern)
+
+              println('VAPI SUMMARY failures=${failures.len}')
+              if failures.len != 0 {
+                  eprintln('VAPI FAILURES ${failures.join(', ')}')
+                  exit(1)
+              }
+          }
+          '@ | Set-Content -Encoding utf8 (Join-Path $probeDir 'v_probe.v')
+
+      - name: Compile and run native Win32 acceptance
+        id: native_probe
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:PROBE_DIR 'native_probe.c'
+          $exe = Join-Path $env:PROBE_DIR 'native_probe.exe'
+          $object = Join-Path $env:PROBE_DIR 'native_probe.obj'
+          switch ($env:PROBE_CC) {
+            'tcc' {
+              & .\thirdparty\tcc\tcc.exe -Bthirdparty\tcc -Wall -Werror -o $exe $source
+            }
+            'gcc' {
+              & gcc.exe -std=c11 -Wall -Wextra -Werror -o $exe $source
+            }
+            'msvc' {
+              & cl.exe /nologo /TC /W4 /WX "/Fo$object" "/Fe$exe" $source
+            }
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw "native probe compilation failed for $env:PROBE_CC"
+          }
+          Push-Location $env:PROBE_DIR
+          try {
+            & $exe
+            if ($LASTEXITCODE -ne 0) {
+              throw "native Win32 acceptance failed for $env:PROBE_CC"
+            }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Compile and run V os.lstat acceptance
+        id: v_probe
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:PROBE_DIR 'v_probe.v'
+          $exe = Join-Path $env:PROBE_DIR 'v_probe.exe'
+          & .\v.exe -cc $env:PROBE_CC -no-retry-compilation -showcc -o $exe $source
+          if ($LASTEXITCODE -ne 0) {
+            throw "V probe compilation failed for $env:PROBE_CC"
+          }
+          Push-Location $env:PROBE_DIR
+          try {
+            & $exe
+            if ($LASTEXITCODE -ne 0) {
+              throw "V os.lstat acceptance failed for $env:PROBE_CC"
+            }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Run dangling symlink regression test (GCC/MSVC)
+        id: regression_test
+        if: ${{ always() && matrix.cc != 'tcc' }}
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $env:VTEST_ONLY_FN = 'test_exists_symlink_dangling'
+          & .\v.exe -cc $env:PROBE_CC -no-retry-compilation test vlib/os/os_test.c.v
+          if ($LASTEXITCODE -ne 0) {
+            throw "dangling symlink regression test failed for $env:PROBE_CC"
+          }
+
+      - name: Record TCC os_test deferral
+        id: tcc_regression_deferral
+        if: ${{ always() && matrix.cc == 'tcc' }}
+        shell: pwsh
+        run: |
+          Write-Host "v_probe=${{ steps.v_probe.outcome }}"
+          Write-Host 'TCC lstat without compilation fallback is covered by native_probe and v_probe.'
+          Write-Host 'The os_test.c.v regression command is deferred to the separate tccbin _fseeki64 workstream.'
+
+      - name: Report acceptance outcome
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "compiler=$env:PROBE_CC"
+          Write-Host "native_probe=${{ steps.native_probe.outcome }}"
+          Write-Host "v_probe=${{ steps.v_probe.outcome }}"
+          Write-Host "regression_test=${{ steps.regression_test.outcome }}"
+          Write-Host "tcc_regression_deferral=${{ steps.tcc_regression_deferral.outcome }}"
+          $failed = (
+            '${{ steps.native_probe.outcome }}' -ne 'success' -or
+            '${{ steps.v_probe.outcome }}' -ne 'success'
+          )
+          if ($env:PROBE_CC -eq 'tcc') {
+            $failed = $failed -or '${{ steps.tcc_regression_deferral.outcome }}' -ne 'success'
+          } else {
+            $failed = $failed -or '${{ steps.regression_test.outcome }}' -ne 'success'
+          }
+          if ($failed) {
+            throw "dangling symlink acceptance failed for $env:PROBE_CC"
+          }
