@@ -397,12 +397,18 @@ jobs:
                   print_wstat(&cases[index]);
               }
 
-              printf("METADATA SUMMARY failures=%d\n", failures);
               for (index = 0; index < case_count; ++index) {
                   DeleteFileW(cases[index].link_path);
               }
               DeleteFileW(target_txt);
               DeleteFileW(target_exe);
+              DeleteFileW(L"native_dangling_file_link");
+              DeleteFileW(L"native_missing_target");
+              failures += validate("V probe dangling fixture",
+                  CreateSymbolicLinkW(L"native_dangling_file_link",
+                      L"native_missing_target",
+                      SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE) != 0);
+              printf("METADATA SUMMARY failures=%d\n", failures);
               return failures == 0 ? 0 : 1;
           }
           '@ | Set-Content -Encoding utf8 (Join-Path $probeDir 'native_probe.c')
@@ -412,25 +418,29 @@ jobs:
 
           import os
 
-          fn probe_wildcard_lstat(label string, path string) {
+          fn probe_wildcard_lstat(label string, path string) bool {
               println('WILDCARD CALL case=${label} path="${path}"')
               if wildcard_stat := os.lstat(path) {
                   println('WILDCARD RESULT case=${label} ok=1 mode=${wildcard_stat.mode} type=${wildcard_stat.get_filetype()}')
                   println('WILDCARD VERDICT case=${label} false_stat=1 result=FALSE_STAT_RETURNED')
+                  return true
               } else {
                   println('WILDCARD RESULT case=${label} ok=0 error="${err.msg()}"')
                   println('WILDCARD VERDICT case=${label} false_stat=0 result=ORIGINAL_ERROR_PRESERVED')
+                  return false
               }
           }
 
-          fn probe_extended_exact_lstat(path string) {
+          fn probe_extended_exact_lstat(path string) bool {
               println('EXTENDED CALL case=exact path="${path}"')
               if exact_stat := os.lstat(path) {
                   println('EXTENDED RESULT case=exact ok=1 mode=${exact_stat.mode} type=${exact_stat.get_filetype()}')
                   println('EXTENDED VERDICT case=exact result=EXACT_PATH_RESOLVED')
+                  return true
               } else {
                   println('EXTENDED RESULT case=exact ok=0 error="${err.msg()}"')
                   println('EXTENDED VERDICT case=exact result=EXACT_PATH_REJECTED')
+                  return false
               }
           }
 
@@ -501,10 +511,26 @@ jobs:
               }
 
               println('WILDCARD MATRIX compiler=${os.getenv('PROBE_CC')}')
-              probe_wildcard_lstat('star', wildcard_star_pattern)
-              probe_wildcard_lstat('question_mark', wildcard_question_pattern)
-              probe_extended_exact_lstat(extended_exact_path)
-              probe_wildcard_lstat('extended_question_mark', extended_wildcard_pattern)
+              star_false_stat := probe_wildcard_lstat('star', wildcard_star_pattern)
+              println('CHECK wildcard star enforced=0 observed_false_stat=${star_false_stat}')
+              if probe_wildcard_lstat('question_mark', wildcard_question_pattern) {
+                  println('CHECK wildcard question mark rejected FAIL')
+                  failures << 'wildcard question mark rejected'
+              } else {
+                  println('CHECK wildcard question mark rejected PASS')
+              }
+              if probe_extended_exact_lstat(extended_exact_path) {
+                  println('CHECK extended exact path accepted PASS')
+              } else {
+                  println('CHECK extended exact path accepted FAIL')
+                  failures << 'extended exact path accepted'
+              }
+              if probe_wildcard_lstat('extended_question_mark', extended_wildcard_pattern) {
+                  println('CHECK extended wildcard question mark rejected FAIL')
+                  failures << 'extended wildcard question mark rejected'
+              } else {
+                  println('CHECK extended wildcard question mark rejected PASS')
+              }
 
               println('VAPI SUMMARY failures=${failures.len}')
               if failures.len != 0 {
@@ -547,6 +573,49 @@ jobs:
             Pop-Location
           }
 
+      - name: Compare native and V link counts
+        id: nlink_probe
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $nativeSource = (Resolve-Path '.github/workflows/windows_lstat_nlink_probe.c').Path
+          $nativeExe = Join-Path $env:PROBE_DIR 'windows_lstat_nlink_native.exe'
+          $nativeObject = Join-Path $env:PROBE_DIR 'windows_lstat_nlink_native.obj'
+          switch ($env:PROBE_CC) {
+            'tcc' {
+              & .\thirdparty\tcc\tcc.exe -Bthirdparty\tcc -Wall -Werror -o $nativeExe $nativeSource
+            }
+            'gcc' {
+              & gcc.exe -std=c11 -Wall -Wextra -Werror -o $nativeExe $nativeSource
+            }
+            'msvc' {
+              & cl.exe /nologo /TC /W4 /WX "/Fo$nativeObject" "/Fe$nativeExe" $nativeSource
+            }
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw "native nlink probe compilation failed for $env:PROBE_CC"
+          }
+          Push-Location $env:PROBE_DIR
+          try {
+            & $nativeExe
+            $nativeExit = $LASTEXITCODE
+          } finally {
+            Pop-Location
+          }
+
+          $vSource = (Resolve-Path '.github/workflows/windows_lstat_nlink_probe.v').Path
+          $vExe = Join-Path $env:PROBE_DIR 'windows_lstat_nlink_v.exe'
+          & .\v.exe -cc $env:PROBE_CC -no-retry-compilation -showcc -o $vExe $vSource
+          if ($LASTEXITCODE -ne 0) {
+            throw "V nlink probe compilation failed for $env:PROBE_CC"
+          }
+          & $vExe
+          $vExit = $LASTEXITCODE
+          if ($nativeExit -ne 0 -or $vExit -ne 0) {
+            throw "nlink probe failed for $env:PROBE_CC (native=$nativeExit, V=$vExit)"
+          }
+
       - name: Compile and run V os.lstat acceptance
         id: v_probe
         if: always()
@@ -568,6 +637,18 @@ jobs:
             }
           } finally {
             Pop-Location
+          }
+
+      - name: Run Windows os.Stat metadata tests
+        id: metadata_test
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          & .\v.exe -cc $env:PROBE_CC -no-retry-compilation test vlib/os/os_stat_windows_test.v
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows os.Stat metadata tests failed for $env:PROBE_CC"
           }
 
       - name: Run dangling symlink regression test (GCC/MSVC)
@@ -598,12 +679,16 @@ jobs:
         run: |
           Write-Host "compiler=$env:PROBE_CC"
           Write-Host "native_probe=${{ steps.native_probe.outcome }}"
+          Write-Host "nlink_probe=${{ steps.nlink_probe.outcome }}"
           Write-Host "v_probe=${{ steps.v_probe.outcome }}"
+          Write-Host "metadata_test=${{ steps.metadata_test.outcome }}"
           Write-Host "regression_test=${{ steps.regression_test.outcome }}"
           Write-Host "tcc_regression_deferral=${{ steps.tcc_regression_deferral.outcome }}"
           $failed = (
             '${{ steps.native_probe.outcome }}' -ne 'success' -or
-            '${{ steps.v_probe.outcome }}' -ne 'success'
+            '${{ steps.nlink_probe.outcome }}' -ne 'success' -or
+            '${{ steps.v_probe.outcome }}' -ne 'success' -or
+            '${{ steps.metadata_test.outcome }}' -ne 'success'
           )
           if ($env:PROBE_CC -eq 'tcc') {
             $failed = $failed -or '${{ steps.tcc_regression_deferral.outcome }}' -ne 'success'
