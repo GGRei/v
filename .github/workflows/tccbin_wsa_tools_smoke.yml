@@ -1,0 +1,100 @@
+name: Smoke Windows x64 TCC Winsock Tools
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - smoke/tccbin-wsa-tools-integration-20260725
+
+permissions:
+  contents: read
+
+jobs:
+  sqlite-vschannel-probe:
+    name: SQLite/vschannel probe (Windows x64, TCC)
+    runs-on: windows-2025
+    timeout-minutes: 10
+    env:
+      VFLAGS: -cc tcc -no-retry-compilation
+    steps:
+      - name: Checkout V
+        uses: actions/checkout@v7
+
+      - name: Build V with TCC
+        shell: pwsh
+        run: .\makev.bat -tcc
+
+      - name: Checkout official TCC Winsock header
+        uses: actions/checkout@v7
+        with:
+          repository: vlang/tccbin
+          ref: thirdparty-windows-amd64
+          sparse-checkout: include/winapi/winsock2.h
+          sparse-checkout-cone-mode: false
+          path: official-tccbin
+
+      - name: Verify downloaded Winsock header
+        shell: pwsh
+        run: |
+          if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
+            throw "Expected an x64 runner, got $env:PROCESSOR_ARCHITECTURE"
+          }
+          $official = "official-tccbin/include/winapi/winsock2.h"
+          $downloaded = "thirdparty/tcc/include/winapi/winsock2.h"
+          $officialHash = (Get-FileHash -Algorithm SHA256 $official).Hash
+          $downloadedHash = (Get-FileHash -Algorithm SHA256 $downloaded).Hash
+          if ($officialHash -ne $downloadedHash) {
+            throw "Downloaded winsock2.h does not match vlang/tccbin:thirdparty-windows-amd64"
+          }
+          Write-Host "winsock2.h SHA256: $downloadedHash"
+
+      - name: Probe SQLite/vschannel without fallback
+        shell: pwsh
+        run: .\v.exe -cc tcc -no-retry-compilation vlib\db\sqlite\install_thirdparty_sqlite.vsh
+
+  tools-windows-tcc:
+    name: tools-windows (TCC, Windows x64, no fallback)
+    needs: sqlite-vschannel-probe
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      VFLAGS: -cc tcc -no-retry-compilation
+    steps:
+      - name: Checkout V
+        uses: actions/checkout@v7
+
+      - name: Build V
+        run: ./makev.bat -tcc && ./v -o v2.exe cmd/v && ./v2 -showcc -o v.exe cmd/v && ./v symlink && ./v doctor
+
+      - name: Checkout official TCC Winsock header
+        uses: actions/checkout@v7
+        with:
+          repository: vlang/tccbin
+          ref: thirdparty-windows-amd64
+          sparse-checkout: include/winapi/winsock2.h
+          sparse-checkout-cone-mode: false
+          path: official-tccbin
+
+      - name: Verify downloaded Winsock header
+        shell: pwsh
+        run: |
+          if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
+            throw "Expected an x64 runner, got $env:PROCESSOR_ARCHITECTURE"
+          }
+          $official = "official-tccbin/include/winapi/winsock2.h"
+          $downloaded = "thirdparty/tcc/include/winapi/winsock2.h"
+          $officialHash = (Get-FileHash -Algorithm SHA256 $official).Hash
+          $downloadedHash = (Get-FileHash -Algorithm SHA256 $downloaded).Hash
+          if ($officialHash -ne $downloadedHash) {
+            throw "Downloaded winsock2.h does not match vlang/tccbin:thirdparty-windows-amd64"
+          }
+          Write-Host "winsock2.h SHA256: $downloadedHash"
+
+      - name: Install SQLite (needed by vsqlite tool)
+        run: .\.github\workflows\windows-install-sqlite.bat
+
+      - name: Check build tools
+        run: ./v build-tools
+
+      - name: Test tools
+        run: ./v -silent test-self cmd
