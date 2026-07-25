@@ -173,8 +173,11 @@ jobs:
           #define _UNICODE
           #define _WIN32_WINNT 0x0A00
 
+          #include <errno.h>
           #include <stdio.h>
           #include <string.h>
+          #include <sys/types.h>
+          #include <sys/stat.h>
           #include <windows.h>
 
           #ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
@@ -195,64 +198,211 @@ jobs:
           #define PROBE_COMPILER "unknown"
           #endif
 
+          #define FILETIME_TICKS_PER_SECOND 10000000ULL
+          #define FILETIME_UNIX_EPOCH 116444736000000000ULL
+
+          struct link_case {
+              const char *label;
+              const wchar_t *link_path;
+              const wchar_t *target_path;
+              long long link_time_base;
+          };
+
+          static FILETIME unix_seconds_to_filetime(long long seconds) {
+              ULARGE_INTEGER value;
+              FILETIME result;
+              value.QuadPart = ((ULONGLONG)seconds * FILETIME_TICKS_PER_SECOND)
+                  + FILETIME_UNIX_EPOCH;
+              result.dwLowDateTime = value.LowPart;
+              result.dwHighDateTime = value.HighPart;
+              return result;
+          }
+
+          static long long filetime_to_unix_seconds(FILETIME value) {
+              ULARGE_INTEGER ticks;
+              ticks.LowPart = value.dwLowDateTime;
+              ticks.HighPart = value.dwHighDateTime;
+              return (long long)((ticks.QuadPart - FILETIME_UNIX_EPOCH)
+                  / FILETIME_TICKS_PER_SECOND);
+          }
+
+          static int set_path_times(const wchar_t *path, long long base,
+              DWORD flags) {
+              HANDLE handle;
+              FILETIME creation = unix_seconds_to_filetime(base + 1);
+              FILETIME access = unix_seconds_to_filetime(base + 2);
+              FILETIME write = unix_seconds_to_filetime(base + 3);
+              int ok;
+
+              handle = CreateFileW(path, FILE_WRITE_ATTRIBUTES,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                  OPEN_EXISTING, flags, NULL);
+              if (handle == INVALID_HANDLE_VALUE) {
+                  printf("SET_TIMES open_ok=0 error=%lu\n",
+                      (unsigned long)GetLastError());
+                  return 0;
+              }
+              ok = SetFileTime(handle, &creation, &access, &write) != 0;
+              if (!ok) {
+                  printf("SET_TIMES set_ok=0 error=%lu\n",
+                      (unsigned long)GetLastError());
+              }
+              CloseHandle(handle);
+              return ok;
+          }
+
+          static int create_target(const wchar_t *path, const char *content,
+              DWORD content_size, long long time_base) {
+              HANDLE handle;
+              DWORD written = 0;
+              int write_ok;
+
+              handle = CreateFileW(path, GENERIC_WRITE,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+              if (handle == INVALID_HANDLE_VALUE) {
+                  printf("TARGET create_ok=0 error=%lu\n",
+                      (unsigned long)GetLastError());
+                  return 0;
+              }
+              write_ok = WriteFile(handle, content, content_size, &written, NULL) != 0
+                  && written == content_size;
+              CloseHandle(handle);
+              return write_ok && set_path_times(path, time_base, 0);
+          }
+
+          static int create_link(const struct link_case *item) {
+              int create_ok = CreateSymbolicLinkW(item->link_path,
+                  item->target_path,
+                  SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE) != 0;
+              if (!create_ok) {
+                  printf("LINK case=%s create_ok=0 error=%lu\n", item->label,
+                      (unsigned long)GetLastError());
+                  return 0;
+              }
+              return set_path_times(item->link_path, item->link_time_base,
+                  FILE_FLAG_OPEN_REPARSE_POINT);
+          }
+
+          static void print_find(const struct link_case *item) {
+              WIN32_FIND_DATAW data;
+              HANDLE handle;
+              DWORD error;
+              unsigned long long size;
+
+              memset(&data, 0, sizeof(data));
+              SetLastError(ERROR_SUCCESS);
+              handle = FindFirstFileW(item->link_path, &data);
+              if (handle == INVALID_HANDLE_VALUE) {
+                  error = GetLastError();
+                  printf("FIND case=%s rc=-1 error=%lu\n", item->label,
+                      (unsigned long)error);
+                  return;
+              }
+              size = ((unsigned long long)data.nFileSizeHigh << 32)
+                  | (unsigned long long)data.nFileSizeLow;
+              printf("FIND case=%s rc=0 attrs=0x%08lX tag=0x%08lX size=%llu"
+                  " atime=%lld mtime=%lld ctime=%lld"
+                  " raw_a=%08lX:%08lX raw_m=%08lX:%08lX raw_c=%08lX:%08lX\n",
+                  item->label, (unsigned long)data.dwFileAttributes,
+                  (unsigned long)data.dwReserved0, size,
+                  filetime_to_unix_seconds(data.ftLastAccessTime),
+                  filetime_to_unix_seconds(data.ftLastWriteTime),
+                  filetime_to_unix_seconds(data.ftCreationTime),
+                  (unsigned long)data.ftLastAccessTime.dwHighDateTime,
+                  (unsigned long)data.ftLastAccessTime.dwLowDateTime,
+                  (unsigned long)data.ftLastWriteTime.dwHighDateTime,
+                  (unsigned long)data.ftLastWriteTime.dwLowDateTime,
+                  (unsigned long)data.ftCreationTime.dwHighDateTime,
+                  (unsigned long)data.ftCreationTime.dwLowDateTime);
+              FindClose(handle);
+          }
+
+          static void print_wstat(const struct link_case *item) {
+              struct _stat64 data;
+              int result;
+              int saved_errno;
+
+              memset(&data, 0, sizeof(data));
+              errno = 0;
+              result = _wstat64(item->link_path, &data);
+              saved_errno = errno;
+              printf("WSTAT case=%s rc=%d errno=%d mode=0x%04X exec=%d"
+                  " size=%lld atime=%lld mtime=%lld ctime=%lld\n",
+                  item->label, result, saved_errno, (unsigned int)data.st_mode,
+                  (data.st_mode & _S_IEXEC) != 0, (long long)data.st_size,
+                  (long long)data.st_atime, (long long)data.st_mtime,
+                  (long long)data.st_ctime);
+          }
+
           static int validate(const char *name, int condition) {
               printf("CHECK %-34s %s\n", name, condition ? "PASS" : "FAIL");
               return condition ? 0 : 1;
           }
 
           int main(void) {
-              const wchar_t *link_path = L"native_dangling_file_link";
-              const wchar_t *target_path = L"native_missing_target";
-              WIN32_FIND_DATAW find_data;
-              HANDLE find_handle;
-              DWORD find_attributes;
-              DWORD create_error;
-              DWORD find_error;
-              DWORD reparse_tag;
-              int create_ok;
-              int reparse_point;
-              int directory;
-              int find_ok;
-              int tag_is_symlink;
+              const wchar_t *target_txt = L"metadata_target.txt";
+              const wchar_t *target_exe = L"metadata_target.exe";
+              const wchar_t *missing_target = L"metadata_missing_target";
+              struct link_case cases[] = {
+                  {"valid_exe_to_txt", L"metadata_valid.exe", target_txt, 1640995200LL},
+                  {"valid_com_to_txt", L"metadata_valid.com", target_txt, 1640995300LL},
+                  {"valid_bat_to_txt", L"metadata_valid.bat", target_txt, 1640995400LL},
+                  {"valid_cmd_to_txt", L"metadata_valid.cmd", target_txt, 1640995500LL},
+                  {"valid_txt_to_exe", L"metadata_valid.txt", target_exe, 1672531200LL},
+                  {"dangling_exe", L"metadata_dangling.exe", missing_target, 1704067200LL},
+                  {"dangling_com", L"metadata_dangling.com", missing_target, 1704067300LL},
+                  {"dangling_bat", L"metadata_dangling.bat", missing_target, 1704067400LL},
+                  {"dangling_cmd", L"metadata_dangling.cmd", missing_target, 1704067500LL},
+                  {"dangling_txt", L"metadata_dangling.txt", missing_target, 1704067600LL}
+              };
+              size_t case_count = sizeof(cases) / sizeof(cases[0]);
+              size_t index;
               int failures = 0;
 
-              DeleteFileW(link_path);
-              DeleteFileW(target_path);
-              printf("NATIVE compiler=%s\n", PROBE_COMPILER);
-
-              SetLastError(ERROR_SUCCESS);
-              create_ok = CreateSymbolicLinkW(link_path, target_path,
-                  SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE) != 0;
-              create_error = create_ok ? ERROR_SUCCESS : GetLastError();
-              printf("NATIVE CreateSymbolicLinkW ok=%d error=%lu flags=0x%X\n",
-                  create_ok, (unsigned long)create_error,
-                  SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE);
-              failures += validate("dangling file symlink creation", create_ok);
-
-              memset(&find_data, 0, sizeof(find_data));
-              SetLastError(ERROR_SUCCESS);
-              find_handle = FindFirstFileW(link_path, &find_data);
-              find_ok = find_handle != INVALID_HANDLE_VALUE;
-              find_error = find_ok ? ERROR_SUCCESS : GetLastError();
-              find_attributes = find_ok ? find_data.dwFileAttributes : 0;
-              reparse_point = find_ok
-                  && (find_attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
-              directory = find_ok
-                  && (find_attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-              reparse_tag = find_ok ? find_data.dwReserved0 : 0;
-              tag_is_symlink = find_ok && reparse_tag == IO_REPARSE_TAG_SYMLINK;
-              printf("NATIVE FindFirstFileW ok=%d error=%lu attrs=0x%08lX reparse=%d directory=%d tag=0x%08lX symlink_tag=%d\n",
-                  find_ok, (unsigned long)find_error, (unsigned long)find_attributes,
-                  reparse_point, directory, (unsigned long)reparse_tag, tag_is_symlink);
-              if (find_ok) {
-                  FindClose(find_handle);
+              for (index = 0; index < case_count; ++index) {
+                  DeleteFileW(cases[index].link_path);
               }
-              failures += validate("FindFirstFileW sees link", find_ok);
-              failures += validate("reparse attribute visible", reparse_point);
-              failures += validate("file symlink attribute", find_ok && !directory);
-              failures += validate("exact symlink tag", tag_is_symlink);
+              DeleteFileW(target_txt);
+              DeleteFileW(target_exe);
+              DeleteFileW(missing_target);
 
-              printf("NATIVE SUMMARY failures=%d\n", failures);
+              printf("METADATA compiler=%s\n", PROBE_COMPILER);
+              failures += validate("target txt fixture",
+                  create_target(target_txt, "TXT", 3, 1577836800LL));
+              failures += validate("target exe fixture",
+                  create_target(target_exe, "EXE!!", 5, 1609459200LL));
+              failures += validate("missing target fixture",
+                  GetFileAttributesW(missing_target) == INVALID_FILE_ATTRIBUTES);
+
+              for (index = 0; index < case_count; ++index) {
+                  failures += validate(cases[index].label, create_link(&cases[index]));
+              }
+
+              {
+                  struct link_case target_txt_case = {
+                      "target_txt", target_txt, target_txt, 0
+                  };
+                  struct link_case target_exe_case = {
+                      "target_exe", target_exe, target_exe, 0
+                  };
+                  print_find(&target_txt_case);
+                  print_wstat(&target_txt_case);
+                  print_find(&target_exe_case);
+                  print_wstat(&target_exe_case);
+              }
+
+              for (index = 0; index < case_count; ++index) {
+                  print_find(&cases[index]);
+                  print_wstat(&cases[index]);
+              }
+
+              printf("METADATA SUMMARY failures=%d\n", failures);
+              for (index = 0; index < case_count; ++index) {
+                  DeleteFileW(cases[index].link_path);
+              }
+              DeleteFileW(target_txt);
+              DeleteFileW(target_exe);
               return failures == 0 ? 0 : 1;
           }
           '@ | Set-Content -Encoding utf8 (Join-Path $probeDir 'native_probe.c')
@@ -296,7 +446,7 @@ jobs:
               extended_exact_path := extended_prefix + os.join_path(absolute_wildcard_dir,
                   os.file_name(wildcard_link))
               extended_wildcard_pattern := extended_prefix + os.join_path(absolute_wildcard_dir,
-                  '*')
+                  'only_dangling_lin?')
               os.rm(absent_path) or {}
               os.rmdir_all(wildcard_dir) or {}
               defer {
@@ -354,7 +504,7 @@ jobs:
               probe_wildcard_lstat('star', wildcard_star_pattern)
               probe_wildcard_lstat('question_mark', wildcard_question_pattern)
               probe_extended_exact_lstat(extended_exact_path)
-              probe_wildcard_lstat('extended_star', extended_wildcard_pattern)
+              probe_wildcard_lstat('extended_question_mark', extended_wildcard_pattern)
 
               println('VAPI SUMMARY failures=${failures.len}')
               if failures.len != 0 {
