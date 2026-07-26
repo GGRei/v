@@ -135,31 +135,43 @@ fn service_monitor_info_for_slot(info ServiceMonitorInfo, app_instance u64, slot
 
 fn (mut registry ServiceRegistry) reconcile_monitor_snapshot(snapshot []ServiceMonitorInfo, sequence u64) []ServiceMonitorInfo {
 	mut seen := []bool{len: registry.monitors.len}
-	for candidate in snapshot {
-		mut slot := -1
+	mut slots := []int{len: snapshot.len, init: -1}
+	for snapshot_index, candidate in snapshot {
 		for index, current in registry.monitors {
 			if !seen[index] && current.name == candidate.name && current.available {
-				slot = index
+				slots[snapshot_index] = index
+				seen[index] = true
 				break
 			}
 		}
-		if slot < 0 {
-			for index, current in registry.monitors {
-				if !seen[index] && current.name == candidate.name && !current.available
-					&& current.id.generation < u32(0xffffffff) {
-					slot = index
-					break
-				}
+	}
+	for snapshot_index, candidate in snapshot {
+		if slots[snapshot_index] >= 0 {
+			continue
+		}
+		for index, current in registry.monitors {
+			if !seen[index] && current.name == candidate.name && !current.available
+				&& current.id.generation < u32(0xffffffff) {
+				slots[snapshot_index] = index
+				seen[index] = true
+				break
 			}
 		}
-		if slot < 0 {
-			for index, current in registry.monitors {
-				if !seen[index] && !current.available && current.id.generation < u32(0xffffffff) {
-					slot = index
-					break
-				}
+	}
+	for snapshot_index, _ in snapshot {
+		if slots[snapshot_index] >= 0 {
+			continue
+		}
+		for index, current in registry.monitors {
+			if !seen[index] && !current.available && current.id.generation < u32(0xffffffff) {
+				slots[snapshot_index] = index
+				seen[index] = true
+				break
 			}
 		}
+	}
+	for snapshot_index, candidate in snapshot {
+		mut slot := slots[snapshot_index]
 		if slot < 0 {
 			slot = registry.monitors.len
 			registry.monitors << service_monitor_info_for_slot(candidate, registry.app_instance,

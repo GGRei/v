@@ -47,6 +47,9 @@ jobs:
         run: v -cc gcc test vlib/gg/legacy_import_multiwindow_isolation_test.v
       - name: Public gg Win32 services no-flag contract
         run: v -cc gcc test vlib/gg/multiwindow_win32_public_services_contract_windows_test.v
+      - name: Win32 W3 native/public GREEN contracts
+        shell: pwsh
+        run: .\.github\workflows\run_multiwindow_win32_w3_green.ps1 -Compiler gcc
       - name: Package 2 native Win32 RED matrix
         shell: pwsh
         run: .\.github\workflows\run_multiwindow_win32_package2_red.ps1 -Compiler gcc
@@ -183,6 +186,13 @@ jobs:
           ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp \
             -subsystem console -o gg_multiwindow_render_runtime_gcc.exe examples/gg/multiwindow_render_runtime.v
 
+          public_services_test=vlib/gg/multiwindow_win32_public_services_contract_windows_test.v
+          public_services_tests=(
+            test_win32_public_hwnd_borrow_route_red
+            test_win32_public_conditional_focus_refusal_is_not_a_capability_error_red
+            test_win32_public_partial_focus_is_never_reported_as_success_red
+            test_win32_public_controls_publish_observed_state_red
+          )
           tests=(
             vlib/x/multiwindow/event_sequence_exhaustion_test.v
             vlib/x/multiwindow/event_terminal_delivery_test.v
@@ -196,7 +206,6 @@ jobs:
             vlib/x/multiwindow/service_native_win32_readback_d3d11_contract_test.v
             vlib/gg/multiwindow_api_d_gg_multiwindow_test.v
             vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v
-            vlib/gg/multiwindow_win32_public_services_contract_windows_test.v
             vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v
             vlib/gg/multiwindow_render_runtime_contract_test.v
             vlib/gg/frame_pacing_test.v
@@ -210,6 +219,12 @@ jobs:
             fi
             ./"$runner" 300 - ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 \
               -d gg_multiwindow_d3d11_warp "${diagnostic_subsystem[@]}" test "$test"
+          done
+
+          for service_test in "${public_services_tests[@]}"; do
+            ./"$runner" 300 - ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 \
+              -d gg_multiwindow_d3d11_warp -subsystem console test \
+              -run-only "$service_test" "$public_services_test"
           done
 
           env VFLAGS='-cc clang -d gg_multiwindow_d3d11_warp' \

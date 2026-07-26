@@ -72,6 +72,9 @@ jobs:
         run: v test vlib/gg/legacy_import_multiwindow_isolation_test.v
       - name: Public gg Win32 services no-flag contract
         run: v test vlib/gg/multiwindow_win32_public_services_contract_windows_test.v
+      - name: Win32 W3 native/public GREEN contracts
+        shell: pwsh
+        run: .\.github\workflows\run_multiwindow_win32_w3_green.ps1 -Compiler tcc
       - name: Multiwindow render runtime contract
         run: .\v.exe -silent vlib\gg\multiwindow_render_runtime_contract_test.v
       - name: Public gg Win32 proven W1 services enabled contract
@@ -88,12 +91,13 @@ jobs:
           }
           $noFlagOnlyTest = 'test_win32_public_services_stay_disabled_without_opt_in'
           $diagnosticTest = 'test_win32_public_controls_publish_observed_state_red'
+          $w3GreenTest = 'test_win32_public_monitor_projection_and_event_order_red'
           $tests = @(
             'test_win32_public_hwnd_borrow_route_red'
             'test_win32_public_conditional_focus_refusal_is_not_a_capability_error_red'
             'test_win32_public_partial_focus_is_never_reported_as_success_red'
           )
-          $classifiedTests = @($noFlagOnlyTest) + $tests + @($diagnosticTest)
+          $classifiedTests = @($noFlagOnlyTest) + $tests + @($diagnosticTest, $w3GreenTest)
           $missingTests = @(
             $classifiedTests | Where-Object { $discoveredTests -cnotcontains $_ }
           )

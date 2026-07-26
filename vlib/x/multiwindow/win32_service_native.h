@@ -5,6 +5,11 @@
 #include <windows.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <wchar.h>
+
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
+#include "testdata/win32_monitor_enumeration_test_seam.h"
+#endif
 
 #define V_MULTIWINDOW_WIN32_SERVICE_OK 1
 #define V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE 0
@@ -46,6 +51,225 @@ typedef struct VMultiwindowWin32NativeWindowSnapshot {
 	RECT rect;
 	int visible;
 } VMultiwindowWin32NativeWindowSnapshot;
+
+#define V_MULTIWINDOW_WIN32_SERVICE_MONITOR_INITIAL_CAPACITY 8
+#define V_MULTIWINDOW_WIN32_SERVICE_MONITOR_MAX_CAPACITY 4096
+
+typedef struct VMultiwindowWin32ServiceMonitor {
+	HMONITOR native_id;
+	wchar_t name[CCHDEVICENAME];
+	RECT geometry;
+	RECT work;
+	UINT dpi;
+	int primary;
+} VMultiwindowWin32ServiceMonitor;
+
+typedef struct VMultiwindowWin32ServiceMonitorSnapshot {
+	VMultiwindowWin32ServiceMonitor *monitors;
+	int count;
+	int capacity;
+	int failed;
+} VMultiwindowWin32ServiceMonitorSnapshot;
+
+typedef HRESULT(WINAPI *VMultiwindowWin32GetDpiForMonitor)(
+	HMONITOR, int, UINT *, UINT *);
+typedef UINT(WINAPI *VMultiwindowWin32GetDpiForWindow)(HWND);
+
+static inline UINT v_multiwindow_win32_service_monitor_dpi(HMONITOR monitor) {
+	HMODULE shcore = LoadLibraryW(L"shcore.dll");
+	if (shcore) {
+		VMultiwindowWin32GetDpiForMonitor get_dpi_for_monitor =
+			(VMultiwindowWin32GetDpiForMonitor)GetProcAddress(shcore,
+				"GetDpiForMonitor");
+		if (get_dpi_for_monitor) {
+			UINT dpi_x = 0;
+			UINT dpi_y = 0;
+			HRESULT result = get_dpi_for_monitor(monitor, 0, &dpi_x, &dpi_y);
+			FreeLibrary(shcore);
+			if (SUCCEEDED(result) && dpi_x > 0) {
+				return dpi_x;
+			}
+		} else {
+			FreeLibrary(shcore);
+		}
+	}
+	HDC dc = GetDC(NULL);
+	int dpi = dc ? GetDeviceCaps(dc, LOGPIXELSX) : 96;
+	if (dc) {
+		ReleaseDC(NULL, dc);
+	}
+	return dpi > 0 ? (UINT)dpi : 96;
+}
+
+static BOOL CALLBACK v_multiwindow_win32_service_monitor_snapshot_callback(
+	HMONITOR monitor, HDC dc, LPRECT rect, LPARAM data) {
+	(void)dc;
+	(void)rect;
+	VMultiwindowWin32ServiceMonitorSnapshot *snapshot =
+		(VMultiwindowWin32ServiceMonitorSnapshot *)(uintptr_t)data;
+	if (!snapshot) {
+		return FALSE;
+	}
+	if (snapshot->count >= snapshot->capacity) {
+		if (snapshot->capacity >=
+				V_MULTIWINDOW_WIN32_SERVICE_MONITOR_MAX_CAPACITY) {
+			snapshot->failed = 1;
+			return FALSE;
+		}
+		int next_capacity = snapshot->capacity > 0
+			? snapshot->capacity * 2
+			: V_MULTIWINDOW_WIN32_SERVICE_MONITOR_INITIAL_CAPACITY;
+		if (next_capacity >
+				V_MULTIWINDOW_WIN32_SERVICE_MONITOR_MAX_CAPACITY) {
+			next_capacity =
+				V_MULTIWINDOW_WIN32_SERVICE_MONITOR_MAX_CAPACITY;
+		}
+		VMultiwindowWin32ServiceMonitor *grown =
+			(VMultiwindowWin32ServiceMonitor *)realloc(snapshot->monitors,
+				(size_t)next_capacity *
+					sizeof(VMultiwindowWin32ServiceMonitor));
+		if (!grown) {
+			snapshot->failed = 1;
+			return FALSE;
+		}
+		snapshot->monitors = grown;
+		snapshot->capacity = next_capacity;
+	}
+	MONITORINFOEXW info;
+	ZeroMemory(&info, sizeof(info));
+	info.cbSize = sizeof(info);
+	if (!GetMonitorInfoW(monitor, (LPMONITORINFO)&info)) {
+		snapshot->failed = 1;
+		return FALSE;
+	}
+	int index = snapshot->count++;
+	VMultiwindowWin32ServiceMonitor *item = &snapshot->monitors[index];
+	item->native_id = monitor;
+	item->geometry = info.rcMonitor;
+	item->work = info.rcWork;
+	item->dpi = v_multiwindow_win32_service_monitor_dpi(monitor);
+	item->primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0;
+	wcsncpy(item->name, info.szDevice, CCHDEVICENAME - 1);
+	item->name[CCHDEVICENAME - 1] = L'\0';
+	return TRUE;
+}
+
+static inline void *v_multiwindow_win32_service_monitor_snapshot_new(void) {
+	VMultiwindowWin32ServiceMonitorSnapshot *snapshot =
+		(VMultiwindowWin32ServiceMonitorSnapshot *)calloc(1,
+			sizeof(VMultiwindowWin32ServiceMonitorSnapshot));
+	if (!snapshot) {
+		return NULL;
+	}
+	snapshot->capacity =
+		V_MULTIWINDOW_WIN32_SERVICE_MONITOR_INITIAL_CAPACITY;
+	snapshot->monitors = (VMultiwindowWin32ServiceMonitor *)calloc(
+		(size_t)snapshot->capacity,
+		sizeof(VMultiwindowWin32ServiceMonitor));
+	if (!snapshot->monitors) {
+		free(snapshot);
+		return NULL;
+	}
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
+	BOOL enumerated = v_multiwindow_win32_service_test_enum_display_monitors(
+		NULL, NULL, v_multiwindow_win32_service_monitor_snapshot_callback,
+		(LPARAM)(uintptr_t)snapshot);
+#else
+	BOOL enumerated = EnumDisplayMonitors(NULL, NULL,
+		v_multiwindow_win32_service_monitor_snapshot_callback,
+		(LPARAM)(uintptr_t)snapshot);
+#endif
+	if (!enumerated || snapshot->failed) {
+		free(snapshot->monitors);
+		free(snapshot);
+		return NULL;
+	}
+	return snapshot;
+}
+
+static inline void v_multiwindow_win32_service_monitor_snapshot_free(
+		void *snapshot) {
+	VMultiwindowWin32ServiceMonitorSnapshot *typed =
+		(VMultiwindowWin32ServiceMonitorSnapshot *)snapshot;
+	if (typed) {
+		free(typed->monitors);
+		free(typed);
+	}
+}
+
+static inline int v_multiwindow_win32_service_monitor_snapshot_count(
+	const VMultiwindowWin32ServiceMonitorSnapshot *snapshot) {
+	return snapshot ? snapshot->count : -1;
+}
+
+static inline uint64_t v_multiwindow_win32_service_monitor_snapshot_native_id(
+	const VMultiwindowWin32ServiceMonitorSnapshot *snapshot, int index) {
+	if (!snapshot || index < 0 || index >= snapshot->count) {
+		return 0;
+	}
+	return (uint64_t)(uintptr_t)snapshot->monitors[index].native_id;
+}
+
+static inline const wchar_t *
+v_multiwindow_win32_service_monitor_snapshot_name(
+	const VMultiwindowWin32ServiceMonitorSnapshot *snapshot, int index) {
+	if (!snapshot || index < 0 || index >= snapshot->count) {
+		return NULL;
+	}
+	return snapshot->monitors[index].name;
+}
+
+static inline int v_multiwindow_win32_service_monitor_snapshot_info(
+	const VMultiwindowWin32ServiceMonitorSnapshot *snapshot, int index,
+	int *x, int *y, int *width, int *height, int *work_x, int *work_y,
+	int *work_width, int *work_height, UINT *dpi, int *primary) {
+	if (!snapshot || index < 0 || index >= snapshot->count) {
+		return 0;
+	}
+	const VMultiwindowWin32ServiceMonitor *item = &snapshot->monitors[index];
+	if (x) *x = item->geometry.left;
+	if (y) *y = item->geometry.top;
+	if (width) *width = item->geometry.right - item->geometry.left;
+	if (height) *height = item->geometry.bottom - item->geometry.top;
+	if (work_x) *work_x = item->work.left;
+	if (work_y) *work_y = item->work.top;
+	if (work_width) *work_width = item->work.right - item->work.left;
+	if (work_height) *work_height = item->work.bottom - item->work.top;
+	if (dpi) *dpi = item->dpi;
+	if (primary) *primary = item->primary;
+	return 1;
+}
+
+static inline uint64_t v_multiwindow_win32_service_window_monitor(
+	void *hwnd_ptr) {
+	HWND hwnd = (HWND)hwnd_ptr;
+	if (!hwnd || !IsWindow(hwnd)) {
+		return 0;
+	}
+	return (uint64_t)(uintptr_t)MonitorFromWindow(hwnd,
+		MONITOR_DEFAULTTONEAREST);
+}
+
+static inline UINT v_multiwindow_win32_service_window_dpi(void *hwnd_ptr) {
+	HWND hwnd = (HWND)hwnd_ptr;
+	if (!hwnd || !IsWindow(hwnd)) {
+		return 0;
+	}
+	HMODULE user32 = GetModuleHandleW(L"user32.dll");
+	VMultiwindowWin32GetDpiForWindow get_dpi_for_window = user32 ?
+		(VMultiwindowWin32GetDpiForWindow)GetProcAddress(user32,
+			"GetDpiForWindow") : NULL;
+	UINT dpi = get_dpi_for_window ? get_dpi_for_window(hwnd) : 0;
+	if (dpi > 0) {
+		return dpi;
+	}
+	HDC dc = GetDC(hwnd);
+	int fallback = dc ? GetDeviceCaps(dc, LOGPIXELSX) : 96;
+	if (dc) {
+		ReleaseDC(hwnd, dc);
+	}
+	return fallback > 0 ? (UINT)fallback : 96;
+}
 
 #if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
 static int v_multiwindow_win32_service_test_focus_refused;

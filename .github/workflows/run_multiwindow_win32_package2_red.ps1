@@ -708,7 +708,6 @@ $greenCases = @(
     @{ Wave = 'W2'; File = $core; Name = 'test_win32_native_modal_reenable_and_child_first_hwnd_destruction_red' }
 )
 $cases = @(
-    @{ File = $core; Name = 'test_win32_native_monitor_dpi_display_change_and_generation_red'; Marker = 'monitor_dpi_hotplug'; Terminal = 'behavioral_red:monitor_dpi_hotplug' }
     @{ File = $core; Name = 'test_win32_native_cf_unicodetext_roundtrip_exact_limit_and_terminal_queue_red'; Marker = 'clipboard_unicode_limit'; Terminal = 'behavioral_red:clipboard_unicode_limit' }
     @{ File = $core; Name = 'test_win32_native_clipboard_occupancy_timeout_failure_and_cancel_red'; Marker = 'clipboard_occupancy_cancel'; Terminal = 'behavioral_red:clipboard_occupancy_cancel' }
     @{ File = $core; Name = 'test_win32_native_raw_input_clipcursor_release_and_two_window_isolation_red'; Marker = 'mouse_lock_isolation'; Terminal = 'behavioral_red:mouse_lock_isolation' }
@@ -727,8 +726,8 @@ $greenNames = @($greenCases | ForEach-Object { $_.Name } | Sort-Object -Unique)
 $greenInRed = @($greenNames | Where-Object { $_ -in $names })
 $w2GreenCount = @($greenCases | Where-Object { $_.Wave -ceq 'W2' }).Count
 if ($greenNames.Count -ne 5 -or $greenInRed.Count -ne 0 `
-    -or $w2GreenCount -ne 1 -or $cases.Count -ne 6) {
-    throw 'Package 2 closure requires one W2 GREEN and six disjoint RED cases'
+    -or $w2GreenCount -ne 1 -or $cases.Count -ne 5) {
+    throw 'Package 2 closure requires one W2 GREEN and five disjoint RED cases'
 }
 
 $vexe = (Resolve-Path '.\v.exe').Path

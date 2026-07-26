@@ -24,41 +24,47 @@ struct Win32NativeQueuedEvent {
 struct Win32WindowRecord {
 	id WindowId
 mut:
-	hwnd                      voidptr
-	service_state             voidptr
-	config                    WindowConfig
-	width                     int
-	height                    int
-	framebuffer_width         int
-	framebuffer_height        int
-	destroyed                 bool
-	modal_active              bool
-	modal_child_count         int
-	modal_restore_enabled     bool
-	render_resize_pending     bool
-	suppress_resize_event     bool
-	queued_events             []Win32NativeQueuedEvent
-	mouse_x                   f32
-	mouse_y                   f32
-	mouse_dx                  f32
-	mouse_dy                  f32
-	mouse_pos_valid           bool
-	iconified                 bool
-	pending_dropped_files     []string
-	pending_drop_modifiers    u32
-	pending_high_surrogate    u32
-	suppress_control_char     u32
-	swapchain                 voidptr
-	swapchain_ticket          u64
-	pending_backbuffer        voidptr
-	pending_backbuffer_ticket u64
-	render_view               voidptr
-	render_view_ticket        u64
-	depth_texture             voidptr
-	depth_texture_ticket      u64
-	depth_stencil_view        voidptr
-	depth_stencil_view_ticket u64
-	render_target_generation  u64 = 1
+	hwnd                       voidptr
+	service_state              voidptr
+	config                     WindowConfig
+	width                      int
+	height                     int
+	framebuffer_width          int
+	framebuffer_height         int
+	destroyed                  bool
+	modal_active               bool
+	modal_child_count          int
+	modal_restore_enabled      bool
+	render_resize_pending      bool
+	suppress_resize_event      bool
+	queued_events              []Win32NativeQueuedEvent
+	mouse_x                    f32
+	mouse_y                    f32
+	mouse_dx                   f32
+	mouse_dy                   f32
+	mouse_pos_valid            bool
+	iconified                  bool
+	pending_dropped_files      []string
+	pending_drop_modifiers     u32
+	pending_high_surrogate     u32
+	suppress_control_char      u32
+	service_monitor_ids        []ServiceMonitorId
+	service_dpi                u32
+	service_refresh_sequence   u64
+	pending_display_refresh    bool
+	pending_dpi_refresh        bool
+	pending_membership_refresh bool
+	swapchain                  voidptr
+	swapchain_ticket           u64
+	pending_backbuffer         voidptr
+	pending_backbuffer_ticket  u64
+	render_view                voidptr
+	render_view_ticket         u64
+	depth_texture              voidptr
+	depth_texture_ticket       u64
+	depth_stencil_view         voidptr
+	depth_stencil_view_ticket  u64
+	render_target_generation   u64 = 1
 }
 
 struct Win32Backend {
@@ -91,6 +97,7 @@ mut:
 	lifetime_release_error           string
 	event_sequence_terminal          string
 	windows                          []&Win32WindowRecord
+	service_monitors                 []Win32ServiceMonitorRecord
 }
 
 struct Win32D3DDeviceLaneAttempt {
@@ -193,7 +200,7 @@ fn (backend &Win32Backend) renderer_probe_error(operation_error string) string {
 
 $if windows {
 	fn C.v_multiwindow_win32_register_class() int
-	fn C.v_multiwindow_win32_create_window(title &u16, width int, height int, min_width int, min_height int, resizable int, borderless int, fullscreen int, visible int, owner voidptr, data voidptr) voidptr
+	fn C.v_multiwindow_win32_create_window(title &u16, width int, height int, min_width int, min_height int, resizable int, high_dpi int, borderless int, fullscreen int, visible int, owner voidptr, data voidptr) voidptr
 	fn C.v_multiwindow_win32_show_created_window(hwnd voidptr, fullscreen int) int
 	fn C.v_multiwindow_win32_destroy_window(hwnd voidptr) int
 	fn C.v_multiwindow_win32_owner_matches(hwnd voidptr, owner voidptr) int
@@ -265,6 +272,24 @@ $if windows {
 			height:    height
 		}))
 		record.enqueue_native_event(sequence, queued_input_event(record.input_event(.resized)))
+	}
+
+	@[export: 'v_multiwindow_win32_window_service_refresh']
+	@[markused]
+	fn win32_window_service_refresh(data voidptr, sequence u64, reason int) {
+		if data == unsafe { nil } || sequence == 0 {
+			return
+		}
+		mut record := unsafe { &Win32WindowRecord(data) }
+		if record.service_refresh_sequence == 0 || sequence < record.service_refresh_sequence {
+			record.service_refresh_sequence = sequence
+		}
+		match reason {
+			1 { record.pending_display_refresh = true }
+			2 { record.pending_dpi_refresh = true }
+			3 { record.pending_membership_refresh = true }
+			else {}
+		}
 	}
 
 	@[export: 'v_multiwindow_win32_window_input_event']
@@ -836,8 +861,9 @@ fn (mut backend Win32Backend) create_window(id WindowId, config WindowConfig) !W
 		show_after_modal_activation := config.modal && config.visible
 		hwnd := C.v_multiwindow_win32_create_window(title, config.width, config.height,
 			config.min_width, config.min_height, win32_bool_to_int(config.resizable),
-			win32_bool_to_int(config.borderless), win32_bool_to_int(config.fullscreen), win32_bool_to_int(
-			config.visible && !show_after_modal_activation), owner_hwnd, record_data)
+			win32_bool_to_int(config.high_dpi), win32_bool_to_int(config.borderless),
+			win32_bool_to_int(config.fullscreen), win32_bool_to_int(config.visible
+			&& !show_after_modal_activation), owner_hwnd, record_data)
 		if hwnd == unsafe { nil } {
 			backend.windows.delete(index)
 			return error(err_win32_create_window_failed)
@@ -885,6 +911,19 @@ fn (mut backend Win32Backend) create_window(id WindowId, config WindowConfig) !W
 		}
 		record.config = window_config_with_size(record.config, record.width, record.height)
 		record.render_resize_pending = false
+		app_instance := if backend.native_operations == unsafe { nil } {
+			u64(0)
+		} else {
+			backend.native_operations.app_identity
+		}
+		native_monitor := C.v_multiwindow_win32_service_window_monitor(record.hwnd)
+		record.service_monitor_ids = win32_service_monitor_ids_for_native(backend.service_monitors,
+			native_monitor, app_instance)
+		record.service_dpi = C.v_multiwindow_win32_service_window_dpi(record.hwnd)
+		record.service_refresh_sequence = 0
+		record.pending_display_refresh = false
+		record.pending_dpi_refresh = false
+		record.pending_membership_refresh = false
 		return WindowSize{
 			width:  record.width
 			height: record.height
@@ -1023,6 +1062,9 @@ fn (mut backend Win32Backend) poll_queued_events() ![]QueuedEvent {
 			return []QueuedEvent{}
 		}
 		C.v_multiwindow_win32_pump_messages()
+		for event in backend.collect_service_refresh_events()! {
+			native_events << event
+		}
 		mut i := 0
 		for i < backend.windows.len {
 			mut record := backend.windows[i]
@@ -1105,6 +1147,7 @@ fn (mut backend Win32Backend) stop() ! {
 			return error(backend.retained_stop_error(err_render_native_renderer_unavailable))
 		}
 		backend.started = false
+		backend.service_monitors.clear()
 		poll_error := backend.poll_error
 		backend.poll_error = ''
 		terminal_error := backend.retained_stop_error(poll_error)

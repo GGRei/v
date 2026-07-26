@@ -4,7 +4,17 @@ module gg
 #flag windows -DV_MULTIWINDOW_WIN32_SERVICE_TEST
 
 $if windows && gg_multiwindow ? {
+	#include "@VMODROOT/vlib/x/multiwindow/testdata/win32_nonreadback_test_oracle.h"
+
 	fn C.v_multiwindow_win32_service_test_set_focus_refused(refused int)
+	fn C.v_multiwindow_test_win32_emit_display_changes(hwnd voidptr, count int) int
+	fn C.v_multiwindow_test_win32_emit_display_change(hwnd voidptr) int
+	fn C.v_multiwindow_test_win32_monitor_enumeration_capture() int
+	fn C.v_multiwindow_test_win32_monitor_enumeration_use_empty()
+	fn C.v_multiwindow_test_win32_monitor_enumeration_use_replay() int
+	fn C.v_multiwindow_test_win32_monitor_enumeration_reset()
+	fn C.v_multiwindow_test_win32_monitor_enumeration_empty_calls() int
+	fn C.v_multiwindow_test_win32_monitor_enumeration_replay_calls() int
 	fn C.SetForegroundWindow(hwnd voidptr) int
 	fn C.GetForegroundWindow() voidptr
 	fn C.SetFocus(hwnd voidptr) voidptr
@@ -53,16 +63,22 @@ fn win32_public_hwnd(mut app App, window WindowId) !voidptr {
 }
 
 fn win32_public_request_refused_focus(mut app App, window WindowId) ! {
-	$if gg_multiwindow ? {
-		C.v_multiwindow_win32_service_test_set_focus_refused(1)
-		defer {
-			C.v_multiwindow_win32_service_test_set_focus_refused(0)
+	$if windows {
+		$if gg_multiwindow ? {
+			C.v_multiwindow_win32_service_test_set_focus_refused(1)
+			defer {
+				C.v_multiwindow_win32_service_test_set_focus_refused(0)
+			}
+			app.request_window_focus(window)!
+		} $else {
+			_ = app
+			_ = window
+			return error(err_multiwindow_not_enabled)
 		}
-		app.request_window_focus(window)!
 	} $else {
 		_ = app
 		_ = window
-		return error(err_multiwindow_not_enabled)
+		return error('Win32 focus refusal test helper is unavailable')
 	}
 }
 
@@ -199,7 +215,7 @@ fn test_win32_public_hwnd_borrow_route_red() {
 }
 
 fn test_win32_public_conditional_focus_refusal_is_not_a_capability_error_red() {
-	$if gg_multiwindow ? {
+	$if windows && gg_multiwindow ? {
 		mut app := new_app(backend: .win32)!
 		defer {
 			C.v_multiwindow_win32_service_test_set_focus_refused(0)
@@ -230,7 +246,7 @@ fn test_win32_public_conditional_focus_refusal_is_not_a_capability_error_red() {
 }
 
 fn test_win32_public_partial_focus_is_never_reported_as_success_red() {
-	$if gg_multiwindow ? {
+	$if windows && gg_multiwindow ? {
 		mut app := new_app(backend: .win32)!
 		defer {
 			C.v_multiwindow_win32_service_test_set_focus_refused(0)
@@ -405,6 +421,176 @@ fn test_win32_public_controls_publish_observed_state_red() {
 				}
 			}
 			assert issues.len == 0, 'Win32 gg.App controls/state RED:\n${issues.join('\n')}'
+		}
+	}
+}
+
+fn test_win32_public_monitor_projection_and_event_order_red() {
+	$if windows {
+		$if gg_multiwindow ? {
+			mut app := new_app(backend: .win32)!
+			defer {
+				app.stop() or {}
+			}
+			window := app.create_window(
+				title:    'Win32 public monitor projection RED'
+				width:    320
+				height:   200
+				high_dpi: true
+			)!
+			for _ in 0 .. 4 {
+				app.poll_events()!
+			}
+			_ = app.drain_window_queued_events()!
+
+			before_ids := app.monitor_ids()!
+			assert before_ids.len > 0
+			mut primary_count := 0
+			for id in before_ids {
+				info := app.monitor_info(id)!
+				assert info.id == id
+				assert info.name != ''
+				assert info.available
+				assert info.geometry.known
+				assert info.geometry.value.width > 0
+				assert info.geometry.value.height > 0
+				assert info.work_area.known
+				assert info.work_area.value.width > 0
+				assert info.work_area.value.height > 0
+				assert info.scale.known
+				assert info.scale.value > 0
+				assert info.primary != .unknown
+				if info.primary == .on {
+					primary_count++
+				}
+			}
+			assert primary_count == 1
+			before_state := app.window_state(window)!
+			assert before_state.monitor_ids.len > 0
+			for id in before_state.monitor_ids {
+				assert id in before_ids
+			}
+
+			hwnd := win32_public_hwnd(mut app, window)!
+			assert C.v_multiwindow_test_win32_emit_display_changes(hwnd, 3) == 1
+			for _ in 0 .. 4 {
+				app.poll_events()!
+			}
+			after_ids := app.monitor_ids()!
+			assert after_ids == before_ids
+			after_state := app.window_state(window)!
+			assert after_state.monitor_ids == before_state.monitor_ids
+
+			queued := app.drain_window_queued_events()!
+			monitor_events := queued.filter(it.kind == .service && it.service.kind == .monitor)
+			metrics_events := queued.filter(it.kind == .service && it.service.kind == .metrics
+				&& it.service.window == window)
+			assert monitor_events.len == 1
+			assert metrics_events.len == 1
+			monitor_envelope := monitor_events[0]
+			metrics_envelope := metrics_events[0]
+			assert monitor_envelope.sequence == monitor_envelope.service.sequence
+			assert metrics_envelope.sequence == metrics_envelope.service.sequence
+			assert metrics_envelope.service.sequence == metrics_envelope.service.metrics.metrics_sequence
+			assert metrics_envelope.service.state.sequence == metrics_envelope.sequence
+			assert monitor_envelope.sequence < metrics_envelope.sequence
+			assert metrics_envelope.service.state.monitor_ids == after_state.monitor_ids
+
+			projected := monitor_envelope.service.monitors
+			assert projected.len == after_ids.len
+			singular_matches := projected.filter(it.id == monitor_envelope.service.monitor.id)
+			assert singular_matches.len == 1
+			assert monitor_envelope.service.monitor == singular_matches[0]
+			for id in after_ids {
+				info := app.monitor_info(id)!
+				id_matches := projected.filter(it.id == id)
+				assert id_matches.len == 1
+				event_info := id_matches[0]
+				assert event_info.id == id
+				assert event_info.name == info.name
+				assert event_info.geometry == info.geometry
+				assert event_info.work_area == info.work_area
+				assert event_info.scale == info.scale
+				assert event_info.primary == info.primary
+				assert event_info.available == info.available
+				assert event_info.sequence == monitor_envelope.sequence
+				assert info.sequence == monitor_envelope.sequence
+			}
+
+			stale_info := app.monitor_info(after_ids[0])!
+			assert C.v_multiwindow_test_win32_monitor_enumeration_capture() == after_ids.len
+			defer {
+				C.v_multiwindow_test_win32_monitor_enumeration_reset()
+			}
+			C.v_multiwindow_test_win32_monitor_enumeration_use_empty()
+			_ = app.drain_window_queued_events()!
+			assert C.v_multiwindow_test_win32_emit_display_change(hwnd) == 1
+			for _ in 0 .. 4 {
+				app.poll_events()!
+			}
+			assert C.v_multiwindow_test_win32_monitor_enumeration_empty_calls() > 0
+			assert app.monitor_ids()!.len == 0
+			unavailable := app.monitor_info(stale_info.id)!
+			assert unavailable.id == stale_info.id
+			assert !unavailable.available
+			unplug_state := app.window_state(window)!
+			assert unplug_state.monitor_ids.len == 0
+			unplug_events := app.drain_window_queued_events()!
+			unplug_monitors := unplug_events.filter(it.kind == .service
+				&& it.service.kind == .monitor)
+			unplug_metrics := unplug_events.filter(it.kind == .service
+				&& it.service.kind == .metrics && it.service.window == window)
+			assert unplug_monitors.len == 1
+			assert unplug_monitors[0].service.monitors.len == 0
+			assert unplug_metrics.len == 1
+			assert unplug_metrics[0].service.state.monitor_ids.len == 0
+			assert unplug_monitors[0].sequence < unplug_metrics[0].sequence
+
+			assert C.v_multiwindow_test_win32_monitor_enumeration_use_replay() == 1
+			_ = app.drain_window_queued_events()!
+			assert C.v_multiwindow_test_win32_emit_display_change(hwnd) == 1
+			for _ in 0 .. 4 {
+				app.poll_events()!
+			}
+			assert C.v_multiwindow_test_win32_monitor_enumeration_replay_calls() > 0
+			replug_ids := app.monitor_ids()!
+			assert replug_ids.len == after_ids.len
+			assert stale_info.id !in replug_ids
+			mut replacement := WindowMonitorInfo{}
+			mut replacement_found := false
+			for id in replug_ids {
+				info := app.monitor_info(id)!
+				if info.name == stale_info.name {
+					replacement = info
+					replacement_found = true
+					break
+				}
+			}
+			assert replacement_found
+			assert replacement.id != stale_info.id
+			replug_state := app.window_state(window)!
+			assert replacement.id in replug_state.monitor_ids
+			assert stale_info.id !in replug_state.monitor_ids
+			replug_events := app.drain_window_queued_events()!
+			replug_monitors := replug_events.filter(it.kind == .service
+				&& it.service.kind == .monitor)
+			replug_metrics := replug_events.filter(it.kind == .service
+				&& it.service.kind == .metrics && it.service.window == window)
+			assert replug_monitors.len == 1
+			assert replug_metrics.len == 1
+			assert replacement.id in replug_metrics[0].service.state.monitor_ids
+			assert stale_info.id !in replug_metrics[0].service.state.monitor_ids
+			assert replug_monitors[0].sequence < replug_metrics[0].sequence
+			replacement_events :=
+				replug_monitors[0].service.monitors.filter(it.id == replacement.id)
+			assert replacement_events.len == 1
+			assert replug_monitors[0].service.monitors.all(it.id != stale_info.id)
+			mut stale_id_rejected := false
+			_ = app.monitor_info(stale_info.id) or {
+				stale_id_rejected = true
+				WindowMonitorInfo{}
+			}
+			assert stale_id_rejected
 		}
 	}
 }

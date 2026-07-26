@@ -59,12 +59,29 @@ $if windows {
 	fn C.v_multiwindow_test_win32_service_wrong_thread_active_count() int
 	fn C.v_multiwindow_test_win32_service_wrong_thread_wait_cleanup(timeout u32) int
 	fn C.v_multiwindow_test_win32_dpi(hwnd voidptr) u32
+	fn C.v_multiwindow_test_win32_window_dpi_awareness(hwnd voidptr) int
+	fn C.v_multiwindow_test_win32_thread_dpi_awareness_context() voidptr
+	fn C.v_multiwindow_test_win32_dpi_awareness_contexts_equal(first voidptr, second voidptr) int
 	fn C.v_multiwindow_test_win32_monitor_snapshot_new() voidptr
 	fn C.v_multiwindow_test_win32_monitor_snapshot_free(snapshot voidptr)
 	fn C.v_multiwindow_test_win32_monitor_snapshot(snapshot voidptr) int
 	fn C.v_multiwindow_test_win32_monitor_identity(snapshot voidptr, index int) u64
+	fn C.v_multiwindow_test_win32_monitor_name(snapshot voidptr, index int) &u16
 	fn C.v_multiwindow_test_win32_monitor_info(snapshot voidptr, index int, x &int, y &int, width &int, height &int, work_x &int, work_y &int, work_width &int, work_height &int, primary &int) int
 	fn C.v_multiwindow_test_win32_emit_display_change(hwnd voidptr) int
+	fn C.v_multiwindow_test_win32_emit_display_changes(hwnd voidptr, count int) int
+	fn C.v_multiwindow_test_win32_emit_dpi_change(hwnd voidptr, dpi u32, left int, top int, width int, height int) int
+	fn C.v_multiwindow_test_win32_monitor_enumeration_capture() int
+	fn C.v_multiwindow_test_win32_monitor_enumeration_use_empty()
+	fn C.v_multiwindow_test_win32_monitor_enumeration_use_replay() int
+	fn C.v_multiwindow_test_win32_monitor_enumeration_reset()
+	fn C.v_multiwindow_test_win32_monitor_enumeration_empty_calls() int
+	fn C.v_multiwindow_test_win32_monitor_enumeration_replay_calls() int
+	fn C.v_multiwindow_test_win32_monitor_enumeration_use_info_failure() int
+	fn C.v_multiwindow_test_win32_monitor_enumeration_use_growth(count int) int
+	fn C.v_multiwindow_test_win32_monitor_enumeration_info_failure_calls() int
+	fn C.v_multiwindow_test_win32_monitor_enumeration_growth_calls() int
+	fn C.v_multiwindow_test_win32_monitor_enumeration_growth_callbacks() int
 	fn C.v_multiwindow_test_win32_clipboard_equals(expected &u16) int
 	fn C.v_multiwindow_test_win32_clipboard_bytes() usize
 	fn C.v_multiwindow_test_win32_set_clipboard(text &u16, units usize) int
@@ -100,6 +117,51 @@ fn win32_red_add(mut issues []string, label string, ok bool) {
 	if !ok {
 		issues << label
 	}
+}
+
+fn win32_w3_raw_monitor(native_id u64, name string) Win32ServiceRawMonitor {
+	return Win32ServiceRawMonitor{
+		native_id:   native_id
+		name:        name
+		width:       100
+		height:      100
+		work_width:  100
+		work_height: 100
+		dpi:         96
+	}
+}
+
+fn win32_w3_monitor_candidate(name string) ServiceMonitorInfo {
+	return ServiceMonitorInfo{
+		name:      name
+		geometry:  ServiceKnownRect{
+			known: true
+			value: ServiceRect{
+				width:  100
+				height: 100
+			}
+		}
+		work_area: ServiceKnownRect{
+			known: true
+			value: ServiceRect{
+				width:  100
+				height: 100
+			}
+		}
+		scale:     ServiceKnownScale{
+			known: true
+			value: 1
+		}
+		primary:   .off
+		available: true
+	}
+}
+
+fn win32_red_rect_inside(inner ServiceRect, outer ServiceRect) bool {
+	return inner.width > 0 && inner.height > 0 && outer.width > 0 && outer.height > 0
+		&& inner.x >= outer.x && inner.y >= outer.y
+		&& inner.x + inner.width <= outer.x + outer.width
+		&& inner.y + inner.height <= outer.y + outer.height
 }
 
 fn win32_red_capability_matches(actual ServiceOperationCapability, support ServiceSupportLevel, asynchronous bool, requires_user_action bool, state_observable bool) bool {
@@ -146,6 +208,73 @@ fn win32_red_clipboard_terminals(mut app App, request ServiceRequestId, attempts
 		time.sleep(5 * time.millisecond)
 	}
 	return terminals
+}
+
+fn test_win32_w3_late_exact_name_reserves_unavailable_slot_and_stales_old_ids_red() {
+	eprintln('PACKAGE2_RED_TEST=test_win32_w3_late_exact_name_reserves_unavailable_slot_and_stales_old_ids_red')
+	mut native_records := [
+		Win32ServiceMonitorRecord{
+			native_id:  11
+			name:       'A'
+			slot:       0
+			generation: 4
+			available:  false
+		},
+		Win32ServiceMonitorRecord{
+			native_id:  22
+			name:       'B'
+			slot:       1
+			generation: 9
+			available:  false
+		},
+	]
+	native := win32_reconcile_service_monitors(mut native_records, [
+		win32_w3_raw_monitor(33, 'C'),
+		win32_w3_raw_monitor(44, 'A'),
+	], 71)
+	assert native.len == 2
+	native_c := native.filter(it.name == 'C')[0]
+	native_a := native.filter(it.name == 'A')[0]
+	assert native_c.id.slot_for_gg() == 1
+	assert native_c.id.generation_for_gg() == 10
+	assert native_a.id.slot_for_gg() == 0
+	assert native_a.id.generation_for_gg() == 5
+
+	instance := u64(72)
+	mut registry := ServiceRegistry{
+		app_instance: instance
+		monitors:     [
+			service_monitor_info_for_slot(win32_w3_monitor_candidate('A'), instance, 0, 4, false, 1),
+			service_monitor_info_for_slot(win32_w3_monitor_candidate('B'), instance, 1, 9, false, 1),
+		]
+	}
+	stale_a := registry.monitors[0].id
+	stale_b := registry.monitors[1].id
+	public := registry.reconcile_monitor_snapshot([
+		win32_w3_monitor_candidate('C'),
+		win32_w3_monitor_candidate('A'),
+	], 2)
+	assert public.len == 2
+	public_c := public.filter(it.name == 'C')[0]
+	public_a := public.filter(it.name == 'A')[0]
+	assert public_c.id.slot_for_gg() == 1
+	assert public_c.id.generation_for_gg() == 10
+	assert public_a.id.slot_for_gg() == 0
+	assert public_a.id.generation_for_gg() == 5
+	assert registry.monitor_index(public_c.id)! == 1
+	assert registry.monitor_index(public_a.id)! == 0
+	mut stale_a_rejected := false
+	_ = registry.monitor_index(stale_a) or {
+		stale_a_rejected = err.msg() == err_service_request_stale
+		-1
+	}
+	mut stale_b_rejected := false
+	_ = registry.monitor_index(stale_b) or {
+		stale_b_rejected = err.msg() == err_service_request_stale
+		-1
+	}
+	assert stale_a_rejected
+	assert stale_b_rejected
 }
 
 fn test_win32_w1_native_authority_show_focus_and_fullscreen_contract() {
@@ -1038,7 +1167,19 @@ fn test_win32_native_monitor_dpi_display_change_and_generation_red() {
 		defer {
 			app.stop() or {}
 		}
-		window := app.create_window(title: 'Win32 monitor oracle', high_dpi: true)!
+		caller_dpi_context_before := C.v_multiwindow_test_win32_thread_dpi_awareness_context()
+		assert caller_dpi_context_before != unsafe { nil }, 'GetThreadDpiAwarenessContext is unavailable before high_dpi window creation'
+
+		window := app.create_window(
+			title:    'Win32 monitor oracle'
+			width:    320
+			height:   200
+			high_dpi: true
+		)!
+		caller_dpi_context_after := C.v_multiwindow_test_win32_thread_dpi_awareness_context()
+		assert caller_dpi_context_after != unsafe { nil }, 'GetThreadDpiAwarenessContext is unavailable after high_dpi window creation'
+
+		win32_red_poll(mut app, 2)!
 		_ = app.drain_queued_events()!
 		hwnd := win32_red_hwnd(app, window)!
 		before_native := C.v_multiwindow_test_win32_monitor_snapshot_new()
@@ -1050,9 +1191,73 @@ fn test_win32_native_monitor_dpi_display_change_and_generation_red() {
 		assert native_count > 0, 'EnumDisplayMonitors oracle admission produced no monitors'
 		before_ids := app.service_monitor_ids()!
 		mut issues := []string{}
+		thread_dpi_contexts_equal := C.v_multiwindow_test_win32_dpi_awareness_contexts_equal(caller_dpi_context_before,
+			caller_dpi_context_after)
+		win32_red_add(mut issues,
+			'high_dpi window creation did not exactly restore the caller thread DPI-awareness context (comparison=${thread_dpi_contexts_equal})',
+			thread_dpi_contexts_equal == 1)
+		window_dpi_awareness := C.v_multiwindow_test_win32_window_dpi_awareness(hwnd)
+		win32_red_add(mut issues,
+			'created high_dpi HWND is not per-monitor DPI aware before synthetic WM_DPICHANGED (awareness=${window_dpi_awareness})',
+			window_dpi_awareness == 2)
+		mut before_by_name := map[string]ServiceMonitorInfo{}
+		mut public_primary_count := 0
+		for id in before_ids {
+			info := app.service_monitor_info(id) or {
+				issues << 'public monitor ${id} could not be resolved: ${err.msg()}'
+				continue
+			}
+			win32_red_add(mut issues, 'public monitor ${id} has an empty native name',
+				info.name != '')
+			win32_red_add(mut issues, 'public monitor ${info.name} is not available',
+				info.available)
+			win32_red_add(mut issues, 'public monitor ${info.name} geometry is unavailable',
+				info.geometry.known)
+			if info.geometry.known {
+				win32_red_add(mut issues, 'public monitor ${info.name} geometry is non-positive',
+
+					info.geometry.value.width > 0 && info.geometry.value.height > 0)
+			}
+			win32_red_add(mut issues, 'public monitor ${info.name} work area is unavailable',
+				info.work_area.known)
+			if info.work_area.known {
+				win32_red_add(mut issues, 'public monitor ${info.name} work area is non-positive',
+
+					info.work_area.value.width > 0 && info.work_area.value.height > 0)
+			}
+			win32_red_add(mut issues, 'public monitor ${info.name} DPI scale is unavailable',
+
+				info.scale.known && info.scale.value > 0)
+			win32_red_add(mut issues, 'public monitor ${info.name} primary state is unknown',
+				info.primary != .unknown)
+			if info.primary == .on {
+				public_primary_count++
+			}
+			if info.name in before_by_name {
+				issues << 'public monitor name ${info.name} is not unique'
+			} else {
+				before_by_name[info.name] = info
+			}
+		}
 		win32_red_add(mut issues, 'public monitor count differs from EnumDisplayMonitors',
 			before_ids.len == native_count)
+		mut native_names := map[string]bool{}
+		mut native_primary_count := 0
 		for native_index in 0 .. native_count {
+			name_pointer := C.v_multiwindow_test_win32_monitor_name(before_native, native_index)
+			if name_pointer == unsafe { nil } {
+				issues << 'native monitor ${native_index} has no device name'
+				continue
+			}
+			native_name := unsafe { string_from_wide(name_pointer) }
+			if native_name == '' {
+				issues << 'native monitor ${native_index} has an empty device name'
+				continue
+			}
+			if native_name in native_names {
+				issues << 'native monitor name ${native_name} is not unique'
+			}
+			native_names[native_name] = true
 			mut x := 0
 			mut y := 0
 			mut width := 0
@@ -1064,50 +1269,182 @@ fn test_win32_native_monitor_dpi_display_change_and_generation_red() {
 			mut primary := 0
 			assert C.v_multiwindow_test_win32_monitor_info(before_native, native_index, &x, &y,
 				&width, &height, &work_x, &work_y, &work_width, &work_height, &primary) == 1
-			mut matched := false
-			for id in before_ids {
-				info := app.service_monitor_info(id)!
-				if info.geometry.known && info.geometry.value == ServiceRect{
+			if primary != 0 {
+				native_primary_count++
+			}
+			if native_name in before_by_name {
+				info := before_by_name[native_name]
+				win32_red_add(mut issues, 'native monitor ${native_name} is unavailable publicly',
+					info.available)
+				win32_red_add(mut issues,
+					'native monitor ${native_name} geometry differs publicly', info.geometry.known && info.geometry.value == ServiceRect{
 					x:      x
 					y:      y
 					width:  width
 					height: height
-				} {
-					matched = info.work_area.known && info.work_area.value == ServiceRect{
-						x:      work_x
-						y:      work_y
-						width:  work_width
-						height: work_height
-					} && info.primary == if primary != 0 {
-						ServiceObservedBool.on
-					} else {
-						ServiceObservedBool.off
-					}
-					break
-				}
+				})
+				win32_red_add(mut issues,
+					'native monitor ${native_name} work area differs publicly', info.work_area.known && info.work_area.value == ServiceRect{
+					x:      work_x
+					y:      work_y
+					width:  work_width
+					height: work_height
+				})
+				win32_red_add(mut issues,
+					'native monitor ${native_name} primary projection differs publicly', info.primary == if primary != 0 {
+					ServiceObservedBool.on
+				} else {
+					ServiceObservedBool.off
+				})
+			} else {
+				issues << 'native monitor ${native_name} has no matching public snapshot'
 			}
-			win32_red_add(mut issues,
-				'native monitor ${native_index} has no matching public snapshot', matched)
 		}
-		window_state := app.service_window_state(window)!
-		if window_state.monitor_ids.len > 0 {
-			monitor := app.service_monitor_info(window_state.monitor_ids[0])!
-			native_scale := f32(C.v_multiwindow_test_win32_dpi(hwnd)) / 96.0
-			win32_red_add(mut issues, 'window DPI differs from native GetDpiForWindow',
-				monitor.scale.known && monitor.scale.value > native_scale - 0.01
-				&& monitor.scale.value < native_scale + 0.01)
-		} else {
+		win32_red_add(mut issues, 'EnumDisplayMonitors did not identify exactly one primary',
+			native_primary_count == 1)
+		win32_red_add(mut issues, 'public snapshot did not identify exactly one primary',
+			public_primary_count == 1)
+
+		before_dpi_state := app.service_window_state(window)!
+		if before_dpi_state.monitor_ids.len == 0 {
 			issues << 'window state has no native monitor membership'
 		}
+		for monitor_id in before_dpi_state.monitor_ids {
+			win32_red_add(mut issues,
+				'window state references a monitor outside the public snapshot',
+				monitor_id in before_ids)
+		}
+		assert before_dpi_state.monitor_ids.len > 0
+		dpi_monitor := app.service_monitor_info(before_dpi_state.monitor_ids[0])!
+		assert dpi_monitor.geometry.known
+		assert dpi_monitor.work_area.known
+		native_dpi := C.v_multiwindow_test_win32_dpi(hwnd)
+		native_scale := f32(native_dpi) / 96.0
+		win32_red_add(mut issues, 'window DPI differs from native GetDpiForWindow',
+			dpi_monitor.scale.known && dpi_monitor.scale.value > native_scale - 0.01
+			&& dpi_monitor.scale.value < native_scale + 0.01)
 
-		assert C.v_multiwindow_test_win32_emit_display_change(hwnd) == 1
+		mut before_left := 0
+		mut before_top := 0
+		mut before_right := 0
+		mut before_bottom := 0
+		assert C.v_multiwindow_test_win32_rect(hwnd, &before_left, &before_top, &before_right,
+			&before_bottom) == 1
+		geometry := dpi_monitor.geometry.value
+		work := dpi_monitor.work_area.value
+		allowed_left := if geometry.x > work.x { geometry.x } else { work.x }
+		allowed_top := if geometry.y > work.y { geometry.y } else { work.y }
+		geometry_right := geometry.x + geometry.width
+		work_right := work.x + work.width
+		allowed_right := if geometry_right < work_right { geometry_right } else { work_right }
+		geometry_bottom := geometry.y + geometry.height
+		work_bottom := work.y + work.height
+		allowed_bottom := if geometry_bottom < work_bottom {
+			geometry_bottom
+		} else {
+			work_bottom
+		}
+		allowed_width := allowed_right - allowed_left
+		allowed_height := allowed_bottom - allowed_top
+		assert allowed_width > 0
+		assert allowed_height > 0
+		before_width := before_right - before_left
+		before_height := before_bottom - before_top
+		suggested_width := if before_width < allowed_width { before_width } else { allowed_width }
+		suggested_height := if before_height < allowed_height {
+			before_height
+		} else {
+			allowed_height
+		}
+		suggested_left := allowed_left + (allowed_width - suggested_width) / 2
+		suggested_top := allowed_top + (allowed_height - suggested_height) / 2
+		suggested := ServiceRect{
+			x:      suggested_left
+			y:      suggested_top
+			width:  suggested_width
+			height: suggested_height
+		}
+		assert win32_red_rect_inside(suggested, geometry)
+		assert win32_red_rect_inside(suggested, work)
+		_ = app.drain_queued_events()!
+		assert C.v_multiwindow_test_win32_emit_dpi_change(hwnd, native_dpi, suggested_left,
+			suggested_top, suggested_width, suggested_height) == 1
+		win32_red_poll(mut app, 4)!
+		mut dpi_left := 0
+		mut dpi_top := 0
+		mut dpi_right := 0
+		mut dpi_bottom := 0
+		assert C.v_multiwindow_test_win32_rect(hwnd, &dpi_left, &dpi_top, &dpi_right, &dpi_bottom) == 1
+		win32_red_add(mut issues, 'WM_DPICHANGED ignored the suggested RECT',
+			dpi_left == suggested_left && dpi_top == suggested_top
+			&& dpi_right == suggested_left + suggested_width
+			&& dpi_bottom == suggested_top + suggested_height)
+		applied := ServiceRect{
+			x:      dpi_left
+			y:      dpi_top
+			width:  dpi_right - dpi_left
+			height: dpi_bottom - dpi_top
+		}
+		win32_red_add(mut issues, 'WM_DPICHANGED applied RECT escaped monitor geometry', win32_red_rect_inside(applied,
+			geometry))
+		win32_red_add(mut issues, 'WM_DPICHANGED applied RECT escaped monitor work area', win32_red_rect_inside(applied,
+			work))
+		dpi_events := app.drain_queued_events()!
+		dpi_metrics := dpi_events.filter(it.kind == .service && it.service.kind == .metrics
+			&& it.service.window == window)
+		win32_red_add(mut issues, 'WM_DPICHANGED did not emit exactly one metrics event',
+			dpi_metrics.len == 1)
+		if dpi_metrics.len == 1 {
+			metrics_event := dpi_metrics[0]
+			win32_red_add(mut issues, 'WM_DPICHANGED metrics sequence is not canonical',
+				metrics_event.sequence == metrics_event.service.sequence
+				&& metrics_event.service.sequence == metrics_event.service.metrics.metrics_sequence
+				&& metrics_event.service.state.sequence == metrics_event.sequence
+				&& metrics_event.sequence > before_dpi_state.sequence)
+			win32_red_add(mut issues, 'WM_DPICHANGED metrics DPI differs from GetDpiForWindow',
+				metrics_event.service.metrics.dpi_scale > native_scale - 0.01
+				&& metrics_event.service.metrics.dpi_scale < native_scale + 0.01)
+			win32_red_add(mut issues, 'same-DPI WM_DPICHANGED changed event monitor membership',
+				metrics_event.service.state.monitor_ids == before_dpi_state.monitor_ids)
+		}
+		after_dpi_state := app.service_window_state(window)!
+		win32_red_add(mut issues, 'same-DPI WM_DPICHANGED changed window monitor membership',
+			after_dpi_state.monitor_ids == before_dpi_state.monitor_ids)
+
+		_ = app.drain_queued_events()!
+		assert C.v_multiwindow_test_win32_emit_display_changes(hwnd, 3) == 1
 		win32_red_poll(mut app, 4)!
 		after_ids := app.service_monitor_ids()!
-		events := app.drain_service_events()!
-		win32_red_add(mut issues, 'WM_DISPLAYCHANGE produced no canonical monitor event',
-			events.any(it.kind == .monitor))
-		win32_red_add(mut issues, 'WM_DISPLAYCHANGE produced no sequence-coherent metrics event', events.any(
-			it.kind == .metrics && it.window == window && it.metrics.metrics_sequence == it.sequence))
+		display_events := app.drain_queued_events()!
+		display_monitors :=
+			display_events.filter(it.kind == .service && it.service.kind == .monitor)
+		display_metrics := display_events.filter(it.kind == .service && it.service.kind == .metrics
+			&& it.service.window == window)
+		win32_red_add(mut issues, 'WM_DISPLAYCHANGE burst was not coalesced to one monitor event',
+			display_monitors.len == 1)
+		win32_red_add(mut issues, 'WM_DISPLAYCHANGE burst did not emit one window metrics event',
+			display_metrics.len == 1)
+		if display_monitors.len == 1 {
+			monitor_event := display_monitors[0]
+			mut monitor_sequences_match := monitor_event.sequence == monitor_event.service.sequence
+			for monitor in monitor_event.service.monitors {
+				monitor_sequences_match = monitor_sequences_match
+					&& monitor.sequence == monitor_event.sequence
+			}
+			win32_red_add(mut issues, 'WM_DISPLAYCHANGE monitor sequence is not canonical',
+				monitor_sequences_match)
+		}
+		if display_metrics.len == 1 {
+			metrics_event := display_metrics[0]
+			win32_red_add(mut issues, 'WM_DISPLAYCHANGE metrics sequence is not canonical',
+				metrics_event.sequence == metrics_event.service.sequence
+				&& metrics_event.service.sequence == metrics_event.service.metrics.metrics_sequence
+				&& metrics_event.service.state.sequence == metrics_event.sequence)
+		}
+		if display_monitors.len == 1 && display_metrics.len == 1 {
+			win32_red_add(mut issues, 'WM_DISPLAYCHANGE metrics preceded the monitor snapshot',
+				display_monitors[0].sequence < display_metrics[0].sequence)
+		}
 		after_native := C.v_multiwindow_test_win32_monitor_snapshot_new()
 		assert after_native != unsafe { nil }
 		defer {
@@ -1115,19 +1452,285 @@ fn test_win32_native_monitor_dpi_display_change_and_generation_red() {
 		}
 		after_count := C.v_multiwindow_test_win32_monitor_snapshot(after_native)
 		assert after_count > 0, 'post-WM_DISPLAYCHANGE monitor oracle produced no monitors'
+		mut after_native_names := map[string]bool{}
+		for native_index in 0 .. after_count {
+			name_pointer := C.v_multiwindow_test_win32_monitor_name(after_native, native_index)
+			if name_pointer != unsafe { nil } {
+				after_native_names[unsafe { string_from_wide(name_pointer) }] = true
+			}
+		}
 		if after_count == native_count {
-			mut same_identities := true
-			for index in 0 .. native_count {
-				if C.v_multiwindow_test_win32_monitor_identity(before_native, index) != C.v_multiwindow_test_win32_monitor_identity(after_native,
-					index) {
-					same_identities = false
+			mut same_names := after_native_names.len == native_names.len
+			for name, _ in native_names {
+				if name !in after_native_names {
+					same_names = false
 					break
 				}
 			}
-			if same_identities {
-				win32_red_add(mut issues, 'stable topology changed public monitor generations',
-					before_ids == after_ids)
+			if same_names {
+				mut after_by_name := map[string]ServiceMonitorId{}
+				for id in after_ids {
+					info := app.service_monitor_info(id) or {
+						issues << 'post-display monitor ${id} could not be resolved: ${err.msg()}'
+						continue
+					}
+					after_by_name[info.name] = info.id
+				}
+				for name, info in before_by_name {
+					win32_red_add(mut issues,
+						'stable monitor ${name} changed identity after WM_DISPLAYCHANGE',
+
+						name in after_by_name && after_by_name[name] == info.id)
+				}
 			}
+		}
+
+		mut replug_snapshot := []ServiceMonitorInfo{cap: after_ids.len}
+		for id in after_ids {
+			info := app.service_monitor_info(id) or {
+				issues << 'monitor ${id} could not be saved for replug: ${err.msg()}'
+				continue
+			}
+			replug_snapshot << info
+		}
+		if replug_snapshot.len == 0 {
+			issues << 'no public monitor snapshot is available for generation-cycle coverage'
+		} else {
+			stale_target := replug_snapshot[0]
+			captured_count := C.v_multiwindow_test_win32_monitor_enumeration_capture()
+			win32_red_add(mut issues, 'native monitor fixture capture changed monitor count',
+				captured_count == after_count)
+			defer {
+				C.v_multiwindow_test_win32_monitor_enumeration_reset()
+			}
+			growth_backend_before := app.backend.win32.service_monitors.clone()
+			growth_registry_before := app.services.monitors.clone()
+			growth_ids_before := app.service_monitor_ids()!
+			_ = app.drain_queued_events()!
+			assert C.v_multiwindow_test_win32_monitor_enumeration_use_growth(33) == 1
+			grown_raw := win32_service_raw_monitor_snapshot() or {
+				issues << '33-monitor snapshot growth failed: ${err.msg()}'
+				[]Win32ServiceRawMonitor{}
+			}
+			win32_red_add(mut issues, 'monitor growth seam was not consumed exactly once',
+				C.v_multiwindow_test_win32_monitor_enumeration_growth_calls() == 1)
+			win32_red_add(mut issues, 'monitor growth seam did not deliver all 33 callbacks',
+				C.v_multiwindow_test_win32_monitor_enumeration_growth_callbacks() == 33)
+			win32_red_add(mut issues, 'monitor snapshot truncated growth beyond 32',
+				grown_raw.len == 33)
+			mut grown_names := map[string]bool{}
+			for monitor in grown_raw {
+				grown_names[monitor.name] = true
+			}
+			win32_red_add(mut issues, 'grown monitor snapshot did not retain 33 unique entries',
+				grown_names.len == 33)
+			win32_red_add(mut issues, 'raw snapshot growth mutated backend monitor generations',
+				app.backend.win32.service_monitors == growth_backend_before)
+			win32_red_add(mut issues, 'raw snapshot growth mutated the public monitor registry',
+				app.services.monitors == growth_registry_before
+				&& app.service_monitor_ids()! == growth_ids_before)
+			growth_delivery := app.drain_queued_events()!
+			win32_red_add(mut issues, 'raw snapshot growth published a monitor event', growth_delivery.all(
+				it.kind != .service || it.service.kind != .monitor))
+
+			refresh_backend_before := app.backend.win32.service_monitors.clone()
+			refresh_registry_before := app.services.monitors.clone()
+			refresh_ids_before := app.service_monitor_ids()!
+			refresh_state_before := app.service_window_state(window)!
+			refresh_index := app.backend.win32.window_record_index(window) or {
+				assert false, 'W3 refresh target has no Win32 record'
+				0
+			}
+			refresh_record := app.backend.win32.windows[refresh_index]
+			C.v_multiwindow_test_win32_monitor_enumeration_use_empty()
+			_ = app.drain_queued_events()!
+			assert C.v_multiwindow_test_win32_emit_display_change(hwnd) == 1
+			pending_sequence := refresh_record.service_refresh_sequence
+			win32_red_add(mut issues, 'WM_DISPLAYCHANGE did not arm a pending refresh',
+
+				refresh_record.pending_display_refresh && pending_sequence != 0)
+			replacement_data := unsafe { voidptr(&app.backend.win32) }
+			expected_data := unsafe { voidptr(refresh_record) }
+			original_data := C.v_multiwindow_test_win32_swap_user_data(hwnd, replacement_data)
+			mut observation_error := ''
+			if _ := app.backend.win32.collect_service_refresh_events() {
+				issues << 'injected display metrics observation failure unexpectedly succeeded'
+			} else {
+				observation_error = err.msg()
+			}
+			replaced_data := C.v_multiwindow_test_win32_swap_user_data(hwnd, original_data)
+			win32_red_add(mut issues, 'display metrics fault did not reach the native authority',
+				observation_error != '')
+			win32_red_add(mut issues, 'display metrics fault did not restore GWLP_USERDATA',
+
+				original_data == expected_data && replaced_data == replacement_data)
+			win32_red_add(mut issues,
+				'failed display observation mutated backend monitor generations/availability',
+				app.backend.win32.service_monitors == refresh_backend_before)
+			win32_red_add(mut issues, 'failed display observation mutated the public registry',
+				app.services.monitors == refresh_registry_before
+				&& app.service_monitor_ids()! == refresh_ids_before)
+			refresh_after_failure := app.backend.win32.windows[refresh_index]
+			win32_red_add(mut issues, 'failed display observation consumed pending retry state',
+				refresh_after_failure.pending_display_refresh
+				&& refresh_after_failure.service_refresh_sequence == pending_sequence)
+			state_after_failure := app.service_window_state(window)!
+			win32_red_add(mut issues, 'failed display observation changed window membership',
+				state_after_failure.monitor_ids == refresh_state_before.monitor_ids)
+			failed_delivery := app.drain_queued_events()!
+			win32_red_add(mut issues,
+				'failed display observation published a partial monitor/metrics batch', failed_delivery.all(
+				it.kind != .service
+				|| (it.service.kind != .monitor && it.service.kind != .metrics)))
+			win32_red_poll(mut app, 4)!
+			win32_red_add(mut issues, 'Win32 service did not consume empty enumeration seam',
+				C.v_multiwindow_test_win32_monitor_enumeration_empty_calls() > 0)
+			empty_delivery := app.drain_queued_events()!
+			empty_monitors := empty_delivery.filter(it.kind == .service
+				&& it.service.kind == .monitor)
+			empty_metrics := empty_delivery.filter(it.kind == .service
+				&& it.service.kind == .metrics && it.service.window == window)
+			win32_red_add(mut issues, 'native empty enumeration was not delivered exactly once',
+
+				empty_monitors.len == 1 && empty_monitors[0].service.monitors.len == 0)
+			win32_red_add(mut issues, 'unplug metrics payload retained window monitor membership',
+
+				empty_metrics.len == 1 && empty_metrics[0].service.state.monitor_ids.len == 0)
+			win32_red_add(mut issues, 'unplug snapshot left available monitor ids',
+				app.service_monitor_ids()!.len == 0)
+			unplug_state := app.service_window_state(window)!
+			win32_red_add(mut issues, 'unplug snapshot left window monitor membership',
+				unplug_state.monitor_ids.len == 0)
+			unplugged := app.service_monitor_info(stale_target.id) or {
+				issues << 'unplugged monitor id could not expose unavailable state: ${err.msg()}'
+				ServiceMonitorInfo{}
+			}
+			win32_red_add(mut issues, 'unplugged monitor did not become unavailable',
+
+				unplugged.id == stale_target.id && !unplugged.available)
+
+			assert C.v_multiwindow_test_win32_monitor_enumeration_use_replay() == 1
+			_ = app.drain_queued_events()!
+			assert C.v_multiwindow_test_win32_emit_display_change(hwnd) == 1
+			win32_red_poll(mut app, 4)!
+			win32_red_add(mut issues, 'Win32 service did not consume replay enumeration seam',
+				C.v_multiwindow_test_win32_monitor_enumeration_replay_calls() > 0)
+			replug_delivery := app.drain_queued_events()!
+			replug_monitors := replug_delivery.filter(it.kind == .service
+				&& it.service.kind == .monitor)
+			replug_metrics := replug_delivery.filter(it.kind == .service
+				&& it.service.kind == .metrics && it.service.window == window)
+			win32_red_add(mut issues, 'native replay enumeration was not delivered exactly once',
+				replug_monitors.len == 1
+				&& replug_monitors[0].service.monitors.len == replug_snapshot.len)
+			replugged_ids := app.service_monitor_ids()!
+			mut replacement := ServiceMonitorInfo{}
+			mut replacement_found := false
+			for id in replugged_ids {
+				info := app.service_monitor_info(id) or {
+					issues << 'replugged monitor ${id} could not be resolved: ${err.msg()}'
+					continue
+				}
+				if info.name == stale_target.name {
+					replacement = info
+					replacement_found = true
+					break
+				}
+			}
+			win32_red_add(mut issues, 'replugged monitor name did not reappear', replacement_found)
+			if replacement_found {
+				win32_red_add(mut issues, 'replug retained the stale opaque monitor id',
+
+					replacement.id != stale_target.id && stale_target.id !in replugged_ids)
+				win32_red_add(mut issues, 'replugged monitor did not preserve its slot',
+					replacement.id.slot_for_gg() == stale_target.id.slot_for_gg())
+				win32_red_add(mut issues, 'replugged monitor generation did not advance once', replacement.id.generation_for_gg() ==
+					stale_target.id.generation_for_gg() + 1)
+				win32_red_add(mut issues, 'replugged monitor is not available',
+					replacement.available)
+			}
+			replug_state := app.service_window_state(window)!
+			win32_red_add(mut issues, 'replugged window retained the stale monitor id',
+				stale_target.id !in replug_state.monitor_ids)
+			if replacement_found {
+				win32_red_add(mut issues,
+					'replugged window state does not contain the replacement monitor id',
+					replacement.id in replug_state.monitor_ids)
+				win32_red_add(mut issues,
+					'replug metrics payload does not contain the replacement monitor id',
+					replug_metrics.len == 1
+					&& replacement.id in replug_metrics[0].service.state.monitor_ids)
+			}
+			win32_red_add(mut issues, 'replug metrics payload retained the stale monitor id',
+				replug_metrics.len == 1
+				&& stale_target.id !in replug_metrics[0].service.state.monitor_ids)
+			mut stale_id_rejected := false
+			_ = app.service_monitor_info(stale_target.id) or {
+				stale_id_rejected = err.msg() == err_service_request_stale
+				ServiceMonitorInfo{}
+			}
+			win32_red_add(mut issues,
+				'public service_monitor_info accepted the pre-unplug opaque id', stale_id_rejected)
+
+			info_failure_backend_before := app.backend.win32.service_monitors.clone()
+			info_failure_registry_before := app.services.monitors.clone()
+			info_failure_ids_before := app.service_monitor_ids()!
+			info_failure_state_before := app.service_window_state(window)!
+			_ = app.drain_queued_events()!
+			assert C.v_multiwindow_test_win32_monitor_enumeration_use_info_failure() == 1
+			assert C.v_multiwindow_test_win32_emit_display_change(hwnd) == 1
+			info_failure_record := app.backend.win32.windows[refresh_index]
+			info_failure_sequence := info_failure_record.service_refresh_sequence
+			mut snapshot_error := ''
+			if _ := app.poll_events() {
+				issues << 'injected GetMonitorInfoW failure unexpectedly published a snapshot'
+			} else {
+				snapshot_error = err.msg()
+			}
+			win32_red_add(mut issues, 'GetMonitorInfoW fault did not fail the whole snapshot',
+				snapshot_error != ''
+				&& C.v_multiwindow_test_win32_monitor_enumeration_info_failure_calls() == 1)
+			win32_red_add(mut issues,
+				'GetMonitorInfoW failure mutated backend generations/availability',
+				app.backend.win32.service_monitors == info_failure_backend_before)
+			win32_red_add(mut issues, 'GetMonitorInfoW failure mutated the public registry',
+				app.services.monitors == info_failure_registry_before
+				&& app.service_monitor_ids()! == info_failure_ids_before)
+			info_failure_after := app.backend.win32.windows[refresh_index]
+			win32_red_add(mut issues, 'GetMonitorInfoW failure consumed pending retry state',
+				info_failure_after.pending_display_refresh
+				&& info_failure_after.service_refresh_sequence == info_failure_sequence)
+			info_failure_state_after := app.service_window_state(window)!
+			win32_red_add(mut issues,
+				'GetMonitorInfoW failure falsely unplugged window membership',
+				info_failure_state_after.monitor_ids == info_failure_state_before.monitor_ids)
+			info_failure_delivery := app.drain_queued_events()!
+			win32_red_add(mut issues,
+				'GetMonitorInfoW failure published a partial unplug/metrics batch', info_failure_delivery.all(
+				it.kind != .service
+				|| (it.service.kind != .monitor && it.service.kind != .metrics)))
+
+			replay_calls_before_retry :=
+				C.v_multiwindow_test_win32_monitor_enumeration_replay_calls()
+			assert C.v_multiwindow_test_win32_monitor_enumeration_use_replay() == 1
+			win32_red_poll(mut app, 4)!
+			win32_red_add(mut issues, 'failed monitor snapshot was not retried',
+				C.v_multiwindow_test_win32_monitor_enumeration_replay_calls() > replay_calls_before_retry)
+			info_retry_delivery := app.drain_queued_events()!
+			info_retry_monitors := info_retry_delivery.filter(it.kind == .service
+				&& it.service.kind == .monitor)
+			info_retry_metrics := info_retry_delivery.filter(it.kind == .service
+				&& it.service.kind == .metrics && it.service.window == window)
+			win32_red_add(mut issues,
+				'GetMonitorInfoW retry did not publish one complete monitor/metrics batch',
+
+				info_retry_monitors.len == 1 && info_retry_metrics.len == 1)
+			win32_red_add(mut issues, 'GetMonitorInfoW retry changed stable monitor ids',
+				app.service_monitor_ids()! == info_failure_ids_before)
+			info_retry_state := app.service_window_state(window)!
+			win32_red_add(mut issues,
+				'GetMonitorInfoW retry changed stable window monitor membership',
+				info_retry_state.monitor_ids == info_failure_state_before.monitor_ids)
 		}
 		if issues.len > 0 {
 			eprintln('PACKAGE2_RED_TERMINAL=behavioral_red:monitor_dpi_hotplug')

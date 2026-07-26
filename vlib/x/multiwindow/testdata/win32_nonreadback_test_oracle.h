@@ -9,18 +9,31 @@
 #include <wchar.h>
 
 #include "../win32_service_native.h"
+#include "win32_monitor_enumeration_test_seam.h"
 
 typedef HRESULT(WINAPI *VMultiwindowTestDwmGetWindowAttribute)(HWND, DWORD, PVOID, DWORD);
 typedef UINT(WINAPI *VMultiwindowTestGetDpiForWindow)(HWND);
+typedef HANDLE (WINAPI *VMultiwindowTestGetWindowDpiAwarenessContext)(HWND);
+typedef int (WINAPI *VMultiwindowTestGetAwarenessFromDpiAwarenessContext)(HANDLE);
+typedef HANDLE (WINAPI *VMultiwindowTestGetThreadDpiAwarenessContext)(void);
+typedef BOOL (WINAPI *VMultiwindowTestAreDpiAwarenessContextsEqual)(
+	HANDLE, HANDLE);
 typedef UINT(WINAPI *VMultiwindowTestGetRegisteredRawInputDevices)(
 	PRAWINPUTDEVICE, PUINT, UINT);
 
+typedef struct VMultiwindowTestMonitorSnapshotItem {
+	HMONITOR handle;
+	wchar_t name[CCHDEVICENAME];
+	RECT geometry;
+	RECT work;
+	int primary;
+} VMultiwindowTestMonitorSnapshotItem;
+
 typedef struct VMultiwindowTestMonitorSnapshot {
-	HMONITOR handles[32];
-	RECT geometry[32];
-	RECT work[32];
-	int primary[32];
+	VMultiwindowTestMonitorSnapshotItem *items;
 	int count;
+	int capacity;
+	int failed;
 } VMultiwindowTestMonitorSnapshot;
 
 typedef struct VMultiwindowTestWin32WindowSnapshot {
@@ -355,36 +368,154 @@ static inline UINT v_multiwindow_test_win32_dpi(void *hwnd) {
 	return dpi > 0 ? (UINT)dpi : 96;
 }
 
+static inline int
+v_multiwindow_test_win32_window_dpi_awareness(void *hwnd_ptr) {
+	HWND hwnd = (HWND)hwnd_ptr;
+	if (!hwnd || !IsWindow(hwnd)) {
+		return -2;
+	}
+	HMODULE user32 = GetModuleHandleW(L"user32.dll");
+	VMultiwindowTestGetWindowDpiAwarenessContext get_window_context = user32
+		? (VMultiwindowTestGetWindowDpiAwarenessContext)GetProcAddress(
+			user32, "GetWindowDpiAwarenessContext")
+		: NULL;
+	VMultiwindowTestGetAwarenessFromDpiAwarenessContext get_awareness = user32
+		? (VMultiwindowTestGetAwarenessFromDpiAwarenessContext)GetProcAddress(
+			user32, "GetAwarenessFromDpiAwarenessContext")
+		: NULL;
+	if (!get_window_context || !get_awareness) {
+		return -1;
+	}
+	HANDLE context = get_window_context(hwnd);
+	return context ? get_awareness(context) : -2;
+}
+
+static inline void *
+v_multiwindow_test_win32_thread_dpi_awareness_context(void) {
+	HMODULE user32 = GetModuleHandleW(L"user32.dll");
+	VMultiwindowTestGetThreadDpiAwarenessContext get_thread_context = user32
+		? (VMultiwindowTestGetThreadDpiAwarenessContext)GetProcAddress(
+			user32, "GetThreadDpiAwarenessContext")
+		: NULL;
+	return get_thread_context ? (void *)get_thread_context() : NULL;
+}
+
+static inline int
+v_multiwindow_test_win32_dpi_awareness_contexts_equal(
+	void *first, void *second) {
+	if (!first || !second) {
+		return 0;
+	}
+	HMODULE user32 = GetModuleHandleW(L"user32.dll");
+	VMultiwindowTestAreDpiAwarenessContextsEqual contexts_equal = user32
+		? (VMultiwindowTestAreDpiAwarenessContextsEqual)GetProcAddress(
+			user32, "AreDpiAwarenessContextsEqual")
+		: NULL;
+	if (!contexts_equal) {
+		return -1;
+	}
+	return contexts_equal((HANDLE)first, (HANDLE)second) ? 1 : 0;
+}
+
+static inline void
+v_multiwindow_test_win32_monitor_snapshot_release_items(
+	VMultiwindowTestMonitorSnapshot *snapshot) {
+	if (!snapshot) {
+		return;
+	}
+	free(snapshot->items);
+	snapshot->items = NULL;
+	snapshot->count = 0;
+	snapshot->capacity = 0;
+}
+
+static inline int
+v_multiwindow_test_win32_monitor_snapshot_reserve(
+	VMultiwindowTestMonitorSnapshot *snapshot, int needed) {
+	if (!snapshot || needed < 0
+		|| needed > V_MULTIWINDOW_WIN32_SERVICE_MONITOR_MAX_CAPACITY) {
+		return 0;
+	}
+	if (needed <= snapshot->capacity) {
+		return 1;
+	}
+	int next_capacity = snapshot->capacity > 0
+		? snapshot->capacity
+		: V_MULTIWINDOW_WIN32_SERVICE_MONITOR_INITIAL_CAPACITY;
+	while (next_capacity < needed
+		&& next_capacity < V_MULTIWINDOW_WIN32_SERVICE_MONITOR_MAX_CAPACITY) {
+		next_capacity *= 2;
+	}
+	if (next_capacity > V_MULTIWINDOW_WIN32_SERVICE_MONITOR_MAX_CAPACITY) {
+		next_capacity = V_MULTIWINDOW_WIN32_SERVICE_MONITOR_MAX_CAPACITY;
+	}
+	if (next_capacity < needed) {
+		return 0;
+	}
+	VMultiwindowTestMonitorSnapshotItem *items =
+		(VMultiwindowTestMonitorSnapshotItem *)calloc(
+			(size_t)next_capacity,
+			sizeof(VMultiwindowTestMonitorSnapshotItem));
+	if (!items) {
+		return 0;
+	}
+	if (snapshot->count > 0) {
+		memcpy(items, snapshot->items,
+			(size_t)snapshot->count *
+				sizeof(VMultiwindowTestMonitorSnapshotItem));
+	}
+	free(snapshot->items);
+	snapshot->items = items;
+	snapshot->capacity = next_capacity;
+	return 1;
+}
+
 static BOOL CALLBACK v_multiwindow_test_win32_monitor_callback(HMONITOR monitor,
 	HDC dc, LPRECT rect, LPARAM data) {
 	(void)dc;
 	(void)rect;
 	VMultiwindowTestMonitorSnapshot *snapshot =
 		(VMultiwindowTestMonitorSnapshot *)(uintptr_t)data;
-	if (!snapshot || snapshot->count >= 32) {
+	if (!snapshot) {
 		return FALSE;
 	}
-	MONITORINFO info = {0};
+	if (!v_multiwindow_test_win32_monitor_snapshot_reserve(
+			snapshot, snapshot->count + 1)) {
+		snapshot->failed = 1;
+		return FALSE;
+	}
+	MONITORINFOEXW info = {0};
 	info.cbSize = sizeof(info);
-	if (!GetMonitorInfoW(monitor, &info)) {
-		return TRUE;
+	if (!GetMonitorInfoW(monitor, (LPMONITORINFO)&info)) {
+		snapshot->failed = 1;
+		return FALSE;
 	}
 	int index = snapshot->count++;
-	snapshot->handles[index] = monitor;
-	snapshot->geometry[index] = info.rcMonitor;
-	snapshot->work[index] = info.rcWork;
-	snapshot->primary[index] = (info.dwFlags & MONITORINFOF_PRIMARY) != 0;
+	VMultiwindowTestMonitorSnapshotItem *item = &snapshot->items[index];
+	item->handle = monitor;
+	item->geometry = info.rcMonitor;
+	item->work = info.rcWork;
+	item->primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0;
+	wcsncpy(item->name, info.szDevice, CCHDEVICENAME - 1);
+	item->name[CCHDEVICENAME - 1] = L'\0';
 	return TRUE;
 }
 
 static inline int v_multiwindow_test_win32_monitor_snapshot(
 	VMultiwindowTestMonitorSnapshot *snapshot) {
 	if (!snapshot) {
-		return 0;
+		return -1;
 	}
-	memset(snapshot, 0, sizeof(*snapshot));
-	EnumDisplayMonitors(NULL, NULL, v_multiwindow_test_win32_monitor_callback,
+	v_multiwindow_test_win32_monitor_snapshot_release_items(snapshot);
+	snapshot->failed = 0;
+	BOOL enumerated = EnumDisplayMonitors(NULL, NULL,
+		v_multiwindow_test_win32_monitor_callback,
 		(LPARAM)(uintptr_t)snapshot);
+	if (!enumerated || snapshot->failed) {
+		v_multiwindow_test_win32_monitor_snapshot_release_items(snapshot);
+		snapshot->failed = 1;
+		return -1;
+	}
 	return snapshot->count;
 }
 
@@ -392,13 +523,25 @@ static inline void *v_multiwindow_test_win32_monitor_snapshot_new(void) {
 	VMultiwindowTestMonitorSnapshot *snapshot =
 		(VMultiwindowTestMonitorSnapshot *)calloc(1,
 			sizeof(VMultiwindowTestMonitorSnapshot));
-	if (snapshot) {
-		v_multiwindow_test_win32_monitor_snapshot(snapshot);
+	if (!snapshot) {
+		return NULL;
+	}
+	if (v_multiwindow_test_win32_monitor_snapshot(snapshot) < 0) {
+		v_multiwindow_test_win32_monitor_snapshot_release_items(snapshot);
+		free(snapshot);
+		return NULL;
 	}
 	return snapshot;
 }
 
-static inline void v_multiwindow_test_win32_monitor_snapshot_free(void *snapshot) {
+static inline void
+v_multiwindow_test_win32_monitor_snapshot_free(void *snapshot_ptr) {
+	VMultiwindowTestMonitorSnapshot *snapshot =
+		(VMultiwindowTestMonitorSnapshot *)snapshot_ptr;
+	if (!snapshot) {
+		return;
+	}
+	v_multiwindow_test_win32_monitor_snapshot_release_items(snapshot);
 	free(snapshot);
 }
 
@@ -407,7 +550,15 @@ static inline uint64_t v_multiwindow_test_win32_monitor_identity(
 	if (!snapshot || index < 0 || index >= snapshot->count) {
 		return 0;
 	}
-	return (uint64_t)(uintptr_t)snapshot->handles[index];
+	return (uint64_t)(uintptr_t)snapshot->items[index].handle;
+}
+
+static inline const wchar_t *v_multiwindow_test_win32_monitor_name(
+	VMultiwindowTestMonitorSnapshot *snapshot, int index) {
+	if (!snapshot || index < 0 || index >= snapshot->count) {
+		return NULL;
+	}
+	return snapshot->items[index].name;
 }
 
 static inline int v_multiwindow_test_win32_monitor_info(
@@ -417,8 +568,9 @@ static inline int v_multiwindow_test_win32_monitor_info(
 	if (!snapshot || index < 0 || index >= snapshot->count) {
 		return 0;
 	}
-	RECT geometry = snapshot->geometry[index];
-	RECT work = snapshot->work[index];
+	VMultiwindowTestMonitorSnapshotItem *item = &snapshot->items[index];
+	RECT geometry = item->geometry;
+	RECT work = item->work;
 	if (x) *x = geometry.left;
 	if (y) *y = geometry.top;
 	if (width) *width = geometry.right - geometry.left;
@@ -427,14 +579,44 @@ static inline int v_multiwindow_test_win32_monitor_info(
 	if (work_y) *work_y = work.top;
 	if (work_width) *work_width = work.right - work.left;
 	if (work_height) *work_height = work.bottom - work.top;
-	if (primary) *primary = snapshot->primary[index];
+	if (primary) *primary = item->primary;
 	return 1;
 }
 
 static inline int v_multiwindow_test_win32_emit_display_change(void *hwnd) {
 	DWORD_PTR result = 0;
 	return hwnd && SendMessageTimeoutW((HWND)hwnd, WM_DISPLAYCHANGE, 32, 0,
-		SMTO_ABORTIFHUNG, 1000, &result) != 0;
+			SMTO_ABORTIFHUNG, 1000, &result) != 0;
+}
+
+static inline int v_multiwindow_test_win32_emit_display_changes(void *hwnd,
+	int count) {
+	if (!hwnd || count <= 0) {
+		return 0;
+	}
+	for (int index = 0; index < count; index++) {
+		if (!v_multiwindow_test_win32_emit_display_change(hwnd)) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static inline int v_multiwindow_test_win32_emit_dpi_change(void *hwnd,
+	UINT dpi, int left, int top, int width, int height) {
+	if (!hwnd || !dpi || width <= 0 || height <= 0) {
+		return 0;
+	}
+	RECT suggested = {
+		left,
+		top,
+		left + width,
+		top + height
+	};
+	DWORD_PTR result = 0;
+	return SendMessageTimeoutW((HWND)hwnd, WM_DPICHANGED,
+			(WPARAM)MAKELONG(dpi, dpi), (LPARAM)&suggested,
+			SMTO_ABORTIFHUNG, 1000, &result) != 0;
 }
 
 static inline int v_multiwindow_test_win32_clipboard_equals(const wchar_t *expected) {

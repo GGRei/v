@@ -54,6 +54,7 @@ extern "C" {
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_close_requested(void *data, uint64_t sequence);
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_destroyed(void *data, uint64_t sequence);
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_resized(void *data, uint64_t sequence, int width, int height);
+V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_service_refresh(void *data, uint64_t sequence, int reason);
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_input_event(void *data, uint64_t sequence, int kind, int key_code, uint32_t char_code, int key_repeat, uint32_t modifiers, int mouse_button, int mouse_x, int mouse_y, int wheel_delta_x, int wheel_delta_y);
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_drop_begin(void *data, uint64_t sequence, int mouse_x, int mouse_y, uint32_t modifiers);
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_drop_file(void *data, uint64_t sequence, char *path);
@@ -721,6 +722,32 @@ static LRESULT CALLBACK v_multiwindow_win32_wnd_proc(HWND hwnd, UINT msg, WPARAM
 			}
 		}
 		break;
+	case WM_DISPLAYCHANGE:
+		if (data) {
+			uint64_t sequence = v_multiwindow_win32_next_event_sequence();
+			v_multiwindow_win32_window_service_refresh(data, sequence, 1);
+			return 0;
+		}
+		break;
+	case WM_DPICHANGED:
+		if (data && lparam) {
+			RECT *suggested = (RECT *)lparam;
+			if (SetWindowPos(hwnd, NULL, suggested->left, suggested->top,
+				suggested->right - suggested->left,
+				suggested->bottom - suggested->top,
+				SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER)) {
+				uint64_t sequence = v_multiwindow_win32_next_event_sequence();
+				v_multiwindow_win32_window_service_refresh(data, sequence, 2);
+			}
+			return 0;
+		}
+		break;
+	case WM_WINDOWPOSCHANGED:
+		if (data) {
+			uint64_t sequence = v_multiwindow_win32_next_event_sequence();
+			v_multiwindow_win32_window_service_refresh(data, sequence, 3);
+		}
+		break;
 	case WM_MOUSEMOVE:
 		if (data) {
 			int x = v_multiwindow_win32_lparam_x(lparam);
@@ -1099,7 +1126,9 @@ static inline int v_multiwindow_win32_set_window_enabled(void *hwnd_ptr, int ena
 	return matched;
 }
 
-static inline void *v_multiwindow_win32_create_window(const wchar_t *title, int width, int height, int min_width, int min_height, int resizable, int borderless, int fullscreen, int visible, void *owner_ptr, void *data) {
+typedef HANDLE (WINAPI *VMultiwindowWin32SetThreadDpiAwarenessContext)(HANDLE);
+
+static inline void *v_multiwindow_win32_create_window(const wchar_t *title, int width, int height, int min_width, int min_height, int resizable, int high_dpi, int borderless, int fullscreen, int visible, void *owner_ptr, void *data) {
 	DWORD style = v_multiwindow_win32_window_style(resizable, borderless, fullscreen);
 	DWORD ex_style = v_multiwindow_win32_window_ex_style(borderless, fullscreen);
 	HWND owner = (HWND)owner_ptr;
@@ -1112,6 +1141,22 @@ static inline void *v_multiwindow_win32_create_window(const wchar_t *title, int 
 	int frame_height = client_height;
 	if (!v_multiwindow_win32_adjusted_size(client_width, client_height, style, ex_style, &frame_width, &frame_height)) {
 		return NULL;
+	}
+	VMultiwindowWin32SetThreadDpiAwarenessContext set_thread_dpi_context = NULL;
+	HANDLE previous_dpi_context = NULL;
+	if (high_dpi) {
+		HMODULE user32 = GetModuleHandleW(L"user32.dll");
+		set_thread_dpi_context = user32
+			? (VMultiwindowWin32SetThreadDpiAwarenessContext)GetProcAddress(
+				user32, "SetThreadDpiAwarenessContext")
+			: NULL;
+		if (!set_thread_dpi_context) {
+			return NULL;
+		}
+		previous_dpi_context = set_thread_dpi_context((HANDLE)(INT_PTR)-4);
+		if (!previous_dpi_context) {
+			return NULL;
+		}
 	}
 	HWND hwnd = CreateWindowExW(
 		ex_style,
@@ -1126,6 +1171,13 @@ static inline void *v_multiwindow_win32_create_window(const wchar_t *title, int 
 		NULL,
 		GetModuleHandleW(NULL),
 		data);
+	if (previous_dpi_context
+		&& !set_thread_dpi_context(previous_dpi_context)) {
+		if (hwnd) {
+			DestroyWindow(hwnd);
+		}
+		return NULL;
+	}
 	if (hwnd) {
 		v_multiwindow_win32_set_hwnd_int_prop(hwnd, v_multiwindow_win32_min_width_prop, min_width);
 		v_multiwindow_win32_set_hwnd_int_prop(hwnd, v_multiwindow_win32_min_height_prop, min_height);
