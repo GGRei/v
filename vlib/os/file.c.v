@@ -1,5 +1,9 @@
 module os
 
+// Diagnostic-only bypass for the V-owned missing _wfreopen declaration.
+// This smoke shim must not be exported as a tccbin production fix.
+#include <stdio.h>
+
 // NotExpected is a generic error that means that we receave a not expected error.
 pub struct NotExpected {
 	cause string

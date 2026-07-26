@@ -11,7 +11,7 @@ on:
       tccbin_commit:
         description: Exact tccbin commit to consume
         required: true
-        default: 115bf4c8c47749a8850986aa746af0e4be36f509
+        default: 3a028db0df319216eee0fce3489d1a3fb31ea089
         type: string
       expect_inet_ntop_declared:
         description: Require the strict inet_ntop C probe to compile
@@ -27,12 +27,13 @@ permissions:
 
 env:
   TCCBIN_REPOSITORY: ${{ inputs.tccbin_repository || 'GGRei/tccbin' }}
-  TCCBIN_COMMIT: ${{ inputs.tccbin_commit || '115bf4c8c47749a8850986aa746af0e4be36f509' }}
+  TCCBIN_COMMIT: ${{ inputs.tccbin_commit || '3a028db0df319216eee0fce3489d1a3fb31ea089' }}
   EXPECT_INET_NTOP_DECLARED: ${{ inputs.expect_inet_ntop_declared || true }}
 
 jobs:
   tcc-windows:
     name: tcc-windows
+    needs: wfreopen-ownership-proof
     runs-on: windows-2022
     timeout-minutes: 60
     env:
@@ -165,6 +166,7 @@ jobs:
 
   tools-windows-tcc:
     name: tools-windows (tcc)
+    needs: wfreopen-ownership-proof
     runs-on: windows-2025
     timeout-minutes: 20
     env:
@@ -218,6 +220,7 @@ jobs:
 
   tools-windows-tcc-strict:
     name: tools-windows (tcc, no fallback proof)
+    needs: wfreopen-ownership-proof
     runs-on: windows-2025
     timeout-minutes: 20
     env:
@@ -298,6 +301,7 @@ jobs:
       - name: Compile strict inet_ntop declaration probe
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $false
           $source = Join-Path $env:RUNNER_TEMP 'inet_ntop_header_probe.c'
           $object = Join-Path $env:RUNNER_TEMP 'inet_ntop_header_probe.o'
           @'
@@ -340,3 +344,166 @@ jobs:
             throw "The superseded WSAConnectByNameW failure resurfaced:`n$diagnostic"
           }
           Write-Host 'PROOF inet_ntop_declaration=missing'
+          exit 0
+
+  wfreopen-ownership-proof:
+    name: _wfreopen ownership proof
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Checkout pinned tccbin source
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.TCCBIN_REPOSITORY }}
+          ref: ${{ env.TCCBIN_COMMIT }}
+          path: .smoke-tccbin-source
+
+      - name: Prepare pinned tccbin source
+        shell: pwsh
+        run: |
+          $actual = (& git -C .smoke-tccbin-source rev-parse HEAD).Trim()
+          if ($actual -ne $env:TCCBIN_COMMIT) {
+            throw "Expected tccbin $env:TCCBIN_COMMIT, got $actual"
+          }
+          & git -C .smoke-tccbin-source switch -c thirdparty-windows-amd64
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not create the local pinned tccbin branch'
+          }
+          $source = (Resolve-Path .smoke-tccbin-source).Path
+          "TCC_GIT=$source" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Pinned $env:TCCBIN_REPOSITORY at $actual"
+
+      - name: Build V with the pinned bundle
+        run: .\makev.bat -tcc
+
+      - name: Verify consumed tccbin revision
+        shell: pwsh
+        run: |
+          $actual = (& git -C thirdparty/tcc rev-parse HEAD).Trim()
+          if ($actual -ne $env:TCCBIN_COMMIT) {
+            throw "V consumed tccbin $actual instead of $env:TCCBIN_COMMIT"
+          }
+          Write-Host "Consumed $env:TCCBIN_REPOSITORY at $actual"
+          Get-FileHash -Algorithm SHA256 thirdparty/tcc/include/stdio.h
+          Get-FileHash -Algorithm SHA256 thirdparty/tcc/include/wchar.h
+          Get-FileHash -Algorithm SHA256 thirdparty/tcc/lib/msvcrt.def
+
+      - name: Direct C stdio declaration and export proof
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:RUNNER_TEMP 'wfreopen_direct.c'
+          $program = Join-Path $env:RUNNER_TEMP 'wfreopen_direct.exe'
+          @'
+          #include <stdio.h>
+
+          typedef FILE *(__cdecl *wfreopen_fn)(
+              const wchar_t *, const wchar_t *, FILE *);
+          static wfreopen_fn const probe_wfreopen = _wfreopen;
+
+          int main(void) {
+              return probe_wfreopen(L"NUL", L"w", stdout) == NULL;
+          }
+          '@ | Set-Content -Path $source -Encoding ascii
+
+          & .\thirdparty\tcc\tcc.exe `
+            -Bthirdparty/tcc `
+            -Werror `
+            -Werror=implicit-function-declaration `
+            -o $program $source
+          if ($LASTEXITCODE -ne 0) {
+            throw "Direct C _wfreopen probe failed to compile with exit code $LASTEXITCODE"
+          }
+          & $program
+          if ($LASTEXITCODE -ne 0) {
+            throw "Direct C _wfreopen probe failed to execute with exit code $LASTEXITCODE"
+          }
+          Write-Host 'PROOF direct_c_stdio_wfreopen=present'
+
+      - name: Current V C interop must expose the missing preamble declaration
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $source = Join-Path $env:RUNNER_TEMP 'wfreopen_without_include.v'
+          $program = Join-Path $env:RUNNER_TEMP 'wfreopen_without_include.exe'
+          @'
+          module main
+
+          fn C._wfreopen(&u16, &u16, &C.FILE) &C.FILE
+
+          fn main() {
+              if isnil(C._wfreopen('NUL'.to_wide(), 'w'.to_wide(), C.stdout)) {
+                  exit(1)
+              }
+          }
+          '@ | Set-Content -Path $source -Encoding ascii
+
+          $output = & .\v.exe `
+            -cc tcc `
+            -no-retry-compilation `
+            -showcc `
+            -show-c-output `
+            -o $program $source 2>&1
+          $exitCode = $LASTEXITCODE
+          $lines = @($output | ForEach-Object { "$_" })
+          $lines | ForEach-Object { Write-Host $_ }
+          $diagnostic = $lines | Out-String
+
+          if ($exitCode -eq 0) {
+            throw 'V probe without an include unexpectedly compiled'
+          }
+          $expected = "^cc: .*: error: implicit declaration of function '_wfreopen'$"
+          $compilerErrors = @($lines | Where-Object { $_ -match '^cc: .*: error:' })
+          $expectedErrors = @($compilerErrors | Where-Object { $_ -match $expected })
+          if ($compilerErrors.Count -eq 0 -or
+            $expectedErrors.Count -ne $compilerErrors.Count) {
+            throw "V probe did not fail exclusively on the expected _wfreopen diagnostic:`n$diagnostic"
+          }
+          $errorLines = @($lines | Where-Object { $_ -match '(?i)\berror:' })
+          $unexpectedErrors = @($errorLines | Where-Object {
+            $_ -notmatch $expected -and $_ -notmatch '^builder error:\s*$'
+          })
+          if ($unexpectedErrors.Count -ne 0) {
+            throw "V probe emitted another error:`n$diagnostic"
+          }
+          if ($diagnostic -match '(?i)\b(fatal|panic)\b' -or
+            $diagnostic -match '(?i)falling back') {
+            throw "V probe emitted a fatal, panic, or fallback diagnostic:`n$diagnostic"
+          }
+          Write-Host 'PROOF v_preamble_wfreopen=missing'
+          exit 0
+
+      - name: Explicit stdio include restores V C interop
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:RUNNER_TEMP 'wfreopen_with_stdio.v'
+          $program = Join-Path $env:RUNNER_TEMP 'wfreopen_with_stdio.exe'
+          @'
+          module main
+
+          #include <stdio.h>
+
+          fn C._wfreopen(&u16, &u16, &C.FILE) &C.FILE
+
+          fn main() {
+              if isnil(C._wfreopen('NUL'.to_wide(), 'w'.to_wide(), C.stdout)) {
+                  exit(1)
+              }
+          }
+          '@ | Set-Content -Path $source -Encoding ascii
+
+          & .\v.exe `
+            -cc tcc `
+            -no-retry-compilation `
+            -showcc `
+            -show-c-output `
+            -o $program $source
+          if ($LASTEXITCODE -ne 0) {
+            throw "V probe with stdio.h failed to compile with exit code $LASTEXITCODE"
+          }
+          & $program
+          if ($LASTEXITCODE -ne 0) {
+            throw "V probe with stdio.h failed to execute with exit code $LASTEXITCODE"
+          }
+          Write-Host 'PROOF explicit_stdio_wfreopen=present'
