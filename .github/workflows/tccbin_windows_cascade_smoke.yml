@@ -11,7 +11,7 @@ on:
       tccbin_commit:
         description: Exact tccbin commit to consume
         required: true
-        default: 1eea43e0eaebb2fc97be9d3ca7da2e684e0ee1c4
+        default: 57d2ec138bacd2c061388bfe5e6de5aa3720a921
         type: string
       expect_inet_ntop_declared:
         description: Require the strict inet_ntop C probe to compile
@@ -27,7 +27,7 @@ permissions:
 
 env:
   TCCBIN_REPOSITORY: ${{ inputs.tccbin_repository || 'GGRei/tccbin' }}
-  TCCBIN_COMMIT: ${{ inputs.tccbin_commit || '1eea43e0eaebb2fc97be9d3ca7da2e684e0ee1c4' }}
+  TCCBIN_COMMIT: ${{ inputs.tccbin_commit || '57d2ec138bacd2c061388bfe5e6de5aa3720a921' }}
   EXPECT_INET_NTOP_DECLARED: ${{ inputs.expect_inet_ntop_declared || true }}
 
 jobs:
@@ -80,6 +80,7 @@ jobs:
           }
           Write-Host "Consumed $env:TCCBIN_REPOSITORY at $actual"
           Get-FileHash -Algorithm SHA256 thirdparty/tcc/include/winapi/ws2tcpip.h
+          Get-FileHash -Algorithm SHA256 thirdparty/tcc/include/tcc/tcc_libm.h
 
       - name: Pkg-config regression (TCC dynamic isolation)
         run: |
@@ -208,6 +209,7 @@ jobs:
           }
           Write-Host "Consumed $env:TCCBIN_REPOSITORY at $actual"
           Get-FileHash -Algorithm SHA256 thirdparty/tcc/include/winapi/ws2tcpip.h
+          Get-FileHash -Algorithm SHA256 thirdparty/tcc/include/tcc/tcc_libm.h
 
       - name: Install SQLite (needed by vsqlite tool)
         run: .\.github\workflows\windows-install-sqlite.bat
@@ -262,6 +264,7 @@ jobs:
           }
           Write-Host "Consumed $env:TCCBIN_REPOSITORY at $actual"
           Get-FileHash -Algorithm SHA256 thirdparty/tcc/include/winapi/ws2tcpip.h
+          Get-FileHash -Algorithm SHA256 thirdparty/tcc/include/tcc/tcc_libm.h
 
       - name: Install SQLite (needed by vsqlite tool)
         run: .\.github\workflows\windows-install-sqlite.bat
@@ -297,6 +300,7 @@ jobs:
           Write-Host "tccbin_commit=$actual"
           Write-Host "ws2tcpip.h inet_ntop matches=$($declarations.Count)"
           Get-FileHash -Algorithm SHA256 $header
+          Get-FileHash -Algorithm SHA256 thirdparty/tcc/include/tcc/tcc_libm.h
 
       - name: Compile strict inet_ntop declaration probe
         shell: pwsh
@@ -389,6 +393,7 @@ jobs:
           Get-FileHash -Algorithm SHA256 thirdparty/tcc/include/stdio.h
           Get-FileHash -Algorithm SHA256 thirdparty/tcc/include/wchar.h
           Get-FileHash -Algorithm SHA256 thirdparty/tcc/lib/msvcrt.def
+          Get-FileHash -Algorithm SHA256 thirdparty/tcc/include/tcc/tcc_libm.h
 
       - name: Direct C stdio declaration and export proof
         shell: pwsh
