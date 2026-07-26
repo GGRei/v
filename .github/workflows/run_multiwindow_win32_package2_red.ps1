@@ -705,14 +705,8 @@ $greenCases = @(
     @{ Wave = 'W1'; File = $core; Name = 'test_win32_w1_native_borrow_is_bounded_and_epoch_checked' }
     @{ Wave = 'W1'; File = $core; Name = 'test_win32_native_controls_state_and_independent_window_oracles_red' }
     @{ Wave = 'W1'; File = $gg; Name = 'test_win32_gg_public_borrow_is_live_callback_bounded_stale_and_defers_teardown_red' }
+    @{ Wave = 'W2'; File = $core; Name = 'test_win32_native_modal_reenable_and_child_first_hwnd_destruction_red' }
 )
-if ($Compiler -ne 'tcc') {
-    $greenCases += @{
-        Wave = 'W2'
-        File = $core
-        Name = 'test_win32_native_modal_reenable_and_child_first_hwnd_destruction_red'
-    }
-}
 $cases = @(
     @{ File = $core; Name = 'test_win32_native_monitor_dpi_display_change_and_generation_red'; Marker = 'monitor_dpi_hotplug'; Terminal = 'behavioral_red:monitor_dpi_hotplug' }
     @{ File = $core; Name = 'test_win32_native_cf_unicodetext_roundtrip_exact_limit_and_terminal_queue_red'; Marker = 'clipboard_unicode_limit'; Terminal = 'behavioral_red:clipboard_unicode_limit' }
@@ -732,11 +726,9 @@ if ($names.Count -ne $cases.Count -or $markers.Count -ne $cases.Count `
 $greenNames = @($greenCases | ForEach-Object { $_.Name } | Sort-Object -Unique)
 $greenInRed = @($greenNames | Where-Object { $_ -in $names })
 $w2GreenCount = @($greenCases | Where-Object { $_.Wave -ceq 'W2' }).Count
-$expectedGreenCount = if ($Compiler -eq 'tcc') { 4 } else { 5 }
-$expectedW2GreenCount = if ($Compiler -eq 'tcc') { 0 } else { 1 }
-if ($greenNames.Count -ne $expectedGreenCount -or $greenInRed.Count -ne 0 `
-    -or $w2GreenCount -ne $expectedW2GreenCount -or $cases.Count -ne 6) {
-    throw 'Package 2 closure requires W2 GREEN only for MSVC/GCC and six disjoint RED cases'
+if ($greenNames.Count -ne 5 -or $greenInRed.Count -ne 0 `
+    -or $w2GreenCount -ne 1 -or $cases.Count -ne 6) {
+    throw 'Package 2 closure requires one W2 GREEN and six disjoint RED cases'
 }
 
 $vexe = (Resolve-Path '.\v.exe').Path
@@ -804,6 +796,9 @@ foreach ($greenCase in $greenCases) {
             '-run-only', $testName,
             'test', $testFile
         )
+        if ($greenWave -ceq 'W2') {
+            $greenArguments = @('-stats') + $greenArguments
+        }
         $greenResult = Invoke-Package2Process -FileName $vexe -Arguments $greenArguments
         Write-Package2ProcessOutput -Result $greenResult
         $greenLines = @(
@@ -816,13 +811,13 @@ foreach ($greenCase in $greenCases) {
         )
         $greenExactSummary = $greenSummaryLines.Count -eq 1 `
             -and $greenSummaryLines[0] -cmatch '^Summary for all V _test\.v files: 1 passed, 1 total\.(?: .*)?$'
-        $w2GreenTerminalLines = @(
+        $greenTerminalLines = @(
             $greenLines |
-                Where-Object { $_ -cmatch '^PACKAGE2_W2_GREEN_TERMINAL=' }
+                Where-Object { $_ -cmatch '^PACKAGE2_(?:RED_TERMINAL|W2_GREEN_TERMINAL)=' }
         )
         $greenExactTerminal = $greenWave -cne 'W2' `
-            -or ($w2GreenTerminalLines.Count -eq 1 `
-                -and $w2GreenTerminalLines[0] -ceq $w2GreenTerminal)
+            -or ($greenTerminalLines.Count -eq 1 `
+                -and $greenTerminalLines[0] -ceq $w2GreenTerminal)
         $greenSelectionMismatch = $greenText -match '(?im)^\s*retrying\s' `
             -or $greenText -match '(?im)\b(skipped?|0 passed)\b'
         $greenFailure = if ($greenResult.TimedOut -or $greenText -match $timeoutPattern) {

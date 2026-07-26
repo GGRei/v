@@ -27,14 +27,14 @@ jobs:
       - name: Checkout pinned Windows TCC bundle
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          repository: GGRei/tccbin
-          ref: 382e677172cbe7103b0c6d913ee282e2d0fb1fca
+          repository: vlang/tccbin
+          ref: f48b48b2a2a027ee91cec7634395d1ec48d3e325
           path: .ci/tccbin-windows-amd64
           persist-credentials: false
       - name: Route TCC validation to pinned bundle
         shell: pwsh
         run: |
-          $expectedSha = '382e677172cbe7103b0c6d913ee282e2d0fb1fca'
+          $expectedSha = 'f48b48b2a2a027ee91cec7634395d1ec48d3e325'
           $bundle = (Resolve-Path '.\.ci\tccbin-windows-amd64').Path
           $actualSha = (git -C $bundle rev-parse HEAD).Trim()
           if ($actualSha -cne $expectedSha) {
@@ -182,9 +182,7 @@ jobs:
               $process.Dispose()
             }
           }
-      # Pending the required tccbin dependency update.
       - name: Package 2 native Win32 RED matrix
-        if: ${{ false }}
         shell: pwsh
         run: .\.github\workflows\run_multiwindow_win32_package2_red.ps1 -Compiler tcc
       - name: Public gg Win32 controls/state native diagnostic
