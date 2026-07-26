@@ -49,12 +49,17 @@ typedef struct VMultiwindowWin32NativeWindowSnapshot {
 
 #if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
 static int v_multiwindow_win32_service_test_focus_refused;
+static int v_multiwindow_win32_service_test_show_failure;
 static int v_multiwindow_win32_service_test_fullscreen_exit_failure;
 static int v_multiwindow_win32_service_test_fullscreen_rollback_failure_mask;
 static int v_multiwindow_win32_service_test_fullscreen_rollback_attempt_mask;
 
 static inline void v_multiwindow_win32_service_test_set_focus_refused(int refused) {
 	v_multiwindow_win32_service_test_focus_refused = refused != 0;
+}
+
+static inline void v_multiwindow_win32_service_test_set_show_failure(int fail) {
+	v_multiwindow_win32_service_test_show_failure = fail != 0;
 }
 
 static inline void v_multiwindow_win32_service_test_set_fullscreen_exit_failure(
@@ -402,6 +407,11 @@ static inline int v_multiwindow_win32_service_show_window(void *state_ptr) {
 		(VMultiwindowWin32ServiceState *)state_ptr;
 	int authority = v_multiwindow_win32_service_authority(state);
 	if (authority != V_MULTIWINDOW_WIN32_SERVICE_OK) return authority;
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
+	if (v_multiwindow_win32_service_test_show_failure) {
+		return V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE;
+	}
+#endif
 	ShowWindow(state->hwnd, SW_SHOWNOACTIVATE);
 	UpdateWindow(state->hwnd);
 	return IsWindowVisible(state->hwnd) ? V_MULTIWINDOW_WIN32_SERVICE_OK

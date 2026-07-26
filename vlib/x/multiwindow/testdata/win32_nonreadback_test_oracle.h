@@ -59,6 +59,19 @@ static inline int v_multiwindow_test_win32_is_enabled(void *hwnd) {
 	return hwnd && IsWindowEnabled((HWND)hwnd) ? 1 : 0;
 }
 
+static inline int v_multiwindow_test_win32_set_enabled(void *hwnd_ptr,
+	int enabled) {
+	HWND hwnd = (HWND)hwnd_ptr;
+	if (!hwnd || !IsWindow(hwnd)) {
+		return 0;
+	}
+	int target = enabled != 0;
+	if ((IsWindowEnabled(hwnd) != 0) != target) {
+		(void)EnableWindow(hwnd, target ? TRUE : FALSE);
+	}
+	return (IsWindowEnabled(hwnd) != 0) == target;
+}
+
 static inline int v_multiwindow_test_win32_is_iconic(void *hwnd) {
 	return hwnd && IsIconic((HWND)hwnd) ? 1 : 0;
 }

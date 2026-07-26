@@ -199,7 +199,18 @@ fn (backend &Win32Backend) service_window_state(id WindowId) !ServiceWindowState
 fn (mut backend Win32Backend) service_show_window(id WindowId) !ServiceWindowState {
 	index := backend.ensure_service_window(id)!
 	$if windows {
-		win32_service_result(C.v_multiwindow_win32_service_show_window(backend.windows[index].service_state))!
+		was_modal_active := backend.windows[index].modal_active
+		backend.activate_modal(index)!
+		win32_service_result(C.v_multiwindow_win32_service_show_window(backend.windows[index].service_state)) or {
+			show_error := err.msg()
+			if !was_modal_active {
+				backend.release_modal(index) or {
+					return error(merge_backend_errors(show_error,
+						'modal rollback failed: ${err.msg()}'))
+				}
+			}
+			return error(show_error)
+		}
 	}
 	return backend.service_window_state(id)!
 }
@@ -208,6 +219,7 @@ fn (mut backend Win32Backend) service_hide_window(id WindowId) !ServiceWindowSta
 	index := backend.ensure_service_window(id)!
 	$if windows {
 		win32_service_result(C.v_multiwindow_win32_service_hide_window(backend.windows[index].service_state))!
+		backend.release_modal(index)!
 	}
 	return backend.service_window_state(id)!
 }

@@ -697,6 +697,7 @@ fn main() {
 }
 
 $core = 'vlib/x/multiwindow/service_native_win32_contract_red_test.v'
+$noFlag = 'vlib/x/multiwindow/service_native_win32_no_flag_test.v'
 $gg = 'vlib/gg/multiwindow_win32_services_red_d_gg_multiwindow_test.v'
 $w2GreenTerminal = 'PACKAGE2_W2_GREEN_TERMINAL=behavioral_green:modal_child_first'
 $greenCases = @(
@@ -754,7 +755,7 @@ $noFlagArguments = @(
     '-subsystem', 'console',
     '-run-only', 'test_win32_nonreadback_no_flag_facade_stays_disabled',
     'test',
-    $core
+    $noFlag
 )
 $noFlagResult = Invoke-Package2Process -FileName $vexe -Arguments $noFlagArguments
 Write-Package2ProcessOutput -Result $noFlagResult
