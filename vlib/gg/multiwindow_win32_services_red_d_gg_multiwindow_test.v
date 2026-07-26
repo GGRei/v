@@ -9,11 +9,13 @@ $if windows {
 
 struct Win32GgBorrowRedProbe {
 mut:
-	callback_hit       bool
-	hwnd               voidptr
-	copied             NativeWindowLease
-	live_after_destroy bool
-	behavior_issues    []string
+	callback_hit               bool
+	stop_callback_hit          bool
+	hwnd                       voidptr
+	copied                     NativeWindowLease
+	live_after_destroy         bool
+	running_after_stop_request bool
+	behavior_issues            []string
 }
 
 fn test_win32_gg_public_facade_capabilities_are_distinct_and_complete_red() {
@@ -55,8 +57,9 @@ fn test_win32_gg_public_borrow_is_live_callback_bounded_stale_and_defers_teardow
 		window := app.create_window(title: 'gg.App Win32 borrow RED')!
 		mut probe := &Win32GgBorrowRedProbe{}
 		mut issues := []string{}
-		app_ptr := unsafe { voidptr(&app) }
-		callback := fn [mut probe, app_ptr, window] (mut lease NativeWindowLease) ! {
+		expected_destroy_error := 'gg public borrow destroy callback failure'
+		app_ptr := unsafe { voidptr(app) }
+		callback := fn [mut probe, app_ptr, window, expected_destroy_error] (mut lease NativeWindowLease) ! {
 			mut owner := unsafe { &App(app_ptr) }
 			probe.callback_hit = true
 			probe.copied = lease
@@ -78,14 +81,12 @@ fn test_win32_gg_public_borrow_is_live_callback_bounded_stale_and_defers_teardow
 			lease.with_win32(inspect_after) or {
 				probe.behavior_issues << 'gg lease expired before callback return: ${err.msg()}'
 			}
+			return error(expected_destroy_error)
 		}
 		mut borrow_error := ''
 		app.with_native_window(window, callback) or { borrow_error = err.msg() }
-		if borrow_error.len > 0 {
-			if probe.callback_hit {
-				assert false, 'gg borrow callback fixture/trigger failed: ${borrow_error}'
-			}
-			issues << 'gg.App.with_native_window failed: ${borrow_error}'
+		if borrow_error != expected_destroy_error {
+			issues << 'gg.App.with_native_window did not preserve the destroy callback error: ${borrow_error}'
 		}
 		for issue in probe.behavior_issues {
 			issues << issue
@@ -111,6 +112,34 @@ fn test_win32_gg_public_borrow_is_live_callback_bounded_stale_and_defers_teardow
 			}
 		}
 		app.stop()!
+
+		mut stop_app := new_app(backend: .win32)!
+		stop_window := stop_app.create_window(title: 'gg.App Win32 borrow stop RED')!
+		expected_stop_error := 'gg public borrow stop callback failure'
+		stop_app_ptr := unsafe { voidptr(stop_app) }
+		stop_callback := fn [mut probe, stop_app_ptr, expected_stop_error] (mut lease NativeWindowLease) ! {
+			_ = lease
+			mut owner := unsafe { &App(stop_app_ptr) }
+			probe.stop_callback_hit = true
+			owner.stop()!
+			probe.running_after_stop_request = owner.core.status() == .running
+			return error(expected_stop_error)
+		}
+		mut stop_error := ''
+		stop_app.with_native_window(stop_window, stop_callback) or { stop_error = err.msg() }
+		if stop_error != expected_stop_error {
+			issues << 'gg.App.with_native_window did not preserve the stop callback error: ${stop_error}'
+		}
+		if !probe.stop_callback_hit {
+			issues << 'native borrow stop callback was not invoked'
+		}
+		if !probe.running_after_stop_request {
+			issues << 'stop was not deferred until callback return'
+		}
+		if stop_app.core.status() != .stopped {
+			issues << 'deferred stop was not flushed after callback error'
+			stop_app.stop() or {}
+		}
 		if issues.len > 0 {
 			eprintln('PACKAGE2_RED_TERMINAL=behavioral_red:gg_public_borrow')
 		}

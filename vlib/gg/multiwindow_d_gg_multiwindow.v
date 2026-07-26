@@ -478,7 +478,12 @@ pub fn (mut app App) with_native_window(id WindowId, f NativeWindowBorrowFn) ! {
 			return callback_error
 		}
 	}
-	app.core.with_native_window_for_gg(id.core, callback)!
+	mut borrow_error := IError(none)
+	app.core.with_native_window_for_gg(id.core, callback) or { borrow_error = err }
+	app.flush_deferred_transitions()!
+	if borrow_error !is none {
+		return borrow_error
+	}
 }
 
 pub fn (mut app App) show_window(id WindowId) ! {

@@ -275,7 +275,7 @@ fn test_win32_public_controls_publish_observed_state_red() {
 			if !win32_public_state_is_observed(initial) {
 				issues << 'initial Win32 state is not observable through gg.App'
 			}
-			_ = app.drain_window_service_events()!
+			_ = app.drain_window_queued_events()!
 
 			for operation in [WindowOperation.show, .hide, .raise, .position, .minimize, .maximize,
 				.restore, .fullscreen] {
@@ -375,6 +375,8 @@ fn test_win32_public_controls_publish_observed_state_red() {
 				issues << 'set_window_fullscreen(false) did not clear fullscreen state'
 			}
 
+			hide_baseline_sequence := windowed.sequence
+			_ = app.drain_window_queued_events()!
 			app.hide_window(window) or { issues << 'hide_window failed: ${err.msg()}' }
 			for _ in 0 .. 2 {
 				app.poll_events() or { issues << 'hide event polling failed: ${err.msg()}' }
@@ -389,9 +391,18 @@ fn test_win32_public_controls_publish_observed_state_red() {
 			if final_state.sequence <= initial.sequence {
 				issues << 'public Win32 state sequence did not advance after controls'
 			}
-			events := app.drain_window_service_events()!
-			if events.filter(it.kind == .state && it.window == window).len == 0 {
-				issues << 'controls did not publish a canonical gg.WindowServiceEvent state'
+			events := app.drain_window_queued_events()!
+			hide_state_events := events.filter(it.kind == .service && it.service.kind == .state
+				&& it.service.window == window)
+			if hide_state_events.len != 1 {
+				issues << 'hide_window did not publish exactly one fresh canonical gg.WindowServiceEvent state'
+			} else {
+				hide_event := hide_state_events[0].service
+				if hide_event.operation != .hide || hide_event.sequence <= hide_baseline_sequence
+					|| hide_event.state.mapping != .unmapped
+					|| hide_event.state.visibility != .hidden {
+					issues << 'hide_window canonical state event did not belong to the hide action'
+				}
 			}
 			assert issues.len == 0, 'Win32 gg.App controls/state RED:\n${issues.join('\n')}'
 		}

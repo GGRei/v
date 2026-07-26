@@ -900,9 +900,212 @@ static inline int v_multiwindow_win32_register_class(void) {
 #endif
 }
 
-static inline void *v_multiwindow_win32_create_window(const wchar_t *title, int width, int height, int min_width, int min_height, int resizable, int borderless, int fullscreen, int visible, void *data) {
+static inline int v_multiwindow_win32_owner_matches(void *hwnd_ptr, void *owner_ptr) {
+	HWND hwnd = (HWND)hwnd_ptr;
+	HWND owner = (HWND)owner_ptr;
+	return hwnd && owner && IsWindow(hwnd) && IsWindow(owner)
+		&& GetWindow(hwnd, GW_OWNER) == owner;
+}
+
+static inline int v_multiwindow_win32_is_window_enabled(void *hwnd_ptr) {
+	HWND hwnd = (HWND)hwnd_ptr;
+	return hwnd && IsWindow(hwnd) && IsWindowEnabled(hwnd);
+}
+
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
+static HWND v_multiwindow_win32_test_modal_trace_owner;
+static HWND v_multiwindow_win32_test_modal_trace_window;
+static uint64_t v_multiwindow_win32_test_modal_trace_sequence;
+static uint64_t v_multiwindow_win32_test_modal_owner_disable_sequence;
+static uint64_t v_multiwindow_win32_test_modal_owner_enable_sequence;
+static uint64_t v_multiwindow_win32_test_modal_show_sequence;
+static uint64_t v_multiwindow_win32_test_modal_destroy_sequence;
+static uint64_t v_multiwindow_win32_test_modal_owner_destroy_sequence;
+static int v_multiwindow_win32_test_modal_owner_disable_count;
+static int v_multiwindow_win32_test_modal_owner_enable_count;
+static int v_multiwindow_win32_test_modal_show_count;
+static int v_multiwindow_win32_test_modal_destroy_count;
+static int v_multiwindow_win32_test_modal_owner_destroy_count;
+static int v_multiwindow_win32_test_modal_destroy_attempt_count;
+static int v_multiwindow_win32_test_modal_owner_destroy_attempt_count;
+static int v_multiwindow_win32_test_modal_fail_enable;
+static int v_multiwindow_win32_test_modal_enable_failures_remaining;
+static int v_multiwindow_win32_test_modal_show_failures_remaining;
+static int v_multiwindow_win32_test_modal_destroy_failures_remaining;
+
+static inline void v_multiwindow_win32_test_modal_trace_reset(
+	void *owner_ptr, void *window_ptr) {
+	v_multiwindow_win32_test_modal_trace_owner = (HWND)owner_ptr;
+	v_multiwindow_win32_test_modal_trace_window = (HWND)window_ptr;
+	v_multiwindow_win32_test_modal_trace_sequence = 0;
+	v_multiwindow_win32_test_modal_owner_disable_sequence = 0;
+	v_multiwindow_win32_test_modal_owner_enable_sequence = 0;
+	v_multiwindow_win32_test_modal_show_sequence = 0;
+	v_multiwindow_win32_test_modal_destroy_sequence = 0;
+	v_multiwindow_win32_test_modal_owner_destroy_sequence = 0;
+	v_multiwindow_win32_test_modal_owner_disable_count = 0;
+	v_multiwindow_win32_test_modal_owner_enable_count = 0;
+	v_multiwindow_win32_test_modal_show_count = 0;
+	v_multiwindow_win32_test_modal_destroy_count = 0;
+	v_multiwindow_win32_test_modal_owner_destroy_count = 0;
+	v_multiwindow_win32_test_modal_destroy_attempt_count = 0;
+	v_multiwindow_win32_test_modal_owner_destroy_attempt_count = 0;
+}
+
+static inline void v_multiwindow_win32_test_modal_set_enable_failure(int fail) {
+	v_multiwindow_win32_test_modal_fail_enable = fail != 0;
+}
+
+static inline void v_multiwindow_win32_test_modal_set_enable_failures(
+		int count) {
+	v_multiwindow_win32_test_modal_enable_failures_remaining =
+		count > 0 ? count : 0;
+}
+
+static inline void v_multiwindow_win32_test_modal_set_show_created_failures(
+		int count) {
+	v_multiwindow_win32_test_modal_show_failures_remaining =
+		count > 0 ? count : 0;
+}
+
+static inline void v_multiwindow_win32_test_modal_set_destroy_failures(
+		int count) {
+	v_multiwindow_win32_test_modal_destroy_failures_remaining =
+		count > 0 ? count : 0;
+}
+
+static inline void *v_multiwindow_win32_test_modal_trace_window_value(void) {
+	return (void *)v_multiwindow_win32_test_modal_trace_window;
+}
+
+static inline int v_multiwindow_win32_test_modal_owner_disable_count_value(void) {
+	return v_multiwindow_win32_test_modal_owner_disable_count;
+}
+
+static inline int v_multiwindow_win32_test_modal_owner_enable_count_value(void) {
+	return v_multiwindow_win32_test_modal_owner_enable_count;
+}
+
+static inline int v_multiwindow_win32_test_modal_show_count_value(void) {
+	return v_multiwindow_win32_test_modal_show_count;
+}
+
+static inline int v_multiwindow_win32_test_modal_destroy_count_value(void) {
+	return v_multiwindow_win32_test_modal_destroy_count;
+}
+
+static inline int v_multiwindow_win32_test_modal_owner_destroy_count_value(void) {
+	return v_multiwindow_win32_test_modal_owner_destroy_count;
+}
+
+static inline int v_multiwindow_win32_test_modal_destroy_attempt_count_value(void) {
+	return v_multiwindow_win32_test_modal_destroy_attempt_count;
+}
+
+static inline int v_multiwindow_win32_test_modal_owner_destroy_attempt_count_value(void) {
+	return v_multiwindow_win32_test_modal_owner_destroy_attempt_count;
+}
+
+static inline uint64_t v_multiwindow_win32_test_modal_owner_disable_sequence_value(void) {
+	return v_multiwindow_win32_test_modal_owner_disable_sequence;
+}
+
+static inline uint64_t v_multiwindow_win32_test_modal_owner_enable_sequence_value(void) {
+	return v_multiwindow_win32_test_modal_owner_enable_sequence;
+}
+
+static inline uint64_t v_multiwindow_win32_test_modal_show_sequence_value(void) {
+	return v_multiwindow_win32_test_modal_show_sequence;
+}
+
+static inline uint64_t v_multiwindow_win32_test_modal_destroy_sequence_value(void) {
+	return v_multiwindow_win32_test_modal_destroy_sequence;
+}
+
+static inline uint64_t v_multiwindow_win32_test_modal_owner_destroy_sequence_value(void) {
+	return v_multiwindow_win32_test_modal_owner_destroy_sequence;
+}
+
+static inline void v_multiwindow_win32_test_modal_record_enabled(
+	HWND hwnd, int before, int target) {
+	if (hwnd != v_multiwindow_win32_test_modal_trace_owner || before == target) {
+		return;
+	}
+	uint64_t sequence = ++v_multiwindow_win32_test_modal_trace_sequence;
+	if (target) {
+		v_multiwindow_win32_test_modal_owner_enable_count++;
+		v_multiwindow_win32_test_modal_owner_enable_sequence = sequence;
+	} else {
+		v_multiwindow_win32_test_modal_owner_disable_count++;
+		v_multiwindow_win32_test_modal_owner_disable_sequence = sequence;
+	}
+}
+
+static inline void v_multiwindow_win32_test_modal_record_show(HWND hwnd) {
+	if (v_multiwindow_win32_test_modal_trace_window == NULL) {
+		v_multiwindow_win32_test_modal_trace_window = hwnd;
+	}
+	if (hwnd != v_multiwindow_win32_test_modal_trace_window) {
+		return;
+	}
+	v_multiwindow_win32_test_modal_show_count++;
+	v_multiwindow_win32_test_modal_show_sequence =
+		++v_multiwindow_win32_test_modal_trace_sequence;
+}
+
+static inline void v_multiwindow_win32_test_modal_record_destroy(HWND hwnd) {
+	if (hwnd != v_multiwindow_win32_test_modal_trace_window
+			&& hwnd != v_multiwindow_win32_test_modal_trace_owner) {
+		return;
+	}
+	uint64_t sequence = ++v_multiwindow_win32_test_modal_trace_sequence;
+	if (hwnd == v_multiwindow_win32_test_modal_trace_window) {
+		v_multiwindow_win32_test_modal_destroy_count++;
+		v_multiwindow_win32_test_modal_destroy_sequence = sequence;
+	}
+	if (hwnd == v_multiwindow_win32_test_modal_trace_owner) {
+		v_multiwindow_win32_test_modal_owner_destroy_count++;
+		v_multiwindow_win32_test_modal_owner_destroy_sequence = sequence;
+	}
+}
+#endif
+
+static inline int v_multiwindow_win32_set_window_enabled(void *hwnd_ptr, int enabled) {
+	HWND hwnd = (HWND)hwnd_ptr;
+	if (!hwnd || !IsWindow(hwnd)) {
+		return 0;
+	}
+	int target = enabled != 0;
+	int before = IsWindowEnabled(hwnd) != 0;
+	if (before != target) {
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
+		if (target
+				&& v_multiwindow_win32_test_modal_enable_failures_remaining > 0) {
+			v_multiwindow_win32_test_modal_enable_failures_remaining--;
+			return 0;
+		}
+		if (target && v_multiwindow_win32_test_modal_fail_enable) {
+			return 0;
+		}
+#endif
+		(void)EnableWindow(hwnd, target ? TRUE : FALSE);
+	}
+	int matched = (IsWindowEnabled(hwnd) != 0) == target;
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
+	if (matched) {
+		v_multiwindow_win32_test_modal_record_enabled(hwnd, before, target);
+	}
+#endif
+	return matched;
+}
+
+static inline void *v_multiwindow_win32_create_window(const wchar_t *title, int width, int height, int min_width, int min_height, int resizable, int borderless, int fullscreen, int visible, void *owner_ptr, void *data) {
 	DWORD style = v_multiwindow_win32_window_style(resizable, borderless, fullscreen);
 	DWORD ex_style = v_multiwindow_win32_window_ex_style(borderless, fullscreen);
+	HWND owner = (HWND)owner_ptr;
+	if (owner && !IsWindow(owner)) {
+		return NULL;
+	}
 	int client_width = v_multiwindow_win32_max_int(width, min_width);
 	int client_height = v_multiwindow_win32_max_int(height, min_height);
 	int frame_width = client_width;
@@ -919,7 +1122,7 @@ static inline void *v_multiwindow_win32_create_window(const wchar_t *title, int 
 		CW_USEDEFAULT,
 		frame_width,
 		frame_height,
-		NULL,
+		owner,
 		NULL,
 		GetModuleHandleW(NULL),
 		data);
@@ -936,11 +1139,56 @@ static inline void *v_multiwindow_win32_create_window(const wchar_t *title, int 
 	return (void *)hwnd;
 }
 
+static inline int v_multiwindow_win32_show_created_window(void *hwnd_ptr,
+	int fullscreen) {
+	HWND hwnd = (HWND)hwnd_ptr;
+	if (!hwnd || !IsWindow(hwnd)) {
+		return 0;
+	}
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
+	if (v_multiwindow_win32_test_modal_trace_window == NULL) {
+		v_multiwindow_win32_test_modal_trace_window = hwnd;
+	}
+	if (v_multiwindow_win32_test_modal_show_failures_remaining > 0) {
+		v_multiwindow_win32_test_modal_show_failures_remaining--;
+		return 0;
+	}
+#endif
+	ShowWindow(hwnd, fullscreen ? SW_MAXIMIZE : SW_SHOW);
+	UpdateWindow(hwnd);
+	if (!IsWindowVisible(hwnd)) {
+		return 0;
+	}
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
+	v_multiwindow_win32_test_modal_record_show(hwnd);
+#endif
+	return 1;
+}
+
 static inline int v_multiwindow_win32_destroy_window(void *hwnd) {
 	if (!hwnd) {
 		return 1;
 	}
-	return DestroyWindow((HWND)hwnd) != 0;
+	HWND native_window = (HWND)hwnd;
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
+	if (native_window == v_multiwindow_win32_test_modal_trace_window) {
+		v_multiwindow_win32_test_modal_destroy_attempt_count++;
+	}
+	if (native_window == v_multiwindow_win32_test_modal_trace_owner) {
+		v_multiwindow_win32_test_modal_owner_destroy_attempt_count++;
+	}
+	if (v_multiwindow_win32_test_modal_destroy_failures_remaining > 0) {
+		v_multiwindow_win32_test_modal_destroy_failures_remaining--;
+		return 0;
+	}
+#endif
+	int destroyed = DestroyWindow(native_window) != 0;
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
+	if (destroyed) {
+		v_multiwindow_win32_test_modal_record_destroy(native_window);
+	}
+#endif
+	return destroyed;
 }
 
 static inline int v_multiwindow_win32_set_window_text(void *hwnd, const wchar_t *title) {

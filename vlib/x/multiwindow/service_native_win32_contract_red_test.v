@@ -6,6 +6,7 @@ import time
 
 const win32_red_clipboard_max_bytes = 16 * 1024 * 1024
 const win32_red_ws_caption = u64(0x00c00000)
+const win32_red_ws_child = u64(0x40000000)
 
 #flag windows -DV_MULTIWINDOW_WIN32_SERVICE_TEST
 
@@ -13,12 +14,32 @@ $if windows {
 	#include "@VMODROOT/vlib/x/multiwindow/testdata/win32_nonreadback_test_oracle.h"
 
 	fn C.v_multiwindow_win32_service_test_set_focus_refused(refused int)
+	fn C.v_multiwindow_win32_service_test_set_show_failure(fail int)
 	fn C.v_multiwindow_win32_service_test_set_fullscreen_exit_failure(failure int)
 	fn C.v_multiwindow_win32_service_test_set_fullscreen_rollback_failure(failure_mask int)
 	fn C.v_multiwindow_win32_service_test_fullscreen_rollback_attempts() int
+	fn C.v_multiwindow_win32_test_modal_trace_reset(owner voidptr, window voidptr)
+	fn C.v_multiwindow_win32_test_modal_set_enable_failure(fail int)
+	fn C.v_multiwindow_win32_test_modal_set_enable_failures(count int)
+	fn C.v_multiwindow_win32_test_modal_set_show_created_failures(count int)
+	fn C.v_multiwindow_win32_test_modal_set_destroy_failures(count int)
+	fn C.v_multiwindow_win32_test_modal_trace_window_value() voidptr
+	fn C.v_multiwindow_win32_test_modal_owner_disable_count_value() int
+	fn C.v_multiwindow_win32_test_modal_owner_enable_count_value() int
+	fn C.v_multiwindow_win32_test_modal_show_count_value() int
+	fn C.v_multiwindow_win32_test_modal_destroy_count_value() int
+	fn C.v_multiwindow_win32_test_modal_owner_destroy_count_value() int
+	fn C.v_multiwindow_win32_test_modal_destroy_attempt_count_value() int
+	fn C.v_multiwindow_win32_test_modal_owner_destroy_attempt_count_value() int
+	fn C.v_multiwindow_win32_test_modal_owner_disable_sequence_value() u64
+	fn C.v_multiwindow_win32_test_modal_owner_enable_sequence_value() u64
+	fn C.v_multiwindow_win32_test_modal_show_sequence_value() u64
+	fn C.v_multiwindow_win32_test_modal_destroy_sequence_value() u64
+	fn C.v_multiwindow_win32_test_modal_owner_destroy_sequence_value() u64
 	fn C.v_multiwindow_test_win32_is_window(hwnd voidptr) int
 	fn C.v_multiwindow_test_win32_is_visible(hwnd voidptr) int
 	fn C.v_multiwindow_test_win32_is_enabled(hwnd voidptr) int
+	fn C.v_multiwindow_test_win32_set_enabled(hwnd voidptr, enabled int) int
 	fn C.v_multiwindow_test_win32_is_iconic(hwnd voidptr) int
 	fn C.v_multiwindow_test_win32_is_zoomed(hwnd voidptr) int
 	fn C.v_multiwindow_test_win32_foreground() voidptr
@@ -590,6 +611,184 @@ fn test_win32_native_controls_state_and_independent_window_oracles_red() {
 	}
 }
 
+fn win32_w2_native_modal_fault_path_regressions(mut issues []string) ! {
+	$if windows {
+		mut create_app := new_app(backend: .win32)!
+		defer {
+			C.v_multiwindow_win32_test_modal_set_enable_failures(0)
+			C.v_multiwindow_win32_test_modal_set_show_created_failures(0)
+			create_app.stop() or {}
+		}
+		create_owner := create_app.create_window(title: 'Win32 modal create-fault owner')!
+		create_owner_hwnd := win32_red_hwnd(create_app, create_owner)!
+		before_create_records := create_app.backend.win32.windows.len
+		C.v_multiwindow_win32_test_modal_trace_reset(create_owner_hwnd, unsafe { nil })
+		C.v_multiwindow_win32_test_modal_set_show_created_failures(1)
+		C.v_multiwindow_win32_test_modal_set_enable_failures(1)
+		mut create_error := ''
+		create_app.create_window(
+			title: 'Win32 modal create-fault child'
+			owner: create_owner
+			modal: true
+		) or { create_error = err.msg() }
+		C.v_multiwindow_win32_test_modal_set_show_created_failures(0)
+		C.v_multiwindow_win32_test_modal_set_enable_failures(0)
+		attempted_hwnd := C.v_multiwindow_win32_test_modal_trace_window_value()
+		win32_red_add(mut issues, 'create show/release fault suppressed rollback failure',
+			create_error.contains(err_win32_create_window_failed)
+			&& create_error.contains('modal rollback failed:'))
+		win32_red_add(mut issues, 'create show/release fault left a backend record',
+			create_app.backend.win32.windows.len == before_create_records)
+		win32_red_add(mut issues, 'create show/release fault left a native HWND',
+			attempted_hwnd != unsafe { nil }
+			&& C.v_multiwindow_test_win32_is_window(attempted_hwnd) == 0)
+		win32_red_add(mut issues, 'create show/release fault left owner disabled',
+			C.v_multiwindow_test_win32_is_enabled(create_owner_hwnd) == 1)
+		win32_red_add(mut issues, 'create show/release recovery violated release-before-destroy',
+			C.v_multiwindow_win32_test_modal_owner_enable_count_value() == 1
+			&& C.v_multiwindow_win32_test_modal_destroy_count_value() == 1
+			&& C.v_multiwindow_win32_test_modal_owner_enable_sequence_value() > 0
+			&& C.v_multiwindow_win32_test_modal_owner_enable_sequence_value() < C.v_multiwindow_win32_test_modal_destroy_sequence_value())
+		create_app.destroy_window(create_owner) or {
+			issues << 'create-fault owner cleanup failed: ${err.msg()}'
+		}
+
+		mut destroy_app := new_app(backend: .win32)!
+		defer {
+			C.v_multiwindow_win32_test_modal_set_destroy_failures(0)
+			destroy_app.stop() or {}
+		}
+		destroy_owner := destroy_app.create_window(title: 'Win32 modal destroy-fault owner')!
+		destroy_modal := destroy_app.create_window(
+			title: 'Win32 modal destroy-fault child'
+			owner: destroy_owner
+			modal: true
+		)!
+		_ = destroy_app.drain_queued_events()!
+		destroy_owner_hwnd := win32_red_hwnd(destroy_app, destroy_owner)!
+		destroy_modal_hwnd := win32_red_hwnd(destroy_app, destroy_modal)!
+		C.v_multiwindow_win32_test_modal_trace_reset(destroy_owner_hwnd, destroy_modal_hwnd)
+		C.v_multiwindow_win32_test_modal_set_destroy_failures(1)
+		mut destroy_error := ''
+		destroy_app.destroy_window(destroy_modal) or { destroy_error = err.msg() }
+		C.v_multiwindow_win32_test_modal_set_destroy_failures(0)
+		expected_child_destroy_error := 'multiwindow: terminal lifecycle failed: multiwindow: win32 destroy window failed'
+		win32_red_add(mut issues, 'DestroyWindow fault was not propagated',
+			destroy_error == expected_child_destroy_error)
+		mut child_destroy_events := 0
+		for event in destroy_app.drain_queued_events()! {
+			if event.kind == .lifecycle && event.lifecycle.kind == .window_destroyed
+				&& event.lifecycle.window_id == destroy_modal {
+				child_destroy_events++
+			}
+		}
+		win32_red_add(mut issues, 'failed child destroy did not become core-terminal once',
+
+			destroy_app.window_destroy_finished(destroy_modal) && child_destroy_events == 1)
+		if destroy_modal_index := destroy_app.backend.win32.window_record_index(destroy_modal) {
+			if destroy_owner_index := destroy_app.backend.win32.window_record_index(destroy_owner) {
+				destroy_record := destroy_app.backend.win32.windows[destroy_modal_index]
+				mut retained_owner_matches := false
+				if retained_owner := destroy_record.config.owner {
+					retained_owner_matches = retained_owner == destroy_owner
+				}
+				win32_red_add(mut issues,
+					'DestroyWindow fault did not retain complete released child debt',
+					destroy_record.hwnd == destroy_modal_hwnd
+					&& destroy_record.service_state != unsafe { nil } && retained_owner_matches
+					&& !destroy_record.modal_active
+					&& destroy_app.backend.win32.windows[destroy_owner_index].modal_child_count == 0
+					&& !destroy_app.backend.win32.windows[destroy_owner_index].modal_restore_enabled)
+			} else {
+				issues << 'DestroyWindow fault removed the owner record'
+			}
+		} else {
+			issues << 'DestroyWindow fault removed the modal record'
+		}
+		win32_red_add(mut issues, 'DestroyWindow fault did not retain released child HWND',
+			C.v_multiwindow_test_win32_is_window(destroy_modal_hwnd) == 1
+			&& C.v_multiwindow_test_win32_is_enabled(destroy_owner_hwnd) == 1)
+		win32_red_add(mut issues, 'DestroyWindow fault reactivated native modality',
+			C.v_multiwindow_win32_test_modal_owner_enable_count_value() == 1
+			&& C.v_multiwindow_win32_test_modal_owner_disable_count_value() == 0
+			&& C.v_multiwindow_win32_test_modal_destroy_count_value() == 0
+			&& C.v_multiwindow_win32_test_modal_destroy_attempt_count_value() == 1)
+		mut retained_child_records := 0
+		for retained_record in destroy_app.backend.win32.windows {
+			if retained_record.id == destroy_modal {
+				retained_child_records++
+			}
+		}
+		win32_red_add(mut issues, 'DestroyWindow fault did not retain exactly one child debt',
+
+			retained_child_records == 1 && destroy_app.backend.win32.windows.len == 2)
+		mut replay_error := ''
+		destroy_app.destroy_window(destroy_modal) or { replay_error = err.msg() }
+		mut replay_destroy_events := 0
+		for event in destroy_app.drain_queued_events()! {
+			if event.kind == .lifecycle && event.lifecycle.kind == .window_destroyed
+				&& event.lifecycle.window_id == destroy_modal {
+				replay_destroy_events++
+			}
+		}
+		win32_red_add(mut issues, 'second child destroy did not replay terminal error',
+			replay_error == destroy_error)
+		win32_red_add(mut issues, 'second child destroy retried HWND or emitted another event',
+			C.v_multiwindow_win32_test_modal_destroy_attempt_count_value() == 1
+			&& replay_destroy_events == 0)
+		mut owner_destroy_error := ''
+		destroy_app.destroy_window(destroy_owner) or { owner_destroy_error = err.msg() }
+		expected_owner_destroy_error := 'multiwindow: terminal lifecycle failed: multiwindow: window owner relation is invalid'
+		win32_red_add(mut issues, 'retained child debt did not reject owner destroy',
+			owner_destroy_error == expected_owner_destroy_error
+			&& destroy_app.window_destroy_finished(destroy_owner))
+		mut owner_destroy_events := 0
+		for event in destroy_app.drain_queued_events()! {
+			if event.kind == .lifecycle && event.lifecycle.kind == .window_destroyed
+				&& event.lifecycle.window_id == destroy_owner {
+				owner_destroy_events++
+			}
+		}
+		win32_red_add(mut issues, 'rejected owner destroy did not emit exactly one event',
+			owner_destroy_events == 1)
+		win32_red_add(mut issues, 'rejected owner destroy reached native DestroyWindow',
+			C.v_multiwindow_test_win32_is_window(destroy_owner_hwnd) == 1
+			&& C.v_multiwindow_test_win32_is_window(destroy_modal_hwnd) == 1
+			&& C.v_multiwindow_win32_test_modal_owner_destroy_attempt_count_value() == 0)
+		win32_red_add(mut issues, 'rejected owner destroy changed released modality',
+			C.v_multiwindow_test_win32_is_enabled(destroy_owner_hwnd) == 1
+			&& C.v_multiwindow_win32_test_modal_owner_enable_count_value() == 1
+			&& C.v_multiwindow_win32_test_modal_owner_disable_count_value() == 0)
+		mut owner_replay_error := ''
+		destroy_app.destroy_window(destroy_owner) or { owner_replay_error = err.msg() }
+		mut owner_replay_destroy_events := 0
+		for event in destroy_app.drain_queued_events()! {
+			if event.kind == .lifecycle && event.lifecycle.kind == .window_destroyed
+				&& event.lifecycle.window_id == destroy_owner {
+				owner_replay_destroy_events++
+			}
+		}
+		win32_red_add(mut issues, 'second owner destroy did not replay terminal error',
+			owner_replay_error == expected_owner_destroy_error)
+		win32_red_add(mut issues, 'second owner destroy retried HWND or emitted another event',
+			C.v_multiwindow_win32_test_modal_owner_destroy_attempt_count_value() == 0
+			&& owner_replay_destroy_events == 0)
+		destroy_app.stop() or { issues << 'retained child debt stop cleanup failed: ${err.msg()}' }
+		win32_red_add(mut issues, 'one stop left retained Win32 records',
+			destroy_app.backend.win32.windows.len == 0)
+		win32_red_add(mut issues, 'one stop left native owner/modal HWNDs alive',
+			C.v_multiwindow_test_win32_is_window(destroy_owner_hwnd) == 0
+			&& C.v_multiwindow_test_win32_is_window(destroy_modal_hwnd) == 0)
+		win32_red_add(mut issues, 'stop did not retry retained child before owner',
+			C.v_multiwindow_win32_test_modal_destroy_attempt_count_value() == 2
+			&& C.v_multiwindow_win32_test_modal_owner_destroy_attempt_count_value() == 1
+			&& C.v_multiwindow_win32_test_modal_destroy_count_value() == 1
+			&& C.v_multiwindow_win32_test_modal_owner_destroy_count_value() == 1
+			&& C.v_multiwindow_win32_test_modal_destroy_sequence_value() > 0
+			&& C.v_multiwindow_win32_test_modal_destroy_sequence_value() < C.v_multiwindow_win32_test_modal_owner_destroy_sequence_value())
+	}
+}
+
 fn test_win32_native_modal_reenable_and_child_first_hwnd_destruction_red() {
 	$if windows {
 		eprintln('PACKAGE2_RED_TEST=test_win32_native_modal_reenable_and_child_first_hwnd_destruction_red')
@@ -608,27 +807,64 @@ fn test_win32_native_modal_reenable_and_child_first_hwnd_destruction_red() {
 		grandchild := app.create_window(
 			title:   'Win32 modal grandchild'
 			owner:   child
+			modal:   true
+			visible: false
+		)!
+		modal_peer := app.create_window(
+			title:   'Win32 modal peer'
+			owner:   owner
+			modal:   true
 			visible: false
 		)!
 		_ = app.drain_queued_events()!
 		owner_hwnd := win32_red_hwnd(app, owner)!
 		child_hwnd := win32_red_hwnd(app, child)!
 		grandchild_hwnd := win32_red_hwnd(app, grandchild)!
+		modal_peer_hwnd := win32_red_hwnd(app, modal_peer)!
 		mut issues := []string{}
+		win32_w2_native_modal_fault_path_regressions(mut issues) or {
+			issues << 'modal fault-path setup failed: ${err.msg()}'
+		}
 
 		app.service_show_window(child) or { issues << 'modal show failed: ${err.msg()}' }
+		app.service_show_window(child) or { issues << 'idempotent modal show failed: ${err.msg()}' }
 		win32_red_poll(mut app, 2)!
 		win32_red_add(mut issues, 'GW_OWNER does not match configured owner',
 			C.v_multiwindow_test_win32_owner(child_hwnd) == owner_hwnd)
+		win32_red_add(mut issues, 'owned window was incorrectly converted to WS_CHILD',
+			C.v_multiwindow_test_win32_style(child_hwnd) & win32_red_ws_child == 0)
 		win32_red_add(mut issues, 'shown modal child did not disable owner',
 			C.v_multiwindow_test_win32_is_enabled(owner_hwnd) == 0)
 
+		app.service_show_window(grandchild) or {
+			issues << 'nested modal show failed: ${err.msg()}'
+		}
+		win32_red_add(mut issues, 'nested modal did not disable its direct owner',
+			C.v_multiwindow_test_win32_is_enabled(child_hwnd) == 0)
+		win32_red_add(mut issues, 'nested modal unexpectedly re-enabled the root owner',
+			C.v_multiwindow_test_win32_is_enabled(owner_hwnd) == 0)
+		app.service_hide_window(grandchild) or {
+			issues << 'nested modal hide failed: ${err.msg()}'
+		}
+		win32_red_add(mut issues, 'nested modal did not restore its direct owner',
+			C.v_multiwindow_test_win32_is_enabled(child_hwnd) == 1)
+		win32_red_add(mut issues, 'nested modal release unexpectedly restored the root owner',
+			C.v_multiwindow_test_win32_is_enabled(owner_hwnd) == 0)
+
+		app.service_show_window(modal_peer) or { issues << 'modal peer show failed: ${err.msg()}' }
+		win32_red_add(mut issues, 'modal peer GW_OWNER does not match configured owner',
+			C.v_multiwindow_test_win32_owner(modal_peer_hwnd) == owner_hwnd)
 		app.service_hide_window(child) or { issues << 'modal hide failed: ${err.msg()}' }
+		app.service_hide_window(child) or { issues << 'idempotent modal hide failed: ${err.msg()}' }
 		win32_red_poll(mut app, 2)!
-		win32_red_add(mut issues, 'hiding modal child did not re-enable owner',
+		win32_red_add(mut issues, 'hiding one modal re-enabled owner while peer remained visible',
+			C.v_multiwindow_test_win32_is_enabled(owner_hwnd) == 0)
+		app.service_hide_window(modal_peer) or { issues << 'modal peer hide failed: ${err.msg()}' }
+		win32_red_add(mut issues, 'hiding final modal child did not re-enable owner',
 			C.v_multiwindow_test_win32_is_enabled(owner_hwnd) == 1)
 
 		app.service_show_window(child) or { issues << 'second modal show failed: ${err.msg()}' }
+		C.v_multiwindow_win32_test_modal_trace_reset(owner_hwnd, child_hwnd)
 		app.destroy_window(child)!
 		win32_red_poll(mut app, 2)!
 		destroy_events := app.drain_queued_events()!
@@ -644,18 +880,154 @@ fn test_win32_native_modal_reenable_and_child_first_hwnd_destruction_red() {
 			C.v_multiwindow_test_win32_is_window(child_hwnd) == 0)
 		win32_red_add(mut issues, 'grandchild HWND survived child-first cascade',
 			C.v_multiwindow_test_win32_is_window(grandchild_hwnd) == 0)
+		win32_red_add(mut issues, 'modal owner was not re-enabled exactly once before destroy',
+			C.v_multiwindow_win32_test_modal_owner_enable_count_value() == 1
+			&& C.v_multiwindow_win32_test_modal_destroy_count_value() == 1
+			&& C.v_multiwindow_win32_test_modal_owner_enable_sequence_value() > 0
+			&& C.v_multiwindow_win32_test_modal_owner_enable_sequence_value() < C.v_multiwindow_win32_test_modal_destroy_sequence_value())
 		win32_red_add(mut issues, 'canonical lifecycle queue is not child-first',
 
 			destroyed_ids.len == 2 && destroyed_ids[0] == grandchild && destroyed_ids[1] == child)
+
+		C.v_multiwindow_win32_test_modal_trace_reset(owner_hwnd, unsafe { nil })
+		initial_modal := app.create_window(
+			title: 'Win32 initially visible modal'
+			owner: owner
+			modal: true
+		)!
+		initial_modal_hwnd := win32_red_hwnd(app, initial_modal)!
+		win32_red_add(mut issues, 'initially visible modal has no configured GW_OWNER',
+			C.v_multiwindow_test_win32_owner(initial_modal_hwnd) == owner_hwnd)
+		win32_red_add(mut issues, 'initially visible modal did not disable owner',
+			C.v_multiwindow_test_win32_is_enabled(owner_hwnd) == 0)
+		win32_red_add(mut issues, 'initial modal became visible before disabling its owner',
+			C.v_multiwindow_win32_test_modal_owner_disable_count_value() == 1
+			&& C.v_multiwindow_win32_test_modal_show_count_value() == 1
+			&& C.v_multiwindow_win32_test_modal_owner_disable_sequence_value() > 0
+			&& C.v_multiwindow_win32_test_modal_owner_disable_sequence_value() < C.v_multiwindow_win32_test_modal_show_sequence_value())
+		app.service_hide_window(initial_modal) or {
+			issues << 'initially visible modal hide failed: ${err.msg()}'
+		}
+		win32_red_add(mut issues, 'hiding initially visible modal did not re-enable owner',
+			C.v_multiwindow_test_win32_is_enabled(owner_hwnd) == 1)
+		app.destroy_window(initial_modal)!
+
+		disabled_owner := app.create_window(title: 'Win32 initially disabled owner')!
+		disabled_owner_hwnd := win32_red_hwnd(app, disabled_owner)!
+		win32_red_add(mut issues, 'oracle could not disable modal owner', C.v_multiwindow_test_win32_set_enabled(disabled_owner_hwnd,
+			0) == 1)
+		disabled_owner_modal := app.create_window(
+			title:   'Win32 modal with initially disabled owner'
+			owner:   disabled_owner
+			modal:   true
+			visible: false
+		)!
+		app.service_show_window(disabled_owner_modal) or {
+			issues << 'initially-disabled owner modal show failed: ${err.msg()}'
+		}
+		app.service_hide_window(disabled_owner_modal) or {
+			issues << 'initially-disabled owner modal hide failed: ${err.msg()}'
+		}
+		win32_red_add(mut issues, 'modal release enabled an owner that started disabled',
+			C.v_multiwindow_test_win32_is_enabled(disabled_owner_hwnd) == 0)
+		win32_red_add(mut issues, 'oracle could not restore initially-disabled owner for cleanup', C.v_multiwindow_test_win32_set_enabled(disabled_owner_hwnd,
+			1) == 1)
+		app.destroy_window(disabled_owner_modal)!
+		app.destroy_window(disabled_owner)!
+
+		rollback_owner := app.create_window(title: 'Win32 modal rollback owner')!
+		rollback_modal := app.create_window(
+			title:   'Win32 modal rollback child'
+			owner:   rollback_owner
+			modal:   true
+			visible: false
+		)!
+		rollback_owner_hwnd := win32_red_hwnd(app, rollback_owner)!
+		C.v_multiwindow_win32_service_test_set_show_failure(1)
+		C.v_multiwindow_win32_test_modal_set_enable_failure(1)
+		mut rollback_error := ''
+		app.service_show_window(rollback_modal) or { rollback_error = err.msg() }
+		C.v_multiwindow_win32_service_test_set_show_failure(0)
+		C.v_multiwindow_win32_test_modal_set_enable_failure(0)
+		win32_red_add(mut issues, 'show rollback suppressed release_modal failure',
+			rollback_error.contains('modal rollback failed:'))
+		if rollback_index := app.backend.win32.window_record_index(rollback_modal) {
+			win32_red_add(mut issues, 'failed modal rollback announced inactive state',
+				app.backend.win32.windows[rollback_index].modal_active
+				&& C.v_multiwindow_test_win32_is_enabled(rollback_owner_hwnd) == 0)
+		} else {
+			issues << 'failed modal rollback removed the native record'
+		}
+		app.service_hide_window(rollback_modal) or {
+			issues << 'modal rollback recovery failed: ${err.msg()}'
+		}
+		win32_red_add(mut issues, 'modal rollback recovery did not restore owner',
+			C.v_multiwindow_test_win32_is_enabled(rollback_owner_hwnd) == 1)
+		app.destroy_window(rollback_modal)!
+		app.destroy_window(rollback_owner)!
+
+		teardown_owner := app.create_window(title: 'Win32 modal teardown owner')!
+		teardown_modal := app.create_window(
+			title: 'Win32 modal teardown child'
+			owner: teardown_owner
+			modal: true
+		)!
+		teardown_owner_hwnd := win32_red_hwnd(app, teardown_owner)!
+		teardown_modal_hwnd := win32_red_hwnd(app, teardown_modal)!
+		C.v_multiwindow_win32_test_modal_set_enable_failure(1)
+		mut teardown_error := ''
+		app.backend.win32.finish_window_teardown(teardown_modal) or { teardown_error = err.msg() }
+		C.v_multiwindow_win32_test_modal_set_enable_failure(0)
+		win32_red_add(mut issues, 'teardown ignored modal release failure',
+			teardown_error == err_capability_unsupported)
+		if teardown_index := app.backend.win32.window_record_index(teardown_modal) {
+			win32_red_add(mut issues, 'failed modal release partially destroyed native state',
+				app.backend.win32.windows[teardown_index].modal_active
+				&& C.v_multiwindow_test_win32_is_window(teardown_modal_hwnd) == 1
+				&& C.v_multiwindow_test_win32_is_enabled(teardown_owner_hwnd) == 0)
+		} else {
+			issues << 'failed modal release removed the native teardown record'
+		}
+		app.destroy_window(teardown_modal)!
+		app.destroy_window(teardown_owner)!
 
 		app.destroy_window(owner)!
 		win32_red_poll(mut app, 2)!
 		win32_red_add(mut issues, 'owner HWND survived public destroy',
 			C.v_multiwindow_test_win32_is_window(owner_hwnd) == 0)
+
+		mut stop_app := new_app(backend: .win32)!
+		stop_owner := stop_app.create_window(title: 'Win32 modal stop owner')!
+		stop_modal_a := stop_app.create_window(
+			title: 'Win32 modal stop child A'
+			owner: stop_owner
+			modal: true
+		)!
+		stop_modal_b := stop_app.create_window(
+			title: 'Win32 modal stop child B'
+			owner: stop_owner
+			modal: true
+		)!
+		stop_owner_hwnd := win32_red_hwnd(stop_app, stop_owner)!
+		stop_modal_a_hwnd := win32_red_hwnd(stop_app, stop_modal_a)!
+		stop_modal_b_hwnd := win32_red_hwnd(stop_app, stop_modal_b)!
+		C.v_multiwindow_win32_test_modal_trace_reset(stop_owner_hwnd, stop_modal_b_hwnd)
+		stop_app.stop() or { issues << 'modal stop failed: ${err.msg()}' }
+		win32_red_add(mut issues,
+			'stop did not restore owner exactly once before final modal destroy',
+			C.v_multiwindow_win32_test_modal_owner_enable_count_value() == 1
+			&& C.v_multiwindow_win32_test_modal_destroy_count_value() == 1
+			&& C.v_multiwindow_win32_test_modal_owner_enable_sequence_value() > 0
+			&& C.v_multiwindow_win32_test_modal_owner_enable_sequence_value() < C.v_multiwindow_win32_test_modal_destroy_sequence_value())
+		win32_red_add(mut issues, 'stop left native owner/modal HWNDs alive',
+			C.v_multiwindow_test_win32_is_window(stop_owner_hwnd) == 0
+			&& C.v_multiwindow_test_win32_is_window(stop_modal_a_hwnd) == 0
+			&& C.v_multiwindow_test_win32_is_window(stop_modal_b_hwnd) == 0)
 		if issues.len > 0 {
 			eprintln('PACKAGE2_RED_TERMINAL=behavioral_red:modal_child_first')
 		}
 		assert issues.len == 0, 'Win32 owner/modal/child-first RED:\n${issues.join('\n')}'
+		eprintln('PACKAGE2_W2_GREEN_TERMINAL=behavioral_green:modal_child_first')
 	}
 }
 

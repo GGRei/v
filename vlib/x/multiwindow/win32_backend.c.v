@@ -32,6 +32,9 @@ mut:
 	framebuffer_width         int
 	framebuffer_height        int
 	destroyed                 bool
+	modal_active              bool
+	modal_child_count         int
+	modal_restore_enabled     bool
 	render_resize_pending     bool
 	suppress_resize_event     bool
 	queued_events             []Win32NativeQueuedEvent
@@ -190,8 +193,12 @@ fn (backend &Win32Backend) renderer_probe_error(operation_error string) string {
 
 $if windows {
 	fn C.v_multiwindow_win32_register_class() int
-	fn C.v_multiwindow_win32_create_window(title &u16, width int, height int, min_width int, min_height int, resizable int, borderless int, fullscreen int, visible int, data voidptr) voidptr
+	fn C.v_multiwindow_win32_create_window(title &u16, width int, height int, min_width int, min_height int, resizable int, borderless int, fullscreen int, visible int, owner voidptr, data voidptr) voidptr
+	fn C.v_multiwindow_win32_show_created_window(hwnd voidptr, fullscreen int) int
 	fn C.v_multiwindow_win32_destroy_window(hwnd voidptr) int
+	fn C.v_multiwindow_win32_owner_matches(hwnd voidptr, owner voidptr) int
+	fn C.v_multiwindow_win32_is_window_enabled(hwnd voidptr) int
+	fn C.v_multiwindow_win32_set_window_enabled(hwnd voidptr, enabled int) int
 	fn C.v_multiwindow_win32_set_window_text(hwnd voidptr, title &u16) int
 	fn C.v_multiwindow_win32_set_cursor_shape(hwnd voidptr, shape int) int
 	fn C.v_multiwindow_win32_set_client_size(hwnd voidptr, width int, height int, min_width int, min_height int, resizable int, borderless int, fullscreen int) int
@@ -805,6 +812,17 @@ fn (mut backend Win32Backend) create_window(id WindowId, config WindowConfig) !W
 		if !backend.started {
 			return error(err_backend_unsupported)
 		}
+		mut owner_hwnd := unsafe { nil }
+		if owner := config.owner {
+			owner_index := backend.window_record_index(owner) or {
+				return error(err_owner_relation_invalid)
+			}
+			owner_record := backend.windows[owner_index]
+			if owner_record.destroyed || owner_record.hwnd == unsafe { nil } {
+				return error(err_owner_relation_invalid)
+			}
+			owner_hwnd = owner_record.hwnd
+		}
 		backend.windows << &Win32WindowRecord{
 			id:     id
 			config: config
@@ -815,10 +833,11 @@ fn (mut backend Win32Backend) create_window(id WindowId, config WindowConfig) !W
 		mut record := backend.windows[index]
 		title := config.title.to_wide()
 		record_data := unsafe { voidptr(record) }
+		show_after_modal_activation := config.modal && config.visible
 		hwnd := C.v_multiwindow_win32_create_window(title, config.width, config.height,
 			config.min_width, config.min_height, win32_bool_to_int(config.resizable),
-			win32_bool_to_int(config.borderless), win32_bool_to_int(config.fullscreen),
-			win32_bool_to_int(config.visible), record_data)
+			win32_bool_to_int(config.borderless), win32_bool_to_int(config.fullscreen), win32_bool_to_int(
+			config.visible && !show_after_modal_activation), owner_hwnd, record_data)
 		if hwnd == unsafe { nil } {
 			backend.windows.delete(index)
 			return error(err_win32_create_window_failed)
@@ -834,6 +853,27 @@ fn (mut backend Win32Backend) create_window(id WindowId, config WindowConfig) !W
 			record.hwnd = unsafe { nil }
 			backend.windows.delete(index)
 			return error(err_win32_create_window_failed)
+		}
+		if show_after_modal_activation {
+			backend.activate_modal(index) or {
+				activate_error := err.msg()
+				backend.finish_window_teardown(id) or {
+					return error(merge_backend_errors(activate_error, err.msg()))
+				}
+				return error(activate_error)
+			}
+			if C.v_multiwindow_win32_show_created_window(hwnd, win32_bool_to_int(config.fullscreen)) == 0 {
+				show_error := err_win32_create_window_failed
+				mut rollback_error := ''
+				backend.release_modal(index) or {
+					rollback_error = 'modal rollback failed: ${err.msg()}'
+				}
+				backend.finish_window_teardown(id) or {
+					return error(merge_backend_errors(show_error, merge_backend_errors(rollback_error,
+						err.msg())))
+				}
+				return error(merge_backend_errors(show_error, rollback_error))
+			}
 		}
 		actual_width := C.v_multiwindow_win32_client_width(hwnd)
 		actual_height := C.v_multiwindow_win32_client_height(hwnd)
@@ -872,6 +912,10 @@ fn (mut backend Win32Backend) finish_window_teardown(id WindowId) ! {
 		if record.has_render_ownership() {
 			backend.render_health = renderer_health_latch_unavailable(backend.render_health)
 			return error(err_render_native_renderer_unavailable)
+		}
+		backend.release_modal(index)!
+		if backend.has_retained_child(id) {
+			return error(err_owner_relation_invalid)
 		}
 		if record.hwnd != unsafe { nil } {
 			if C.v_multiwindow_win32_destroy_window(record.hwnd) == 0 {
@@ -1024,8 +1068,9 @@ fn (mut backend Win32Backend) stop() ! {
 			return
 		}
 		for backend.windows.len > 0 {
-			mut record := backend.windows[0]
-			if !backend.release_window_render_resources(0, win32_window_operation_seed(record.id,
+			index := backend.windows.len - 1
+			mut record := backend.windows[index]
+			if !backend.release_window_render_resources(index, win32_window_operation_seed(record.id,
 				record.render_target_generation, .shutdown_release)) {
 				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
 				return error(backend.retained_stop_error(err_render_native_renderer_unavailable))
@@ -1034,6 +1079,7 @@ fn (mut backend Win32Backend) stop() ! {
 				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
 				return error(backend.retained_stop_error(err_render_native_renderer_unavailable))
 			}
+			backend.release_modal(index) or { return error(backend.retained_stop_error(err.msg())) }
 			if record.hwnd != unsafe { nil } {
 				if C.v_multiwindow_win32_destroy_window(record.hwnd) == 0 {
 					return error(backend.retained_stop_error(err_win32_destroy_window_failed))
@@ -1051,7 +1097,7 @@ fn (mut backend Win32Backend) stop() ! {
 				}
 				record.service_state = unsafe { nil }
 			}
-			backend.windows.delete(0)
+			backend.windows.delete(index)
 		}
 		backend.shutdown_renderer()
 		if backend.retains_native_ownership() {
@@ -1078,6 +1124,93 @@ fn (backend &Win32Backend) window_record_index(id WindowId) ?int {
 		}
 	}
 	return none
+}
+
+fn (backend &Win32Backend) has_retained_child(owner WindowId) bool {
+	for record in backend.windows {
+		if configured_owner := record.config.owner {
+			if configured_owner == owner {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+fn (mut backend Win32Backend) activate_modal(index int) ! {
+	$if windows {
+		if index < 0 || index >= backend.windows.len {
+			return error(err_window_not_found)
+		}
+		mut record := backend.windows[index]
+		if !record.config.modal || record.modal_active {
+			return
+		}
+		owner := record.config.owner or { return error(err_owner_relation_invalid) }
+		owner_index := backend.window_record_index(owner) or {
+			return error(err_owner_relation_invalid)
+		}
+		if owner_index == index {
+			return error(err_owner_relation_invalid)
+		}
+		mut owner_record := backend.windows[owner_index]
+		if record.hwnd == unsafe { nil } || owner_record.destroyed
+			|| owner_record.hwnd == unsafe { nil }
+			|| C.v_multiwindow_win32_owner_matches(record.hwnd, owner_record.hwnd) == 0 {
+			return error(err_owner_relation_invalid)
+		}
+		if owner_record.modal_child_count == 0 {
+			owner_record.modal_restore_enabled = C.v_multiwindow_win32_is_window_enabled(owner_record.hwnd) != 0
+		}
+		if C.v_multiwindow_win32_is_window_enabled(owner_record.hwnd) != 0
+			&& C.v_multiwindow_win32_set_window_enabled(owner_record.hwnd, 0) == 0 {
+			return error(err_capability_unsupported)
+		}
+		owner_record.modal_child_count++
+		record.modal_active = true
+		return
+	} $else {
+		_ = index
+		return error(err_backend_unsupported)
+	}
+}
+
+fn (mut backend Win32Backend) release_modal(index int) ! {
+	$if windows {
+		if index < 0 || index >= backend.windows.len {
+			return error(err_window_not_found)
+		}
+		mut record := backend.windows[index]
+		if !record.modal_active {
+			return
+		}
+		owner := record.config.owner or { return error(err_owner_relation_invalid) }
+		owner_index := backend.window_record_index(owner) or {
+			return error(err_owner_relation_invalid)
+		}
+		if owner_index == index {
+			return error(err_owner_relation_invalid)
+		}
+		mut owner_record := backend.windows[owner_index]
+		if owner_record.modal_child_count <= 0 {
+			return error(err_owner_relation_invalid)
+		}
+		if owner_record.modal_child_count == 1 && owner_record.modal_restore_enabled {
+			if owner_record.hwnd == unsafe { nil }
+				|| C.v_multiwindow_win32_set_window_enabled(owner_record.hwnd, 1) == 0 {
+				return error(err_capability_unsupported)
+			}
+		}
+		owner_record.modal_child_count--
+		if owner_record.modal_child_count == 0 {
+			owner_record.modal_restore_enabled = false
+		}
+		record.modal_active = false
+		return
+	} $else {
+		_ = index
+		return error(err_backend_unsupported)
+	}
 }
 
 $if gg_multiwindow ? || x_multiwindow_render ? {

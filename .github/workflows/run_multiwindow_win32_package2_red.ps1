@@ -351,10 +351,15 @@ function Get-Package2RedClassification {
     $nameLines = @($lines | Where-Object { $_ -cmatch '^PACKAGE2_RED_TEST=' })
     $markerLines = @($lines | Where-Object { $_ -cmatch '^PACKAGE2_RED_FAMILY=' })
     $terminalLines = @($lines | Where-Object { $_ -cmatch '^PACKAGE2_RED_TERMINAL=' })
+    $summaryLines = @($lines | Where-Object { $_ -cmatch '^Summary for all V _test\.v files:.*$' })
     $exactIdentity = $nameLines.Count -eq 1 -and $nameLines[0] -ceq $expectedName `
         -and $markerLines.Count -eq 1 -and $markerLines[0] -ceq $expectedMarker
     $exactTerminal = $terminalLines.Count -eq 1 `
         -and $terminalLines[0] -ceq $expectedTerminal
+    $exactFailureSummary = $summaryLines.Count -eq 1 `
+        -and $summaryLines[0] -cmatch '^Summary for all V _test\.v files: 1 failed, 1 total\.(?: .*)?$'
+    $selectionMismatch = $text -match '(?im)^\s*retrying\s' `
+        -or $text -match '(?im)\bskip(?:ped)?\b'
 
     if ($Result.TimedOut) {
         return [pscustomobject]@{ Kind = 'TimeoutFailure'; Detail = 'watchdog expired' }
@@ -395,6 +400,12 @@ function Get-Package2RedClassification {
             Detail = "expected_terminal=$expectedTerminal"
         }
     }
+    if (-not $exactFailureSummary -or $selectionMismatch) {
+        return [pscustomobject]@{
+            Kind = 'SummaryFailure'
+            Detail = "expected exactly one '1 failed, 1 total' summary without skip/retry"
+        }
+    }
     return [pscustomobject]@{
         Kind = 'BehavioralRed'
         Detail = "exit=$ExpectedFailureExitCode"
@@ -418,7 +429,8 @@ function Test-Package2RedClassifier {
     $name = "PACKAGE2_RED_TEST=$($probeCase.Name)"
     $marker = "PACKAGE2_RED_FAMILY=$($probeCase.Marker)"
     $terminal = "PACKAGE2_RED_TERMINAL=$($probeCase.Terminal)"
-    $validOutput = @($name, $marker, $terminal, 'assertion failed as expected')
+    $failureSummary = 'Summary for all V _test.v files: 1 failed, 1 total. Elapsed time: 1 ms.'
+    $validOutput = @($name, $marker, $terminal, 'assertion failed as expected', $failureSummary)
     $syntheticCases = @(
         @{
             Name = 'valid behavioral RED'
@@ -471,6 +483,26 @@ function Test-Package2RedClassifier {
             Result = [pscustomobject]@{ ExitCode = 1; TimedOut = $false; InfrastructureError = ''; Output = @($name, $marker, 'PACKAGE2_RED_TERMINAL=wrong_terminal') }
         }
         @{
+            Name = 'missing failure summary'
+            Expected = 'SummaryFailure'
+            Result = [pscustomobject]@{ ExitCode = 1; TimedOut = $false; InfrastructureError = ''; Output = @($name, $marker, $terminal) }
+        }
+        @{
+            Name = 'duplicate failure summary'
+            Expected = 'SummaryFailure'
+            Result = [pscustomobject]@{ ExitCode = 1; TimedOut = $false; InfrastructureError = ''; Output = @($validOutput + $failureSummary) }
+        }
+        @{
+            Name = 'wrong failure summary'
+            Expected = 'SummaryFailure'
+            Result = [pscustomobject]@{ ExitCode = 1; TimedOut = $false; InfrastructureError = ''; Output = @($name, $marker, $terminal, 'Summary for all V _test.v files: 2 failed, 2 total.') }
+        }
+        @{
+            Name = 'retrying selection'
+            Expected = 'InfrastructureFailure'
+            Result = [pscustomobject]@{ ExitCode = 1; TimedOut = $false; InfrastructureError = ''; Output = @($validOutput + 'retrying 1/1') }
+        }
+        @{
             Name = 'arbitrary nonzero after terminal'
             Expected = 'UnknownExit'
             Result = [pscustomobject]@{ ExitCode = 7; TimedOut = $false; InfrastructureError = ''; Output = $validOutput }
@@ -507,7 +539,7 @@ function Test-Package2RedClassifier {
         }
     )
 
-    if ($syntheticCases.Count -gt 20) {
+    if ($syntheticCases.Count -gt 24) {
         throw 'Package 2 classifier self-test exceeded its fixed case bound'
     }
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -666,20 +698,27 @@ fn main() {
 
 $core = 'vlib/x/multiwindow/service_native_win32_contract_red_test.v'
 $gg = 'vlib/gg/multiwindow_win32_services_red_d_gg_multiwindow_test.v'
-$w1GreenCases = @(
-    'test_win32_w1_native_authority_show_focus_and_fullscreen_contract'
-    'test_win32_w1_native_borrow_is_bounded_and_epoch_checked'
+$w2GreenTerminal = 'PACKAGE2_W2_GREEN_TERMINAL=behavioral_green:modal_child_first'
+$greenCases = @(
+    @{ Wave = 'W1'; File = $core; Name = 'test_win32_w1_native_authority_show_focus_and_fullscreen_contract' }
+    @{ Wave = 'W1'; File = $core; Name = 'test_win32_w1_native_borrow_is_bounded_and_epoch_checked' }
+    @{ Wave = 'W1'; File = $core; Name = 'test_win32_native_controls_state_and_independent_window_oracles_red' }
+    @{ Wave = 'W1'; File = $gg; Name = 'test_win32_gg_public_borrow_is_live_callback_bounded_stale_and_defers_teardown_red' }
 )
+if ($Compiler -ne 'tcc') {
+    $greenCases += @{
+        Wave = 'W2'
+        File = $core
+        Name = 'test_win32_native_modal_reenable_and_child_first_hwnd_destruction_red'
+    }
+}
 $cases = @(
-    @{ File = $core; Name = 'test_win32_native_controls_state_and_independent_window_oracles_red'; Marker = 'controls_state'; Terminal = 'behavioral_red:controls_state' }
-    @{ File = $core; Name = 'test_win32_native_modal_reenable_and_child_first_hwnd_destruction_red'; Marker = 'modal_child_first'; Terminal = 'behavioral_red:modal_child_first' }
     @{ File = $core; Name = 'test_win32_native_monitor_dpi_display_change_and_generation_red'; Marker = 'monitor_dpi_hotplug'; Terminal = 'behavioral_red:monitor_dpi_hotplug' }
     @{ File = $core; Name = 'test_win32_native_cf_unicodetext_roundtrip_exact_limit_and_terminal_queue_red'; Marker = 'clipboard_unicode_limit'; Terminal = 'behavioral_red:clipboard_unicode_limit' }
     @{ File = $core; Name = 'test_win32_native_clipboard_occupancy_timeout_failure_and_cancel_red'; Marker = 'clipboard_occupancy_cancel'; Terminal = 'behavioral_red:clipboard_occupancy_cancel' }
     @{ File = $core; Name = 'test_win32_native_raw_input_clipcursor_release_and_two_window_isolation_red'; Marker = 'mouse_lock_isolation'; Terminal = 'behavioral_red:mouse_lock_isolation' }
     @{ File = $core; Name = 'test_win32_native_conditional_titlebar_dwm_and_style_oracles_red'; Marker = 'titlebar_dwm_style'; Terminal = 'behavioral_red:titlebar_dwm_style' }
     @{ File = $gg; Name = 'test_win32_gg_public_facade_capabilities_are_distinct_and_complete_red'; Marker = 'gg_public_facade'; Terminal = 'behavioral_red:gg_public_facade' }
-    @{ File = $gg; Name = 'test_win32_gg_public_borrow_is_live_callback_bounded_stale_and_defers_teardown_red'; Marker = 'gg_public_borrow'; Terminal = 'behavioral_red:gg_public_borrow' }
 )
 
 $names = @($cases | ForEach-Object { $_.Name } | Sort-Object -Unique)
@@ -689,10 +728,14 @@ if ($names.Count -ne $cases.Count -or $markers.Count -ne $cases.Count `
     -or $terminals.Count -ne $cases.Count) {
     throw 'Package 2 RED case names, family markers, and terminals must be unique'
 }
-$w1GreenNames = @($w1GreenCases | Sort-Object -Unique)
-$w1GreenInRed = @($w1GreenNames | Where-Object { $_ -in $names })
-if ($w1GreenNames.Count -ne 2 -or $w1GreenInRed.Count -ne 0) {
-    throw 'Package 2 W1 GREEN cases must be exactly two unique cases outside the RED matrix'
+$greenNames = @($greenCases | ForEach-Object { $_.Name } | Sort-Object -Unique)
+$greenInRed = @($greenNames | Where-Object { $_ -in $names })
+$w2GreenCount = @($greenCases | Where-Object { $_.Wave -ceq 'W2' }).Count
+$expectedGreenCount = if ($Compiler -eq 'tcc') { 4 } else { 5 }
+$expectedW2GreenCount = if ($Compiler -eq 'tcc') { 0 } else { 1 }
+if ($greenNames.Count -ne $expectedGreenCount -or $greenInRed.Count -ne 0 `
+    -or $w2GreenCount -ne $expectedW2GreenCount -or $cases.Count -ne 6) {
+    throw 'Package 2 closure requires W2 GREEN only for MSVC/GCC and six disjoint RED cases'
 }
 
 $vexe = (Resolve-Path '.\v.exe').Path
@@ -717,9 +760,9 @@ $noFlagResult = Invoke-Package2Process -FileName $vexe -Arguments $noFlagArgumen
 Write-Package2ProcessOutput -Result $noFlagResult
 $noFlagText = @($noFlagResult.Output | ForEach-Object { ([string]$_).Trim() }) -join "`n"
 $noFlagSummaryLines = @($noFlagResult.Output | ForEach-Object { ([string]$_).Trim() } |
-    Where-Object { $_ -cmatch '^Summary for all V _test\.v files:' })
+    Where-Object { $_ -cmatch '^Summary for all V _test\.v files:.*$' })
 $noFlagExactSummary = $noFlagSummaryLines.Count -eq 1 `
-    -and $noFlagSummaryLines[0] -cmatch '^Summary for all V _test\.v files: 1 passed, 1 total\.'
+    -and $noFlagSummaryLines[0] -cmatch '^Summary for all V _test\.v files: 1 passed, 1 total\.(?: .*)?$'
 $noFlagFailure = if ($noFlagResult.TimedOut -or $noFlagText -match $timeoutPattern) {
     'timeout'
 } elseif ($noFlagResult.InfrastructureError -or $noFlagText -match $infrastructurePattern) {
@@ -744,10 +787,13 @@ if ($noFlagFailure) {
 Write-Host "NO_FLAG_GATE_PASS compiler=$Compiler passed=1 total=1"
 Write-Host '::endgroup::'
 
-foreach ($testName in $w1GreenCases) {
-    Write-Host "::group::Package 2 W1 GREEN $Compiler $testName"
+foreach ($greenCase in $greenCases) {
+    $greenWave = $greenCase.Wave
+    $testName = $greenCase.Name
+    $testFile = $greenCase.File
+    Write-Host "::group::Package 2 $greenWave GREEN $Compiler $testName"
     try {
-        Write-Host "PACKAGE2_W1_GREEN_START compiler=$Compiler case=$testName file=$core"
+        Write-Host "PACKAGE2_${greenWave}_GREEN_START compiler=$Compiler case=$testName file=$testFile"
         $greenArguments = @(
             '-cc', $Compiler,
             '-no-retry-compilation',
@@ -755,7 +801,7 @@ foreach ($testName in $w1GreenCases) {
             '-subsystem', 'console',
             '-d', 'gg_multiwindow',
             '-run-only', $testName,
-            'test', $core
+            'test', $testFile
         )
         $greenResult = Invoke-Package2Process -FileName $vexe -Arguments $greenArguments
         Write-Package2ProcessOutput -Result $greenResult
@@ -765,10 +811,19 @@ foreach ($testName in $w1GreenCases) {
         $greenText = $greenLines -join "`n"
         $greenSummaryLines = @(
             $greenLines |
-                Where-Object { $_ -cmatch '^Summary for all V _test\.v files:' }
+                Where-Object { $_ -cmatch '^Summary for all V _test\.v files:.*$' }
         )
         $greenExactSummary = $greenSummaryLines.Count -eq 1 `
-            -and $greenSummaryLines[0] -cmatch '^Summary for all V _test\.v files: 1 passed, 1 total\.'
+            -and $greenSummaryLines[0] -cmatch '^Summary for all V _test\.v files: 1 passed, 1 total\.(?: .*)?$'
+        $w2GreenTerminalLines = @(
+            $greenLines |
+                Where-Object { $_ -cmatch '^PACKAGE2_W2_GREEN_TERMINAL=' }
+        )
+        $greenExactTerminal = $greenWave -cne 'W2' `
+            -or ($w2GreenTerminalLines.Count -eq 1 `
+                -and $w2GreenTerminalLines[0] -ceq $w2GreenTerminal)
+        $greenSelectionMismatch = $greenText -match '(?im)^\s*retrying\s' `
+            -or $greenText -match '(?im)\b(skipped?|0 passed)\b'
         $greenFailure = if ($greenResult.TimedOut -or $greenText -match $timeoutPattern) {
             'timeout'
         } elseif ($greenResult.InfrastructureError -or $greenText -match $infrastructurePattern) {
@@ -779,16 +834,18 @@ foreach ($testName in $w1GreenCases) {
             'crash-or-panic'
         } elseif ($greenResult.ExitCode -ne 0) {
             "unexpected-exit-$($greenResult.ExitCode)"
-        } elseif (-not $greenExactSummary) {
-            'unexpected-summary'
+        } elseif (-not $greenExactTerminal) {
+            'terminal-mismatch'
+        } elseif (-not $greenExactSummary -or $greenSelectionMismatch) {
+            'selection-or-summary-mismatch'
         } else {
             ''
         }
         if ($greenFailure) {
-            Write-Host "PACKAGE2_W1_GREEN_FAILURE compiler=$Compiler case=$testName kind=$greenFailure exit=$($greenResult.ExitCode)"
-            throw "Package 2 W1 GREEN gate failed for ${Compiler}/${testName}: $greenFailure"
+            Write-Host "PACKAGE2_${greenWave}_GREEN_FAILURE compiler=$Compiler case=$testName kind=$greenFailure exit=$($greenResult.ExitCode)"
+            throw "Package 2 $greenWave GREEN gate failed for ${Compiler}/${testName}: $greenFailure"
         }
-        Write-Host "PACKAGE2_W1_GREEN_PASS compiler=$Compiler case=$testName passed=1 total=1"
+        Write-Host "PACKAGE2_${greenWave}_GREEN_PASS compiler=$Compiler case=$testName passed=1 total=1"
     } finally {
         Write-Host '::endgroup::'
     }
@@ -805,6 +862,7 @@ $identityFailures = 0
 $fatalFailures = 0
 $timeoutFailures = 0
 $terminalFailures = 0
+$summaryFailures = 0
 $unknownExits = 0
 $unexpectedGreen = 0
 
@@ -848,6 +906,10 @@ foreach ($case in $cases) {
             $terminalFailures++
             Write-Host "TERMINAL_FAILURE compiler=$Compiler case=$($case.Name) detail=$($classification.Detail)"
         }
+        'SummaryFailure' {
+            $summaryFailures++
+            Write-Host "SUMMARY_FAILURE compiler=$Compiler case=$($case.Name) detail=$($classification.Detail)"
+        }
         'UnknownExit' {
             $unknownExits++
             Write-Host "UNKNOWN_EXIT compiler=$Compiler case=$($case.Name) detail=$($classification.Detail)"
@@ -864,7 +926,7 @@ foreach ($case in $cases) {
 }
 
 $rejected = $cases.Count - $behavioralRed
-Write-Host "PACKAGE2_RED_SUMMARY compiler=$Compiler accepted=$behavioralRed rejected=$rejected behavioral_red=$behavioralRed infrastructure_failures=$infrastructureFailures identity_failures=$identityFailures terminal_failures=$terminalFailures fatal_failures=$fatalFailures timeout_failures=$timeoutFailures unknown_exits=$unknownExits unexpected_green=$unexpectedGreen total=$($cases.Count)"
+Write-Host "PACKAGE2_RED_SUMMARY compiler=$Compiler accepted=$behavioralRed rejected=$rejected behavioral_red=$behavioralRed infrastructure_failures=$infrastructureFailures identity_failures=$identityFailures terminal_failures=$terminalFailures summary_failures=$summaryFailures fatal_failures=$fatalFailures timeout_failures=$timeoutFailures unknown_exits=$unknownExits unexpected_green=$unexpectedGreen total=$($cases.Count)"
 if ($infrastructureFailures -ne 0) {
     throw "Package 2 RED matrix had $infrastructureFailures infrastructure failure(s) for $Compiler"
 }
@@ -879,6 +941,9 @@ if ($timeoutFailures -ne 0) {
 }
 if ($terminalFailures -ne 0) {
     throw "Package 2 RED matrix had $terminalFailures missing/wrong terminal failure(s) for $Compiler"
+}
+if ($summaryFailures -ne 0) {
+    throw "Package 2 RED matrix had $summaryFailures selection/summary failure(s) for $Compiler"
 }
 if ($unknownExits -ne 0) {
     throw "Package 2 RED matrix had $unknownExits unknown child exit(s) for $Compiler"
