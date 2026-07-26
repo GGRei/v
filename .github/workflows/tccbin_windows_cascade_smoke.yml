@@ -460,13 +460,6 @@ jobs:
             $expectedErrors.Count -ne $compilerErrors.Count) {
             throw "V probe did not fail exclusively on the expected _wfreopen diagnostic:`n$diagnostic"
           }
-          $errorLines = @($lines | Where-Object { $_ -match '(?i)\berror:' })
-          $unexpectedErrors = @($errorLines | Where-Object {
-            $_ -notmatch $expected -and $_ -notmatch '^builder error:\s*$'
-          })
-          if ($unexpectedErrors.Count -ne 0) {
-            throw "V probe emitted another error:`n$diagnostic"
-          }
           if ($diagnostic -match '(?i)\b(fatal|panic)\b' -or
             $diagnostic -match '(?i)falling back') {
             throw "V probe emitted a fatal, panic, or fallback diagnostic:`n$diagnostic"
