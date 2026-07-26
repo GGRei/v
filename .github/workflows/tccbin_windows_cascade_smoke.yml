@@ -11,7 +11,7 @@ on:
       tccbin_commit:
         description: Exact tccbin commit to consume
         required: true
-        default: 3a028db0df319216eee0fce3489d1a3fb31ea089
+        default: 1eea43e0eaebb2fc97be9d3ca7da2e684e0ee1c4
         type: string
       expect_inet_ntop_declared:
         description: Require the strict inet_ntop C probe to compile
@@ -27,7 +27,7 @@ permissions:
 
 env:
   TCCBIN_REPOSITORY: ${{ inputs.tccbin_repository || 'GGRei/tccbin' }}
-  TCCBIN_COMMIT: ${{ inputs.tccbin_commit || '3a028db0df319216eee0fce3489d1a3fb31ea089' }}
+  TCCBIN_COMMIT: ${{ inputs.tccbin_commit || '1eea43e0eaebb2fc97be9d3ca7da2e684e0ee1c4' }}
   EXPECT_INET_NTOP_DECLARED: ${{ inputs.expect_inet_ntop_declared || true }}
 
 jobs:
