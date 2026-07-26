@@ -24,6 +24,11 @@ $cases = @(
         File = 'vlib/gg/multiwindow_win32_public_services_contract_windows_test.v'
         Name = 'test_win32_public_monitor_projection_and_event_order_red'
     }
+    [pscustomobject]@{
+        Kind = 'native'
+        File = 'vlib/x/multiwindow/event_sequence_exhaustion_test.v'
+        Name = 'test_win32_w3_cold_start_sequence_exhaustion_releases_native_ownership'
+    }
 )
 
 $vexe = (Resolve-Path '.\v.exe').Path

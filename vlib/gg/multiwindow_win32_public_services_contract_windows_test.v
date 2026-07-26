@@ -3,6 +3,10 @@ module gg
 
 #flag windows -DV_MULTIWINDOW_WIN32_SERVICE_TEST
 
+$if windows {
+	#include "@VMODROOT/vlib/x/multiwindow/testdata/win32_monitor_enumeration_test_storage.h"
+}
+
 $if windows && gg_multiwindow ? {
 	#include "@VMODROOT/vlib/x/multiwindow/testdata/win32_nonreadback_test_oracle.h"
 
@@ -63,18 +67,16 @@ fn win32_public_hwnd(mut app App, window WindowId) !voidptr {
 }
 
 fn win32_public_request_refused_focus(mut app App, window WindowId) ! {
-	$if windows {
-		$if gg_multiwindow ? {
-			C.v_multiwindow_win32_service_test_set_focus_refused(1)
-			defer {
-				C.v_multiwindow_win32_service_test_set_focus_refused(0)
-			}
-			app.request_window_focus(window)!
-		} $else {
-			_ = app
-			_ = window
-			return error(err_multiwindow_not_enabled)
+	$if windows && gg_multiwindow ? {
+		C.v_multiwindow_win32_service_test_set_focus_refused(1)
+		defer {
+			C.v_multiwindow_win32_service_test_set_focus_refused(0)
 		}
+		app.request_window_focus(window)!
+	} $else $if windows {
+		_ = app
+		_ = window
+		return error(err_multiwindow_not_enabled)
 	} $else {
 		_ = app
 		_ = window

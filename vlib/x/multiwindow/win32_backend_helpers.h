@@ -6,6 +6,14 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#ifndef WM_DPICHANGED
+#define WM_DPICHANGED 0x02E0
+#endif
+
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
+#include "testdata/win32_monitor_enumeration_test_seam.h"
+#endif
+
 #if defined(SOKOL_TRACE_HOOKS) && defined(V_MULTIWINDOW_NATIVE_PROOF_TEST)
 #include "native_render_result.h"
 #define V_MULTIWINDOW_TEST_WIN32_PROCESS_COMMIT UINT64_C(17)
@@ -744,7 +752,16 @@ static LRESULT CALLBACK v_multiwindow_win32_wnd_proc(HWND hwnd, UINT msg, WPARAM
 		break;
 	case WM_WINDOWPOSCHANGED:
 		if (data) {
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
+			if (v_multiwindow_test_win32_windowposchanged_reason3_consume(hwnd)) {
+				v_multiwindow_win32_event_sequence = UINT64_MAX;
+				v_multiwindow_win32_event_sequence_exhausted_flag = 0;
+			}
+#endif
 			uint64_t sequence = v_multiwindow_win32_next_event_sequence();
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
+			v_multiwindow_test_win32_windowposchanged_reason3_record(sequence);
+#endif
 			v_multiwindow_win32_window_service_refresh(data, sequence, 3);
 		}
 		break;
@@ -1184,6 +1201,16 @@ static inline void *v_multiwindow_win32_create_window(const wchar_t *title, int 
 		DragAcceptFiles(hwnd, TRUE);
 		v_multiwindow_win32_register_touch_window(hwnd);
 	}
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
+	if (hwnd && v_multiwindow_test_win32_windowposchanged_reason3_is_armed()) {
+		RECT test_rect = {0, 0, 0, 0};
+		int moved = GetWindowRect(hwnd, &test_rect)
+			&& MoveWindow(hwnd, test_rect.left + 1, test_rect.top,
+				test_rect.right - test_rect.left,
+				test_rect.bottom - test_rect.top, FALSE);
+		v_multiwindow_test_win32_windowposchanged_reason3_record_move_result(moved);
+	}
+#endif
 	if (hwnd && visible) {
 		ShowWindow(hwnd, fullscreen ? SW_MAXIMIZE : SW_SHOW);
 		UpdateWindow(hwnd);

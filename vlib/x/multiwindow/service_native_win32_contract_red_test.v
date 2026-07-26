@@ -10,6 +10,7 @@ const win32_red_ws_child = u64(0x40000000)
 #flag windows -DV_MULTIWINDOW_WIN32_SERVICE_TEST
 
 $if windows {
+	#include "@VMODROOT/vlib/x/multiwindow/testdata/win32_monitor_enumeration_test_storage.h"
 	#include "@VMODROOT/vlib/x/multiwindow/testdata/win32_nonreadback_test_oracle.h"
 
 	fn C.v_multiwindow_win32_service_test_set_focus_refused(refused int)
@@ -1163,10 +1164,25 @@ fn test_win32_native_monitor_dpi_display_change_and_generation_red() {
 	$if windows {
 		eprintln('PACKAGE2_RED_TEST=test_win32_native_monitor_dpi_display_change_and_generation_red')
 		eprintln('PACKAGE2_RED_FAMILY=monitor_dpi_hotplug')
+		empty_calls_before_cold_start :=
+			C.v_multiwindow_test_win32_monitor_enumeration_empty_calls()
+		C.v_multiwindow_test_win32_monitor_enumeration_use_empty()
+		defer {
+			C.v_multiwindow_test_win32_monitor_enumeration_reset()
+		}
 		mut app := new_app(backend: .win32)!
 		defer {
 			app.stop() or {}
 		}
+		assert C.v_multiwindow_test_win32_monitor_enumeration_empty_calls() > empty_calls_before_cold_start, 'Win32 cold-start admission did not use the forced empty monitor snapshot'
+
+		assert app.backend.win32.service_monitors.all(!it.available), 'Win32 backend retained available monitors after forced-empty cold-start refresh'
+
+		assert app.services.monitors.len == 0, 'public registry published monitors during forced-empty cold-start admission'
+
+		assert app.service_monitor_ids()!.len == 0, 'public registry exposed monitor ids during forced-empty cold-start admission'
+
+		C.v_multiwindow_test_win32_monitor_enumeration_reset()
 		caller_dpi_context_before := C.v_multiwindow_test_win32_thread_dpi_awareness_context()
 		assert caller_dpi_context_before != unsafe { nil }, 'GetThreadDpiAwarenessContext is unavailable before high_dpi window creation'
 
@@ -1179,7 +1195,35 @@ fn test_win32_native_monitor_dpi_display_change_and_generation_red() {
 		caller_dpi_context_after := C.v_multiwindow_test_win32_thread_dpi_awareness_context()
 		assert caller_dpi_context_after != unsafe { nil }, 'GetThreadDpiAwarenessContext is unavailable after high_dpi window creation'
 
+		cold_start_index := app.backend.win32.window_record_index(window) or {
+			assert false, 'Win32 cold-start window has no backend record'
+			0
+		}
+		assert app.backend.win32.service_monitors.all(!it.available), 'Win32 window creation made a monitor available before cold-start polling'
+
+		assert app.services.monitors.len == 0, 'public registry changed before cold-start polling'
+
+		assert app.backend.win32.windows[cold_start_index].service_monitor_ids.len == 0, 'Win32 window acquired monitor membership before cold-start polling'
+
 		win32_red_poll(mut app, 2)!
+		assert app.backend.win32.service_monitors.len > 0, 'Win32 cold-start polling did not populate backend monitors'
+
+		assert app.services.monitors.any(it.available), 'Win32 cold-start polling did not populate the public monitor registry'
+
+		cold_start_ids := app.service_monitor_ids()!
+		assert cold_start_ids.len > 0, 'Win32 cold-start polling did not expose public monitor ids'
+
+		cold_start_record := app.backend.win32.windows[cold_start_index]
+		assert cold_start_record.service_monitor_ids.len > 0, 'Win32 cold-start polling did not populate record monitor membership'
+
+		for monitor_id in cold_start_record.service_monitor_ids {
+			assert monitor_id in cold_start_ids, 'Win32 cold-start record references a monitor outside the public registry'
+		}
+		cold_start_state := app.service_window_state(window)!
+		assert cold_start_state.monitor_ids.len > 0, 'Win32 cold-start polling did not populate public window membership'
+
+		assert cold_start_state.monitor_ids == cold_start_record.service_monitor_ids, 'Win32 cold-start public and backend window memberships diverged'
+
 		_ = app.drain_queued_events()!
 		hwnd := win32_red_hwnd(app, window)!
 		before_native := C.v_multiwindow_test_win32_monitor_snapshot_new()

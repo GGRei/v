@@ -186,6 +186,7 @@ fn (mut backend Backend) service_monitor_snapshot(app_instance u64) ![]ServiceMo
 		.x11 { backend.x11.service_monitor_snapshot(app_instance)! }
 		.wayland { backend.wayland.service_monitor_snapshot(app_instance)! }
 		.appkit { backend.appkit.service_monitor_snapshot(app_instance)! }
+		.win32 { backend.win32.service_monitor_snapshot(app_instance)! }
 		else { error(err_capability_unsupported) }
 	}
 }

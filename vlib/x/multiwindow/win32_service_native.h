@@ -137,18 +137,19 @@ static BOOL CALLBACK v_multiwindow_win32_service_monitor_snapshot_callback(
 	}
 	MONITORINFOEXW info;
 	ZeroMemory(&info, sizeof(info));
-	info.cbSize = sizeof(info);
-	if (!GetMonitorInfoW(monitor, (LPMONITORINFO)&info)) {
+	LPMONITORINFO base = (LPMONITORINFO)&info;
+	base->cbSize = sizeof(info);
+	if (!GetMonitorInfoW(monitor, base)) {
 		snapshot->failed = 1;
 		return FALSE;
 	}
 	int index = snapshot->count++;
 	VMultiwindowWin32ServiceMonitor *item = &snapshot->monitors[index];
 	item->native_id = monitor;
-	item->geometry = info.rcMonitor;
-	item->work = info.rcWork;
+	item->geometry = base->rcMonitor;
+	item->work = base->rcWork;
 	item->dpi = v_multiwindow_win32_service_monitor_dpi(monitor);
-	item->primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0;
+	item->primary = (base->dwFlags & MONITORINFOF_PRIMARY) != 0;
 	wcsncpy(item->name, info.szDevice, CCHDEVICENAME - 1);
 	item->name[CCHDEVICENAME - 1] = L'\0';
 	return TRUE;

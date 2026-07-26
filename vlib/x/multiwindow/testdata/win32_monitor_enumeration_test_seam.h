@@ -31,9 +31,14 @@ typedef struct VMultiwindowWin32TestMonitorEnumeration {
 	int growth_calls;
 	int growth_callbacks;
 	int growth_count;
+	int windowposchanged_reason3_armed;
+	int windowposchanged_reason3_consumed;
+	int windowposchanged_reason3_uint64_max;
+	int windowposchanged_reason3_move_succeeded;
+	HWND windowposchanged_reason3_hwnd;
 } VMultiwindowWin32TestMonitorEnumeration;
 
-static VMultiwindowWin32TestMonitorEnumeration
+extern VMultiwindowWin32TestMonitorEnumeration
 	v_multiwindow_win32_test_monitor_enumeration;
 
 static inline void
@@ -120,6 +125,7 @@ v_multiwindow_win32_service_test_get_monitor_info_w(
 	HMONITOR monitor, LPMONITORINFO info) {
 	VMultiwindowWin32TestMonitorEnumeration *fixture =
 		&v_multiwindow_win32_test_monitor_enumeration;
+	LPMONITORINFO monitor_info = info;
 	if (fixture->mode == V_MULTIWINDOW_WIN32_TEST_MONITOR_INFO_FAILURE
 		&& fixture->info_failure_calls == 0) {
 		fixture->info_failure_calls++;
@@ -130,23 +136,25 @@ v_multiwindow_win32_service_test_get_monitor_info_w(
 		v_multiwindow_win32_service_test_synthetic_monitor_index(monitor);
 	if (synthetic_index < 0) {
 		return v_multiwindow_win32_service_test_real_get_monitor_info_w(
-			monitor, info);
+			monitor, monitor_info);
 	}
-	if (!info || info->cbSize < sizeof(MONITORINFO)) {
+	if (!monitor_info || monitor_info->cbSize < sizeof(MONITORINFO)) {
 		SetLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	DWORD size = info->cbSize;
-	ZeroMemory(info, size);
-	info->cbSize = size;
-	info->rcMonitor.left = synthetic_index * 100;
-	info->rcMonitor.top = 0;
-	info->rcMonitor.right = info->rcMonitor.left + 100;
-	info->rcMonitor.bottom = 100;
-	info->rcWork = info->rcMonitor;
-	info->dwFlags = synthetic_index == 0 ? MONITORINFOF_PRIMARY : 0;
+	DWORD size = monitor_info->cbSize;
+	ZeroMemory(monitor_info, size);
+	monitor_info->cbSize = size;
+	monitor_info->rcMonitor.left = synthetic_index * 100;
+	monitor_info->rcMonitor.top = 0;
+	monitor_info->rcMonitor.right =
+		monitor_info->rcMonitor.left + 100;
+	monitor_info->rcMonitor.bottom = 100;
+	monitor_info->rcWork = monitor_info->rcMonitor;
+	monitor_info->dwFlags =
+		synthetic_index == 0 ? MONITORINFOF_PRIMARY : 0;
 	if (size >= sizeof(MONITORINFOEXW)) {
-		MONITORINFOEXW *extended = (MONITORINFOEXW *)info;
+		MONITORINFOEXW *extended = (MONITORINFOEXW *)monitor_info;
 		wsprintfW(extended->szDevice, L"\\\\.\\W3DISPLAY-%04d",
 			synthetic_index + 1);
 	}
@@ -276,6 +284,90 @@ v_multiwindow_test_win32_monitor_enumeration_growth_calls(void) {
 static inline int
 v_multiwindow_test_win32_monitor_enumeration_growth_callbacks(void) {
 	return v_multiwindow_win32_test_monitor_enumeration.growth_callbacks;
+}
+
+static inline void
+v_multiwindow_test_win32_windowposchanged_reason3_reset(void) {
+	VMultiwindowWin32TestMonitorEnumeration *fixture =
+		&v_multiwindow_win32_test_monitor_enumeration;
+	fixture->windowposchanged_reason3_armed = 0;
+	fixture->windowposchanged_reason3_consumed = 0;
+	fixture->windowposchanged_reason3_uint64_max = 0;
+	fixture->windowposchanged_reason3_move_succeeded = 0;
+	fixture->windowposchanged_reason3_hwnd = NULL;
+}
+
+static inline void
+v_multiwindow_test_win32_windowposchanged_reason3_arm(void) {
+	v_multiwindow_test_win32_windowposchanged_reason3_reset();
+	v_multiwindow_win32_test_monitor_enumeration
+		.windowposchanged_reason3_armed = 1;
+}
+
+static inline int
+v_multiwindow_test_win32_windowposchanged_reason3_is_armed(void) {
+	return v_multiwindow_win32_test_monitor_enumeration
+		.windowposchanged_reason3_armed;
+}
+
+static inline int
+v_multiwindow_test_win32_windowposchanged_reason3_consume(HWND hwnd) {
+	VMultiwindowWin32TestMonitorEnumeration *fixture =
+		&v_multiwindow_win32_test_monitor_enumeration;
+	if (!fixture->windowposchanged_reason3_armed) {
+		return 0;
+	}
+	fixture->windowposchanged_reason3_armed = 0;
+	fixture->windowposchanged_reason3_consumed++;
+	fixture->windowposchanged_reason3_hwnd = hwnd;
+	return 1;
+}
+
+static inline void
+v_multiwindow_test_win32_windowposchanged_reason3_record(
+	uint64_t sequence) {
+	if (sequence == UINT64_MAX) {
+		v_multiwindow_win32_test_monitor_enumeration
+			.windowposchanged_reason3_uint64_max = 1;
+	}
+}
+
+static inline void
+v_multiwindow_test_win32_windowposchanged_reason3_record_move_result(
+	int succeeded) {
+	v_multiwindow_win32_test_monitor_enumeration
+		.windowposchanged_reason3_move_succeeded = succeeded != 0;
+}
+
+static inline int
+v_multiwindow_test_win32_windowposchanged_reason3_consumed(void) {
+	return v_multiwindow_win32_test_monitor_enumeration
+		.windowposchanged_reason3_consumed;
+}
+
+static inline int
+v_multiwindow_test_win32_windowposchanged_reason3_uint64_max_observed(void) {
+	return v_multiwindow_win32_test_monitor_enumeration
+		.windowposchanged_reason3_uint64_max;
+}
+
+static inline int
+v_multiwindow_test_win32_windowposchanged_reason3_move_succeeded(void) {
+	return v_multiwindow_win32_test_monitor_enumeration
+		.windowposchanged_reason3_move_succeeded;
+}
+
+static inline void *
+v_multiwindow_test_win32_windowposchanged_reason3_hwnd(void) {
+	return (void *)v_multiwindow_win32_test_monitor_enumeration
+		.windowposchanged_reason3_hwnd;
+}
+
+static inline int
+v_multiwindow_test_win32_windowposchanged_reason3_hwnd_is_window(void) {
+	HWND hwnd = v_multiwindow_win32_test_monitor_enumeration
+		.windowposchanged_reason3_hwnd;
+	return hwnd != NULL && IsWindow(hwnd);
 }
 
 /*

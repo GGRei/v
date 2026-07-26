@@ -212,6 +212,7 @@ $if windows {
 	fn C.v_multiwindow_win32_client_width(hwnd voidptr) int
 	fn C.v_multiwindow_win32_client_height(hwnd voidptr) int
 	fn C.v_multiwindow_win32_pump_messages() int
+	fn C.v_multiwindow_win32_next_event_sequence() u64
 	fn C.v_multiwindow_win32_event_sequence_exhausted() int
 	fn C.v_multiwindow_win32_render_snapshot(hwnd voidptr, out_visible &int, out_minimized &int, out_logical_width &int, out_logical_height &int, out_framebuffer_width &int, out_framebuffer_height &int, out_scale &f32, out_conversion_available &int) int
 	fn C.v_multiwindow_win32_logical_to_pixel_rect(hwnd voidptr, x f32, y f32, width f32, height f32, out_x &int, out_y &int, out_width &int, out_height &int) int
@@ -920,10 +921,19 @@ fn (mut backend Win32Backend) create_window(id WindowId, config WindowConfig) !W
 		record.service_monitor_ids = win32_service_monitor_ids_for_native(backend.service_monitors,
 			native_monitor, app_instance)
 		record.service_dpi = C.v_multiwindow_win32_service_window_dpi(record.hwnd)
-		record.service_refresh_sequence = 0
-		record.pending_display_refresh = false
-		record.pending_dpi_refresh = false
-		record.pending_membership_refresh = false
+		if native_monitor != 0 && record.service_monitor_ids.len == 0 {
+			record.pending_display_refresh = true
+			if record.service_refresh_sequence == 0 {
+				record.service_refresh_sequence = C.v_multiwindow_win32_next_event_sequence()
+			}
+		}
+		terminal_error := backend.event_sequence_terminal_error()
+		if terminal_error != '' {
+			backend.finish_window_teardown(id) or {
+				return error(merge_backend_errors(terminal_error, err.msg()))
+			}
+			return error(terminal_error)
+		}
 		return WindowSize{
 			width:  record.width
 			height: record.height

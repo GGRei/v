@@ -485,17 +485,19 @@ static BOOL CALLBACK v_multiwindow_test_win32_monitor_callback(HMONITOR monitor,
 		return FALSE;
 	}
 	MONITORINFOEXW info = {0};
-	info.cbSize = sizeof(info);
-	if (!GetMonitorInfoW(monitor, (LPMONITORINFO)&info)) {
+	LPMONITORINFO monitor_info = (LPMONITORINFO)&info;
+	monitor_info->cbSize = sizeof(info);
+	if (!GetMonitorInfoW(monitor, monitor_info)) {
 		snapshot->failed = 1;
 		return FALSE;
 	}
 	int index = snapshot->count++;
 	VMultiwindowTestMonitorSnapshotItem *item = &snapshot->items[index];
 	item->handle = monitor;
-	item->geometry = info.rcMonitor;
-	item->work = info.rcWork;
-	item->primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0;
+	item->geometry = monitor_info->rcMonitor;
+	item->work = monitor_info->rcWork;
+	item->primary =
+		(monitor_info->dwFlags & MONITORINFOF_PRIMARY) != 0;
 	wcsncpy(item->name, info.szDevice, CCHDEVICENAME - 1);
 	item->name[CCHDEVICENAME - 1] = L'\0';
 	return TRUE;
