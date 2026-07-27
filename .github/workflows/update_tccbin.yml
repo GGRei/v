@@ -13,7 +13,7 @@ on:
         required: false
         default: false
       force_rebuild:
-        description: 'Rebuild even when tccbin already records the same TinyCC hash'
+        description: 'Rebuild even when tccbin already records the same TinyCC hash; smoke dispatches must set force_rebuild=true'
         type: boolean
         required: false
         default: false
@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   update-tccbin-hosted:
-    if: github.repository == 'vlang/v' && (github.event_name != 'schedule' || github.ref == 'refs/heads/master')
+    if: (github.repository == 'vlang/v' && (github.event_name != 'schedule' || github.ref == 'refs/heads/master')) || (github.repository == 'GGRei/v' && github.event_name == 'workflow_dispatch')
     strategy:
       fail-fast: false
       matrix:
@@ -50,10 +50,12 @@ jobs:
     env:
       TCC_COMMIT: ${{ github.event.inputs.tcc_commit || 'mob' }}
       TCCBIN_REPO: vlang/tccbin
-      PUBLISH: ${{ github.event_name == 'schedule' || github.event.inputs.publish == 'true' }}
+      PUBLISH: ${{ github.repository == 'vlang/v' && (github.event_name == 'schedule' || github.event.inputs.publish == 'true') }}
       FORCE_REBUILD: ${{ github.event.inputs.force_rebuild == 'true' }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'
@@ -64,7 +66,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --quiet https://repo.or.cz/tinycc.git /tmp/tinycc-ref
+          for attempt in 1 2 3; do
+            if git clone --quiet https://repo.or.cz/tinycc.git /tmp/tinycc-ref; then
+              break
+            fi
+            rm -rf /tmp/tinycc-ref
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep "$((attempt * 5))"
+          done
           git -C /tmp/tinycc-ref checkout --quiet "$TCC_COMMIT"
           hash="$(git -C /tmp/tinycc-ref rev-parse HEAD)"
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
@@ -73,7 +84,7 @@ jobs:
       - name: Clone tccbin branch
         shell: bash
         env:
-          TCCBIN_TOKEN: ${{ secrets.VLANG_BOT_SECRET }}
+          TCCBIN_TOKEN: ${{ github.repository == 'vlang/v' && secrets.VLANG_BOT_SECRET || '' }}
         run: |
           set -euo pipefail
           git clone --branch "${{ matrix.branch }}" --depth=1 \
@@ -112,12 +123,23 @@ jobs:
         shell: bash
         env:
           BUILD_CMD: TCC_COMMIT=${{ env.TCC_COMMIT }} TCC_FOLDER=thirdparty/tcc bash ${{ matrix.script }}
+          TCC_REPO: /tmp/tinycc-ref
         run: |
           set -euo pipefail
           TCC_FOLDER=thirdparty/tcc bash "${{ matrix.script }}"
           test "$(cat thirdparty/tcc/build_source_hash.txt)" = "${{ steps.tinycc.outputs.hash }}"
           thirdparty/tcc/tcc.exe --version
           thirdparty/tcc/tcc.exe -v -v
+          cat > /tmp/tcc-stdatomic-smoke.c <<'EOF'
+          #include <stdatomic.h>
+          int main(void) {
+              atomic_int value = ATOMIC_VAR_INIT(0);
+              atomic_store(&value, 1);
+              return atomic_load(&value) == 1 ? 0 : 1;
+          }
+          EOF
+          thirdparty/tcc/tcc.exe /tmp/tcc-stdatomic-smoke.c -o /tmp/tcc-stdatomic-smoke
+          /tmp/tcc-stdatomic-smoke
 
       - name: Upload TCC bundle artifact
         if: steps.rebuild.outputs.skip != 'true'
@@ -134,7 +156,7 @@ jobs:
           git -C thirdparty/tcc push origin HEAD:${{ matrix.branch }}
 
   update-tccbin-bsd:
-    if: github.repository == 'vlang/v' && (github.event_name != 'schedule' || github.ref == 'refs/heads/master')
+    if: (github.repository == 'vlang/v' && (github.event_name != 'schedule' || github.ref == 'refs/heads/master')) || (github.repository == 'GGRei/v' && github.event_name == 'workflow_dispatch')
     strategy:
       fail-fast: false
       matrix:
@@ -157,11 +179,13 @@ jobs:
     env:
       TCC_COMMIT: ${{ github.event.inputs.tcc_commit || 'mob' }}
       TCCBIN_REPO: vlang/tccbin
-      PUBLISH: ${{ github.event_name == 'schedule' || github.event.inputs.publish == 'true' }}
+      PUBLISH: ${{ github.repository == 'vlang/v' && (github.event_name == 'schedule' || github.event.inputs.publish == 'true') }}
       FORCE_REBUILD: ${{ github.event.inputs.force_rebuild == 'true' }}
-      TCCBIN_TOKEN: ${{ secrets.VLANG_BOT_SECRET }}
+      TCCBIN_TOKEN: ${{ github.repository == 'vlang/v' && secrets.VLANG_BOT_SECRET || '' }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Start ${{ matrix.id }} VM
         uses: cross-platform-actions/action@v1.3.0
@@ -182,7 +206,16 @@ jobs:
           git config --global user.email vlang-bot@users.noreply.github.com
           git config --global --add safe.directory "$PWD"
 
-          git clone --quiet https://repo.or.cz/tinycc.git /tmp/tinycc-ref
+          for attempt in 1 2 3; do
+            if git clone --quiet https://repo.or.cz/tinycc.git /tmp/tinycc-ref; then
+              break
+            fi
+            rm -rf /tmp/tinycc-ref
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep "$((attempt * 5))"
+          done
           git -C /tmp/tinycc-ref checkout --quiet "$TCC_COMMIT"
           tinycc_hash="$(git -C /tmp/tinycc-ref rev-parse HEAD)"
           echo "TinyCC $TCC_COMMIT resolves to $tinycc_hash"
@@ -206,10 +239,20 @@ jobs:
           fi
 
           BUILD_CMD="TCC_COMMIT=$TCC_COMMIT TCC_FOLDER=thirdparty/tcc CC=${{ matrix.cc }} bash ${{ matrix.script }}" \
-            TCC_FOLDER=thirdparty/tcc CC="${{ matrix.cc }}" bash "${{ matrix.script }}"
+            TCC_REPO=/tmp/tinycc-ref TCC_FOLDER=thirdparty/tcc CC="${{ matrix.cc }}" bash "${{ matrix.script }}"
           test "$(cat thirdparty/tcc/build_source_hash.txt)" = "$tinycc_hash"
           thirdparty/tcc/tcc.exe --version
           thirdparty/tcc/tcc.exe -v -v
+          cat > /tmp/tcc-stdatomic-smoke.c <<'EOF'
+          #include <stdatomic.h>
+          int main(void) {
+              atomic_int value = ATOMIC_VAR_INIT(0);
+              atomic_store(&value, 1);
+              return atomic_load(&value) == 1 ? 0 : 1;
+          }
+          EOF
+          thirdparty/tcc/tcc.exe /tmp/tcc-stdatomic-smoke.c -o /tmp/tcc-stdatomic-smoke
+          /tmp/tcc-stdatomic-smoke
 
           if [ "$PUBLISH" = 'true' ]; then
             git -C thirdparty/tcc push origin HEAD:${{ matrix.branch }}
