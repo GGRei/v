@@ -671,6 +671,7 @@ V_CRT_LINKAGE int V_CRT_CALL _fseeki64(FILE *stream, i64 offset, int whence);
 V_CRT_LINKAGE int V_CRT_CALL fgetpos(FILE *stream, i64 *pos);
 V_CRT_LINKAGE int V_CRT_CALL _fileno(FILE *stream);
 V_CRT_LINKAGE FILE * V_CRT_CALL _wfopen(const unsigned short *filename, const unsigned short *mode);
+V_CRT_LINKAGE int V_CRT_CALL freopen_s(FILE **new_stream, const char *filename, const char *mode, FILE *stream);
 V_CRT_LINKAGE FILE * V_CRT_CALL _wfreopen(const unsigned short *filename, const unsigned short *mode, FILE *stream);
 V_CRT_LINKAGE FILE * V_CRT_CALL _wpopen(const unsigned short *command, const unsigned short *mode);
 V_CRT_LINKAGE int V_CRT_CALL _pclose(FILE *stream);

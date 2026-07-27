@@ -1,0 +1,189 @@
+name: Smoke Windows TCC declarations
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - smoke/windows-tcc-declarations-20260727
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-tcc-declarations-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tcc-windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      TCC_GIT: https://github.com/GGRei/tccbin.git
+      TCC_BRANCH: smoke/windows-cancelioex-20260727
+      VFLAGS: -cc tcc -no-retry-compilation
+      VTEST_SHOW_LONGEST_BY_RUNTIME: 3
+      VTEST_SHOW_LONGEST_BY_COMPTIME: 3
+      VTEST_SHOW_LONGEST_BY_TOTALTIME: 3
+    steps:
+      - name: Checkout V smoke branch
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Checkout exact GGRei tccbin smoke branch
+        uses: actions/checkout@v7
+        with:
+          repository: GGRei/tccbin
+          ref: smoke/windows-cancelioex-20260727
+          path: thirdparty/tcc
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact tccbin source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected_origin = 'https://github.com/GGRei/tccbin'
+          $actual_origin = ((& git -C thirdparty/tcc remote get-url origin).Trim() -replace '\.git$', '').TrimEnd('/')
+          if (-not [string]::Equals($actual_origin, $expected_origin, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Unexpected tccbin origin: $actual_origin"
+          }
+
+          $remote_ref = "refs/heads/$env:TCC_BRANCH"
+          $remote_line = @(& git -C thirdparty/tcc ls-remote origin $remote_ref)
+          if ($LASTEXITCODE -ne 0 -or $remote_line.Count -ne 1) {
+            throw "Could not resolve $expected_origin branch $env:TCC_BRANCH"
+          }
+          $remote_head = (($remote_line[0] -split '\s+')[0]).Trim()
+          $checkout_head = (& git -C thirdparty/tcc rev-parse HEAD).Trim()
+          if ($checkout_head -ne $remote_head) {
+            throw "tccbin checkout $checkout_head does not match $remote_ref at $remote_head"
+          }
+
+          $required_paths = @(
+            'thirdparty\tcc\0009-win32-declare-CancelIoEx.patch'
+            'thirdparty\tcc\tests\winapi_cancel_io_ex.c'
+            'thirdparty\tcc\include\winapi\winbase.h'
+            'thirdparty\tcc\lib\kernel32.def'
+          )
+          foreach ($required_path in $required_paths) {
+            if (-not (Test-Path -LiteralPath $required_path -PathType Leaf)) {
+              throw "Required tccbin smoke file is missing: $required_path"
+            }
+          }
+          Write-Host "PROOF tccbin_origin=$actual_origin"
+          Write-Host "PROOF tccbin_branch=$env:TCC_BRANCH"
+          Write-Host "PROOF tccbin_head=$checkout_head"
+
+      - name: Build V with TCC and reject bootstrap fallback
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $build_output = @(& .\makev.bat -tcc 2>&1)
+          $build_exit = $LASTEXITCODE
+          $build_output | ForEach-Object { Write-Host $_ }
+          if ($build_exit -ne 0) {
+            throw "makev.bat -tcc failed with exit code $build_exit"
+          }
+          $build_text = $build_output -join "`n"
+          if ($build_text -match 'retrying bootstrap with Clang/GCC') {
+            throw 'makev.bat used its host-compiler bootstrap fallback'
+          }
+
+          $expected_origin = 'https://github.com/GGRei/tccbin'
+          $actual_origin = ((& git -C thirdparty/tcc remote get-url origin).Trim() -replace '\.git$', '').TrimEnd('/')
+          if (-not [string]::Equals($actual_origin, $expected_origin, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Unexpected tccbin origin after build: $actual_origin"
+          }
+          $remote_ref = "refs/heads/$env:TCC_BRANCH"
+          $remote_line = @(& git -C thirdparty/tcc ls-remote origin $remote_ref)
+          if ($LASTEXITCODE -ne 0 -or $remote_line.Count -ne 1) {
+            throw "Could not resolve $expected_origin branch $env:TCC_BRANCH after build"
+          }
+          $remote_head = (($remote_line[0] -split '\s+')[0]).Trim()
+          $bundle_head = (& git -C thirdparty/tcc rev-parse HEAD).Trim()
+          if ($bundle_head -ne $remote_head) {
+            throw "Built tccbin checkout $bundle_head does not match $remote_ref at $remote_head"
+          }
+          Write-Host "PROOF bootstrap_fallback_used=false"
+          Write-Host "PROOF built_tccbin_origin=$actual_origin"
+          Write-Host "PROOF built_tccbin_branch=$env:TCC_BRANCH"
+          Write-Host "PROOF built_tccbin_head=$bundle_head"
+
+      - name: Build current compiler with TCC and no retry
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $compiler_output = @(& .\v.exe -showcc -cc tcc -no-retry-compilation -g -o .\v_tcc.exe cmd\v 2>&1)
+          $compiler_exit = $LASTEXITCODE
+          $compiler_output | ForEach-Object { Write-Host $_ }
+          if ($compiler_exit -ne 0) {
+            throw "TCC compiler build failed with exit code $compiler_exit"
+          }
+          $normalized_output = ($compiler_output -join "`n") -replace '/', '\'
+          if (-not $normalized_output.Contains('thirdparty\tcc\tcc.exe', [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Compiler build did not invoke the checked-out bundled TCC'
+          }
+          if (-not (Test-Path -LiteralPath .\v_tcc.exe -PathType Leaf)) {
+            throw 'TCC compiler build did not produce v_tcc.exe'
+          }
+          Write-Host 'PROOF compiler_cc=tcc'
+          Write-Host 'PROOF compiler_retry_fallback=false'
+
+      - name: Run new freopen_s regression
+        shell: pwsh
+        run: |
+          & .\v_tcc.exe -cc tcc -no-retry-compilation test vlib\v\gen\c\windows_tcc_freopen_s_test.v
+          if ($LASTEXITCODE -ne 0) {
+            throw "freopen_s Windows TCC regression failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Verify manual Windows CRT prelude
+        shell: pwsh
+        run: |
+          & .\v_tcc.exe -cc tcc -no-retry-compilation test vlib\v\gen\c\cheaders_manual_stdlib_decls_test.v
+          if ($LASTEXITCODE -ne 0) {
+            throw "manual prelude regression failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Run exact fasthttp CancelIoEx regression
+        shell: pwsh
+        run: |
+          & .\v_tcc.exe -cc tcc -no-retry-compilation test vlib\fasthttp\fasthttp_windows_regression_test.c.v
+          if ($LASTEXITCODE -ne 0) {
+            throw "fasthttp CancelIoEx regression failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Run representative PR 27948 regressions
+        shell: pwsh
+        run: |
+          & .\v_tcc.exe -cc tcc -no-retry-compilation test vlib\v\gen\c\windows_tcc_file_reopen_test.v
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows TCC stream regressions failed with exit code $LASTEXITCODE"
+          }
+
+          & .\v_tcc.exe -cc tcc -no-retry-compilation -prod -no-skip-unused -o .\embed_issue_12035.exe vlib\v\gen\c\testdata\embed_issue_12035.vv
+          if ($LASTEXITCODE -ne 0) {
+            throw "embed_issue_12035 compilation failed with exit code $LASTEXITCODE"
+          }
+          $actual = & .\embed_issue_12035.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "embed_issue_12035 execution failed with exit code $LASTEXITCODE"
+          }
+          if (($actual -join "`n").Trim() -ne 'issue-12035') {
+            throw "embed_issue_12035 output mismatch: $actual"
+          }
+
+      - name: Install SQLite for C output regression suite
+        shell: pwsh
+        run: .\.github\workflows\windows-install-sqlite.bat
+
+      - name: Run complete C output regression suite
+        shell: pwsh
+        run: |
+          & .\v_tcc.exe -cc tcc -no-retry-compilation vlib\v\gen\c\coutput_test.v
+          if ($LASTEXITCODE -ne 0) {
+            throw "complete C output regression suite failed with exit code $LASTEXITCODE"
+          }
