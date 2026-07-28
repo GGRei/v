@@ -3,6 +3,9 @@ import rand
 
 const makefile_path = os.join_path(@VEXEROOT, 'GNUmakefile')
 const selector_path = os.join_path(@VEXEROOT, 'cmd', 'tools', 'select_linux_tcc.sh')
+const git_argv_path = os.join_path(@VEXEROOT, 'cmd', 'tools', 'git_argv.sh')
+const linux_tcc_build_script_path = os.join_path(@VEXEROOT, 'thirdparty', 'build_scripts',
+	'thirdparty-linux-amd64_tcc.sh')
 
 struct TccHistoryFixture {
 	root             string
@@ -25,6 +28,105 @@ fn run_checked(command string) string {
 fn write_executable(path string, contents string) {
 	os.write_file(path, contents) or { panic(err) }
 	os.chmod(path, 0o755) or { panic(err) }
+}
+
+fn run_linux_tcc_source_git_case(with_options bool) {
+	root := os.join_path(os.vtmp_dir(), 'v_make_tcc_source_${rand.ulid()}')
+	defer {
+		os.rmdir_all(root) or {}
+	}
+
+	tcc_dir := os.join_path(root, 'thirdparty', 'tcc')
+	tinycc_source := os.join_path(root, 'tinycc-source')
+	poison_bin := os.join_path(root, 'poison-bin')
+	git_wrapper := os.join_path(root, 'custom-git')
+	git_trace := os.join_path(root, 'git-trace')
+	bare_git_trace := os.join_path(root, 'bare-git-trace')
+	real_git := os.find_abs_path_of_executable('git') or { panic(err) }
+	real_make := os.find_abs_path_of_executable('make') or { panic(err) }
+	os.mkdir_all(os.join_path(root, 'vlib', 'v')) or { panic(err) }
+	os.mkdir_all(os.join_path(root, 'cmd', 'tools')) or { panic(err) }
+	os.mkdir_all(os.join_path(root, 'thirdparty', 'build_scripts')) or { panic(err) }
+	os.mkdir_all(os.join_path(tcc_dir, 'lib')) or { panic(err) }
+	os.mkdir_all(poison_bin) or { panic(err) }
+	os.write_file(os.join_path(root, 'vlib', 'v', 'compiler_errors_test.v'), '') or { panic(err) }
+	os.symlink(makefile_path, os.join_path(root, 'GNUmakefile')) or { panic(err) }
+	os.symlink(git_argv_path, os.join_path(root, 'cmd', 'tools', 'git_argv.sh')) or { panic(err) }
+	os.symlink(linux_tcc_build_script_path, os.join_path(root, 'thirdparty', 'build_scripts',
+		'thirdparty-linux-amd64_tcc.sh')) or { panic(err) }
+
+	configure_source_repo(tcc_dir)
+	write_executable(os.join_path(tcc_dir, 'tcc.exe'), '#!/bin/sh\necho old-tcc\n')
+	os.write_file(os.join_path(tcc_dir, 'lib', 'libgc.a'), 'preserved-libgc\n') or { panic(err) }
+	os.write_file(os.join_path(tcc_dir, 'lib', 'build_libgc.sh'), 'preserved build helper\n') or {
+		panic(err)
+	}
+	os.write_file(os.join_path(tcc_dir, 'README.md'), 'preserved readme\n') or { panic(err) }
+	run_checked('git -C ${os.quoted_path(tcc_dir)} add .')
+	run_checked('git -C ${os.quoted_path(tcc_dir)} commit --quiet -m initial-bundle')
+
+	configure_source_repo(tinycc_source)
+	write_executable(os.join_path(tinycc_source, 'configure'), '#!/bin/sh
+set -eu
+prefix=
+for arg in "\$@"; do
+	case "\$arg" in
+		--prefix=*) prefix="\${arg#--prefix=}" ;;
+	esac
+done
+test -n "\$prefix"
+printf "%s\\n" "\$prefix" > .test-prefix
+')
+	write_executable(os.join_path(tinycc_source, 'fake-tcc'), '#!/bin/sh
+if [ "\${1:-}" = "--version" ]; then
+	echo source-test-tcc
+fi
+exit 0
+')
+	os.write_file(os.join_path(tinycc_source, 'Makefile'), 'all:
+	@:
+install:
+	@prefix="\$\$(cat .test-prefix)"; mkdir -p "\$\$prefix/lib/tcc/include"; cp fake-tcc "\$\$prefix/tcc"; printf "/* source test */\\n" > "\$\$prefix/lib/tcc/include/stddef.h"
+') or {
+		panic(err)
+	}
+	run_checked('git -C ${os.quoted_path(tinycc_source)} add .')
+	run_checked('git -C ${os.quoted_path(tinycc_source)} commit --quiet -m fake-tinycc')
+	tinycc_sha := run_checked('git -C ${os.quoted_path(tinycc_source)} rev-parse HEAD').trim_space()
+
+	write_executable(git_wrapper, '#!/bin/sh
+printf "%s\\n" "\$*" >> ${os.quoted_path(git_trace)}
+exec ${os.quoted_path(real_git)} "\$@"
+')
+	write_executable(os.join_path(poison_bin, 'git'), '#!/bin/sh
+echo bare-git >> ${os.quoted_path(bare_git_trace)}
+exit 97
+')
+	git_options := if with_options { ' -c vlang.source-test=enabled' } else { '' }
+	git_spec := '${git_wrapper}${git_options}'
+	path := '${poison_bin}:/usr/bin:/bin'
+	result :=
+		os.execute('cd ${os.quoted_path(root)} && PATH=${os.quoted_path(path)} ${os.quoted_path(real_make)} --no-print-directory latest_tcc_source VROOT=. TCCOS=linux TCCARCH=amd64 TCC_COMMIT=${tinycc_sha} TCC_REPO=${os.quoted_path('file://${tinycc_source}')} GIT=${os.quoted_path(git_spec)} 2>&1')
+	assert result.exit_code == 0, result.output
+	assert !os.exists(bare_git_trace), result.output
+	trace_contents := os.read_file(git_trace) or { panic(err) }
+	trace_lines := trace_contents.trim_space().split_into_lines()
+	assert trace_lines.len == 5, trace_lines.str()
+	option_prefix := if with_options { '-c vlang.source-test=enabled ' } else { '' }
+	for i, operation in ['clone ', 'checkout ', 'rev-parse ', 'add ', 'commit '] {
+		assert trace_lines[i].starts_with('${option_prefix}${operation}'), trace_lines.str()
+	}
+	assert os.execute('${os.quoted_path(os.join_path(tcc_dir, 'tcc.exe'))} --version').output.trim_space() == 'source-test-tcc'
+	libgc := os.read_file(os.join_path(tcc_dir, 'lib', 'libgc.a')) or { panic(err) }
+	assert libgc == 'preserved-libgc\n'
+}
+
+fn test_linux_tcc_source_uses_custom_git_argv_for_every_operation() {
+	if os.user_os() != 'linux' {
+		return
+	}
+	run_linux_tcc_source_git_case(false)
+	run_linux_tcc_source_git_case(true)
 }
 
 fn compatible_tcc_script(version string) string {
@@ -153,6 +255,7 @@ fn new_tcc_history_fixture(with_compatible_ancestor bool) TccHistoryFixture {
 	os.symlink(selector_path, os.join_path(vroot, 'cmd', 'tools', 'select_linux_tcc.sh')) or {
 		panic(err)
 	}
+	os.symlink(git_argv_path, os.join_path(vroot, 'cmd', 'tools', 'git_argv.sh')) or { panic(err) }
 	run_checked('git init --quiet --bare ${os.quoted_path(remote)}')
 	configure_source_repo(source)
 	run_checked('git -C ${os.quoted_path(source)} checkout --quiet -b thirdparty-linux-amd64')
@@ -317,6 +420,17 @@ fn test_linux_tcc_preserves_git_command_options() {
 	assert multiple_options_result.output.contains('Using newest host-compatible TCC commit ${fixture.compatible_sha}'), multiple_options_result.output
 
 	assert_historical_fallback(fixture)
+
+	wrapper_path := os.join_path(fixture.root, 'git-wrapper')
+	wrapper_log := os.join_path(fixture.root, 'git-wrapper.log')
+	write_executable(wrapper_path,
+		'#!/bin/sh\nprintf "%s\\n" "\$*" >> ${os.quoted_path(wrapper_log)}\nexec git "\$@"\n')
+	wrapper_result := os.execute('${fixture.latest_cmd} GIT=${os.quoted_path(wrapper_path)} 2>&1')
+	assert wrapper_result.exit_code == 0, wrapper_result.output
+	assert wrapper_result.output.contains('Using newest host-compatible TCC commit ${fixture.compatible_sha}'), wrapper_result.output
+	assert os.read_file(wrapper_log)!.contains('ls-remote')
+
+	assert_historical_fallback(fixture)
 }
 
 fn test_linux_tcc_does_not_evaluate_git_command_during_make_parsing() {
@@ -343,6 +457,106 @@ fn test_linux_tcc_does_not_evaluate_git_command_during_make_parsing() {
 	}
 }
 
+fn test_linux_tcc_git_detection_does_not_depend_on_shell_export() {
+	if os.user_os() != 'linux' {
+		return
+	}
+	root := os.join_path(os.vtmp_dir(), 'v_make_43_git_${rand.ulid()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	make_43_shell := os.join_path(root, 'make-4.3-shell')
+	write_executable(make_43_shell, '#!/bin/sh\nunset GIT GIT_PROGRAM\nexec /bin/sh "\$@"\n')
+	missing_git := 'v-missing-git-${rand.ulid()}'
+	result :=
+		os.execute('make --no-print-directory -pn -f ${os.quoted_path(makefile_path)} latest_tcc VROOT=${os.quoted_path(root)} TCCOS=linux TCCARCH=amd64 GIT=${os.quoted_path(missing_git)} SHELL=${os.quoted_path(make_43_shell)} 2>&1')
+	assert result.exit_code == 0, result.output
+	assert result.output.contains("select_linux_tcc.sh' latest"), result.output
+
+	makefile_contents := os.read_file(makefile_path)!
+	linux_git_block :=
+		makefile_contents.all_after('ifeq ($(TCCOS),linux)\n').all_before('\nelse\nexport GIT\nHAS_GIT :=')
+	assert linux_git_block.contains('export GIT'), linux_git_block
+	assert !linux_git_block.contains('HAS_GIT := $(shell'), linux_git_block
+	assert !linux_git_block.contains('command -v $(GIT)'), linux_git_block
+	assert !linux_git_block.contains('$$GIT_PROGRAM'), linux_git_block
+	assert !linux_git_block.contains('GIT_PROGRAM :='), linux_git_block
+}
+
+fn test_linux_missing_or_unsafe_git_preserves_existing_vc() {
+	if os.user_os() != 'linux' {
+		return
+	}
+	root := os.join_path(os.vtmp_dir(), 'v_make_vc_git_${rand.ulid()}')
+	vc_dir := os.join_path(root, 'vc')
+	os.mkdir_all(vc_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	os.symlink(makefile_path, os.join_path(root, 'GNUmakefile')) or { panic(err) }
+	vc_file := os.join_path(vc_dir, 'v.c')
+	os.write_file(vc_file, '/* preserve manual vc */\n') or { panic(err) }
+	sentinel := os.join_path(root, 'sentinel')
+	git_specs := [
+		'v-missing-git-${rand.ulid()}',
+		'git; touch ${sentinel} #',
+		'git $(touch ${sentinel})',
+	]
+	for git_spec in git_specs {
+		result :=
+			os.execute('cd ${os.quoted_path(root)} && make --no-print-directory -f ${os.quoted_path(makefile_path)} latest_vc VROOT=${os.quoted_path(root)} GIT_ARGV_RUNNER=${os.quoted_path(git_argv_path)} TCCOS=linux GIT=${os.quoted_path(git_spec)} 2>&1')
+		assert result.exit_code == 0, '${git_spec}:\n${result.output}'
+		assert result.output.contains('using existing ./vc/v.c'), result.output
+		assert os.read_file(vc_file)! == '/* preserve manual vc */\n'
+		assert !os.exists(sentinel)
+
+		fresh_result :=
+			os.execute('cd ${os.quoted_path(root)} && make --no-print-directory -f ${os.quoted_path(makefile_path)} fresh_vc VROOT=${os.quoted_path(root)} GIT_ARGV_RUNNER=${os.quoted_path(git_argv_path)} TCCOS=linux GIT=${os.quoted_path(git_spec)} 2>&1')
+		assert fresh_result.exit_code != 0, '${git_spec}:\n${fresh_result.output}'
+		assert os.read_file(vc_file)! == '/* preserve manual vc */\n'
+		assert !os.exists(sentinel)
+	}
+
+	remote := os.join_path(root, 'vc.git')
+	source := os.join_path(root, 'vc-source')
+	run_checked('git init --quiet --bare ${os.quoted_path(remote)}')
+	configure_source_repo(source)
+	os.write_file(os.join_path(source, 'v.c'), '/* cloned vc */\n') or { panic(err) }
+	run_checked('git -C ${os.quoted_path(source)} add v.c')
+	run_checked('git -C ${os.quoted_path(source)} commit --quiet -m vc')
+	run_checked('git -C ${os.quoted_path(source)} push --quiet ${os.quoted_path(remote)} HEAD:refs/heads/master')
+	run_checked('git -C ${os.quoted_path(remote)} symbolic-ref HEAD refs/heads/master')
+
+	git_path := run_checked('command -v git').trim_space()
+	wrapper_path := os.join_path(root, 'git-wrapper')
+	wrapper_log := os.join_path(root, 'git-wrapper.log')
+	write_executable(wrapper_path,
+		'#!/bin/sh\nprintf "%s\\n" "\$*" >> ${os.quoted_path(wrapper_log)}\nexec ${os.quoted_path(git_path)} "\$@"\n')
+	valid_git_specs := [
+		git_path,
+		'git -c protocol.file.allow=always',
+		wrapper_path,
+	]
+	os.rmdir_all(vc_dir) or { panic(err) }
+	bootstrap_result :=
+		os.execute('cd ${os.quoted_path(root)} && make --no-print-directory -f ${os.quoted_path(makefile_path)} latest_vc VROOT=${os.quoted_path(root)} GIT_ARGV_RUNNER=${os.quoted_path(git_argv_path)} VCREPO=${os.quoted_path(remote)} TCCOS=linux GIT=${os.quoted_path(git_path)} 2>&1')
+	assert bootstrap_result.exit_code == 0, bootstrap_result.output
+	assert os.read_file(vc_file)! == '/* cloned vc */\n'
+
+	for git_spec in valid_git_specs {
+		result :=
+			os.execute('cd ${os.quoted_path(root)} && make --no-print-directory -f ${os.quoted_path(makefile_path)} fresh_vc VROOT=${os.quoted_path(root)} GIT_ARGV_RUNNER=${os.quoted_path(git_argv_path)} VCREPO=${os.quoted_path(remote)} TCCOS=linux GIT=${os.quoted_path(git_spec)} 2>&1')
+		assert result.exit_code == 0, '${git_spec}:\n${result.output}'
+		assert os.read_file(vc_file)! == '/* cloned vc */\n'
+		latest_result :=
+			os.execute('cd ${os.quoted_path(root)} && make --no-print-directory -f ${os.quoted_path(makefile_path)} latest_vc VROOT=${os.quoted_path(root)} GIT_ARGV_RUNNER=${os.quoted_path(git_argv_path)} VCREPO=${os.quoted_path(remote)} TCCOS=linux GIT=${os.quoted_path(git_spec)} 2>&1')
+		assert latest_result.exit_code == 0, '${git_spec}:\n${latest_result.output}'
+		assert os.read_file(vc_file)! == '/* cloned vc */\n'
+	}
+	assert os.read_file(wrapper_log)!.contains('clone')
+}
+
 fn test_linux_tcc_rejects_unsafe_git_command_data() {
 	if os.user_os() != 'linux' {
 		return
@@ -352,6 +566,7 @@ fn test_linux_tcc_rejects_unsafe_git_command_data() {
 	defer {
 		os.rmdir_all(root) or {}
 	}
+	os.mkdir_all(os.join_path(root, 'thirdparty')) or { panic(err) }
 	sentinel := os.join_path(root, 'sentinel')
 	unsafe_git_specs := [
 		'git; touch ${sentinel}',
@@ -365,7 +580,7 @@ fn test_linux_tcc_rejects_unsafe_git_command_data() {
 		'git\n-c protocol.file.allow=always',
 	]
 	selector_args := '${os.quoted_path(selector_path)} fresh ${os.quoted_path(os.join_path(root,
-		'tcc'))} unused amd64 ${os.quoted_path(root)}'
+		'thirdparty', 'tcc'))} unused amd64 ${os.quoted_path(root)}'
 	for git_spec in unsafe_git_specs {
 		result := os.execute('GIT=${os.quoted_path(git_spec)} bash ${selector_args} 2>&1')
 		assert result.exit_code == 2, '${git_spec}:\n${result.output}'
@@ -377,6 +592,88 @@ fn test_linux_tcc_rejects_unsafe_git_command_data() {
 	missing_result := os.execute('GIT=${os.quoted_path(missing_git)} bash ${selector_args} 2>&1')
 	assert missing_result.exit_code == 2, missing_result.output
 	assert missing_result.output.contains('the Git executable was not found: ${missing_git}'), missing_result.output
+}
+
+fn test_linux_tcc_missing_git_preserves_latest_and_fails_fresh() {
+	if os.user_os() != 'linux' {
+		return
+	}
+	fixture := new_tcc_history_fixture(true)
+	defer {
+		os.rmdir_all(fixture.root) or {}
+	}
+	run_checked('${fixture.fresh_cmd} 2>&1')
+	assert_historical_fallback(fixture)
+	head_before :=
+		run_checked('git -C ${os.quoted_path(fixture.tcc_dir)} rev-parse HEAD').trim_space()
+	metadata_path := os.join_path(compatible_marker_dir(fixture), 'metadata')
+	metadata_before := os.read_file(metadata_path)!
+	missing_git := 'v-missing-git-${rand.ulid()}'
+
+	latest_result := os.execute('${fixture.latest_cmd} GIT=${os.quoted_path(missing_git)} 2>&1')
+	assert latest_result.exit_code == 0, latest_result.output
+	assert latest_result.output.contains('the Git executable was not found: ${missing_git}; skipping the Linux TCC refresh.'), latest_result.output
+	assert run_checked('git -C ${os.quoted_path(fixture.tcc_dir)} rev-parse HEAD').trim_space() == head_before
+	assert os.read_file(metadata_path)! == metadata_before
+	assert_historical_fallback(fixture)
+
+	explicit_latest_result :=
+		os.execute('${fixture.latest_cmd} GIT=${os.quoted_path(missing_git)} VFLAGS="-cc tcc" 2>&1')
+	assert explicit_latest_result.exit_code == 0, explicit_latest_result.output
+	assert explicit_latest_result.output.contains('preserving the existing host-compatible TCC bundle'), explicit_latest_result.output
+	assert_historical_fallback(fixture)
+
+	fresh_result := os.execute('${fixture.fresh_cmd} GIT=${os.quoted_path(missing_git)} 2>&1')
+	assert fresh_result.exit_code != 0, fresh_result.output
+	assert fresh_result.output.contains('the Git executable was not found: ${missing_git}'), fresh_result.output
+	assert !os.exists(fixture.tcc_dir)
+
+	empty_latest_result :=
+		os.execute('${fixture.latest_cmd} GIT=${os.quoted_path(missing_git)} 2>&1')
+	assert empty_latest_result.exit_code == 0, empty_latest_result.output
+	assert empty_latest_result.output.contains('skipping the Linux TCC refresh'), empty_latest_result.output
+	assert !os.exists(fixture.tcc_dir)
+	assert os.ls(fixture.tmp_dir)! == []
+
+	explicit_empty_result :=
+		os.execute('${fixture.latest_cmd} GIT=${os.quoted_path(missing_git)} VFLAGS="-cc=tcc" 2>&1')
+	assert explicit_empty_result.exit_code != 0, explicit_empty_result.output
+	assert explicit_empty_result.output.contains("existing TCC bundle failed its host-compatibility probe; explicit '-cc tcc' cannot continue"), explicit_empty_result.output
+	assert !os.exists(fixture.tcc_dir)
+
+	os.mkdir_all(os.join_path(fixture.tcc_dir, 'lib')) or { panic(err) }
+	os.write_file(os.join_path(fixture.tcc_dir, 'lib', 'libgc.a'), 'broken-libgc\n') or {
+		panic(err)
+	}
+	os.symlink('/bin/false', os.join_path(fixture.tcc_dir, 'tcc.exe')) or { panic(err) }
+	broken_tcc_result :=
+		os.execute('${fixture.latest_cmd} GIT=${os.quoted_path(missing_git)} VFLAGS="-cc tcc" 2>&1')
+	assert broken_tcc_result.exit_code != 0, broken_tcc_result.output
+	assert broken_tcc_result.output.contains('existing TCC bundle failed its host-compatibility probe'), broken_tcc_result.output
+	assert os.is_link(os.join_path(fixture.tcc_dir, 'tcc.exe'))
+	assert os.ls(fixture.tmp_dir)! == []
+
+	source_cmd := fixture.latest_cmd.replace_once(' latest_tcc ', ' latest_tcc_source ')
+	missing_source_result := os.execute('${source_cmd} GIT=${os.quoted_path(missing_git)} 2>&1')
+	assert missing_source_result.exit_code != 0, missing_source_result.output
+	assert missing_source_result.output.contains('the Git executable was not found: ${missing_git}'), missing_source_result.output
+	assert os.is_link(os.join_path(fixture.tcc_dir, 'tcc.exe'))
+	assert os.read_file(os.join_path(fixture.tcc_dir, 'lib', 'libgc.a'))! == 'broken-libgc\n'
+
+	source_sentinel := os.join_path(fixture.root, 'source-sentinel')
+	hostile_source_git := 'git; touch ${source_sentinel} #'
+	hostile_source_result :=
+		os.execute('${source_cmd} GIT=${os.quoted_path(hostile_source_git)} 2>&1')
+	assert hostile_source_result.exit_code != 0, hostile_source_result.output
+	assert hostile_source_result.output.contains('the Git command contains unsupported characters'), hostile_source_result.output
+	assert !os.exists(source_sentinel)
+	assert os.is_link(os.join_path(fixture.tcc_dir, 'tcc.exe'))
+	assert os.read_file(os.join_path(fixture.tcc_dir, 'lib', 'libgc.a'))! == 'broken-libgc\n'
+
+	source_result := os.execute('${source_cmd} 2>&1')
+	assert source_result.exit_code != 0, source_result.output
+	assert source_result.output.contains('No upstream TinyCC build script is available'), source_result.output
+	assert_historical_fallback(fixture)
 }
 
 fn test_linux_tcc_explicit_request_does_not_hide_missing_compatible_history() {

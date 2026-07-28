@@ -11,27 +11,17 @@ tmp_root="${TMPDIR:-/tmp}"
 expected_branch="thirdparty-linux-${tcc_arch}"
 unknown_branch='thirdparty-unknown-unknown'
 marker_name='vlang-compatible-tcc'
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
-declare -a git_cmd
-git_argv_spec="${GIT:-git}"
-# GIT is a space-delimited argv prefix.  Use a wrapper without spaces when one
-# argument itself would otherwise need shell quoting.
-if [[ ! "$git_argv_spec" =~ ^[-A-Za-z0-9_./:=+@%,\ ]+$ ]]; then
-	echo 'the Git command contains unsupported characters; use space-separated arguments and a wrapper path without spaces' >&2
-	exit 2
-fi
-read -r -a git_cmd <<< "$git_argv_spec"
-if [ "${#git_cmd[@]}" -eq 0 ] || [ -z "${git_cmd[0]}" ]; then
-	echo 'the Git command must be non-empty' >&2
-	exit 2
-fi
-if ! command -v -- "${git_cmd[0]}" >/dev/null 2>&1; then
-	echo "the Git executable was not found: ${git_cmd[0]}" >&2
-	exit 2
-fi
+# shellcheck source=git_argv.sh
+source "$script_dir/git_argv.sh"
+parse_git_argv
 
-run_git() {
-	"${git_cmd[@]}" "$@"
+tcc_is_required() {
+	case " ${VFLAGS:-} " in
+		*" -cc tcc "* | *" -cc=tcc "*) return 0 ;;
+	esac
+	return 1
 }
 
 case "$mode" in
@@ -63,6 +53,25 @@ tcc_dir="$(cd "$(dirname "$tcc_dir")" && pwd -P)/$(basename "$tcc_dir")"
 if [ "$tcc_dir" != "$vroot/thirdparty/tcc" ]; then
 	echo "the Linux TCC bundle must be located at ${vroot}/thirdparty/tcc, got ${tcc_dir}" >&2
 	exit 2
+fi
+
+git_available=1
+if ! git_executable_is_available; then
+	git_available=0
+	if [ "$mode" = 'fresh' ]; then
+		echo "the Git executable was not found: ${git_cmd[0]}" >&2
+		exit 2
+	fi
+	if ! tcc_is_required; then
+		echo "the Git executable was not found: ${git_cmd[0]}; skipping the Linux TCC refresh." >&2
+		exit 0
+	fi
+fi
+
+if [ "$git_available" != 1 ] && [ ! -d "$tmp_root" ]; then
+	echo "the Git executable was not found: ${git_cmd[0]}" >&2
+	echo "the temporary directory required to validate the existing TCC bundle is unavailable: ${tmp_root}" >&2
+	exit 1
 fi
 
 probe_dir="$(mktemp -d "${tmp_root%/}/v-tcc-host-probe.XXXXXX")"
@@ -116,13 +125,6 @@ clone_branch() {
 	local branch="$1"
 	rm -rf "$tcc_dir"
 	run_git clone --filter=blob:none --quiet --branch "$branch" "$tcc_repo" "$tcc_dir"
-}
-
-tcc_is_required() {
-	case " ${VFLAGS:-} " in
-		*" -cc tcc "* | *" -cc=tcc "*) return 0 ;;
-	esac
-	return 1
 }
 
 use_system_compiler_or_fail() {
@@ -326,7 +328,15 @@ latest_bundle() {
 	select_compatible_history "$remote_head_sha"
 }
 
-if [ "$mode" = 'fresh' ]; then
+if [ "$git_available" != 1 ]; then
+	if probe_bundle; then
+		echo "the Git executable was not found: ${git_cmd[0]}; preserving the existing host-compatible TCC bundle." >&2
+		exit 0
+	fi
+	echo "the Git executable was not found: ${git_cmd[0]}, and the existing TCC bundle failed its host-compatibility probe; explicit '-cc tcc' cannot continue." >&2
+	sed 's/^/  /' "$probe_log" >&2
+	exit 1
+elif [ "$mode" = 'fresh' ]; then
 	fresh_bundle
 else
 	latest_bundle

@@ -33,6 +33,16 @@ export TCC_FOLDER="${TCC_FOLDER:-thirdparty/tcc.$TCC_COMMIT}"
 export TCC_REPO="${TCC_REPO:-https://repo.or.cz/tinycc.git}"
 export CC="${CC:-gcc}"
 
+git_argv_runner="${GIT_ARGV_RUNNER:-cmd/tools/git_argv.sh}"
+if ! test -r "$git_argv_runner"; then
+  echo "the Git argv helper was not found: $git_argv_runner" >&2
+  exit 2
+fi
+# shellcheck source=../../cmd/tools/git_argv.sh
+source "$git_argv_runner"
+parse_git_argv
+require_git_executable
+
 echo " BUILD_CMD: \`$BUILD_CMD\`"
 echo "        CC: $CC"
 echo "TCC_COMMIT: $TCC_COMMIT"
@@ -46,12 +56,13 @@ rsync -a thirdparty/tcc/ thirdparty/tcc.original/
 
 pushd .
 
-git clone "$TCC_REPO" tinycc
+run_git clone "$TCC_REPO" tinycc
 
 cd tinycc
 
-git checkout $TCC_COMMIT
-export TCC_COMMIT_FULL_HASH=$(git rev-parse HEAD)
+run_git checkout "$TCC_COMMIT"
+TCC_COMMIT_FULL_HASH="$(run_git rev-parse HEAD)"
+export TCC_COMMIT_FULL_HASH
 
 ## Note: crt1.o is located in:
 ## /usr/lib/x86_64-linux-gnu on Debian/Ubuntu
@@ -92,8 +103,8 @@ $TCC_FOLDER/tcc.exe -v -v
 
 pushd .
 cd $TCC_FOLDER
-git add .
-git commit -m "build with \`$BUILD_CMD\`"
+run_git add .
+run_git commit -m "build with \`$BUILD_CMD\`"
 popd
 
 echo "tcc commit: $TCC_COMMIT , full hash: $TCC_COMMIT_FULL_HASH . The tcc executable is ready in $TCC_FOLDER/tcc.exe "
