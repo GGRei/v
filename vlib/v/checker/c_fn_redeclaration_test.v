@@ -134,6 +134,19 @@ fn test_fasthttp_and_veb_linux_c_fn_redeclarations_are_compatible() {
 	assert result.exit_code == 0, result.output
 }
 
+fn test_os_and_vinix_gethostname_c_fn_redeclarations_are_compatible() {
+	root := write_c_fn_redeclaration_project('c_fn_os_vinix_gethostname_redeclaration', {
+		'v.mod':                 "Module { name: 'c_fn_os_vinix_gethostname_redeclaration' }\n"
+		'vinixabi/vinixabi.c.v': 'module vinixabi\n\nfn C.gethostname(name charptr, len u64) int\n\npub fn touch() {}\n'
+		'main.v':                'module main\n\nimport os as _\nimport vinixabi as _\n\nfn main() {}\n'
+	})!
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	result := os.execute('${c_fn_redeclaration_vexe} -os vinix -check ${os.quoted_path(root)}')
+	assert result.exit_code == 0, result.output
+}
+
 fn test_trace_calls_and_os_pthread_self_redeclarations_are_compatible() {
 	root := write_c_fn_redeclaration_project('c_fn_trace_calls_os_redeclaration', {
 		'main.v': 'module main\n\nimport os\n\nfn main() {\n\t_ := os.args\n}\n'

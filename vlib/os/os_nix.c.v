@@ -62,7 +62,11 @@ fn C.readlink(&char, &char, i32) i32
 
 fn C.link(&char, &char) i32
 
-fn C.gethostname(&char, i32) i32
+$if vinix {
+	fn C.gethostname(name &char, len u64) i32
+} $else {
+	fn C.gethostname(name &char, len usize) i32
+}
 
 // Note: not available on Android fn C.getlogin_r(&char, int) int
 fn C.getlogin() &char
@@ -257,7 +261,13 @@ pub fn hostname() !string {
 	mut hstnme := ''
 	size := 256
 	buf := unsafe { &char(malloc_noscan(size)) }
-	if C.gethostname(buf, size) == 0 {
+	mut result := 0
+	$if vinix {
+		result = C.gethostname(buf, u64(size))
+	} $else {
+		result = C.gethostname(buf, usize(size))
+	}
+	if result == 0 {
 		hstnme = unsafe { cstring_to_vstring(buf) }
 		unsafe { free(buf) }
 		return hstnme
