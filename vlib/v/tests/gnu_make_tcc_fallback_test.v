@@ -169,7 +169,9 @@ fn new_tcc_history_fixture(with_compatible_ancestor bool) TccHistoryFixture {
 	create_unknown_branch(root, remote)
 	create_musl_branch(root, remote)
 
-	make_args := 'VROOT=${os.quoted_path(vroot)} TCCREPO=${os.quoted_path('file://${remote}')} TMPDIR=${os.quoted_path(tmp_dir)} TCCOS=linux TCCARCH=amd64'
+	// Keep fixture intent independent from the compiler flags of the outer test lane.
+	// Individual scenarios can still override VFLAGS after these default arguments.
+	make_args := 'VROOT=${os.quoted_path(vroot)} TCCREPO=${os.quoted_path('file://${remote}')} TMPDIR=${os.quoted_path(tmp_dir)} TCCOS=linux TCCARCH=amd64 VFLAGS='
 	fresh_cmd := 'cd ${os.quoted_path(vroot)} && make --no-print-directory fresh_tcc ${make_args}'
 	latest_cmd := 'cd ${os.quoted_path(vroot)} && make --no-print-directory latest_tcc ${make_args}'
 	return TccHistoryFixture{
