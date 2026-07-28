@@ -13,10 +13,12 @@ on:
       - '!**/openbsd_ci.yml'
       - '!ci/openbsd_ci.vsh'
       - '!cmd/tools/builders/**.v'
+      - '!cmd/tools/vwatch_stdin_test.v'
   pull_request:
     paths:
       - 'cmd/v/**'
       - 'cmd/tools/builders/**.v'
+      - 'cmd/tools/vwatch_stdin_test.v'
       # cmd/tools essentials synced with cmd/tools/vtest-self.v:essential_list
       - 'cmd/tools/vvet/**'
       - 'cmd/tools/vdoc/**'

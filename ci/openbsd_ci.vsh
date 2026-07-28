@@ -125,6 +125,9 @@ fn test_vwatch_stdin() {
 	} else {
 		println('### Test vwatch terminal input')
 	}
+	for tool in ['script', 'sh', 'sleep'] {
+		exec('command -v ${tool}')
+	}
 	exec('v -silent test cmd/tools/vwatch_stdin_test.v')
 	if common.is_github_job {
 		println('::endgroup::')
