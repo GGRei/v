@@ -7,11 +7,32 @@ tcc_dir="${2:-}"
 tcc_repo="${3:-}"
 tcc_arch="${4:-}"
 vroot="${5:-}"
-git_cmd="${GIT:-git}"
 tmp_root="${TMPDIR:-/tmp}"
 expected_branch="thirdparty-linux-${tcc_arch}"
 unknown_branch='thirdparty-unknown-unknown'
 marker_name='vlang-compatible-tcc'
+
+declare -a git_cmd
+git_argv_spec="${GIT:-git}"
+# GIT is a space-delimited argv prefix.  Use a wrapper without spaces when one
+# argument itself would otherwise need shell quoting.
+if [[ ! "$git_argv_spec" =~ ^[-A-Za-z0-9_./:=+@%,\ ]+$ ]]; then
+	echo 'the Git command contains unsupported characters; use space-separated arguments and a wrapper path without spaces' >&2
+	exit 2
+fi
+read -r -a git_cmd <<< "$git_argv_spec"
+if [ "${#git_cmd[@]}" -eq 0 ] || [ -z "${git_cmd[0]}" ]; then
+	echo 'the Git command must be non-empty' >&2
+	exit 2
+fi
+if ! command -v -- "${git_cmd[0]}" >/dev/null 2>&1; then
+	echo "the Git executable was not found: ${git_cmd[0]}" >&2
+	exit 2
+fi
+
+run_git() {
+	"${git_cmd[@]}" "$@"
+}
 
 case "$mode" in
 	fresh | latest) ;;
@@ -88,13 +109,13 @@ probe_bundle() {
 }
 
 remote_has_branch() {
-	"$git_cmd" ls-remote --exit-code --heads "$tcc_repo" "refs/heads/$1" >/dev/null 2>&1
+	run_git ls-remote --exit-code --heads "$tcc_repo" "refs/heads/$1" >/dev/null 2>&1
 }
 
 clone_branch() {
 	local branch="$1"
 	rm -rf "$tcc_dir"
-	"$git_cmd" clone --filter=blob:none --quiet --branch "$branch" "$tcc_repo" "$tcc_dir"
+	run_git clone --filter=blob:none --quiet --branch "$branch" "$tcc_repo" "$tcc_dir"
 }
 
 tcc_is_required() {
@@ -157,11 +178,11 @@ find_compatible_ancestor() {
 	local start_sha="$1"
 	local skip_sha="$2"
 	local candidate_sha
-	for candidate_sha in $("$git_cmd" -C "$tcc_dir" rev-list "$start_sha"); do
+	for candidate_sha in $(run_git -C "$tcc_dir" rev-list "$start_sha"); do
 		if [ "$candidate_sha" = "$skip_sha" ]; then
 			continue
 		fi
-		"$git_cmd" -C "$tcc_dir" checkout --detach --quiet "$candidate_sha"
+		run_git -C "$tcc_dir" checkout --detach --quiet "$candidate_sha"
 		if probe_bundle; then
 			printf '%s\n' "$candidate_sha"
 			return 0
@@ -176,7 +197,7 @@ select_compatible_history() {
 	echo "TCC ${expected_branch}@${remote_head_sha} is not host-compatible:" >&2
 	sed 's/^/  /' "$probe_log" >&2
 	if compatible_sha="$(find_compatible_ancestor "$remote_head_sha" "$remote_head_sha")"; then
-		"$git_cmd" -C "$tcc_dir" checkout --detach --quiet "$compatible_sha"
+		run_git -C "$tcc_dir" checkout --detach --quiet "$compatible_sha"
 		write_marker "$remote_head_sha" "$compatible_sha"
 		echo "Using newest host-compatible TCC commit ${compatible_sha} from ${expected_branch}."
 		return 0
@@ -187,7 +208,7 @@ select_compatible_history() {
 
 assert_clean_checkout() {
 	local status
-	status="$("$git_cmd" -C "$tcc_dir" status --porcelain --untracked-files=all)"
+	status="$(run_git -C "$tcc_dir" status --porcelain --untracked-files=all)"
 	if [ -n "$status" ]; then
 		echo 'Refusing to refresh a dirty TCC checkout:' >&2
 		printf '%s\n' "$status" >&2
@@ -200,11 +221,11 @@ validate_detached_marker() {
 	local current_sha
 	local remote_head_sha
 	[ -f "$metadata" ] || return 1
-	current_sha="$("$git_cmd" -C "$tcc_dir" rev-parse HEAD)"
+	current_sha="$(run_git -C "$tcc_dir" rev-parse HEAD)"
 	remote_head_sha="$(sed -n 's/^remote_head_sha=//p' "$metadata" | head -n 1)"
 	[ -n "$remote_head_sha" ] \
-		&& "$git_cmd" -C "$tcc_dir" cat-file -e "${remote_head_sha}^{commit}" \
-		&& "$git_cmd" -C "$tcc_dir" merge-base --is-ancestor "$current_sha" "$remote_head_sha" \
+		&& run_git -C "$tcc_dir" cat-file -e "${remote_head_sha}^{commit}" \
+		&& run_git -C "$tcc_dir" merge-base --is-ancestor "$current_sha" "$remote_head_sha" \
 		&& grep -Fqx 'tccos=linux' "$metadata" \
 		&& grep -Fqx "tccarch=$tcc_arch" "$metadata" \
 		&& grep -Fqx 'abi=glibc' "$metadata" \
@@ -218,12 +239,12 @@ validate_system_marker() {
 	local remote_head_sha
 	local system_remote_sha
 	[ -f "$metadata" ] || return 1
-	current_sha="$("$git_cmd" -C "$tcc_dir" rev-parse HEAD)"
+	current_sha="$(run_git -C "$tcc_dir" rev-parse HEAD)"
 	remote_head_sha="$(sed -n 's/^remote_head_sha=//p' "$metadata" | head -n 1)"
-	system_remote_sha="$("$git_cmd" -C "$tcc_dir" rev-parse "refs/remotes/origin/${unknown_branch}" 2>/dev/null)" \
+	system_remote_sha="$(run_git -C "$tcc_dir" rev-parse "refs/remotes/origin/${unknown_branch}" 2>/dev/null)" \
 		|| return 1
 	[ -n "$remote_head_sha" ] \
-		&& "$git_cmd" -C "$tcc_dir" merge-base --is-ancestor "$current_sha" "$system_remote_sha" \
+		&& run_git -C "$tcc_dir" merge-base --is-ancestor "$current_sha" "$system_remote_sha" \
 		&& grep -Fqx 'tccos=linux' "$metadata" \
 		&& grep -Fqx "tccarch=$tcc_arch" "$metadata" \
 		&& grep -Fqx 'abi=glibc' "$metadata" \
@@ -239,7 +260,7 @@ fresh_bundle() {
 	fi
 	clone_branch "$expected_branch"
 	local head_sha
-	head_sha="$("$git_cmd" -C "$tcc_dir" rev-parse HEAD)"
+	head_sha="$(run_git -C "$tcc_dir" rev-parse HEAD)"
 	if probe_bundle; then
 		rm -rf "$tcc_dir/.git/$marker_name"
 		return
@@ -255,8 +276,8 @@ latest_bundle() {
 	assert_clean_checkout
 	local current_branch
 	local current_sha
-	current_branch="$("$git_cmd" -C "$tcc_dir" branch --show-current)"
-	current_sha="$("$git_cmd" -C "$tcc_dir" rev-parse HEAD)"
+	current_branch="$(run_git -C "$tcc_dir" branch --show-current)"
+	current_sha="$(run_git -C "$tcc_dir" rev-parse HEAD)"
 	if [ -n "$current_branch" ]; then
 		if [ "$current_branch" = "$unknown_branch" ]; then
 			if ! validate_system_marker; then
@@ -288,17 +309,17 @@ latest_bundle() {
 		return 1
 	fi
 
-	"$git_cmd" -C "$tcc_dir" fetch --quiet origin "refs/heads/${expected_branch}:refs/remotes/origin/${expected_branch}"
+	run_git -C "$tcc_dir" fetch --quiet origin "refs/heads/${expected_branch}:refs/remotes/origin/${expected_branch}"
 	local remote_head_sha
-	remote_head_sha="$("$git_cmd" -C "$tcc_dir" rev-parse "refs/remotes/origin/${expected_branch}")"
+	remote_head_sha="$(run_git -C "$tcc_dir" rev-parse "refs/remotes/origin/${expected_branch}")"
 	if [ "$current_branch" = "$expected_branch" ] \
-		&& ! "$git_cmd" -C "$tcc_dir" merge-base --is-ancestor "$current_sha" "$remote_head_sha"; then
+		&& ! run_git -C "$tcc_dir" merge-base --is-ancestor "$current_sha" "$remote_head_sha"; then
 		echo "Refusing to overwrite local TCC commits on ${expected_branch}; run 'make fresh_tcc' after preserving them." >&2
 		return 1
 	fi
-	"$git_cmd" -C "$tcc_dir" checkout --detach --quiet "$remote_head_sha"
+	run_git -C "$tcc_dir" checkout --detach --quiet "$remote_head_sha"
 	if probe_bundle; then
-		"$git_cmd" -C "$tcc_dir" checkout --quiet -B "$expected_branch" "refs/remotes/origin/${expected_branch}"
+		run_git -C "$tcc_dir" checkout --quiet -B "$expected_branch" "refs/remotes/origin/${expected_branch}"
 		rm -rf "$tcc_dir/.git/$marker_name"
 		return
 	fi

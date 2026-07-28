@@ -10,6 +10,10 @@ VCREPO ?= https://github.com/vlang/vc
 TCCREPO ?= https://github.com/vlang/tccbin
 LEGACYREPO ?= https://github.com/macports/macports-legacy-support
 GIT ?= git
+# Command-line variables are exported automatically.  Keep GIT as literal data
+# until platform detection decides whether the Linux selector will consume it.
+override V_GIT_LITERAL := $(value GIT)
+unexport GIT
 
 VCFILE := v.c
 TMPTCC := $(VROOT)/thirdparty/tcc
@@ -17,9 +21,6 @@ LEGACYLIBS := $(VROOT)/thirdparty/legacy
 TMPLEGACY := $(LEGACYLIBS)/source
 TCCOS := unknown
 TCCARCH := unknown
-HAS_GIT := $(shell command -v $(GIT) >/dev/null 2>&1 && echo 1 || echo 0)
-GITCLEANPULL := $(GIT) clean -xf && $(GIT) pull --rebase --quiet
-GITFASTCLONE := $(GIT) clone --filter=blob:none --quiet
 LINUX_TCC_SELECTOR := $(VROOT)/cmd/tools/select_linux_tcc.sh
 
 #### Platform detections and overrides:
@@ -110,6 +111,18 @@ endif
 endif
 endif
 endif
+
+ifeq ($(TCCOS),linux)
+override GIT := $(V_GIT_LITERAL)
+override GIT_PROGRAM := $(or $(firstword $(GIT)),git)
+export GIT GIT_PROGRAM
+HAS_GIT := $(shell command -v "$$GIT_PROGRAM" >/dev/null 2>&1 && echo 1 || echo 0)
+else
+export GIT
+HAS_GIT := $(shell command -v $(GIT) >/dev/null 2>&1 && echo 1 || echo 0)
+endif
+GITCLEANPULL := $(GIT) clean -xf && $(GIT) pull --rebase --quiet
+GITFASTCLONE := $(GIT) clone --filter=blob:none --quiet
 
 TCCBUILDSCRIPT = $(VROOT)/thirdparty/build_scripts/thirdparty-$(TCCOS)-$(TCCARCH)_tcc.sh
 
@@ -252,7 +265,7 @@ ifndef local
 latest_tcc: $(TMPTCC)/.git/config
 ifeq ($(HAS_GIT),1)
 ifeq ($(TCCOS),linux)
-	@GIT='$(GIT)' TMPDIR='$(TMPDIR)' VFLAGS='$(VFLAGS)' \
+	@TMPDIR='$(TMPDIR)' VFLAGS='$(VFLAGS)' \
 		bash '$(LINUX_TCC_SELECTOR)' latest '$(TMPTCC)' '$(TCCREPO)' '$(TCCARCH)' '$(VROOT)'
 else
 ifdef WIN32
@@ -304,7 +317,7 @@ fresh_tcc:
 ifndef local
 ifeq ($(HAS_GIT),1)
 ifeq ($(TCCOS),linux)
-	@GIT='$(GIT)' TMPDIR='$(TMPDIR)' VFLAGS='$(VFLAGS)' \
+	@TMPDIR='$(TMPDIR)' VFLAGS='$(VFLAGS)' \
 		bash '$(LINUX_TCC_SELECTOR)' fresh '$(TMPTCC)' '$(TCCREPO)' '$(TCCARCH)' '$(VROOT)'
 else
 	@set -e; \

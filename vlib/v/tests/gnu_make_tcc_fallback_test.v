@@ -285,6 +285,98 @@ fn test_linux_tcc_uses_newest_compatible_commit_and_returns_to_a_fixed_head() {
 	assert_clean_checkout(fixture.tcc_dir)
 }
 
+fn test_linux_tcc_preserves_git_command_options() {
+	if os.user_os() != 'linux' {
+		return
+	}
+	fixture := new_tcc_history_fixture(true)
+	defer {
+		os.rmdir_all(fixture.root) or {}
+	}
+
+	git_with_options := os.quoted_path('git -c protocol.file.allow=always')
+	fresh_result := os.execute('${fixture.fresh_cmd} GIT=${git_with_options} 2>&1')
+	assert fresh_result.exit_code == 0, fresh_result.output
+	assert fresh_result.output.contains('Using newest host-compatible TCC commit ${fixture.compatible_sha}'), fresh_result.output
+
+	assert_historical_fallback(fixture)
+
+	latest_result := os.execute('${fixture.latest_cmd} GIT=${git_with_options} 2>&1')
+	assert latest_result.exit_code == 0, latest_result.output
+	assert latest_result.output.contains('Using newest host-compatible TCC commit ${fixture.compatible_sha}'), latest_result.output
+
+	assert_historical_fallback(fixture)
+
+	git_with_multiple_options :=
+		os.quoted_path('  git   -c protocol.file.allow=always   -c advice.detachedHead=false  ')
+	multiple_options_result :=
+		os.execute('${fixture.latest_cmd} GIT=${git_with_multiple_options} 2>&1')
+	assert multiple_options_result.exit_code == 0, multiple_options_result.output
+	assert multiple_options_result.output.contains('Using newest host-compatible TCC commit ${fixture.compatible_sha}'), multiple_options_result.output
+
+	assert_historical_fallback(fixture)
+}
+
+fn test_linux_tcc_does_not_evaluate_git_command_during_make_parsing() {
+	if os.user_os() != 'linux' {
+		return
+	}
+	root := os.join_path(os.vtmp_dir(), 'v_make_git_parse_${rand.ulid()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	shell_sentinel := os.join_path(root, 'shell-sentinel')
+	make_sentinel := os.join_path(root, 'make-sentinel')
+	git_specs := [
+		'git; touch ${shell_sentinel} #',
+		'git $(shell touch ${make_sentinel})',
+	]
+	for git_spec in git_specs {
+		result :=
+			os.execute('cd ${os.quoted_path(root)} && make --no-print-directory -n -f ${os.quoted_path(makefile_path)} fresh_tcc VROOT=${os.quoted_path(root)} TCCOS=linux TCCARCH=amd64 GIT=${os.quoted_path(git_spec)} 2>&1')
+		assert result.exit_code == 0, result.output
+		assert !os.exists(shell_sentinel)
+		assert !os.exists(make_sentinel)
+	}
+}
+
+fn test_linux_tcc_rejects_unsafe_git_command_data() {
+	if os.user_os() != 'linux' {
+		return
+	}
+	root := os.join_path(os.vtmp_dir(), 'v_selector_git_data_${rand.ulid()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	sentinel := os.join_path(root, 'sentinel')
+	unsafe_git_specs := [
+		'git; touch ${sentinel}',
+		'git && touch ${sentinel}',
+		'git $(touch ${sentinel})',
+		'git `touch ${sentinel}`',
+		'git > ${sentinel}',
+		'git *',
+		'git "quoted path"',
+		'git\\ wrapper',
+		'git\n-c protocol.file.allow=always',
+	]
+	selector_args := '${os.quoted_path(selector_path)} fresh ${os.quoted_path(os.join_path(root,
+		'tcc'))} unused amd64 ${os.quoted_path(root)}'
+	for git_spec in unsafe_git_specs {
+		result := os.execute('GIT=${os.quoted_path(git_spec)} bash ${selector_args} 2>&1')
+		assert result.exit_code == 2, '${git_spec}:\n${result.output}'
+		assert result.output.contains('the Git command contains unsupported characters'), result.output
+		assert !os.exists(sentinel)
+	}
+
+	missing_git := 'v-missing-git-${rand.ulid()}'
+	missing_result := os.execute('GIT=${os.quoted_path(missing_git)} bash ${selector_args} 2>&1')
+	assert missing_result.exit_code == 2, missing_result.output
+	assert missing_result.output.contains('the Git executable was not found: ${missing_git}'), missing_result.output
+}
+
 fn test_linux_tcc_explicit_request_does_not_hide_missing_compatible_history() {
 	if os.user_os() != 'linux' {
 		return
