@@ -3,6 +3,8 @@
 
 fn C._fseeki64(stream &C.FILE, offset u64, whence int) int
 fn C.fdopen(fd int, mode &char) &C.FILE
+fn C.freopen_s(new_stream &&C.FILE, filename &char, mode &char, stream &C.FILE) int
+fn C._wfreopen(filename &u16, mode &u16, stream &C.FILE) &C.FILE
 
 fn crt_stdio_linkage_noop() {}
 
@@ -19,6 +21,12 @@ fn link_windows_gcc_crt_stdio_imports(run bool) {
 	if !isnil(file) {
 		_ = C._fileno(file)
 		_ = C._fseeki64(file, 0, 0)
+		mut reopened := &C.FILE(unsafe { nil })
+		_ = C.freopen_s(&reopened, c'NUL', c'rb', file)
+		wide := &u16(unsafe { nil })
+		_ = C._wfopen(wide, wide)
+		_ = C._wfreopen(wide, wide, file)
+		_ = C._wpopen(wide, wide)
 		_ = C.fclose(file)
 	}
 	fd_file := C.fdopen(-1, c'r')
