@@ -221,6 +221,7 @@ fn (mut backend Backend) service_set_clipboard_text(id WindowId, request Service
 		.x11 { backend.x11.service_set_clipboard_text(id, request, text)! }
 		.wayland { backend.wayland.service_set_clipboard_text(id, request, text)! }
 		.appkit { backend.appkit.service_set_clipboard_text(id, request, text)! }
+		.win32 { backend.win32.service_set_clipboard_text(id, request, text)! }
 		else { error(err_capability_unsupported) }
 	}
 }
@@ -230,6 +231,7 @@ fn (mut backend Backend) service_request_clipboard_text(id WindowId, request Ser
 		.x11 { backend.x11.service_request_clipboard_text(id, request)! }
 		.wayland { backend.wayland.service_request_clipboard_text(id, request)! }
 		.appkit { backend.appkit.service_request_clipboard_text(id, request)! }
+		.win32 { backend.win32.service_request_clipboard_text(id, request)! }
 		else { error(err_capability_unsupported) }
 	}
 }

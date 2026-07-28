@@ -77,7 +77,8 @@ function Invoke-Package2Process {
         [string[]]$Arguments,
         [int]$TimeoutSeconds = 120,
         [int]$ReapTimeoutMilliseconds = 5000,
-        [int]$OutputDrainTimeoutMilliseconds = 5000
+        [int]$OutputDrainTimeoutMilliseconds = 5000,
+        [hashtable]$EnvironmentOverrides = @{}
     )
 
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -86,6 +87,10 @@ function Invoke-Package2Process {
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
     $startInfo.CreateNoWindow = $true
+    foreach ($environmentName in $EnvironmentOverrides.Keys) {
+        $startInfo.Environment[[string]$environmentName] =
+            [string]$EnvironmentOverrides[$environmentName]
+    }
     foreach ($argument in $Arguments) {
         [void]$startInfo.ArgumentList.Add($argument)
     }
@@ -696,9 +701,121 @@ fn main() {
     }
 }
 
+function Invoke-Package2ClipboardNoOptProbeGate {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VExe,
+        [Parameter(Mandatory = $true)]
+        [string]$Compiler,
+        [Parameter(Mandatory = $true)]
+        [string]$ProbeFile
+    )
+
+    $tempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
+    $token = [guid]::NewGuid().ToString('N')
+    $binaryPath = Join-Path $tempRoot "package2_clipboard_no_opt_$($Compiler)_$token.exe"
+    $expectedCCompiler = if ($Compiler -ieq 'tcc') {
+        'tinyc'
+    } else {
+        $Compiler.ToLowerInvariant()
+    }
+    $expectedOutput = "CCOMPILER=$expectedCCompiler"
+    $expectedOutputPattern = '\A' + [regex]::Escape($expectedOutput) + '(?:\r\n|\n)?\z'
+    $fallbackOrRetryPattern =
+        '(?i)(\bfallback\b|\bfalling back\b|(?<!no-)\bretry(?:ing)?\b|max_retry:\s*[1-9])'
+    $neutralEnvironment = @{ VFLAGS = '' }
+
+    Write-Host "::group::Package 2 direct clipboard no-opt probe $Compiler"
+    try {
+        $sourcePath = (Resolve-Path -LiteralPath $ProbeFile -ErrorAction Stop).Path
+        if (Test-Path -LiteralPath $binaryPath) {
+            throw "Package 2 direct clipboard no-opt probe binary path already exists: $binaryPath"
+        }
+        Write-Host "PACKAGE2_DIRECT_NO_OPT_START compiler=$Compiler expected_ccompiler=$expectedCCompiler source=$sourcePath vflags=cleared"
+        $compileArguments = @(
+            '-cc', $Compiler,
+            '-no-retry-compilation',
+            '-no-parallel',
+            '-gc', 'none',
+            '-subsystem', 'console',
+            '-o', $binaryPath,
+            $sourcePath
+        )
+        $compile = Invoke-Package2Process -FileName $VExe -Arguments $compileArguments `
+            -EnvironmentOverrides $neutralEnvironment
+        Write-Host "PACKAGE2_DIRECT_NO_OPT_COMPILE compiler=$Compiler exit=$($compile.ExitCode) timed_out=$($compile.TimedOut) infrastructure=$($compile.InfrastructureError)"
+        Write-Package2ProcessOutput -Result $compile
+        $compileText = @(
+            $compile.Output | ForEach-Object { ([string]$_).Trim() }
+        ) -join "`n"
+        $compileFailure = if ($compile.TimedOut -or $compileText -match $timeoutPattern) {
+            'timeout'
+        } elseif ($compile.InfrastructureError) {
+            'infrastructure'
+        } elseif ($null -eq $compile.ExitCode) {
+            'unknown-no-exit'
+        } elseif ($compile.ExitCode -in $crashExitCodes -or $compileText -match $fatalPattern) {
+            'crash-or-panic'
+        } elseif ($compileText -match $fallbackOrRetryPattern) {
+            'compiler-fallback-or-retry'
+        } elseif ($compileText -match $infrastructurePattern) {
+            'infrastructure'
+        } elseif ($compile.ExitCode -ne 0) {
+            "unexpected-exit-$($compile.ExitCode)"
+        } elseif (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) {
+            'binary-missing'
+        } else {
+            ''
+        }
+        if ($compileFailure) {
+            Write-Host "PACKAGE2_DIRECT_NO_OPT_FAILURE phase=compile compiler=$Compiler kind=$compileFailure exit=$($compile.ExitCode)"
+            throw "Package 2 direct clipboard no-opt compile gate failed for ${Compiler}: $compileFailure"
+        }
+
+        $run = Invoke-Package2Process -FileName $binaryPath -Arguments @() `
+            -TimeoutSeconds 30 -EnvironmentOverrides $neutralEnvironment
+        Write-Host "PACKAGE2_DIRECT_NO_OPT_RUN compiler=$Compiler exit=$($run.ExitCode) timed_out=$($run.TimedOut) infrastructure=$($run.InfrastructureError)"
+        Write-Package2ProcessOutput -Result $run
+        $runText = @(
+            $run.Output | ForEach-Object { ([string]$_).Trim() }
+        ) -join "`n"
+        $exactOutput = ([string]$run.Stdout) -cmatch $expectedOutputPattern `
+            -and [string]::IsNullOrEmpty([string]$run.Stderr)
+        $runFailure = if ($run.TimedOut -or $runText -match $timeoutPattern) {
+            'timeout'
+        } elseif ($run.InfrastructureError) {
+            'infrastructure'
+        } elseif ($null -eq $run.ExitCode) {
+            'unknown-no-exit'
+        } elseif ($run.ExitCode -in $crashExitCodes -or $runText -match $fatalPattern) {
+            'crash-or-panic'
+        } elseif ($runText -match $fallbackOrRetryPattern) {
+            'compiler-fallback-or-retry'
+        } elseif ($runText -match $infrastructurePattern) {
+            'infrastructure'
+        } elseif ($run.ExitCode -ne 0) {
+            "unexpected-exit-$($run.ExitCode)"
+        } elseif (-not $exactOutput) {
+            'output-or-compiler-identity-mismatch'
+        } else {
+            ''
+        }
+        if ($runFailure) {
+            Write-Host "PACKAGE2_DIRECT_NO_OPT_FAILURE phase=run compiler=$Compiler expected_output=$expectedOutput exact_output=$exactOutput kind=$runFailure exit=$($run.ExitCode)"
+            throw "Package 2 direct clipboard no-opt run gate failed for ${Compiler}: $runFailure"
+        }
+        Write-Host "PACKAGE2_DIRECT_NO_OPT_PASS compiler=$Compiler expected_output=$expectedOutput exact_output=true no_opt_errors=exact"
+    } finally {
+        Remove-Item -LiteralPath $binaryPath -Force -ErrorAction SilentlyContinue
+        Write-Host '::endgroup::'
+    }
+}
+
 $core = 'vlib/x/multiwindow/service_native_win32_contract_red_test.v'
 $noFlag = 'vlib/x/multiwindow/service_native_win32_no_flag_test.v'
 $gg = 'vlib/gg/multiwindow_win32_services_red_d_gg_multiwindow_test.v'
+$public = 'vlib/gg/multiwindow_win32_public_services_contract_windows_test.v'
+$clipboardNoOptProbe = 'vlib/gg/testdata/multiwindow_win32_clipboard_no_optin_probe.v'
 $w2GreenTerminal = 'PACKAGE2_W2_GREEN_TERMINAL=behavioral_green:modal_child_first'
 $greenCases = @(
     @{ Wave = 'W1'; File = $core; Name = 'test_win32_w1_native_authority_show_focus_and_fullscreen_contract' }
@@ -706,13 +823,23 @@ $greenCases = @(
     @{ Wave = 'W1'; File = $core; Name = 'test_win32_native_controls_state_and_independent_window_oracles_red' }
     @{ Wave = 'W1'; File = $gg; Name = 'test_win32_gg_public_borrow_is_live_callback_bounded_stale_and_defers_teardown_red' }
     @{ Wave = 'W2'; File = $core; Name = 'test_win32_native_modal_reenable_and_child_first_hwnd_destruction_red' }
+    @{ Wave = 'W4'; File = $core; Name = 'test_win32_native_cf_unicodetext_roundtrip_exact_limit_and_terminal_queue_red' }
+    @{ Wave = 'W4'; File = $core; Name = 'test_win32_native_clipboard_malformed_read_bounds_red' }
+    @{ Wave = 'W4'; File = $core; Name = 'test_win32_native_clipboard_exact_utf8_limit_and_over_red' }
+    @{ Wave = 'W4'; File = $core; Name = 'test_win32_native_clipboard_contention_retry_success_red' }
+    @{ Wave = 'W4'; File = $core; Name = 'test_win32_native_clipboard_fifo_head_only_red' }
+    @{ Wave = 'W4'; File = $core; Name = 'test_win32_native_clipboard_real_wm_close_global_order_red' }
+    @{ Wave = 'W4'; File = $core; Name = 'test_win32_native_clipboard_occupancy_timeout_failure_and_cancel_red' }
+    @{ Wave = 'W4'; File = $public; Name = 'test_win32_public_clipboard_cf_unicodetext_bmp_astral_roundtrip_red' }
 )
 $cases = @(
-    @{ File = $core; Name = 'test_win32_native_cf_unicodetext_roundtrip_exact_limit_and_terminal_queue_red'; Marker = 'clipboard_unicode_limit'; Terminal = 'behavioral_red:clipboard_unicode_limit' }
-    @{ File = $core; Name = 'test_win32_native_clipboard_occupancy_timeout_failure_and_cancel_red'; Marker = 'clipboard_occupancy_cancel'; Terminal = 'behavioral_red:clipboard_occupancy_cancel' }
     @{ File = $core; Name = 'test_win32_native_raw_input_clipcursor_release_and_two_window_isolation_red'; Marker = 'mouse_lock_isolation'; Terminal = 'behavioral_red:mouse_lock_isolation' }
     @{ File = $core; Name = 'test_win32_native_conditional_titlebar_dwm_and_style_oracles_red'; Marker = 'titlebar_dwm_style'; Terminal = 'behavioral_red:titlebar_dwm_style' }
     @{ File = $gg; Name = 'test_win32_gg_public_facade_capabilities_are_distinct_and_complete_red'; Marker = 'gg_public_facade'; Terminal = 'behavioral_red:gg_public_facade' }
+)
+$noFlagCases = @(
+    @{ File = $noFlag; Name = 'test_win32_nonreadback_no_flag_facade_stays_disabled'; Probe = 'native_facade' }
+    @{ File = $public; Name = 'test_win32_public_services_stay_disabled_without_opt_in'; Probe = 'public_clipboard_child' }
 )
 
 $names = @($cases | ForEach-Object { $_.Name } | Sort-Object -Unique)
@@ -725,9 +852,12 @@ if ($names.Count -ne $cases.Count -or $markers.Count -ne $cases.Count `
 $greenNames = @($greenCases | ForEach-Object { $_.Name } | Sort-Object -Unique)
 $greenInRed = @($greenNames | Where-Object { $_ -in $names })
 $w2GreenCount = @($greenCases | Where-Object { $_.Wave -ceq 'W2' }).Count
-if ($greenNames.Count -ne 5 -or $greenInRed.Count -ne 0 `
-    -or $w2GreenCount -ne 1 -or $cases.Count -ne 5) {
-    throw 'Package 2 closure requires one W2 GREEN and five disjoint RED cases'
+$w4GreenCount = @($greenCases | Where-Object { $_.Wave -ceq 'W4' }).Count
+$noFlagNames = @($noFlagCases | ForEach-Object { $_.Name } | Sort-Object -Unique)
+if ($greenNames.Count -ne 13 -or $greenInRed.Count -ne 0 `
+    -or $w2GreenCount -ne 1 -or $w4GreenCount -ne 8 -or $cases.Count -ne 3 `
+    -or $noFlagNames.Count -ne 2) {
+    throw 'Package 2 closure requires two no-flag gates, one W2 GREEN, eight W4 GREEN, and three disjoint RED cases'
 }
 
 $vexe = (Resolve-Path '.\v.exe').Path
@@ -737,47 +867,57 @@ if ($env:VFLAGS -match '(?i)(^|\s)-d\s+gg_multiwindow(\s|$)') {
 
 Test-Package2BoundedProcessDrain
 
-Write-Host "::group::Package 2 no-flag gate $Compiler"
-Write-Host "PACKAGE2_NO_FLAG_START compiler=$Compiler define=disabled"
-$noFlagArguments = @(
-    '-cc', $Compiler,
-    '-no-retry-compilation',
-    '-no-parallel',
-    '-subsystem', 'console',
-    '-run-only', 'test_win32_nonreadback_no_flag_facade_stays_disabled',
-    'test',
-    $noFlag
-)
-$noFlagResult = Invoke-Package2Process -FileName $vexe -Arguments $noFlagArguments
-Write-Package2ProcessOutput -Result $noFlagResult
-$noFlagText = @($noFlagResult.Output | ForEach-Object { ([string]$_).Trim() }) -join "`n"
-$noFlagSummaryLines = @($noFlagResult.Output | ForEach-Object { ([string]$_).Trim() } |
-    Where-Object { $_ -cmatch '^Summary for all V _test\.v files:.*$' })
-$noFlagExactSummary = $noFlagSummaryLines.Count -eq 1 `
-    -and $noFlagSummaryLines[0] -cmatch '^Summary for all V _test\.v files: 1 passed, 1 total\.(?: .*)?$'
-$noFlagFailure = if ($noFlagResult.TimedOut -or $noFlagText -match $timeoutPattern) {
-    'timeout'
-} elseif ($noFlagResult.InfrastructureError -or $noFlagText -match $infrastructurePattern) {
-    'infrastructure'
-} elseif ($null -eq $noFlagResult.ExitCode) {
-    'unknown-no-exit'
-} elseif ($noFlagResult.ExitCode -in $crashExitCodes -or $noFlagText -match $fatalPattern) {
-    'crash-or-panic'
-} elseif ($noFlagResult.ExitCode -ne 0) {
-    "unexpected-exit-$($noFlagResult.ExitCode)"
-} elseif (-not $noFlagExactSummary) {
-    'unexpected-summary'
-} else {
-    ''
+foreach ($noFlagCase in $noFlagCases) {
+    $noFlagName = $noFlagCase.Name
+    $noFlagFile = $noFlagCase.File
+    $noFlagProbe = $noFlagCase.Probe
+    Write-Host "::group::Package 2 no-flag gate $Compiler $noFlagName"
+    try {
+        Write-Host "PACKAGE2_NO_FLAG_START compiler=$Compiler case=$noFlagName probe=$noFlagProbe file=$noFlagFile define=disabled"
+        $noFlagArguments = @(
+            '-cc', $Compiler,
+            '-no-retry-compilation',
+            '-no-parallel',
+            '-subsystem', 'console',
+            '-run-only', $noFlagName,
+            'test',
+            $noFlagFile
+        )
+        $noFlagResult = Invoke-Package2Process -FileName $vexe -Arguments $noFlagArguments
+        Write-Package2ProcessOutput -Result $noFlagResult
+        $noFlagText = @($noFlagResult.Output | ForEach-Object { ([string]$_).Trim() }) -join "`n"
+        $noFlagSummaryLines = @($noFlagResult.Output | ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { $_ -cmatch '^Summary for all V _test\.v files:.*$' })
+        $noFlagExactSummary = $noFlagSummaryLines.Count -eq 1 `
+            -and $noFlagSummaryLines[0] -cmatch '^Summary for all V _test\.v files: 1 passed, 1 total\.(?: .*)?$'
+        $noFlagFailure = if ($noFlagResult.TimedOut -or $noFlagText -match $timeoutPattern) {
+            'timeout'
+        } elseif ($noFlagResult.InfrastructureError -or $noFlagText -match $infrastructurePattern) {
+            'infrastructure'
+        } elseif ($null -eq $noFlagResult.ExitCode) {
+            'unknown-no-exit'
+        } elseif ($noFlagResult.ExitCode -in $crashExitCodes -or $noFlagText -match $fatalPattern) {
+            'crash-or-panic'
+        } elseif ($noFlagResult.ExitCode -ne 0) {
+            "unexpected-exit-$($noFlagResult.ExitCode)"
+        } elseif (-not $noFlagExactSummary) {
+            'unexpected-summary'
+        } else {
+            ''
+        }
+        if ($noFlagFailure) {
+            Write-Host "NO_FLAG_GATE_FAILURE compiler=$Compiler case=$noFlagName probe=$noFlagProbe kind=$noFlagFailure exit=$($noFlagResult.ExitCode)"
+            Invoke-Package2NoFlagDiagnostic -VExe $vexe -Compiler $Compiler
+            throw "Package 2 no-flag gate failed for ${Compiler}/${noFlagName}: $noFlagFailure"
+        }
+        Write-Host "NO_FLAG_GATE_PASS compiler=$Compiler case=$noFlagName probe=$noFlagProbe passed=1 total=1"
+    } finally {
+        Write-Host '::endgroup::'
+    }
 }
-if ($noFlagFailure) {
-    Write-Host "NO_FLAG_GATE_FAILURE compiler=$Compiler kind=$noFlagFailure exit=$($noFlagResult.ExitCode)"
-    Invoke-Package2NoFlagDiagnostic -VExe $vexe -Compiler $Compiler
-    Write-Host '::endgroup::'
-    throw "Package 2 no-flag gate failed for ${Compiler}: $noFlagFailure"
-}
-Write-Host "NO_FLAG_GATE_PASS compiler=$Compiler passed=1 total=1"
-Write-Host '::endgroup::'
+
+Invoke-Package2ClipboardNoOptProbeGate -VExe $vexe -Compiler $Compiler `
+    -ProbeFile $clipboardNoOptProbe
 
 foreach ($greenCase in $greenCases) {
     $greenWave = $greenCase.Wave

@@ -4,6 +4,27 @@ const win32_service_ok = 1
 const win32_service_unavailable = 0
 const win32_service_wrong_thread = -1
 const win32_service_invalid = -2
+const win32_clipboard_attempt_failed = -1
+const win32_clipboard_attempt_retry = 0
+const win32_clipboard_attempt_ready = 1
+const win32_clipboard_attempt_capacity = -2
+const win32_clipboard_convert_ready = 1
+const win32_clipboard_convert_capacity = -1
+const win32_clipboard_max_bytes = 16 * 1024 * 1024
+const win32_clipboard_max_pending_operations = 64
+const win32_clipboard_max_pending_bytes = win32_clipboard_max_bytes
+const win32_clipboard_timeout_ns = i64(2_000_000_000)
+
+struct Win32ClipboardPending {
+	request        ServiceRequestId
+	window         WindowId
+	hwnd           voidptr
+	operation      ServiceOperation
+	write_utf16    []u16
+	reserved_bytes usize
+mut:
+	deadline_ns i64
+}
 
 struct Win32ServiceRawMonitor {
 	native_id   u64
@@ -43,6 +64,10 @@ struct Win32ServiceRefreshObservation {
 
 $if windows {
 	#insert "@VMODROOT/vlib/x/multiwindow/win32_service_native.h"
+	$if test {
+		#flag windows -DV_MULTIWINDOW_WIN32_SERVICE_TEST
+		#insert "@VMODROOT/vlib/x/multiwindow/win32_service_clipboard_test.h"
+	}
 
 	fn C.v_multiwindow_win32_service_authority(state voidptr) int
 	fn C.v_multiwindow_win32_service_create(hwnd voidptr, record_data voidptr, initial_fullscreen int, width int, height int, resizable int, borderless int) voidptr
@@ -66,6 +91,18 @@ $if windows {
 	fn C.v_multiwindow_win32_service_monitor_snapshot_info(snapshot voidptr, index int, x &int, y &int, width &int, height &int, work_x &int, work_y &int, work_width &int, work_height &int, dpi &u32, primary &int) int
 	fn C.v_multiwindow_win32_service_window_monitor(hwnd voidptr) u64
 	fn C.v_multiwindow_win32_service_window_dpi(hwnd voidptr) u32
+	fn C.v_multiwindow_win32_clipboard_now_ns() i64
+	fn C.v_multiwindow_win32_clipboard_utf8_to_utf16(text &char, text_bytes usize, output &u16, output_units usize, out_units &usize) int
+	fn C.v_multiwindow_win32_clipboard_write(owner voidptr, text &u16, units usize) int
+	fn C.v_multiwindow_win32_clipboard_read(owner voidptr, out_text &voidptr, out_text_bytes &usize) int
+	fn C.v_multiwindow_win32_clipboard_text_free(text voidptr)
+
+	$if test {
+		fn C.v_multiwindow_win32_clipboard_now_for_test(backend voidptr, real_now_ns i64) i64
+		fn C.v_multiwindow_win32_clipboard_write_for_test(backend voidptr, request_app u64, request_serial u64, owner voidptr, text &u16, units usize) int
+		fn C.v_multiwindow_win32_clipboard_read_for_test(backend voidptr, request_app u64, request_serial u64, owner voidptr, out_text &voidptr, out_text_bytes &usize) int
+		fn C.v_multiwindow_win32_clipboard_record_sequence_for_test(backend voidptr)
+	}
 }
 
 struct Win32ServiceRawWindowState {
@@ -348,6 +385,216 @@ fn (backend &Win32Backend) ensure_service_window(id WindowId) !int {
 	}
 }
 
+fn win32_clipboard_deadline(now_ns i64) i64 {
+	if now_ns > i64(0x7fffffffffffffff) - win32_clipboard_timeout_ns {
+		return i64(0x7fffffffffffffff)
+	}
+	return now_ns + win32_clipboard_timeout_ns
+}
+
+fn (backend &Win32Backend) clipboard_now_ns() i64 {
+	$if windows {
+		real_now_ns := C.v_multiwindow_win32_clipboard_now_ns()
+		$if test {
+			return C.v_multiwindow_win32_clipboard_now_for_test(voidptr(backend), real_now_ns)
+		} $else {
+			return real_now_ns
+		}
+	} $else {
+		return 0
+	}
+}
+
+fn win32_clipboard_utf16(text string) ![]u16 {
+	$if windows {
+		mut units := usize(0)
+		query := C.v_multiwindow_win32_clipboard_utf8_to_utf16(&char(text.str), usize(text.len),
+			unsafe { nil }, 0, &units)
+		if query == win32_clipboard_convert_capacity {
+			return error(err_clipboard_capacity)
+		}
+		if query != win32_clipboard_convert_ready || units == 0
+			|| units > usize(win32_clipboard_max_bytes / 2) {
+			return error(err_capability_unsupported)
+		}
+		mut wide := []u16{len: int(units)}
+		converted := C.v_multiwindow_win32_clipboard_utf8_to_utf16(&char(text.str),
+			usize(text.len), wide.data, units, &units)
+		if converted == win32_clipboard_convert_capacity {
+			return error(err_clipboard_capacity)
+		}
+		if converted != win32_clipboard_convert_ready || units != usize(wide.len) {
+			return error(err_capability_unsupported)
+		}
+		return wide
+	} $else {
+		_ = text
+		return error(err_backend_unsupported)
+	}
+}
+
+fn (backend &Win32Backend) clipboard_can_admit(reserved_bytes usize) bool {
+	return backend.clipboard_pending.len < win32_clipboard_max_pending_operations
+		&& reserved_bytes <= usize(win32_clipboard_max_pending_bytes)
+		&& backend.clipboard_pending_bytes <= usize(win32_clipboard_max_pending_bytes) - reserved_bytes
+}
+
+fn (mut backend Win32Backend) admit_clipboard_request(request ServiceRequestId, window WindowId, hwnd voidptr, operation ServiceOperation, write_utf16 []u16) ! {
+	if operation !in [.clipboard_read, .clipboard_write] {
+		return error(err_capability_unsupported)
+	}
+	reserved_bytes := if operation == .clipboard_write {
+		usize(write_utf16.len) * usize(2)
+	} else {
+		usize(0)
+	}
+	if !backend.clipboard_can_admit(reserved_bytes) {
+		return error(err_clipboard_capacity)
+	}
+	deadline_ns := if backend.clipboard_pending.len == 0 {
+		win32_clipboard_deadline(backend.clipboard_now_ns())
+	} else {
+		i64(0)
+	}
+	backend.clipboard_pending << Win32ClipboardPending{
+		request:        request
+		window:         window
+		hwnd:           hwnd
+		operation:      operation
+		write_utf16:    write_utf16
+		reserved_bytes: reserved_bytes
+		deadline_ns:    deadline_ns
+	}
+	backend.clipboard_pending_bytes += reserved_bytes
+}
+
+fn (mut backend Win32Backend) finish_clipboard_head(status ServiceStatus, text string, message string) Win32NativeQueuedEvent {
+	pending := backend.clipboard_pending[0]
+	if pending.reserved_bytes <= backend.clipboard_pending_bytes {
+		backend.clipboard_pending_bytes -= pending.reserved_bytes
+	} else {
+		backend.clipboard_pending_bytes = 0
+	}
+	backend.clipboard_pending.delete(0)
+	if backend.clipboard_pending.len > 0 {
+		backend.clipboard_pending[0].deadline_ns =
+			win32_clipboard_deadline(backend.clipboard_now_ns())
+	}
+	mut sequence := u64(0)
+	$if windows {
+		sequence = C.v_multiwindow_win32_next_event_sequence()
+		$if test {
+			C.v_multiwindow_win32_clipboard_record_sequence_for_test(voidptr(backend))
+		}
+	}
+	return Win32NativeQueuedEvent{
+		sequence: sequence
+		event:    queued_service_event(ServiceEvent{
+			kind:      .clipboard
+			window:    pending.window
+			operation: pending.operation
+			clipboard: ServiceClipboardResult{
+				id:     pending.request
+				window: pending.window
+				status: status
+				text:   text.clone()
+				error:  message
+			}
+		})
+	}
+}
+
+fn (mut backend Win32Backend) collect_clipboard_events() []Win32NativeQueuedEvent {
+	$if windows {
+		if backend.clipboard_pending.len == 0 {
+			return []Win32NativeQueuedEvent{}
+		}
+		now_ns := backend.clipboard_now_ns()
+		if backend.clipboard_pending[0].deadline_ns != 0
+			&& now_ns >= backend.clipboard_pending[0].deadline_ns {
+			return [backend.finish_clipboard_head(.failed, '', err_clipboard_timeout)]
+		}
+		pending := backend.clipboard_pending[0]
+		mut status := win32_clipboard_attempt_failed
+		mut text := ''
+		if pending.operation == .clipboard_write {
+			$if test {
+				status = C.v_multiwindow_win32_clipboard_write_for_test(voidptr(backend),
+					pending.request.app_instance, pending.request.serial, pending.hwnd,
+					pending.write_utf16.data, usize(pending.write_utf16.len))
+			} $else {
+				status = C.v_multiwindow_win32_clipboard_write(pending.hwnd,
+					pending.write_utf16.data, usize(pending.write_utf16.len))
+			}
+		} else {
+			mut native_text := voidptr(unsafe { nil })
+			mut text_bytes := usize(0)
+			$if test {
+				status = C.v_multiwindow_win32_clipboard_read_for_test(voidptr(backend),
+					pending.request.app_instance, pending.request.serial, pending.hwnd,
+					&native_text, &text_bytes)
+			} $else {
+				status = C.v_multiwindow_win32_clipboard_read(pending.hwnd, &native_text,
+					&text_bytes)
+			}
+			if status == win32_clipboard_attempt_ready {
+				if native_text == unsafe { nil }
+					|| text_bytes > usize(win32_clipboard_max_bytes - 1) {
+					status = win32_clipboard_attempt_failed
+				} else {
+					text = unsafe { tos(native_text, int(text_bytes)).clone() }
+				}
+			}
+			if native_text != unsafe { nil } {
+				C.v_multiwindow_win32_clipboard_text_free(native_text)
+			}
+		}
+		return match status {
+			win32_clipboard_attempt_retry {
+				[]Win32NativeQueuedEvent{}
+			}
+			win32_clipboard_attempt_ready {
+				[backend.finish_clipboard_head(.ready, text, '')]
+			}
+			win32_clipboard_attempt_capacity {
+				[backend.finish_clipboard_head(.failed, '', err_clipboard_capacity)]
+			}
+			else {
+				[backend.finish_clipboard_head(.failed, '', err_capability_unsupported)]
+			}
+		}
+	} $else {
+		return []Win32NativeQueuedEvent{}
+	}
+}
+
+fn (mut backend Win32Backend) purge_clipboard_window(id WindowId) {
+	if backend.clipboard_pending.len == 0 {
+		return
+	}
+	head_removed := backend.clipboard_pending[0].window == id
+	mut retained := []Win32ClipboardPending{cap: backend.clipboard_pending.len}
+	mut retained_bytes := usize(0)
+	for pending in backend.clipboard_pending {
+		if pending.window == id {
+			continue
+		}
+		retained << pending
+		retained_bytes += pending.reserved_bytes
+	}
+	backend.clipboard_pending = retained
+	backend.clipboard_pending_bytes = retained_bytes
+	if head_removed && backend.clipboard_pending.len > 0 {
+		backend.clipboard_pending[0].deadline_ns =
+			win32_clipboard_deadline(backend.clipboard_now_ns())
+	}
+}
+
+fn (mut backend Win32Backend) purge_all_clipboard_requests() {
+	backend.clipboard_pending.clear()
+	backend.clipboard_pending_bytes = 0
+}
+
 fn (backend &Win32Backend) service_operation_capability(id WindowId, operation ServiceOperation) ServiceOperationCapability {
 	index := backend.ensure_service_window(id) or { return ServiceOperationCapability{} }
 	record := backend.windows[index]
@@ -378,6 +625,12 @@ fn (backend &Win32Backend) service_operation_capability(id WindowId, operation S
 		.native_borrow {
 			ServiceOperationCapability{
 				support: .available
+			}
+		}
+		.clipboard_read, .clipboard_write {
+			ServiceOperationCapability{
+				support:      .available
+				asynchronous: true
 			}
 		}
 		else {
@@ -729,6 +982,21 @@ fn (mut backend Win32Backend) service_set_fullscreen(id WindowId, enabled bool) 
 	return backend.service_window_state(id)!
 }
 
+fn (mut backend Win32Backend) service_set_clipboard_text(id WindowId, request ServiceRequestId, text string) !BackendClipboardStart {
+	index := backend.ensure_service_window(id)!
+	wide := win32_clipboard_utf16(text)!
+	backend.admit_clipboard_request(request, id, backend.windows[index].hwnd, .clipboard_write,
+		wide)!
+	return BackendClipboardStart{}
+}
+
+fn (mut backend Win32Backend) service_request_clipboard_text(id WindowId, request ServiceRequestId) !BackendClipboardStart {
+	index := backend.ensure_service_window(id)!
+	backend.admit_clipboard_request(request, id, backend.windows[index].hwnd, .clipboard_read,
+		[]u16{})!
+	return BackendClipboardStart{}
+}
+
 fn (backend &Win32Backend) service_native_window_borrow(id WindowId) !BackendNativeWindowBorrow {
 	index := backend.ensure_service_window(id)!
 	$if windows {
@@ -742,4 +1010,51 @@ fn (backend &Win32Backend) service_native_window_borrow(id WindowId) !BackendNat
 		}
 	}
 	return error(err_backend_unsupported)
+}
+
+$if test {
+	@[markused]
+	fn win32_service_test_clipboard_pending_count(backend_pointer voidptr) int {
+		if backend_pointer == unsafe { nil } {
+			return 0
+		}
+		backend := unsafe { &Win32Backend(backend_pointer) }
+		return backend.clipboard_pending.len
+	}
+
+	@[markused]
+	fn win32_service_test_clipboard_pending_deadline_ns(backend_pointer voidptr, index int) i64 {
+		if backend_pointer == unsafe { nil } {
+			return 0
+		}
+		backend := unsafe { &Win32Backend(backend_pointer) }
+		if index < 0 || index >= backend.clipboard_pending.len {
+			return 0
+		}
+		return backend.clipboard_pending[index].deadline_ns
+	}
+
+	@[markused]
+	fn win32_service_test_clipboard_pending_write_matches(backend_pointer voidptr, index int, request_app u64, request_serial u64, window_app u64, window_slot int, window_generation u32, text &u16, units usize) int {
+		if backend_pointer == unsafe { nil } || text == unsafe { nil } {
+			return 0
+		}
+		backend := unsafe { &Win32Backend(backend_pointer) }
+		if index < 0 || index >= backend.clipboard_pending.len {
+			return 0
+		}
+		pending := backend.clipboard_pending[index]
+		if pending.operation != .clipboard_write || pending.request.app_instance != request_app
+			|| pending.request.serial != request_serial || pending.window.app_instance != window_app
+			|| pending.window.slot != window_slot || pending.window.generation != window_generation
+			|| usize(pending.write_utf16.len) != units {
+			return 0
+		}
+		for unit_index in 0 .. pending.write_utf16.len {
+			if pending.write_utf16[unit_index] != unsafe { text[unit_index] } {
+				return 0
+			}
+		}
+		return 1
+	}
 }

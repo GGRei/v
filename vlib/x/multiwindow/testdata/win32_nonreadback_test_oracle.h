@@ -52,10 +52,6 @@ typedef struct VMultiwindowTestWin32WrongThreadProbe {
 	volatile LONG references;
 } VMultiwindowTestWin32WrongThreadProbe;
 
-static HANDLE v_multiwindow_test_clipboard_ready;
-static HANDLE v_multiwindow_test_clipboard_release;
-static HANDLE v_multiwindow_test_clipboard_thread;
-static volatile LONG v_multiwindow_test_clipboard_held;
 static volatile LONG v_multiwindow_test_win32_wrong_thread_active;
 static DWORD v_multiwindow_test_win32_wrong_thread_worker_delay;
 static DWORD v_multiwindow_test_win32_wrong_thread_wait_timeout = 5000;
@@ -621,13 +617,43 @@ static inline int v_multiwindow_test_win32_emit_dpi_change(void *hwnd,
 			SMTO_ABORTIFHUNG, 1000, &result) != 0;
 }
 
-static inline int v_multiwindow_test_win32_clipboard_equals(const wchar_t *expected) {
-	if (!OpenClipboard(NULL)) {
+#define V_MULTIWINDOW_TEST_WIN32_CLIPBOARD_MAX_BYTES (16u * 1024u * 1024u)
+
+static inline int v_multiwindow_test_win32_clipboard_equals(
+	const wchar_t *expected, size_t expected_units) {
+	if (!expected || expected_units == 0 ||
+		expected_units > V_MULTIWINDOW_TEST_WIN32_CLIPBOARD_MAX_BYTES /
+			sizeof(wchar_t) ||
+		expected[expected_units - 1] != L'\0' ||
+		!OpenClipboard(NULL)) {
 		return 0;
 	}
 	HGLOBAL data = (HGLOBAL)GetClipboardData(CF_UNICODETEXT);
-	wchar_t *actual = data ? (wchar_t *)GlobalLock(data) : NULL;
-	int equal = actual && expected && wcscmp(actual, expected) == 0;
+	size_t bytes = data ? GlobalSize(data) : 0;
+	if (!data || bytes < sizeof(wchar_t)) {
+		CloseClipboard();
+		return 0;
+	}
+	size_t scan_bytes = bytes;
+	if (scan_bytes > V_MULTIWINDOW_TEST_WIN32_CLIPBOARD_MAX_BYTES) {
+		scan_bytes = V_MULTIWINDOW_TEST_WIN32_CLIPBOARD_MAX_BYTES;
+	}
+	const wchar_t *actual = (const wchar_t *)GlobalLock(data);
+	size_t actual_units = 0;
+	if (actual) {
+		for (size_t offset = 0; offset + sizeof(wchar_t) <= scan_bytes;
+			offset += sizeof(wchar_t)) {
+			wchar_t unit = 0;
+			memcpy(&unit, (const unsigned char *)actual + offset,
+				sizeof(unit));
+			if (unit == L'\0') {
+				actual_units = offset / sizeof(wchar_t) + 1;
+				break;
+			}
+		}
+	}
+	int equal = actual && actual_units == expected_units &&
+		memcmp(actual, expected, expected_units * sizeof(wchar_t)) == 0;
 	if (actual) {
 		GlobalUnlock(data);
 	}
@@ -635,92 +661,83 @@ static inline int v_multiwindow_test_win32_clipboard_equals(const wchar_t *expec
 	return equal;
 }
 
-static inline size_t v_multiwindow_test_win32_clipboard_bytes(void) {
-	if (!OpenClipboard(NULL)) {
+static inline int v_multiwindow_test_win32_set_clipboard_raw(void *owner_ptr,
+	const void *payload, size_t bytes) {
+	HWND owner = (HWND)owner_ptr;
+	if (!owner || !IsWindow(owner) || !payload || bytes == 0 ||
+		!OpenClipboard(owner)) {
 		return 0;
 	}
-	HGLOBAL data = (HGLOBAL)GetClipboardData(CF_UNICODETEXT);
-	size_t bytes = data ? GlobalSize(data) : 0;
-	CloseClipboard();
-	return bytes;
-}
-
-static inline int v_multiwindow_test_win32_set_clipboard(const wchar_t *text,
-	size_t units) {
-	if (!text || units == 0 || !OpenClipboard(NULL)) {
-		return 0;
-	}
-	HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, units * sizeof(wchar_t));
-	wchar_t *target = data ? (wchar_t *)GlobalLock(data) : NULL;
+	HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, bytes);
+	void *target = data ? GlobalLock(data) : NULL;
 	if (!target) {
 		if (data) GlobalFree(data);
 		CloseClipboard();
 		return 0;
 	}
-	memcpy(target, text, units * sizeof(wchar_t));
+	memcpy(target, payload, bytes);
 	GlobalUnlock(data);
-	EmptyClipboard();
+	if (!EmptyClipboard()) {
+		GlobalFree(data);
+		CloseClipboard();
+		return 0;
+	}
 	if (!SetClipboardData(CF_UNICODETEXT, data)) {
 		GlobalFree(data);
 		CloseClipboard();
 		return 0;
 	}
-	CloseClipboard();
-	return 1;
+	return CloseClipboard() != 0;
 }
 
-static DWORD WINAPI v_multiwindow_test_win32_clipboard_holder(void *unused) {
-	(void)unused;
-	if (!OpenClipboard(NULL)) {
-		SetEvent(v_multiwindow_test_clipboard_ready);
-		return 1;
+static inline int v_multiwindow_test_win32_set_clipboard(void *owner_ptr,
+	const wchar_t *text, size_t units) {
+	if (!text || units == 0 ||
+		units > ((size_t)-1) / sizeof(wchar_t)) {
+		return 0;
 	}
-	InterlockedExchange(&v_multiwindow_test_clipboard_held, 1);
-	SetEvent(v_multiwindow_test_clipboard_ready);
-	WaitForSingleObject(v_multiwindow_test_clipboard_release, 10000);
-	CloseClipboard();
-	InterlockedExchange(&v_multiwindow_test_clipboard_held, 0);
-	return 0;
+	return v_multiwindow_test_win32_set_clipboard_raw(owner_ptr, text,
+		units * sizeof(wchar_t));
 }
 
-static inline int v_multiwindow_test_win32_start_clipboard_occupancy(void) {
-	if (v_multiwindow_test_clipboard_thread) {
+static inline int v_multiwindow_test_win32_set_clipboard_malformed(
+	void *owner_ptr, int kind) {
+	HWND owner = (HWND)owner_ptr;
+	if (!owner || !IsWindow(owner)) {
 		return 0;
 	}
-	v_multiwindow_test_clipboard_ready = CreateEventW(NULL, TRUE, FALSE, NULL);
-	v_multiwindow_test_clipboard_release = CreateEventW(NULL, TRUE, FALSE, NULL);
-	if (!v_multiwindow_test_clipboard_ready || !v_multiwindow_test_clipboard_release) {
+	if (kind == 2) {
+		const wchar_t invalid_surrogate[] = {
+			(wchar_t)0xd800, L'A', L'\0'
+		};
+		return v_multiwindow_test_win32_set_clipboard_raw(owner,
+			invalid_surrogate, sizeof(invalid_surrogate));
+	}
+	if (kind != 1 || !OpenClipboard(owner)) {
 		return 0;
 	}
-	v_multiwindow_test_clipboard_thread = CreateThread(NULL, 0,
-		v_multiwindow_test_win32_clipboard_holder, NULL, 0, NULL);
-	if (!v_multiwindow_test_clipboard_thread) {
+	HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, sizeof(wchar_t));
+	size_t actual_bytes = data ? GlobalSize(data) : 0;
+	void *target = actual_bytes >= sizeof(wchar_t) ? GlobalLock(data) : NULL;
+	if (!target) {
+		if (data) GlobalFree(data);
+		CloseClipboard();
 		return 0;
 	}
-	if (WaitForSingleObject(v_multiwindow_test_clipboard_ready, 2000) != WAIT_OBJECT_0) {
+	// Fill the allocator's complete reported extent so padding cannot supply a NUL.
+	memset(target, 0x41, actual_bytes);
+	GlobalUnlock(data);
+	if (!EmptyClipboard()) {
+		GlobalFree(data);
+		CloseClipboard();
 		return 0;
 	}
-	return InterlockedCompareExchange(&v_multiwindow_test_clipboard_held, 0, 0) != 0;
-}
-
-static inline void v_multiwindow_test_win32_stop_clipboard_occupancy(void) {
-	if (v_multiwindow_test_clipboard_release) {
-		SetEvent(v_multiwindow_test_clipboard_release);
+	if (!SetClipboardData(CF_UNICODETEXT, data)) {
+		GlobalFree(data);
+		CloseClipboard();
+		return 0;
 	}
-	if (v_multiwindow_test_clipboard_thread) {
-		WaitForSingleObject(v_multiwindow_test_clipboard_thread, 3000);
-		CloseHandle(v_multiwindow_test_clipboard_thread);
-	}
-	if (v_multiwindow_test_clipboard_ready) {
-		CloseHandle(v_multiwindow_test_clipboard_ready);
-	}
-	if (v_multiwindow_test_clipboard_release) {
-		CloseHandle(v_multiwindow_test_clipboard_release);
-	}
-	v_multiwindow_test_clipboard_thread = NULL;
-	v_multiwindow_test_clipboard_ready = NULL;
-	v_multiwindow_test_clipboard_release = NULL;
-	InterlockedExchange(&v_multiwindow_test_clipboard_held, 0);
+	return CloseClipboard() != 0;
 }
 
 static inline VMultiwindowTestGetRegisteredRawInputDevices

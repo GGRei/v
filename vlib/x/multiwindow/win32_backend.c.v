@@ -98,6 +98,8 @@ mut:
 	event_sequence_terminal          string
 	windows                          []&Win32WindowRecord
 	service_monitors                 []Win32ServiceMonitorRecord
+	clipboard_pending                []Win32ClipboardPending
+	clipboard_pending_bytes          usize
 }
 
 struct Win32D3DDeviceLaneAttempt {
@@ -966,6 +968,7 @@ fn (mut backend Win32Backend) finish_window_teardown(id WindowId) ! {
 		if backend.has_retained_child(id) {
 			return error(err_owner_relation_invalid)
 		}
+		backend.purge_clipboard_window(id)
 		if record.hwnd != unsafe { nil } {
 			if C.v_multiwindow_win32_destroy_window(record.hwnd) == 0 {
 				return error(err_win32_destroy_window_failed)
@@ -1084,6 +1087,9 @@ fn (mut backend Win32Backend) poll_queued_events() ![]QueuedEvent {
 			record.queued_events.clear()
 			i++
 		}
+		for event in backend.collect_clipboard_events() {
+			native_events << event
+		}
 	}
 	win32_sort_native_events(mut native_events)
 	mut events := []QueuedEvent{cap: native_events.len}
@@ -1112,6 +1118,7 @@ fn (mut backend Win32Backend) event_sequence_terminal_error() string {
 
 fn (mut backend Win32Backend) stop() ! {
 	$if windows {
+		backend.purge_all_clipboard_requests()
 		if !backend.started && !backend.retains_native_ownership() {
 			terminal_error := backend.retained_stop_error('')
 			if terminal_error != '' {
