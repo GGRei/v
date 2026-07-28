@@ -134,6 +134,17 @@ fn test_fasthttp_and_veb_linux_c_fn_redeclarations_are_compatible() {
 	assert result.exit_code == 0, result.output
 }
 
+fn test_fasthttp_and_veb_freebsd_c_fn_redeclarations_are_compatible() {
+	root := write_c_fn_redeclaration_project('c_fn_fasthttp_veb_freebsd_redeclaration', {
+		'main.v': 'module main\n\nimport fasthttp as _\nimport veb as _\n\nfn main() {}\n'
+	})!
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	result := os.execute('${c_fn_redeclaration_vexe} -os freebsd -check ${os.quoted_path(root)}')
+	assert result.exit_code == 0, result.output
+}
+
 fn test_os_and_vinix_gethostname_c_fn_redeclarations_are_compatible() {
 	root := write_c_fn_redeclaration_project('c_fn_os_vinix_gethostname_redeclaration', {
 		'v.mod':                 "Module { name: 'c_fn_os_vinix_gethostname_redeclaration' }\n"
