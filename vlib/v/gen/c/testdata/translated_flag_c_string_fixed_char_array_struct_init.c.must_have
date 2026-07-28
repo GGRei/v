@@ -1,0 +1,3 @@
+typedef Array_fixed_i8_5 main__FlagName;
+typedef Array_fixed_u8_4 main__ExactFlagName;
+main__FlagFixedName* value = (HEAP(main__FlagFixedName, ((main__FlagFixedName){.name = "flag",.exact = "WXYZ",.pointer = "pointer",})));

@@ -1,0 +1,24 @@
+// vtest vflags: -translated
+module main
+
+type FlagName = [5]i8
+type ExactFlagName = [4]u8
+
+struct FlagFixedName {
+	name    FlagName
+	exact   ExactFlagName
+	pointer &char
+}
+
+fn main() {
+	value := &FlagFixedName{
+		name:    c'flag'
+		exact:   c'WXYZ'
+		pointer: c'pointer'
+	}
+	assert value.name[3] == i8(`g`)
+	assert value.name[4] == 0
+	assert value.exact[3] == u8(`Z`)
+	assert value.pointer[0] == char(`p`)
+	println('ok')
+}

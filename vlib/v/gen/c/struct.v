@@ -586,7 +586,10 @@ fn (mut g Gen) can_use_direct_heap_struct_init(node ast.StructInit, sym ast.Type
 		return false
 	}
 	for init_field in node.init_fields {
-		if g.need_tmp_var_in_expr(init_field.expr) {
+		// C string literals can initialize arrays only as part of an initializer.
+		// This path assigns fields after allocation, so keep the compound initializer instead.
+		if g.need_tmp_var_in_expr(init_field.expr)
+			|| g.is_translated_c_string_fixed_char_array_field(init_field) {
 			return false
 		}
 	}
@@ -595,6 +598,26 @@ fn (mut g Gen) can_use_direct_heap_struct_init(node ast.StructInit, sym ast.Type
 	}
 	field_names := info.fields.map(it.name)
 	return node.init_fields.all(it.name in field_names)
+}
+
+fn (mut g Gen) is_translated_c_string_fixed_char_array_field(field ast.StructInitField) bool {
+	if !(g.file.is_translated || g.pref.translated) {
+		return false
+	}
+	literal := match field.expr {
+		ast.StringLiteral { field.expr }
+		else { return false }
+	}
+	if literal.language != .c || field.expected_type == 0 {
+		return false
+	}
+	expected_sym := g.table.final_sym(g.unwrap_generic(field.expected_type))
+	array_info := match expected_sym.info {
+		ast.ArrayFixed { expected_sym.info }
+		else { return false }
+	}
+	elem_type := g.table.fully_unaliased_type(g.unwrap_generic(array_info.elem_type)).clear_flags()
+	return elem_type.idx() in [ast.i8_type_idx, ast.u8_type_idx, ast.char_type_idx]
 }
 
 fn (mut g Gen) direct_heap_struct_init(node ast.StructInit, styp string, info ast.Struct, language ast.Language) {

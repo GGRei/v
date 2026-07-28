@@ -1149,6 +1149,8 @@ or use an explicit `unsafe{ a[..] }`, if you do not want a copy of the slice.',
 							init_field.expr.pos())
 					}
 				}
+				is_translated_c_string_fixed_char_array := c.is_translated_c_string_fixed_char_array(init_field.expr,
+					exp_type)
 				if exp_final_sym.kind == .interface {
 					if c.type_implements(got_type, exp_type, init_field.pos) {
 						if !c.inside_unsafe && got_type_sym.kind != .interface
@@ -1157,11 +1159,12 @@ or use an explicit `unsafe{ a[..] }`, if you do not want a copy of the slice.',
 						}
 					}
 				} else if c.table.final_sym(exp_type).kind == .array_fixed && got_type.is_ptr()
-					&& !exp_type.is_any_kind_of_pointer() && !init_field.expr.is_auto_deref_var() {
+					&& !exp_type.is_any_kind_of_pointer() && !init_field.expr.is_auto_deref_var()
+					&& !is_translated_c_string_fixed_char_array {
 					c.error('cannot assign to field `${field_info.name}`: ${c.expected_msg(got_type,
 						exp_type)}', init_field.pos)
-				} else if got_type != ast.void_type && got_type_sym.kind != .placeholder
-					&& !exp_type.has_flag(.generic) {
+				} else if !is_translated_c_string_fixed_char_array && got_type != ast.void_type
+					&& got_type_sym.kind != .placeholder && !exp_type.has_flag(.generic) {
 					mut needs_sum_type_cast := false
 					if exp_type_sym.kind == .placeholder {
 						base_type := c.table.find_type(exp_type_sym.ngname)
@@ -1403,6 +1406,26 @@ or use an explicit `unsafe{ a[..] }`, if you do not want a copy of the slice.',
 		}
 	}
 	return node.typ
+}
+
+fn (c &Checker) is_translated_c_string_fixed_char_array(expr ast.Expr, expected ast.Type) bool {
+	if !(c.file.is_translated || c.pref.translated) {
+		return false
+	}
+	literal := match expr {
+		ast.StringLiteral { expr }
+		else { return false }
+	}
+	if literal.language != .c {
+		return false
+	}
+	expected_sym := c.table.final_sym(expected)
+	array_info := match expected_sym.info {
+		ast.ArrayFixed { expected_sym.info }
+		else { return false }
+	}
+	elem_type := c.table.fully_unaliased_type(array_info.elem_type).clear_flags()
+	return elem_type.idx() in [ast.i8_type_idx, ast.u8_type_idx, ast.char_type_idx]
 }
 
 fn (c &Checker) has_direct_numeric_alias_struct_init_mismatch(expr ast.Expr, got ast.Type, expected ast.Type) bool {
