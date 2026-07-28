@@ -5,15 +5,16 @@ on:
   push:
     branches:
       - master
-    paths-ignore:
-      - 'vlib/v3/**'
-      - '**.md'
-      - '**.yml'
-      - 'cmd/tools/**'
-      - '!**/openbsd_ci.yml'
-      - '!ci/openbsd_ci.vsh'
-      - '!cmd/tools/builders/**.v'
-      - '!cmd/tools/vwatch_stdin_test.v'
+    paths:
+      - '**'
+      - '!vlib/v3/**'
+      - '!**.md'
+      - '!**.yml'
+      - '!cmd/tools/**'
+      - '.github/workflows/openbsd_ci.yml'
+      - 'ci/openbsd_ci.vsh'
+      - 'cmd/tools/builders/**.v'
+      - 'cmd/tools/vwatch_stdin_test.v'
   pull_request:
     paths:
       - 'cmd/v/**'
