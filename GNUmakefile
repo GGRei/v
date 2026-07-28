@@ -20,6 +20,7 @@ TCCARCH := unknown
 HAS_GIT := $(shell command -v $(GIT) >/dev/null 2>&1 && echo 1 || echo 0)
 GITCLEANPULL := $(GIT) clean -xf && $(GIT) pull --rebase --quiet
 GITFASTCLONE := $(GIT) clone --filter=blob:none --quiet
+LINUX_TCC_SELECTOR := $(VROOT)/cmd/tools/select_linux_tcc.sh
 
 #### Platform detections and overrides:
 _SYS := $(shell uname 2>/dev/null || echo Unknown)
@@ -250,6 +251,10 @@ endif
 ifndef local
 latest_tcc: $(TMPTCC)/.git/config
 ifeq ($(HAS_GIT),1)
+ifeq ($(TCCOS),linux)
+	@GIT='$(GIT)' TMPDIR='$(TMPDIR)' VFLAGS='$(VFLAGS)' \
+		bash '$(LINUX_TCC_SELECTOR)' latest '$(TMPTCC)' '$(TCCREPO)' '$(TCCARCH)' '$(VROOT)'
+else
 ifdef WIN32
 	@if [ -f "$(TMPTCC)/lib/advapi32.def" ]; then \
 		cd "$(TMPTCC)" && $(GIT) checkout -- lib/advapi32.def > /dev/null 2> /dev/null || true; \
@@ -262,6 +267,7 @@ ifdef WIN32
 			grep -qx "$$sym" "$(TMPTCC)/lib/advapi32.def" || printf '%s\n' "$$sym" >> "$(TMPTCC)/lib/advapi32.def"; \
 		done; \
 	fi
+endif
 endif
 else
 	@echo "git not found; skipping update of $(TMPTCC)"
@@ -297,6 +303,10 @@ fresh_tcc:
 	rm -rf $(TMPTCC)
 ifndef local
 ifeq ($(HAS_GIT),1)
+ifeq ($(TCCOS),linux)
+	@GIT='$(GIT)' TMPDIR='$(TMPDIR)' VFLAGS='$(VFLAGS)' \
+		bash '$(LINUX_TCC_SELECTOR)' fresh '$(TMPTCC)' '$(TCCREPO)' '$(TCCARCH)' '$(VROOT)'
+else
 	@set -e; \
 	branches="$$( $(GIT) ls-remote --heads $(TCCREPO) 2> /dev/null | awk '{sub("refs/heads/","",$$2); print $$2}' || true )"; \
 	preferred_branch='thirdparty-$(TCCOS)-$(TCCARCH)'; \
@@ -333,6 +343,7 @@ ifeq ($(HAS_GIT),1)
 			$(MAKE) --quiet check_for_working_tcc 2> /dev/null; \
 		fi; \
 	fi
+endif
 else
 	@echo "git is required to clone $(TCCREPO)"
 	@exit 1
