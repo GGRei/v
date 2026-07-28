@@ -1,4 +1,4 @@
-// vtest build: !(windows && tinyc) && !musl?
+// vtest build: !musl? && !docker-ubuntu-musl && !(windows && tinyc)
 
 module gg
 
