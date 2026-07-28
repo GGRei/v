@@ -33,6 +33,10 @@ if [ "\${1:-}" = "--version" ]; then
 	echo "${version}"
 	exit 0
 fi
+if [ ! -f thirdparty/tcc/lib/tcc/include/stddef.h ]; then
+	echo "tcc: error: thirdparty/tcc/lib/tcc/include/stddef.h is unavailable from the current directory" >&2
+	exit 3
+fi
 out=
 has_gc_include=0
 has_gc_threads=0
@@ -102,8 +106,11 @@ fn configure_source_repo(path string) {
 
 fn commit_bundle_state(source string, message string, tcc_script string, libgc string) string {
 	os.mkdir_all(os.join_path(source, 'lib')) or { panic(err) }
+	os.mkdir_all(os.join_path(source, 'lib', 'tcc', 'include')) or { panic(err) }
 	write_executable(os.join_path(source, 'tcc.exe'), tcc_script)
 	os.write_file(os.join_path(source, 'lib', 'libgc.a'), libgc) or { panic(err) }
+	os.write_file(os.join_path(source, 'lib', 'tcc', 'include', 'stddef.h'),
+		'/* bundle-relative TCC include contract */\n') or { panic(err) }
 	os.write_file(os.join_path(source, 'lib', 'bundle-state.txt'), '${message}\n') or { panic(err) }
 	run_checked('git -C ${os.quoted_path(source)} add .')
 	run_checked('git -C ${os.quoted_path(source)} commit --quiet -m ${os.quoted_path(message)}')
@@ -204,6 +211,23 @@ fn assert_historical_fallback(fixture TccHistoryFixture) {
 	assert tmp_entries == []
 }
 
+fn assert_fixture_bundle_is_vroot_cwd_sensitive(fixture TccHistoryFixture) {
+	vroot := os.dir(os.dir(fixture.tcc_dir))
+	source_path := os.join_path(fixture.tmp_dir, 'wrong-cwd-probe.c')
+	executable_path := os.join_path(fixture.tmp_dir, 'wrong-cwd-probe')
+	os.write_file(source_path, 'int main(void) { return 0; }\n') or { panic(err) }
+	result := os.execute('cd ${os.quoted_path(fixture.tcc_dir)} && ./tcc.exe -I${os.quoted_path(os.join_path(vroot,
+		'thirdparty', 'libgc', 'include'))} -DGC_THREADS=1 -DTHREAD_LOCAL_ALLOC=1 -DGC_BUILTIN_ATOMIC=1 -o ${os.quoted_path(executable_path)} ${os.quoted_path(source_path)} ${os.quoted_path(os.join_path(fixture.tcc_dir,
+		'lib', 'libgc.a'))} -ldl -lpthread 2>&1')
+	assert result.exit_code != 0, result.output
+	assert result.output.contains('thirdparty/tcc/lib/tcc/include/stddef.h is unavailable'), result.output
+
+	os.rm(source_path) or {}
+	os.rm(executable_path) or {}
+	tmp_entries := os.ls(fixture.tmp_dir) or { panic(err) }
+	assert tmp_entries == []
+}
+
 fn push_compatible_head(mut fixture TccHistoryFixture) string {
 	compatible_head_sha := commit_bundle_state(fixture.source, 'compatible-v2',
 		compatible_tcc_script('compatible-tcc-v2'), 'compatible-libgc-v2\n')
@@ -226,6 +250,7 @@ fn test_linux_tcc_uses_newest_compatible_commit_and_returns_to_a_fixed_head() {
 	assert fresh_result.output.contains('Using newest host-compatible TCC commit ${fixture.compatible_sha}'), fresh_result.output
 
 	assert_historical_fallback(fixture)
+	assert_fixture_bundle_is_vroot_cwd_sensitive(fixture)
 
 	still_broken_result := os.execute('${fixture.latest_cmd} 2>&1')
 	assert still_broken_result.exit_code == 0, still_broken_result.output

@@ -33,6 +33,17 @@ if [ -z "$tcc_repo" ] || [ -z "$tcc_arch" ] || [ -z "$vroot" ]; then
 	exit 2
 fi
 
+if [ ! -d "$vroot" ] || [ ! -d "$(dirname "$tcc_dir")" ]; then
+	echo 'the V root and TCC parent directory must already exist' >&2
+	exit 2
+fi
+vroot="$(cd "$vroot" && pwd -P)"
+tcc_dir="$(cd "$(dirname "$tcc_dir")" && pwd -P)/$(basename "$tcc_dir")"
+if [ "$tcc_dir" != "$vroot/thirdparty/tcc" ]; then
+	echo "the Linux TCC bundle must be located at ${vroot}/thirdparty/tcc, got ${tcc_dir}" >&2
+	exit 2
+fi
+
 probe_dir="$(mktemp -d "${tmp_root%/}/v-tcc-host-probe.XXXXXX")"
 trap 'rm -rf "$probe_dir"' EXIT HUP INT TERM
 probe_source="$probe_dir/probe.c"
@@ -59,11 +70,11 @@ probe_bundle() {
 		echo 'the TCC bundle libgc.a or V libgc headers are missing' >> "$probe_log"
 		return 1
 	fi
-	if ! (cd "$tcc_dir" && ./tcc.exe --version) >> "$probe_log" 2>&1; then
+	if ! (cd "$vroot" && "$tcc_dir/tcc.exe" --version) >> "$probe_log" 2>&1; then
 		return 1
 	fi
 	rm -f "$probe_exe"
-	if ! (cd "$tcc_dir" && ./tcc.exe \
+	if ! (cd "$vroot" && "$tcc_dir/tcc.exe" \
 		-I"$vroot/thirdparty/libgc/include" \
 		-DGC_THREADS=1 -DTHREAD_LOCAL_ALLOC=1 -DGC_BUILTIN_ATOMIC=1 \
 		-o "$probe_exe" "$probe_source" "$tcc_dir/lib/libgc.a" -ldl -lpthread) \
