@@ -277,7 +277,8 @@ static inline int atomic_compare_exchange_strong_u64(unsigned long long volatile
                                                  unsigned long long desired)
 {
 	unsigned long long old = *expected;
-    *expected = InterlockedCompareExchange64(object, desired, old);
+    *expected = (unsigned long long) InterlockedCompareExchange64((volatile long long *) object,
+        (long long) desired, (long long) old);
     return *expected == old;
 }
 
