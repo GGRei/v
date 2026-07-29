@@ -277,8 +277,17 @@ latest_bundle() {
 	fi
 	assert_clean_checkout
 	local current_branch
+	local branch_status
 	local current_sha
-	current_branch="$(run_git -C "$tcc_dir" branch --show-current)"
+	if current_branch="$(run_git -C "$tcc_dir" symbolic-ref --quiet --short HEAD)"; then
+		:
+	else
+		branch_status=$?
+		if [ "$branch_status" -ne 1 ]; then
+			return "$branch_status"
+		fi
+		current_branch=''
+	fi
 	current_sha="$(run_git -C "$tcc_dir" rev-parse HEAD)"
 	if [ -n "$current_branch" ]; then
 		if [ "$current_branch" = "$unknown_branch" ]; then
