@@ -392,7 +392,8 @@ static inline int atomic_compare_exchange_strong_u16(unsigned short volatile * o
                                                  unsigned short desired)
 {
 	unsigned short old = *expected;
-    *expected = InterlockedCompareExchange16(object, desired, old);
+    *expected = (unsigned short) InterlockedCompareExchange16((volatile short *) object,
+        (short) desired, (short) old);
     return *expected == old;
 }
 
