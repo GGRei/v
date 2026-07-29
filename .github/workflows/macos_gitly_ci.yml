@@ -30,6 +30,7 @@ on:
 
 jobs:
   macos-gitly-ci:
+    if: ${{ github.repository == 'vlang/v' }}
     runs-on: [self-hosted, macOS, gitly-ci]
     timeout-minutes: 120
     env:
