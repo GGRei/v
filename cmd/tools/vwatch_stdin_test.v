@@ -4,7 +4,9 @@ import time
 const vwatch_stdin_vexe = @VEXE
 
 fn openbsd_script_args(stty_exe string, command string, ready_path string) []string {
-	mut setup_command := '${os.quoted_path(stty_exe)} sane'
+	// With redirected stdin, OpenBSD `script` initializes its pseudo-terminal
+	// at B0. Set a usable speed together with sane modes to avoid hanging it up.
+	mut setup_command := '${os.quoted_path(stty_exe)} sane 115200'
 	if ready_path != '' {
 		setup_command += ' && : > ${os.quoted_path(ready_path)}'
 	}
@@ -24,12 +26,12 @@ fn test_openbsd_script_args() {
 	command := "'/bin/sh' -m '/tmp/run.sh' '/tmp/helper'"
 	assert openbsd_script_args('/bin/stty', command, '') == [
 		'-c',
-		"'/bin/stty' sane && exec ${command}",
+		"'/bin/stty' sane 115200 && exec ${command}",
 		'/dev/null',
 	]
 	assert openbsd_script_args('/bin/stty', command, '/tmp/ready') == [
 		'-c',
-		"'/bin/stty' sane && : > '/tmp/ready' && exec ${command}",
+		"'/bin/stty' sane 115200 && : > '/tmp/ready' && exec ${command}",
 		'/dev/null',
 	]
 }
