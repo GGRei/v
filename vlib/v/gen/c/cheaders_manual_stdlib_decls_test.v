@@ -22,7 +22,7 @@ fn test_default_c_prelude_uses_manual_stdio_stdlib_string_and_stdarg_decls() {
 	assert generated_c.contains('V_CRT_LINKAGE int V_CRT_CALL vfprintf(FILE *stream, const char *format, va_list ap);'), generated_c
 
 	assert generated_c.contains('V_CRT_LINKAGE int V_CRT_CALL vsnprintf(char *str, size_t size, const char *format, va_list ap);'), generated_c
-	assert generated_c.contains('#if defined(_WIN32) || defined(_WIN64)\nV_CRT_STDIO_LINKAGE int V_CRT_CALL _fseeki64(FILE *stream, i64 offset, int whence);\nV_CRT_LINKAGE int V_CRT_CALL fgetpos(FILE *stream, i64 *pos);\nV_CRT_STDIO_LINKAGE int V_CRT_CALL _fileno(FILE *stream);\nV_CRT_STDIO_LINKAGE FILE * V_CRT_CALL _wfopen(const unsigned short *filename, const unsigned short *mode);\nV_CRT_STDIO_LINKAGE int V_CRT_CALL freopen_s(FILE **new_stream, const char *filename, const char *mode, FILE *stream);\nV_CRT_STDIO_LINKAGE FILE * V_CRT_CALL _wfreopen(const unsigned short *filename, const unsigned short *mode, FILE *stream);\nV_CRT_STDIO_LINKAGE FILE * V_CRT_CALL _wpopen(const unsigned short *command, const unsigned short *mode);\nV_CRT_STDIO_LINKAGE int V_CRT_CALL _pclose(FILE *stream);\nV_CRT_LINKAGE int V_CRT_CALL _wremove(const unsigned short *path);\nV_CRT_LINKAGE void * V_CRT_CALL _aligned_malloc(size_t size, size_t alignment);\nV_CRT_LINKAGE void * V_CRT_CALL _aligned_realloc(void *memory, size_t size, size_t alignment);\nV_CRT_LINKAGE void V_CRT_CALL _aligned_free(void *memory);\nV_CRT_LINKAGE unsigned short * V_CRT_CALL _wgetenv(const unsigned short *varname);\nV_CRT_LINKAGE int V_CRT_CALL _wputenv(const unsigned short *envstring);\n#endif'), generated_c
+	assert generated_c.contains('#if defined(_WIN32) || defined(_WIN64)\nV_CRT_STDIO_LINKAGE int V_CRT_CALL _fseeki64(FILE *stream, i64 offset, int whence);\nV_CRT_LINKAGE int V_CRT_CALL fgetpos(FILE *stream, i64 *pos);\nV_CRT_STDIO_LINKAGE int V_CRT_CALL _fileno(FILE *stream);\nV_CRT_STDIO_LINKAGE FILE * V_CRT_CALL _wfopen(const unsigned short *filename, const unsigned short *mode);\nV_CRT_STDIO_LINKAGE int V_CRT_CALL freopen_s(FILE **new_stream, const char *filename, const char *mode, FILE *stream);\nV_CRT_STDIO_LINKAGE FILE * V_CRT_CALL _wfreopen(const unsigned short *filename, const unsigned short *mode, FILE *stream);\nV_CRT_STDIO_LINKAGE FILE * V_CRT_CALL _wpopen(const unsigned short *command, const unsigned short *mode);\nV_CRT_STDIO_LINKAGE int V_CRT_CALL _pclose(FILE *stream);\nV_CRT_STDIO_LINKAGE int V_CRT_CALL _wremove(const unsigned short *path);\nV_CRT_LINKAGE void * V_CRT_CALL _aligned_malloc(size_t size, size_t alignment);\nV_CRT_LINKAGE void * V_CRT_CALL _aligned_realloc(void *memory, size_t size, size_t alignment);\nV_CRT_LINKAGE void V_CRT_CALL _aligned_free(void *memory);\nV_CRT_LINKAGE unsigned short * V_CRT_CALL _wgetenv(const unsigned short *varname);\nV_CRT_LINKAGE int V_CRT_CALL _wputenv(const unsigned short *envstring);\n#endif'), generated_c
 
 	assert generated_c.contains('V_CRT_LINKAGE void V_CRT_CALL perror(const char *str);'), generated_c
 	assert generated_c.contains('V_CRT_LINKAGE int V_CRT_CALL mkstemp(char *stemplate);'), generated_c
@@ -53,8 +53,10 @@ fn test_default_c_prelude_uses_manual_stdio_stdlib_string_and_stdarg_decls() {
 		'V_CRT_STDIO_LINKAGE FILE * V_CRT_CALL _wfreopen(const unsigned short *filename, const unsigned short *mode, FILE *stream);',
 		'V_CRT_STDIO_LINKAGE FILE * V_CRT_CALL _wpopen(const unsigned short *command, const unsigned short *mode);',
 		'V_CRT_STDIO_LINKAGE int V_CRT_CALL _pclose(FILE *stream);',
+		'V_CRT_STDIO_LINKAGE int V_CRT_CALL _wremove(const unsigned short *path);',
 	], crt_stdio_linkage_decls.str()
 	assert !generated_c.contains('V_CRT_STDIO_LINKAGE FILE * V_CRT_CALL _popen('), generated_c
+	assert !generated_c.contains('V_CRT_LINKAGE int V_CRT_CALL _wremove('), generated_c
 	for declaration in [
 		'V_CRT_LINKAGE FILE * V_CRT_CALL fdopen(int fd, const char *mode);',
 		'V_CRT_LINKAGE int V_CRT_CALL fileno(FILE *stream);',
@@ -67,7 +69,6 @@ fn test_default_c_prelude_uses_manual_stdio_stdlib_string_and_stdarg_decls() {
 		'V_CRT_LINKAGE char * V_CRT_CALL realpath(const char *path, char *resolved_path);',
 		'V_CRT_LINKAGE isize V_CRT_CALL getline(char **lineptr, size_t *n, FILE *stream);',
 		'V_CRT_LINKAGE int V_CRT_CALL fgetpos(FILE *stream, i64 *pos);',
-		'V_CRT_LINKAGE int V_CRT_CALL _wremove(const unsigned short *path);',
 		'V_CRT_LINKAGE void * V_CRT_CALL _aligned_malloc(size_t size, size_t alignment);',
 		'V_CRT_LINKAGE void * V_CRT_CALL _aligned_realloc(void *memory, size_t size, size_t alignment);',
 		'V_CRT_LINKAGE void V_CRT_CALL _aligned_free(void *memory);',

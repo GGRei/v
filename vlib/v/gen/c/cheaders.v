@@ -680,7 +680,7 @@ V_CRT_STDIO_LINKAGE int V_CRT_CALL freopen_s(FILE **new_stream, const char *file
 V_CRT_STDIO_LINKAGE FILE * V_CRT_CALL _wfreopen(const unsigned short *filename, const unsigned short *mode, FILE *stream);
 V_CRT_STDIO_LINKAGE FILE * V_CRT_CALL _wpopen(const unsigned short *command, const unsigned short *mode);
 V_CRT_STDIO_LINKAGE int V_CRT_CALL _pclose(FILE *stream);
-V_CRT_LINKAGE int V_CRT_CALL _wremove(const unsigned short *path);
+V_CRT_STDIO_LINKAGE int V_CRT_CALL _wremove(const unsigned short *path);
 V_CRT_LINKAGE void * V_CRT_CALL _aligned_malloc(size_t size, size_t alignment);
 V_CRT_LINKAGE void * V_CRT_CALL _aligned_realloc(void *memory, size_t size, size_t alignment);
 V_CRT_LINKAGE void V_CRT_CALL _aligned_free(void *memory);
