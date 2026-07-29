@@ -3,13 +3,35 @@ import time
 
 const vwatch_stdin_vexe = @VEXE
 
-fn openbsd_script_args(command string) []string {
-	return ['-c', command, '/dev/null']
+fn openbsd_script_args(stty_exe string, command string, ready_path string) []string {
+	mut setup_command := '${os.quoted_path(stty_exe)} sane'
+	if ready_path != '' {
+		setup_command += ' && : > ${os.quoted_path(ready_path)}'
+	}
+	return ['-c', '${setup_command} && exec ${command}', '/dev/null']
+}
+
+fn required_openbsd_tool(name string) string {
+	return os.find_abs_path_of_executable(name) or {
+		panic('`${name}` is required for OpenBSD vwatch terminal tests')
+	}
 }
 
 fn test_openbsd_script_args() {
+	$if windows {
+		return
+	}
 	command := "'/bin/sh' -m '/tmp/run.sh' '/tmp/helper'"
-	assert openbsd_script_args(command) == ['-c', command, '/dev/null']
+	assert openbsd_script_args('/bin/stty', command, '') == [
+		'-c',
+		"'/bin/stty' sane && exec ${command}",
+		'/dev/null',
+	]
+	assert openbsd_script_args('/bin/stty', command, '/tmp/ready') == [
+		'-c',
+		"'/bin/stty' sane && : > '/tmp/ready' && exec ${command}",
+		'/dev/null',
+	]
 }
 
 fn test_background_watch_does_not_take_terminal() {
@@ -40,7 +62,8 @@ fn test_background_watch_does_not_take_terminal() {
 		process.use_pgroup = true
 		command := '${os.quoted_path(shell_exe)} -m ${os.quoted_path(shell_path)} ${os.quoted_path(helper_path)} ${os.quoted_path(sleep_exe)} ${os.quoted_path(marker_path)}'
 		$if openbsd {
-			process.set_args(openbsd_script_args(command))
+			stty_exe := required_openbsd_tool('stty')
+			process.set_args(openbsd_script_args(stty_exe, command, ''))
 		} $else $if macos || freebsd {
 			process.set_args(['-q', '/dev/null', shell_exe, '-m', shell_path, helper_path, sleep_exe,
 				marker_path])
@@ -96,7 +119,8 @@ fn test_background_restore_does_not_reclaim_terminal() {
 		process.use_pgroup = true
 		command := '${os.quoted_path(shell_exe)} -m ${os.quoted_path(shell_path)} ${os.quoted_path(helper_path)} ${os.quoted_path(marker_path)}'
 		$if openbsd {
-			process.set_args(openbsd_script_args(command))
+			stty_exe := required_openbsd_tool('stty')
+			process.set_args(openbsd_script_args(stty_exe, command, ''))
 		} $else $if macos || freebsd {
 			process.set_args(['-q', '/dev/null', shell_exe, '-m', shell_path, helper_path,
 				marker_path])
@@ -135,6 +159,7 @@ fn test_watch_run_forwards_terminal_input() {
 		}
 		source_path := os.join_path(tmp_dir, 'input.v')
 		marker_path := os.join_path(tmp_dir, 'input.txt')
+		ready_path := os.join_path(tmp_dir, 'pty_ready')
 		os.write_file(source_path,
 			"import os\n\nfn main() {\n\tname := os.input('Enter name: ')\n\tos.write_file(os.args[1], name)!\n}\n")!
 		mut process := os.new_process(script_exe)
@@ -142,7 +167,8 @@ fn test_watch_run_forwards_terminal_input() {
 		process.use_pgroup = true
 		command := '${os.quoted_path(vwatch_stdin_vexe)} watch run ${os.quoted_path(source_path)} ${os.quoted_path(marker_path)}'
 		$if openbsd {
-			process.set_args(openbsd_script_args(command))
+			stty_exe := required_openbsd_tool('stty')
+			process.set_args(openbsd_script_args(stty_exe, command, ready_path))
 		} $else $if macos || freebsd {
 			process.set_args(['-q', '/dev/null', vwatch_stdin_vexe, 'watch', 'run', source_path,
 				marker_path])
@@ -150,7 +176,33 @@ fn test_watch_run_forwards_terminal_input() {
 			process.set_args(['-q', '-c', command, '/dev/null'])
 		}
 		process.run()
-		process.stdin_write('Alice\n')
+		mut pty_ready := true
+		mut prompt_ready := true
+		mut startup_output := ''
+		$if openbsd {
+			pty_ready = false
+			prompt_ready = false
+			for _ in 0 .. 100 {
+				startup_output += process.stdout_read()
+				if os.exists(ready_path) {
+					pty_ready = true
+				}
+				if startup_output.contains('Enter name:') {
+					prompt_ready = true
+				}
+				if pty_ready && prompt_ready {
+					break
+				}
+				if !process.is_alive() {
+					startup_output += process.stdout_read()
+					break
+				}
+				time.sleep(100 * time.millisecond)
+			}
+		}
+		if pty_ready && prompt_ready && process.is_alive() {
+			process.stdin_write('Alice\n')
+		}
 		mut received_input := false
 		for _ in 0 .. 100 {
 			if os.read_file(marker_path) or { '' } == 'Alice' {
@@ -162,7 +214,9 @@ fn test_watch_run_forwards_terminal_input() {
 			}
 			time.sleep(100 * time.millisecond)
 		}
-		process.stdin_write('\x03')
+		if process.is_alive() {
+			process.stdin_write('\x03')
+		}
 		for _ in 0 .. 50 {
 			if !process.is_alive() {
 				break
@@ -173,8 +227,10 @@ fn test_watch_run_forwards_terminal_input() {
 			process.signal_pgkill()
 		}
 		process.wait()
-		output := process.stdout_slurp() + process.stderr_slurp()
+		output := startup_output + process.stdout_slurp() + process.stderr_slurp()
 		process.close()
+		assert pty_ready, output
+		assert prompt_ready, output
 		assert received_input, output
 	}
 }

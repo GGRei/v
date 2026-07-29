@@ -125,7 +125,7 @@ fn test_vwatch_stdin() {
 	} else {
 		println('### Test vwatch terminal input')
 	}
-	for tool in ['script', 'sh', 'sleep'] {
+	for tool in ['script', 'sh', 'sleep', 'stty'] {
 		exec('command -v ${tool}')
 	}
 	exec('v -silent test cmd/tools/vwatch_stdin_test.v')
