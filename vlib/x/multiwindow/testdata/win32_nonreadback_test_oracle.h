@@ -866,7 +866,8 @@ static inline int v_multiwindow_test_win32_dwm_dark(void *hwnd, int *value) {
 	return 1;
 }
 
-#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST) \
+#if (defined(V_MULTIWINDOW_WIN32_SERVICE_TEST) \
+	|| defined(V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_BACKEND_IMPLEMENTATION)) \
 	&& !defined(V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ADAPTERS)
 #define V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ADAPTERS
 

@@ -202,7 +202,7 @@ jobs:
           .\.github\workflows\run_multiwindow_win32_w4.ps1 `
             -Compiler tcc `
             -Expectation Red `
-            -ExpectedOracleSha256 '39343dc1a87f27c44c841a4155e11e46817eb137881695280308fea4ba9c4485' `
+            -ExpectedOracleSha256 '3dfcbd77f831864ed8a954440a70b32f32ed72f01fe02c23d6609b915c6aa6e1' `
             -ExpectedNativeTestSha256 'a75b16032557d1b476646490c9f485c987a67a5db446c663b5036733c4713456' `
             -ExpectedPublicTestSha256 'd08eafb919ae97b185fc480c22f6d990973396152e9a0b3a01035c3e9a30275c' `
             -ExpectedNoOptProbeSha256 '288f148ca15b6694481f117c03be5f80c4045baf76d3b0e90db61b5e0596741c' `
@@ -211,8 +211,8 @@ jobs:
             -ExpectedWin32ServiceBackendSha256 '5261f7fd1b9aefe3bb76c298f8eeeabd281f8fa26fe58b15868ceb6415dd8ba1' `
             -ExpectedWin32ServiceNativeSha256 'c113d9361d0f55f5fd127d2a2ae7e05fa6930022350cb717161de07e5eeb0054' `
             -ExpectedRedSurfaceSha256 '04b271a1ece4844a60a338358ec292d1e59448b962f6be7fb9c5765206678a7e' `
-            -ExpectedGreenSurfaceSha256 'b5ae060815efc906b8e3137c119e345d9dcc3b2b1b1250f0a7650efae52c9a0d' `
-            -ExpectedRunnerSha256 '69a911b8c9f7f6b9ef1cfb8af02a1c66e7f2ec9f5dc314b8ee9f3688623a85ed'
+            -ExpectedGreenSurfaceSha256 '7c46e7e4c1c85d282f9734e07b8a0a09efdf2e51156f8bd853a4d417c1c346b9' `
+            -ExpectedRunnerSha256 'cdbbcbc59489963ef72ed92808248bd675b63f5e1fa52d66773884f6b274f3c4'
       - name: Public gg Win32 controls/state native diagnostic
         if: ${{ always() }}
         shell: pwsh
