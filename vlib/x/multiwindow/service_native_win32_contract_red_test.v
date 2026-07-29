@@ -4,6 +4,7 @@ module multiwindow
 import time
 
 const win32_red_clipboard_max_bytes = 16 * 1024 * 1024
+const win32_red_wm_close = u32(0x0010)
 const win32_red_ws_caption = u64(0x00c00000)
 const win32_red_ws_child = u64(0x40000000)
 
@@ -83,12 +84,28 @@ $if windows {
 	fn C.v_multiwindow_test_win32_monitor_enumeration_info_failure_calls() int
 	fn C.v_multiwindow_test_win32_monitor_enumeration_growth_calls() int
 	fn C.v_multiwindow_test_win32_monitor_enumeration_growth_callbacks() int
-	fn C.v_multiwindow_test_win32_clipboard_equals(expected &u16) int
-	fn C.v_multiwindow_test_win32_clipboard_bytes() usize
-	fn C.v_multiwindow_test_win32_set_clipboard(text &u16, units usize) int
-	fn C.v_multiwindow_test_win32_start_clipboard_occupancy() int
-	fn C.v_multiwindow_test_win32_stop_clipboard_occupancy()
+	fn C.v_multiwindow_test_win32_clipboard_equals(expected &u16, expected_units usize) int
+	fn C.v_multiwindow_test_win32_set_clipboard(owner voidptr, text &u16, units usize) int
+	fn C.v_multiwindow_test_win32_set_clipboard_malformed(owner voidptr, kind int) int
+	fn C.v_multiwindow_win32_service_test_clipboard_configure(backend voidptr, now_ns i64, fail_open_attempts int)
+	fn C.v_multiwindow_win32_service_test_clipboard_set_now_ns(backend voidptr, now_ns i64)
+	fn C.v_multiwindow_win32_service_test_clipboard_use_real_clock(backend voidptr)
+	fn C.v_multiwindow_win32_service_test_clipboard_fail_before_transfer(backend voidptr, count int)
+	fn C.v_multiwindow_win32_service_test_clipboard_attempts(backend voidptr) int
+	fn C.v_multiwindow_win32_service_test_clipboard_request_attempts(backend voidptr, request_app u64, request_serial u64) int
+	fn C.v_multiwindow_win32_service_test_clipboard_last_open_owner(backend voidptr) voidptr
+	fn C.v_multiwindow_win32_service_test_clipboard_pending_count(backend voidptr) int
+	fn C.v_multiwindow_win32_service_test_clipboard_pending_deadline_ns(backend voidptr, index int) i64
+	fn C.v_multiwindow_win32_service_test_clipboard_pending_write_matches(backend voidptr, index int, request_app u64, request_serial u64, window_app u64, window_slot int, window_generation u32, text &u16, units usize) int
+	fn C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend voidptr) int
+	fn C.v_multiwindow_win32_service_test_clipboard_owned_globals_peak(backend voidptr) int
+	fn C.v_multiwindow_win32_service_test_clipboard_global_allocations(backend voidptr) int
+	fn C.v_multiwindow_win32_service_test_clipboard_global_transfers(backend voidptr) int
+	fn C.v_multiwindow_win32_service_test_clipboard_global_frees(backend voidptr) int
+	fn C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend voidptr) int
+	fn C.v_multiwindow_win32_service_test_clipboard_timeout_ns(backend voidptr) i64
 	fn C.v_multiwindow_test_win32_dwm_dark(hwnd voidptr, value &int) int
+	fn C.SendMessageW(hwnd voidptr, msg u32, wparam usize, lparam isize) isize
 }
 
 fn C.v_multiwindow_test_win32_raw_mouse_target() voidptr
@@ -193,22 +210,122 @@ fn win32_red_utf16_units(text string) usize {
 	return units
 }
 
-fn win32_red_clipboard_terminals(mut app App, request ServiceRequestId, attempts int) ![]ServiceClipboardResult {
-	mut terminals := []ServiceClipboardResult{}
-	for _ in 0 .. attempts {
-		app.poll_events()!
-		for event in app.drain_queued_events()! {
-			if event.kind == .service && event.service.kind == .clipboard
-				&& event.service.clipboard.id == request {
-				terminals << event.service.clipboard
-			}
+fn win32_red_backend_pointer(app &App) voidptr {
+	return unsafe { voidptr(&app.backend.win32) }
+}
+
+fn win32_red_core_pending(app &App, request ServiceRequestId) []PendingServiceRequest {
+	return app.services.pending.filter(it.id == request)
+}
+
+fn win32_red_clipboard_events(events []QueuedEvent, request ServiceRequestId) []QueuedEvent {
+	return events.filter(it.kind == .service && it.service.kind == .clipboard
+		&& it.service.clipboard.id == request)
+}
+
+fn win32_red_events_are_globally_ordered(events []QueuedEvent) bool {
+	mut previous := u64(0)
+	for event in events {
+		if event.sequence == 0 || event.sequence <= previous {
+			return false
 		}
-		if terminals.len > 0 {
+		if event.kind == .service && event.service.sequence != event.sequence {
+			return false
+		}
+		previous = event.sequence
+	}
+	return true
+}
+
+fn win32_w4_poll_collect(mut app App, attempts int, label string, mut issues []string) []QueuedEvent {
+	mut delivered := []QueuedEvent{}
+	for _ in 0 .. attempts {
+		mut poll_failed := false
+		app.poll_events() or {
+			win32_w4_add_infra(mut issues, '${label}: poll failed: ${err.msg()}')
+			poll_failed = true
+		}
+		if poll_failed {
+			break
+		}
+		delivered << app.drain_queued_events() or {
+			win32_w4_add_infra(mut issues, '${label}: event drain failed: ${err.msg()}')
+			[]QueuedEvent{}
+		}
+		time.sleep(5 * time.millisecond)
+	}
+	return delivered
+}
+
+fn win32_w4_finish_single_clipboard(mut app App, backend voidptr, request ServiceRequestId, attempts int, label string, mut issues []string) []QueuedEvent {
+	admitted := win32_red_core_pending(app, request)
+	win32_red_add(mut issues, '${label}: core request was not admitted non-terminal',
+
+		admitted.len == 1 && !admitted[0].terminal)
+	win32_red_add(mut issues, '${label}: native request was not admitted',
+		C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 1)
+	for _ in 0 .. attempts {
+		mut poll_failed := false
+		app.poll_events() or {
+			win32_w4_add_infra(mut issues, '${label}: poll failed: ${err.msg()}')
+			poll_failed = true
+		}
+		if poll_failed || C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0 {
 			break
 		}
 		time.sleep(5 * time.millisecond)
 	}
-	return terminals
+	win32_red_add(mut issues, '${label}: native request did not become terminal',
+		C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0)
+	retained := win32_red_core_pending(app, request)
+	win32_red_add(mut issues, '${label}: core terminal was not retained before delivery',
+
+		retained.len == 1 && retained[0].terminal)
+	delivered := app.drain_queued_events() or {
+		win32_w4_add_infra(mut issues, '${label}: terminal event drain failed: ${err.msg()}')
+		[]QueuedEvent{}
+	}
+	win32_red_add(mut issues, '${label}: core terminal survived delivery', win32_red_core_pending(app,
+		request).len == 0)
+	win32_red_add(mut issues, '${label}: terminal delivery lost global ordering',
+		win32_red_events_are_globally_ordered(delivered))
+	return delivered
+}
+
+fn win32_w4_add_infra(mut issues []string, message string) {
+	issues << 'PACKAGE2_W4_INFRA=${message}'
+}
+
+fn win32_w4_is_infra(issue string) bool {
+	return issue.starts_with('PACKAGE2_W4_INFRA=')
+}
+
+fn win32_w4_epilogue(family string, label string, issues []string) {
+	eprintln('PACKAGE2_W4_REACHED=${family}')
+	infra_issues := issues.filter(win32_w4_is_infra(it))
+	contract_issues := issues.filter(!win32_w4_is_infra(it))
+	if infra_issues.len == 0 && contract_issues.len > 0 {
+		eprintln('PACKAGE2_RED_TERMINAL=behavioral_red:${family}')
+	}
+	assert issues.len == 0, '${label}:\n${issues.join('\n')}'
+}
+
+fn win32_red_clipboard_envelope_matches(event QueuedEvent, request ServiceRequestId, window WindowId, operation ServiceOperation, status ServiceStatus) bool {
+	return event.kind == .service && event.sequence > 0 && event.service.kind == .clipboard
+		&& event.service.sequence == event.sequence && event.service.operation == operation
+		&& event.service.window == window && event.service.clipboard.id == request
+		&& event.service.clipboard.window == window && event.service.clipboard.status == status
+}
+
+fn win32_red_exact_mixed_clipboard_text() string {
+	max_units_without_nul := win32_red_clipboard_max_bytes / 2 - 1
+	non_ascii := '漢🙂'
+	non_ascii_units := int(win32_red_utf16_units(non_ascii) - 1)
+	return 'A'.repeat(max_units_without_nul - non_ascii_units) + non_ascii
+}
+
+fn win32_red_exact_utf8_clipboard_text() string {
+	return '漢'.repeat((win32_red_clipboard_max_bytes - 1) / 3)
 }
 
 fn test_win32_w3_late_exact_name_reserves_unavailable_slot_and_stales_old_ids_red() {
@@ -1793,62 +1910,1150 @@ fn test_win32_native_cf_unicodetext_roundtrip_exact_limit_and_terminal_queue_red
 		}
 		window := app.create_window(title: 'Win32 clipboard oracle')!
 		_ = app.drain_queued_events()!
+		backend := win32_red_backend_pointer(app)
+		hwnd := win32_red_hwnd(app, window)!
 		mut issues := []string{}
+		for operation in [ServiceOperation.clipboard_read, .clipboard_write] {
+			capability := app.service_operation_capability(window, operation) or {
+				issues << '${operation} capability query failed: ${err.msg()}'
+				ServiceOperationCapability{}
+			}
+			win32_red_add(mut issues, '${operation} capability is not available asynchronous',
+				capability.support == .available && capability.asynchronous
+				&& !capability.requires_user_action && !capability.state_observable)
+		}
+		mut last_sequence := u64(0)
 
-		external := 'external € 🙂'
+		external := 'external BMP € 漢字 astral 🙂 𝄞'
 		external_wide := external.to_wide()
-		assert C.v_multiwindow_test_win32_set_clipboard(external_wide,
+		external_fixture_ready := C.v_multiwindow_test_win32_set_clipboard(hwnd, external_wide,
 			win32_red_utf16_units(external)) == 1
-		read_request := app.service_request_clipboard_text(window) or {
-			issues << 'public CF_UNICODETEXT read start failed: ${err.msg()}'
-			ServiceRequestId{}
+		if !external_fixture_ready {
+			win32_w4_add_infra(mut issues,
+				'external clipboard oracle could not install Unicode fixture')
 		}
-		if read_request != ServiceRequestId{} {
-			terminals := win32_red_clipboard_terminals(mut app, read_request, 200)!
-			win32_red_add(mut issues,
-				'external-to-public clipboard did not produce one ready terminal',
-
-				terminals.len == 1 && terminals[0].status == .ready && terminals[0].text == external)
+		if external_fixture_ready {
+			read_request := app.service_request_clipboard_text(window) or {
+				issues << 'public CF_UNICODETEXT read start failed: ${err.msg()}'
+				ServiceRequestId{}
+			}
+			if read_request != ServiceRequestId{} {
+				delivered := win32_w4_finish_single_clipboard(mut app, backend, read_request, 8,
+					'normal Unicode read', mut issues)
+				terminals := win32_red_clipboard_events(delivered, read_request)
+				win32_red_add(mut issues,
+					'external-to-native clipboard did not produce one exact ready envelope',
+					terminals.len == 1
+					&& win32_red_clipboard_envelope_matches(terminals[0], read_request, window, .clipboard_read, .ready)
+					&& terminals[0].service.clipboard.text == external)
+				if terminals.len == 1 {
+					last_sequence = terminals[0].sequence
+				}
+				late_delivery := win32_w4_poll_collect(mut app, 4, 'normal Unicode read late', mut
+					issues)
+				late := win32_red_clipboard_events(late_delivery, read_request)
+				win32_red_add(mut issues, 'normal read produced a duplicate late terminal',
+					late.len == 0)
+				win32_red_add(mut issues, 'normal read late events lost global ordering',
+					win32_red_events_are_globally_ordered(late_delivery))
+			}
 		}
 
-		written := 'public € 🙂'
+		written := 'public BMP Ω Ж astral 🙂 𝄞'
+		written_units := win32_red_utf16_units(written)
 		write_request := app.service_set_clipboard_text(window, written) or {
 			issues << 'public CF_UNICODETEXT write start failed: ${err.msg()}'
 			ServiceRequestId{}
 		}
 		if write_request != ServiceRequestId{} {
-			terminals := win32_red_clipboard_terminals(mut app, write_request, 200)!
+			delivered := win32_w4_finish_single_clipboard(mut app, backend, write_request, 8,
+				'normal Unicode write', mut issues)
+			terminals := win32_red_clipboard_events(delivered, write_request)
 			win32_red_add(mut issues,
-				'public-to-external clipboard did not produce one ready terminal',
-
-				terminals.len == 1 && terminals[0].status == .ready)
-			win32_red_add(mut issues, 'CF_UNICODETEXT does not equal the public UTF-16 payload',
-				C.v_multiwindow_test_win32_clipboard_equals(written.to_wide()) == 1)
+				'native-to-external clipboard did not produce one exact ready envelope',
+				terminals.len == 1
+				&& win32_red_clipboard_envelope_matches(terminals[0], write_request, window, .clipboard_write, .ready)
+				&& terminals[0].sequence > last_sequence)
+			win32_red_add(mut issues, 'CF_UNICODETEXT does not equal the public UTF-16 payload', C.v_multiwindow_test_win32_clipboard_equals(written.to_wide(),
+				written_units) == 1)
+			if terminals.len == 1 {
+				last_sequence = terminals[0].sequence
+			}
+			late_delivery := win32_w4_poll_collect(mut app, 4, 'normal Unicode write late', mut
+				issues)
+			late := win32_red_clipboard_events(late_delivery, write_request)
+			win32_red_add(mut issues, 'normal write produced a duplicate late terminal',
+				late.len == 0)
+			win32_red_add(mut issues, 'normal write late events lost global ordering',
+				win32_red_events_are_globally_ordered(late_delivery))
 		}
 
-		exact := 'x'.repeat(win32_red_clipboard_max_bytes / 2 - 1)
+		exact := win32_red_exact_mixed_clipboard_text()
+		exact_units := win32_red_utf16_units(exact)
+		win32_red_add(mut issues, 'exact boundary payload is not exactly 16 MiB including NUL',
+			exact_units * 2 == usize(win32_red_clipboard_max_bytes))
+		win32_red_add(mut issues, 'exact mixed payload exceeds the independent UTF-8 bound',
+			exact.len + 1 <= win32_red_clipboard_max_bytes && exact.contains('漢')
+			&& exact.contains('🙂'))
 		exact_request := app.service_set_clipboard_text(window, exact) or {
 			issues << 'exact clipboard limit failed: ${err.msg()}'
 			ServiceRequestId{}
 		}
 		if exact_request != ServiceRequestId{} {
-			terminals := win32_red_clipboard_terminals(mut app, exact_request, 300)!
-			win32_red_add(mut issues, 'exact clipboard limit lacks one ready terminal',
-
-				terminals.len == 1 && terminals[0].status == .ready)
-			win32_red_add(mut issues,
-				'CF_UNICODETEXT exact allocation is below the contract limit',
-				C.v_multiwindow_test_win32_clipboard_bytes() >= usize(win32_red_clipboard_max_bytes))
+			delivered := win32_w4_finish_single_clipboard(mut app, backend, exact_request, 8,
+				'exact UTF-16 write', mut issues)
+			terminals := win32_red_clipboard_events(delivered, exact_request)
+			win32_red_add(mut issues, 'exact clipboard limit lacks one ordered ready envelope',
+				terminals.len == 1
+				&& win32_red_clipboard_envelope_matches(terminals[0], exact_request, window, .clipboard_write, .ready)
+				&& terminals[0].sequence > last_sequence)
+			win32_red_add(mut issues, 'exact mixed BMP/astral payload lost integrity', C.v_multiwindow_test_win32_clipboard_equals(exact.to_wide(),
+				exact_units) == 1)
+			if terminals.len == 1 {
+				last_sequence = terminals[0].sequence
+			}
+			late_delivery := win32_w4_poll_collect(mut app, 4, 'exact UTF-16 write late', mut
+				issues)
+			late := win32_red_clipboard_events(late_delivery, exact_request)
+			win32_red_add(mut issues, 'exact-limit write produced a duplicate late terminal',
+				late.len == 0)
+			win32_red_add(mut issues, 'exact-limit late events lost global ordering',
+				win32_red_events_are_globally_ordered(late_delivery))
 		}
-		oversized := 'x'.repeat(win32_red_clipboard_max_bytes / 2)
+		exact_read_request := app.service_request_clipboard_text(window) or {
+			issues << 'exact clipboard readback start failed: ${err.msg()}'
+			ServiceRequestId{}
+		}
+		if exact_read_request != ServiceRequestId{} {
+			delivered := win32_w4_finish_single_clipboard(mut app, backend, exact_read_request, 8,
+				'exact UTF-16 read', mut issues)
+			terminals := win32_red_clipboard_events(delivered, exact_read_request)
+			win32_red_add(mut issues,
+				'exact 16 MiB NUL-at-boundary payload did not parse with full integrity',
+				terminals.len == 1
+				&& win32_red_clipboard_envelope_matches(terminals[0], exact_read_request, window, .clipboard_read, .ready)
+				&& terminals[0].sequence > last_sequence
+				&& terminals[0].service.clipboard.text == exact)
+			if terminals.len == 1 {
+				last_sequence = terminals[0].sequence
+			}
+			late_delivery := win32_w4_poll_collect(mut app, 4, 'exact UTF-16 read late', mut issues)
+			late := win32_red_clipboard_events(late_delivery, exact_read_request)
+			win32_red_add(mut issues, 'exact-limit read produced a duplicate late terminal',
+				late.len == 0)
+			win32_red_add(mut issues, 'exact-limit read late events lost global ordering',
+				win32_red_events_are_globally_ordered(late_delivery))
+		}
+		oversized := exact + 'A'
+		win32_red_add(mut issues, 'one-unit-over payload is not exactly one UTF-16 unit over', win32_red_utf16_units(oversized) * 2 == usize(
+			win32_red_clipboard_max_bytes + 2))
+		win32_red_add(mut issues, 'one-unit-over payload does not isolate the UTF-16 bound',
+
+			oversized.len + 1 <= win32_red_clipboard_max_bytes)
+		core_pending_before := app.services.pending.len
+		native_pending_before := C.v_multiwindow_win32_service_test_clipboard_pending_count(backend)
 		mut oversized_error := ''
 		app.service_set_clipboard_text(window, oversized) or { oversized_error = err.msg() }
 		win32_red_add(mut issues, 'limit+one UTF-16 unit was not rejected as capacity',
 			oversized_error == err_clipboard_capacity)
-		if issues.len > 0 {
-			eprintln('PACKAGE2_RED_TERMINAL=behavioral_red:clipboard_unicode_limit')
+		win32_red_add(mut issues, 'over-limit write admitted a core or native pending request',
+			app.services.pending.len == core_pending_before
+			&& C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == native_pending_before)
+		app.poll_events() or {
+			win32_w4_add_infra(mut issues, 'over-limit adjacent poll failed: ${err.msg()}')
 		}
-		assert issues.len == 0, 'Win32 CF_UNICODETEXT RED:\n${issues.join('\n')}'
+		over_delivery := app.drain_queued_events() or {
+			win32_w4_add_infra(mut issues, 'over-limit adjacent drain failed: ${err.msg()}')
+			[]QueuedEvent{}
+		}
+		over_events := over_delivery.filter(it.kind == .service && it.service.kind == .clipboard
+			&& it.sequence > last_sequence)
+		win32_red_add(mut issues, 'over-limit write emitted a clipboard event',
+			over_events.len == 0)
+		win32_red_add(mut issues, 'over-limit adjacent events lost global ordering',
+			win32_red_events_are_globally_ordered(over_delivery))
+		win32_w4_epilogue('clipboard_unicode_limit', 'Win32 CF_UNICODETEXT RED', issues)
+	}
+}
+
+fn test_win32_native_clipboard_malformed_read_bounds_red() {
+	$if windows {
+		eprintln('PACKAGE2_RED_TEST=test_win32_native_clipboard_malformed_read_bounds_red')
+		eprintln('PACKAGE2_RED_FAMILY=clipboard_malformed_bounds')
+		mut app := new_app(backend: .win32)!
+		defer {
+			app.stop() or {}
+		}
+		window := app.create_window(title: 'Win32 malformed HGLOBAL RED')!
+		_ = app.drain_queued_events()!
+		backend := win32_red_backend_pointer(app)
+		hwnd := win32_red_hwnd(app, window)!
+		mut issues := []string{}
+		for kind in 1 .. 3 {
+			fixture_ready := C.v_multiwindow_test_win32_set_clipboard_malformed(hwnd, kind) == 1
+			if !fixture_ready {
+				win32_w4_add_infra(mut issues,
+					'independent oracle could not install certified malformed HGLOBAL fixture ${kind}')
+			}
+			if !fixture_ready {
+				continue
+			}
+			request := app.service_request_clipboard_text(window) or {
+				issues << 'malformed fixture ${kind}: public read was not admitted: ${err.msg()}'
+				ServiceRequestId{}
+			}
+			if request == ServiceRequestId{} {
+				continue
+			}
+			delivered := win32_w4_finish_single_clipboard(mut app, backend, request, 4,
+				'malformed fixture ${kind}', mut issues)
+			terminals := win32_red_clipboard_events(delivered, request)
+			win32_red_add(mut issues,
+				'malformed fixture ${kind}: public path did not publish one empty failed envelope',
+				terminals.len == 1
+				&& win32_red_clipboard_envelope_matches(terminals[0], request, window, .clipboard_read, .failed)
+				&& terminals[0].service.clipboard.text == ''
+				&& terminals[0].service.clipboard.error != '')
+			win32_red_add(mut issues,
+				'malformed fixture ${kind}: native request survived terminal',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0)
+			win32_red_add(mut issues, 'malformed fixture ${kind}: test-owned HGLOBAL leaked',
+				C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend) == 0)
+			win32_red_add(mut issues, 'malformed fixture ${kind}: core terminal survived delivery', win32_red_core_pending(app,
+				request).len == 0)
+			late_delivery := win32_w4_poll_collect(mut app, 4, 'malformed fixture ${kind} late', mut
+				issues)
+			win32_red_add(mut issues,
+				'malformed fixture ${kind}: duplicate late clipboard terminal', win32_red_clipboard_events(late_delivery,
+				request).len == 0)
+			win32_red_add(mut issues,
+				'malformed fixture ${kind}: late events lost global ordering',
+				win32_red_events_are_globally_ordered(late_delivery))
+		}
+		win32_w4_epilogue('clipboard_malformed_bounds', 'Win32 malformed clipboard RED', issues)
+	}
+}
+
+fn test_win32_native_clipboard_exact_utf8_limit_and_over_red() {
+	$if windows {
+		eprintln('PACKAGE2_RED_TEST=test_win32_native_clipboard_exact_utf8_limit_and_over_red')
+		eprintln('PACKAGE2_RED_FAMILY=clipboard_utf8_limit')
+		mut app := new_app(backend: .win32)!
+		defer {
+			app.stop() or {}
+		}
+		window := app.create_window(title: 'Win32 clipboard UTF-8 limit RED')!
+		_ = app.drain_queued_events()!
+		backend := win32_red_backend_pointer(app)
+		mut issues := []string{}
+		initial_events := app.drain_queued_events() or {
+			win32_w4_add_infra(mut issues, 'initial event drain failed: ${err.msg()}')
+			[]QueuedEvent{}
+		}
+		if initial_events.len != 0 {
+			win32_w4_add_infra(mut issues, 'unexpected events remained after setup')
+		}
+
+		exact := win32_red_exact_utf8_clipboard_text()
+		exact_units := win32_red_utf16_units(exact)
+		win32_red_add(mut issues, 'exact UTF-8 fixture is not exactly 16 MiB including NUL',
+
+			exact.len + 1 == win32_red_clipboard_max_bytes)
+		win32_red_add(mut issues, 'exact UTF-8 fixture accidentally reaches the UTF-16 bound',
+			exact_units * 2 < usize(win32_red_clipboard_max_bytes))
+		exact_request := app.service_set_clipboard_text(window, exact) or {
+			issues << 'exact UTF-8 write was not admitted: ${err.msg()}'
+			ServiceRequestId{}
+		}
+		if exact_request != ServiceRequestId{} {
+			exact_delivery := win32_w4_finish_single_clipboard(mut app, backend, exact_request, 8,
+				'exact UTF-8 write', mut issues)
+			win32_red_add(mut issues, 'exact UTF-8 write did not publish one ready envelope',
+				exact_delivery.len == 1
+				&& win32_red_clipboard_envelope_matches(exact_delivery[0], exact_request, window, .clipboard_write, .ready))
+			win32_red_add(mut issues, 'exact UTF-8 write lost global ordering',
+				win32_red_events_are_globally_ordered(exact_delivery))
+			win32_red_add(mut issues, 'exact UTF-8 write lost CF_UNICODETEXT integrity', C.v_multiwindow_test_win32_clipboard_equals(exact.to_wide(),
+				exact_units) == 1)
+			exact_late := win32_w4_poll_collect(mut app, 4, 'exact UTF-8 late', mut issues)
+			win32_red_add(mut issues, 'exact UTF-8 write produced late events', exact_late.len == 0)
+		}
+
+		over := exact + 'A'
+		win32_red_add(mut issues, 'over-limit UTF-8 fixture is not exactly one byte over',
+
+			over.len + 1 == win32_red_clipboard_max_bytes + 1)
+		win32_red_add(mut issues, 'over-limit UTF-8 fixture accidentally reaches the UTF-16 bound',
+			win32_red_utf16_units(over) * 2 < usize(win32_red_clipboard_max_bytes))
+		core_pending_before := app.services.pending.len
+		native_pending_before := C.v_multiwindow_win32_service_test_clipboard_pending_count(backend)
+		allocations_before :=
+			C.v_multiwindow_win32_service_test_clipboard_global_allocations(backend)
+		owned_globals_before := C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend)
+		sequences_before :=
+			C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend)
+		mut over_error := ''
+		app.service_set_clipboard_text(window, over) or { over_error = err.msg() }
+		win32_red_add(mut issues, 'one-byte-over UTF-8 write was not rejected as capacity',
+			over_error == err_clipboard_capacity)
+		win32_red_add(mut issues, 'one-byte-over UTF-8 write changed core pending state',
+			app.services.pending.len == core_pending_before)
+		win32_red_add(mut issues, 'one-byte-over UTF-8 write changed native pending state',
+			C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == native_pending_before)
+		win32_red_add(mut issues, 'one-byte-over UTF-8 write allocated an HGLOBAL',
+			C.v_multiwindow_win32_service_test_clipboard_global_allocations(backend) == allocations_before)
+		win32_red_add(mut issues, 'one-byte-over UTF-8 write changed HGLOBAL ownership',
+			C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend) == owned_globals_before)
+		win32_red_add(mut issues, 'one-byte-over UTF-8 write allocated an event sequence',
+			C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == sequences_before)
+		mut over_poll_failed := false
+		app.poll_events() or {
+			win32_w4_add_infra(mut issues, 'one-byte-over UTF-8 adjacent poll failed: ${err.msg()}')
+			over_poll_failed = true
+		}
+		if !over_poll_failed {
+			over_delivery := app.drain_queued_events() or {
+				win32_w4_add_infra(mut issues,
+					'one-byte-over UTF-8 adjacent drain failed: ${err.msg()}')
+				[]QueuedEvent{}
+			}
+			win32_red_add(mut issues, 'one-byte-over UTF-8 write emitted an adjacent event',
+				over_delivery.len == 0)
+		}
+		over_late := win32_w4_poll_collect(mut app, 4, 'one-byte-over UTF-8 late', mut issues)
+		win32_red_add(mut issues, 'one-byte-over UTF-8 write emitted a late event',
+			over_late.len == 0)
+		win32_w4_epilogue('clipboard_utf8_limit', 'Win32 independent UTF-8 limit RED', issues)
+	}
+}
+
+fn test_win32_native_clipboard_contention_retry_success_red() {
+	$if windows {
+		eprintln('PACKAGE2_RED_TEST=test_win32_native_clipboard_contention_retry_success_red')
+		eprintln('PACKAGE2_RED_FAMILY=clipboard_contention_retry')
+		test_now_ns := i64(10_000_000)
+		mut app := new_app(backend: .win32)!
+		window := app.create_window(title: 'Win32 clipboard contention retry')!
+		_ = app.drain_queued_events()!
+		backend := win32_red_backend_pointer(app)
+		C.v_multiwindow_win32_service_test_clipboard_configure(backend, test_now_ns, 1)
+		defer {
+			C.v_multiwindow_win32_service_test_clipboard_use_real_clock(backend)
+			app.stop() or {}
+		}
+		hwnd := win32_red_hwnd(app, window)!
+		mut issues := []string{}
+		expected := 'pending write BMP é 漢 astral 🙂'
+		expected_wide := expected.to_wide()
+		expected_units := win32_red_utf16_units(expected)
+		mut submitted := expected.clone()
+		request := app.service_set_clipboard_text(window, submitted) or {
+			issues << 'contention write was not admitted: ${err.msg()}'
+			ServiceRequestId{}
+		}
+		submitted = 'caller storage changed after admission'
+		win32_red_add(mut issues, 'caller storage mutation did not change the caller value',
+			submitted != expected)
+		if request != ServiceRequestId{} {
+			core_admitted := win32_red_core_pending(app, request)
+			win32_red_add(mut issues, 'contention request was not retained non-terminal',
+
+				core_admitted.len == 1 && !core_admitted[0].terminal)
+			win32_red_add(mut issues, 'contention request was not admitted natively',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 1)
+			win32_red_add(mut issues, 'native queue did not own the admitted UTF-16 copy', C.v_multiwindow_win32_service_test_clipboard_pending_write_matches(backend,
+				0, request.app_instance, request.serial, window.app_instance, window.slot,
+				window.generation, expected_wide, expected_units) == 1)
+			deadline := C.v_multiwindow_win32_service_test_clipboard_pending_deadline_ns(backend, 0)
+			win32_red_add(mut issues, 'clipboard timeout contract is not two seconds',
+				C.v_multiwindow_win32_service_test_clipboard_timeout_ns(backend) == i64(2_000_000_000))
+			win32_red_add(mut issues, 'contention deadline was not based on admission time', deadline ==
+				test_now_ns + i64(2_000_000_000))
+			win32_red_add(mut issues, 'contention admission owned an HGLOBAL before polling',
+				C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend) == 0)
+			win32_red_add(mut issues, 'contention admission allocated a terminal sequence',
+				C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == 0)
+			for _ in 0 .. 4 {
+				attempts_before := C.v_multiwindow_win32_service_test_clipboard_attempts(backend)
+				mut poll_failed := false
+				app.poll_events() or {
+					win32_w4_add_infra(mut issues, 'contention poll failed: ${err.msg()}')
+					poll_failed = true
+				}
+				if poll_failed {
+					break
+				}
+				attempts_after := C.v_multiwindow_win32_service_test_clipboard_attempts(backend)
+				win32_red_add(mut issues, 'one poll performed more than one native attempt',
+
+					attempts_after - attempts_before >= 0 && attempts_after - attempts_before <= 1)
+				win32_red_add(mut issues, 'contention poll leaked an owned HGLOBAL',
+					C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend) == 0)
+				if C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0 {
+					break
+				}
+				win32_red_add(mut issues, 'contention retry changed the absolute deadline', C.v_multiwindow_win32_service_test_clipboard_pending_deadline_ns(backend,
+					0) == deadline)
+			}
+			win32_red_add(mut issues, 'contention path did not retry before success',
+				C.v_multiwindow_win32_service_test_clipboard_attempts(backend) >= 2)
+			win32_red_add(mut issues, 'contention path used a non-window clipboard owner',
+				C.v_multiwindow_win32_service_test_clipboard_last_open_owner(backend) == hwnd)
+			win32_red_add(mut issues, 'contention request remained native-pending',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0)
+			retained := win32_red_core_pending(app, request)
+			win32_red_add(mut issues, 'contention terminal was not retained before delivery',
+
+				retained.len == 1 && retained[0].terminal)
+			win32_red_add(mut issues, 'contention success leaked an owned HGLOBAL',
+				C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend) == 0)
+			win32_red_add(mut issues, 'contention success did not allocate exactly one HGLOBAL',
+				C.v_multiwindow_win32_service_test_clipboard_global_allocations(backend) == 1)
+			win32_red_add(mut issues, 'contention success did not transfer exactly one HGLOBAL',
+				C.v_multiwindow_win32_service_test_clipboard_global_transfers(backend) == 1)
+			win32_red_add(mut issues, 'contention success freed a transferred HGLOBAL',
+				C.v_multiwindow_win32_service_test_clipboard_global_frees(backend) == 0)
+			win32_red_add(mut issues, 'contention success did not allocate one terminal sequence',
+				C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == 1)
+			delivered := app.drain_queued_events() or {
+				win32_w4_add_infra(mut issues, 'contention terminal drain failed: ${err.msg()}')
+				[]QueuedEvent{}
+			}
+			win32_red_add(mut issues, 'contention core terminal survived delivery', win32_red_core_pending(app,
+				request).len == 0)
+			win32_red_add(mut issues, 'contention delivery lost global ordering',
+				win32_red_events_are_globally_ordered(delivered))
+			terminals := win32_red_clipboard_events(delivered, request)
+			win32_red_add(mut issues, 'contention success did not publish one ready envelope',
+				terminals.len == 1
+				&& win32_red_clipboard_envelope_matches(terminals[0], request, window, .clipboard_write, .ready))
+			win32_red_add(mut issues, 'contention success lost clipboard payload integrity', C.v_multiwindow_test_win32_clipboard_equals(expected_wide,
+				expected_units) == 1)
+			attempts_after_success := C.v_multiwindow_win32_service_test_clipboard_attempts(backend)
+			late_delivery := win32_w4_poll_collect(mut app, 4, 'contention late', mut issues)
+			win32_red_add(mut issues, 'contention success produced a duplicate late terminal', win32_red_clipboard_events(late_delivery,
+				request).len == 0)
+			win32_red_add(mut issues, 'contention late delivery lost global ordering',
+				win32_red_events_are_globally_ordered(late_delivery))
+			win32_red_add(mut issues, 'contention success was attempted again after terminal',
+				C.v_multiwindow_win32_service_test_clipboard_attempts(backend) == attempts_after_success)
+		}
+
+		fault_sentinel := 'pre-transfer sentinel 🙂'
+		fault_sentinel_wide := fault_sentinel.to_wide()
+		fault_fixture_ready := C.v_multiwindow_test_win32_set_clipboard(hwnd, fault_sentinel_wide,
+			win32_red_utf16_units(fault_sentinel)) == 1
+		if !fault_fixture_ready {
+			win32_w4_add_infra(mut issues,
+				'pre-transfer oracle could not install the clipboard sentinel')
+		}
+		if fault_fixture_ready {
+			C.v_multiwindow_win32_service_test_clipboard_configure(backend, test_now_ns +
+				i64(1_000_000), 0)
+			C.v_multiwindow_win32_service_test_clipboard_fail_before_transfer(backend, 1)
+			fault_request := app.service_set_clipboard_text(window, 'must not replace sentinel') or {
+				issues << 'pre-transfer fault write was not admitted: ${err.msg()}'
+				ServiceRequestId{}
+			}
+			if fault_request != ServiceRequestId{} {
+				fault_delivery := win32_w4_finish_single_clipboard(mut app, backend, fault_request,
+					4, 'pre-transfer fault', mut issues)
+				fault_terminals := win32_red_clipboard_events(fault_delivery, fault_request)
+				win32_red_add(mut issues, 'pre-transfer fault did not publish one failed envelope',
+					fault_terminals.len == 1
+					&& win32_red_clipboard_envelope_matches(fault_terminals[0], fault_request, window, .clipboard_write, .failed))
+				win32_red_add(mut issues, 'pre-transfer fault did not attempt exactly once',
+					C.v_multiwindow_win32_service_test_clipboard_attempts(backend) == 1)
+				win32_red_add(mut issues,
+					'pre-transfer fault did not allocate exactly one HGLOBAL',
+					C.v_multiwindow_win32_service_test_clipboard_global_allocations(backend) == 1)
+				win32_red_add(mut issues, 'pre-transfer fault did not free exactly one HGLOBAL',
+					C.v_multiwindow_win32_service_test_clipboard_global_frees(backend) == 1)
+				win32_red_add(mut issues, 'pre-transfer fault transferred an HGLOBAL',
+					C.v_multiwindow_win32_service_test_clipboard_global_transfers(backend) == 0)
+				win32_red_add(mut issues, 'pre-transfer fault leaked HGLOBAL ownership',
+					C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend) == 0)
+				win32_red_add(mut issues,
+					'pre-transfer fault never observed live HGLOBAL ownership',
+					C.v_multiwindow_win32_service_test_clipboard_owned_globals_peak(backend) == 1)
+				win32_red_add(mut issues,
+					'pre-transfer fault did not allocate one terminal sequence',
+					C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == 1)
+				win32_red_add(mut issues, 'pre-transfer fault mutated the real clipboard sentinel', C.v_multiwindow_test_win32_clipboard_equals(fault_sentinel_wide,
+					win32_red_utf16_units(fault_sentinel)) == 1)
+				fault_late := win32_w4_poll_collect(mut app, 4, 'pre-transfer fault late', mut
+					issues)
+				win32_red_add(mut issues, 'pre-transfer fault produced a duplicate late terminal', win32_red_clipboard_events(fault_late,
+					fault_request).len == 0)
+				win32_red_add(mut issues, 'pre-transfer late delivery lost global ordering',
+					win32_red_events_are_globally_ordered(fault_late))
+				win32_red_add(mut issues, 'pre-transfer fault retried after terminal',
+					C.v_multiwindow_win32_service_test_clipboard_attempts(backend) == 1)
+				win32_red_add(mut issues,
+					'pre-transfer fault changed allocation/free/transfer counters after terminal',
+					C.v_multiwindow_win32_service_test_clipboard_global_allocations(backend) == 1
+					&& C.v_multiwindow_win32_service_test_clipboard_global_frees(backend) == 1
+					&& C.v_multiwindow_win32_service_test_clipboard_global_transfers(backend) == 0
+					&& C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend) == 0
+					&& C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == 1)
+				win32_red_add(mut issues,
+					'pre-transfer late poll mutated the real clipboard sentinel', C.v_multiwindow_test_win32_clipboard_equals(fault_sentinel_wide,
+					win32_red_utf16_units(fault_sentinel)) == 1)
+			}
+		}
+		win32_w4_epilogue('clipboard_contention_retry', 'Win32 clipboard contention/HGLOBAL RED',
+			issues)
+	}
+}
+
+fn test_win32_native_clipboard_fifo_head_only_red() {
+	$if windows {
+		eprintln('PACKAGE2_RED_TEST=test_win32_native_clipboard_fifo_head_only_red')
+		eprintln('PACKAGE2_RED_FAMILY=clipboard_fifo')
+		test_now_ns := i64(15_000_000)
+		mut app := new_app(backend: .win32)!
+		window := app.create_window(title: 'Win32 clipboard FIFO RED')!
+		_ = app.drain_queued_events()!
+		backend := win32_red_backend_pointer(app)
+		C.v_multiwindow_win32_service_test_clipboard_configure(backend, test_now_ns, 1)
+		defer {
+			C.v_multiwindow_win32_service_test_clipboard_use_real_clock(backend)
+			app.stop() or {}
+		}
+		first_text := 'FIFO first 🙂'
+		second_text := 'FIFO second 漢'
+		first_wide := first_text.to_wide()
+		second_wide := second_text.to_wide()
+		mut issues := []string{}
+		first := app.service_set_clipboard_text(window, first_text) or {
+			issues << 'FIFO first write was not admitted: ${err.msg()}'
+			ServiceRequestId{}
+		}
+		second := app.service_set_clipboard_text(window, second_text) or {
+			issues << 'FIFO second write was not admitted: ${err.msg()}'
+			ServiceRequestId{}
+		}
+		if first != ServiceRequestId{} && second != ServiceRequestId{} {
+			first_core := win32_red_core_pending(app, first)
+			second_core := win32_red_core_pending(app, second)
+			win32_red_add(mut issues, 'FIFO first request was not admitted non-terminal',
+
+				first_core.len == 1 && !first_core[0].terminal)
+			win32_red_add(mut issues, 'FIFO second request was not admitted non-terminal',
+
+				second_core.len == 1 && !second_core[0].terminal)
+			win32_red_add(mut issues, 'FIFO native queue did not retain two requests',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 2)
+			win32_red_add(mut issues, 'FIFO head did not own the first UTF-16 payload', C.v_multiwindow_win32_service_test_clipboard_pending_write_matches(backend,
+				0, first.app_instance, first.serial, window.app_instance, window.slot,
+				window.generation, first_wide, win32_red_utf16_units(first_text)) == 1)
+			win32_red_add(mut issues, 'FIFO tail did not own the second UTF-16 payload', C.v_multiwindow_win32_service_test_clipboard_pending_write_matches(backend,
+				1, second.app_instance, second.serial, window.app_instance, window.slot,
+				window.generation, second_wide, win32_red_utf16_units(second_text)) == 1)
+			first_deadline :=
+				C.v_multiwindow_win32_service_test_clipboard_pending_deadline_ns(backend, 0)
+			win32_red_add(mut issues, 'FIFO first deadline was not based on admission', first_deadline ==
+				test_now_ns + i64(2_000_000_000))
+			win32_red_add(mut issues, 'FIFO first request was attempted during admission', C.v_multiwindow_win32_service_test_clipboard_request_attempts(backend,
+				first.app_instance, first.serial) == 0)
+			win32_red_add(mut issues, 'FIFO second request was attempted during admission', C.v_multiwindow_win32_service_test_clipboard_request_attempts(backend,
+				second.app_instance, second.serial) == 0)
+
+			app.poll_events() or {
+				win32_w4_add_infra(mut issues, 'FIFO contention poll failed: ${err.msg()}')
+			}
+			win32_red_add(mut issues, 'FIFO head was not attempted exactly once under contention', C.v_multiwindow_win32_service_test_clipboard_request_attempts(backend,
+				first.app_instance, first.serial) == 1)
+			win32_red_add(mut issues, 'FIFO tail was attempted while the head was blocked', C.v_multiwindow_win32_service_test_clipboard_request_attempts(backend,
+				second.app_instance, second.serial) == 0)
+			win32_red_add(mut issues, 'FIFO contention removed a pending request',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 2)
+			win32_red_add(mut issues, 'FIFO contention leaked an HGLOBAL',
+				C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend) == 0)
+			win32_red_add(mut issues, 'FIFO contention emitted a head terminal', win32_red_clipboard_events(app.events,
+				first).len == 0)
+			win32_red_add(mut issues, 'FIFO contention emitted a tail terminal', win32_red_clipboard_events(app.events,
+				second).len == 0)
+
+			activation_now_ns := test_now_ns + i64(1_000_000_000)
+			C.v_multiwindow_win32_service_test_clipboard_set_now_ns(backend, activation_now_ns)
+			app.poll_events() or {
+				win32_w4_add_infra(mut issues, 'FIFO head completion poll failed: ${err.msg()}')
+			}
+			win32_red_add(mut issues, 'FIFO head did not retry exactly once', C.v_multiwindow_win32_service_test_clipboard_request_attempts(backend,
+				first.app_instance, first.serial) == 2)
+			win32_red_add(mut issues, 'FIFO tail was attempted in the head completion poll', C.v_multiwindow_win32_service_test_clipboard_request_attempts(backend,
+				second.app_instance, second.serial) == 0)
+			win32_red_add(mut issues, 'FIFO head completion did not promote exactly one tail',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 1)
+			first_after := win32_red_core_pending(app, first)
+			second_after := win32_red_core_pending(app, second)
+			win32_red_add(mut issues, 'FIFO head did not become core-terminal',
+
+				first_after.len == 1 && first_after[0].terminal)
+			win32_red_add(mut issues, 'FIFO tail became terminal before its first attempt',
+
+				second_after.len == 1 && !second_after[0].terminal)
+			second_deadline :=
+				C.v_multiwindow_win32_service_test_clipboard_pending_deadline_ns(backend, 0)
+			win32_red_add(mut issues, 'FIFO tail deadline did not start at activation',
+				second_deadline == activation_now_ns + i64(2_000_000_000)
+				&& second_deadline > first_deadline)
+			win32_red_add(mut issues, 'FIFO head did not queue exactly one terminal', win32_red_clipboard_events(app.events,
+				first).len == 1)
+			win32_red_add(mut issues, 'FIFO tail queued a terminal before its first attempt', win32_red_clipboard_events(app.events,
+				second).len == 0)
+
+			C.v_multiwindow_win32_service_test_clipboard_set_now_ns(backend, first_deadline)
+			app.poll_events() or {
+				win32_w4_add_infra(mut issues, 'FIFO tail completion poll failed: ${err.msg()}')
+			}
+			win32_red_add(mut issues, 'FIFO tail was not attempted exactly once', C.v_multiwindow_win32_service_test_clipboard_request_attempts(backend,
+				second.app_instance, second.serial) == 1)
+			win32_red_add(mut issues, 'FIFO tail remained native-pending after success',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0)
+			first_terminal := win32_red_core_pending(app, first)
+			second_terminal := win32_red_core_pending(app, second)
+			win32_red_add(mut issues, 'FIFO first terminal was not retained before delivery',
+
+				first_terminal.len == 1 && first_terminal[0].terminal)
+			win32_red_add(mut issues, 'FIFO second terminal was not retained before delivery',
+
+				second_terminal.len == 1 && second_terminal[0].terminal)
+			win32_red_add(mut issues, 'FIFO completion leaked HGLOBAL ownership',
+				C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend) == 0)
+			win32_red_add(mut issues, 'FIFO completion did not allocate two HGLOBALs',
+				C.v_multiwindow_win32_service_test_clipboard_global_allocations(backend) == 2)
+			win32_red_add(mut issues, 'FIFO completion did not transfer two HGLOBALs',
+				C.v_multiwindow_win32_service_test_clipboard_global_transfers(backend) == 2)
+			win32_red_add(mut issues, 'FIFO completion did not allocate two sequences',
+				C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == 2)
+
+			delivered := app.drain_queued_events() or {
+				win32_w4_add_infra(mut issues, 'FIFO terminal drain failed: ${err.msg()}')
+				[]QueuedEvent{}
+			}
+			clipboard := delivered.filter(it.kind == .service && it.service.kind == .clipboard)
+			win32_red_add(mut issues, 'FIFO delivery lost global ordering',
+				win32_red_events_are_globally_ordered(delivered))
+			win32_red_add(mut issues, 'FIFO delivery did not contain exactly two terminals',
+				clipboard.len == 2)
+			if clipboard.len == 2 {
+				win32_red_add(mut issues, 'FIFO first envelope was not first and ready', win32_red_clipboard_envelope_matches(clipboard[0],
+					first, window, .clipboard_write, .ready))
+				win32_red_add(mut issues, 'FIFO second envelope was not second and ready', win32_red_clipboard_envelope_matches(clipboard[1],
+					second, window, .clipboard_write, .ready))
+				win32_red_add(mut issues, 'FIFO terminal sequences were not strictly ordered',
+					clipboard[0].sequence < clipboard[1].sequence)
+			}
+			win32_red_add(mut issues, 'FIFO first core terminal survived delivery', win32_red_core_pending(app,
+				first).len == 0)
+			win32_red_add(mut issues, 'FIFO second core terminal survived delivery', win32_red_core_pending(app,
+				second).len == 0)
+			win32_red_add(mut issues, 'FIFO final clipboard did not contain the tail payload', C.v_multiwindow_test_win32_clipboard_equals(second_wide,
+				win32_red_utf16_units(second_text)) == 1)
+			late := win32_w4_poll_collect(mut app, 4, 'FIFO late', mut issues)
+			win32_red_add(mut issues, 'FIFO first request produced a duplicate late terminal', win32_red_clipboard_events(late,
+				first).len == 0)
+			win32_red_add(mut issues, 'FIFO second request produced a duplicate late terminal', win32_red_clipboard_events(late,
+				second).len == 0)
+			win32_red_add(mut issues, 'FIFO late delivery lost global ordering',
+				win32_red_events_are_globally_ordered(late))
+		}
+		win32_w4_epilogue('clipboard_fifo', 'Win32 clipboard FIFO RED', issues)
+	}
+}
+
+fn test_win32_native_clipboard_real_wm_close_global_order_red() {
+	$if windows {
+		eprintln('PACKAGE2_RED_TEST=test_win32_native_clipboard_real_wm_close_global_order_red')
+		eprintln('PACKAGE2_RED_FAMILY=clipboard_global_order')
+		test_now_ns := i64(18_000_000)
+		mut app := new_app(backend: .win32)!
+		defer {
+			app.stop() or {}
+		}
+		window := app.create_window(title: 'Win32 clipboard WM_CLOSE order RED')!
+		_ = app.drain_queued_events()!
+		backend := win32_red_backend_pointer(app)
+		hwnd := win32_red_hwnd(app, window)!
+		C.v_multiwindow_win32_service_test_clipboard_configure(backend, test_now_ns, 0)
+		defer {
+			C.v_multiwindow_win32_service_test_clipboard_use_real_clock(backend)
+		}
+		mut issues := []string{}
+		initial_events := app.drain_queued_events() or {
+			win32_w4_add_infra(mut issues, 'WM_CLOSE initial event drain failed: ${err.msg()}')
+			[]QueuedEvent{}
+		}
+		if initial_events.len != 0 {
+			win32_w4_add_infra(mut issues, 'WM_CLOSE setup left queued events')
+		}
+
+		first := app.service_set_clipboard_text(window, 'first before WM_CLOSE') or {
+			issues << 'pre-WM_CLOSE clipboard write was not admitted: ${err.msg()}'
+			ServiceRequestId{}
+		}
+		if first != ServiceRequestId{} {
+			for _ in 0 .. 8 {
+				mut poll_failed := false
+				app.poll_events() or {
+					win32_w4_add_infra(mut issues,
+						'pre-WM_CLOSE clipboard poll failed: ${err.msg()}')
+					poll_failed = true
+				}
+				if poll_failed
+					|| C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0 {
+					break
+				}
+				time.sleep(5 * time.millisecond)
+			}
+			win32_red_add(mut issues, 'pre-WM_CLOSE write remained native-pending',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0)
+			first_core := win32_red_core_pending(app, first)
+			win32_red_add(mut issues, 'pre-WM_CLOSE terminal was not retained', first_core.len == 1
+				&& first_core[0].terminal)
+			win32_red_add(mut issues, 'pre-WM_CLOSE path queued unexpected adjacent events',
+
+				app.events.len == 1 && win32_red_clipboard_events(app.events, first).len == 1)
+
+			second := app.service_set_clipboard_text(window, 'second after WM_CLOSE') or {
+				issues << 'post-WM_CLOSE clipboard write was not admitted: ${err.msg()}'
+				ServiceRequestId{}
+			}
+			if second != ServiceRequestId{} {
+				win32_red_add(mut issues, 'post-WM_CLOSE write was attempted during admission', C.v_multiwindow_win32_service_test_clipboard_request_attempts(backend,
+					second.app_instance, second.serial) == 0)
+				_ = C.SendMessageW(hwnd, win32_red_wm_close, usize(0), isize(0))
+				win32_red_add(mut issues, 'real WM_CLOSE destroyed the HWND synchronously',
+					C.v_multiwindow_test_win32_is_window(hwnd) == 1)
+				win32_red_add(mut issues, 'real WM_CLOSE removed the public window synchronously',
+					app.window_exists(window))
+				for _ in 0 .. 8 {
+					mut poll_failed := false
+					app.poll_events() or {
+						win32_w4_add_infra(mut issues,
+							'post-WM_CLOSE clipboard poll failed: ${err.msg()}')
+						poll_failed = true
+					}
+					if poll_failed
+						|| C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0 {
+						break
+					}
+					time.sleep(5 * time.millisecond)
+				}
+				win32_red_add(mut issues, 'post-WM_CLOSE write remained native-pending',
+					C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0)
+				second_core := win32_red_core_pending(app, second)
+				win32_red_add(mut issues, 'post-WM_CLOSE terminal was not retained',
+
+					second_core.len == 1 && second_core[0].terminal)
+
+				delivered := app.drain_queued_events() or {
+					win32_w4_add_infra(mut issues,
+						'WM_CLOSE global-order drain failed: ${err.msg()}')
+					[]QueuedEvent{}
+				}
+				win32_red_add(mut issues, 'WM_CLOSE global delivery did not contain three events',
+					delivered.len == 3)
+				win32_red_add(mut issues, 'WM_CLOSE global delivery lost strict ordering',
+					win32_red_events_are_globally_ordered(delivered))
+				if delivered.len == 3 {
+					win32_red_add(mut issues, 'pre-WM_CLOSE clipboard terminal was not first', win32_red_clipboard_envelope_matches(delivered[0],
+						first, window, .clipboard_write, .ready))
+					win32_red_add(mut issues, 'real WM_CLOSE lifecycle event was not second',
+						delivered[1].kind == .lifecycle
+						&& delivered[1].lifecycle.kind == .window_close_requested
+						&& delivered[1].lifecycle.window_id == window)
+					win32_red_add(mut issues, 'post-WM_CLOSE clipboard terminal was not third', win32_red_clipboard_envelope_matches(delivered[2],
+						second, window, .clipboard_write, .ready))
+					win32_red_add(mut issues,
+						'clipboard/lifecycle/clipboard sequences were not strictly increasing',
+						delivered[0].sequence < delivered[1].sequence
+						&& delivered[1].sequence < delivered[2].sequence)
+				}
+				win32_red_add(mut issues, 'pre-WM_CLOSE core terminal survived delivery', win32_red_core_pending(app,
+					first).len == 0)
+				win32_red_add(mut issues, 'post-WM_CLOSE core terminal survived delivery', win32_red_core_pending(app,
+					second).len == 0)
+				win32_red_add(mut issues, 'WM_CLOSE delivery destroyed the HWND',
+					C.v_multiwindow_test_win32_is_window(hwnd) == 1)
+				win32_red_add(mut issues, 'WM_CLOSE delivery removed the public window',
+					app.window_exists(window))
+				late := win32_w4_poll_collect(mut app, 4, 'WM_CLOSE global-order late', mut issues)
+				win32_red_add(mut issues, 'WM_CLOSE path produced late events', late.len == 0)
+				win32_red_add(mut issues, 'late WM_CLOSE poll destroyed the HWND',
+					C.v_multiwindow_test_win32_is_window(hwnd) == 1)
+				win32_red_add(mut issues, 'late WM_CLOSE poll removed the public window',
+					app.window_exists(window))
+			}
+		}
+		win32_w4_epilogue('clipboard_global_order', 'Win32 clipboard/WM_CLOSE global ordering RED',
+			issues)
+	}
+}
+
+fn win32_w4_clipboard_timeout_case(test_now_ns i64) ![]string {
+	$if windows {
+		mut app := new_app(backend: .win32)!
+		defer {
+			app.stop() or {}
+		}
+		window := app.create_window(title: 'Win32 clipboard occupied')!
+		_ = app.drain_queued_events()!
+		backend := win32_red_backend_pointer(app)
+		hwnd := win32_red_hwnd(app, window)!
+		C.v_multiwindow_win32_service_test_clipboard_configure(backend, test_now_ns, 16)
+		defer {
+			C.v_multiwindow_win32_service_test_clipboard_use_real_clock(backend)
+		}
+		mut issues := []string{}
+		request := app.service_request_clipboard_text(window) or {
+			issues << 'occupied read was not admitted: ${err.msg()}'
+			ServiceRequestId{}
+		}
+		if request != ServiceRequestId{} {
+			core_admitted := win32_red_core_pending(app, request)
+			win32_red_add(mut issues, 'occupied read was not retained non-terminal',
+
+				core_admitted.len == 1 && !core_admitted[0].terminal)
+			win32_red_add(mut issues, 'occupied read was not native-pending',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 1)
+			deadline := C.v_multiwindow_win32_service_test_clipboard_pending_deadline_ns(backend, 0)
+			win32_red_add(mut issues, 'occupied read deadline was not admission+2s', deadline ==
+				test_now_ns + i64(2_000_000_000))
+			win32_red_add(mut issues, 'occupied read allocated a sequence during admission',
+				C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == 0)
+			attempts_before_retry := C.v_multiwindow_win32_service_test_clipboard_attempts(backend)
+			app.poll_events() or {
+				win32_w4_add_infra(mut issues, 'occupied read retry poll failed: ${err.msg()}')
+			}
+			attempts_after_retry := C.v_multiwindow_win32_service_test_clipboard_attempts(backend)
+			win32_red_add(mut issues, 'occupied read poll performed more than one attempt',
+				attempts_after_retry - attempts_before_retry >= 0
+				&& attempts_after_retry - attempts_before_retry <= 1)
+			win32_red_add(mut issues, 'occupied read used a non-window clipboard owner',
+				C.v_multiwindow_win32_service_test_clipboard_last_open_owner(backend) == hwnd)
+			win32_red_add(mut issues, 'occupied read retry changed its deadline', C.v_multiwindow_win32_service_test_clipboard_pending_deadline_ns(backend,
+				0) == deadline)
+			win32_red_add(mut issues, 'occupied read retry left the native queue unexpectedly',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 1)
+			core_retry := win32_red_core_pending(app, request)
+			win32_red_add(mut issues, 'occupied read retry became core-terminal',
+
+				core_retry.len == 1 && !core_retry[0].terminal)
+			win32_red_add(mut issues, 'occupied read retry emitted a clipboard terminal', win32_red_clipboard_events(app.events,
+				request).len == 0)
+			C.v_multiwindow_win32_service_test_clipboard_set_now_ns(backend, deadline)
+			attempts_before_timeout :=
+				C.v_multiwindow_win32_service_test_clipboard_attempts(backend)
+			app.poll_events() or {
+				win32_w4_add_infra(mut issues, 'occupied read timeout poll failed: ${err.msg()}')
+			}
+			win32_red_add(mut issues, 'timeout performed an extra native clipboard attempt',
+				C.v_multiwindow_win32_service_test_clipboard_attempts(backend) == attempts_before_timeout)
+			win32_red_add(mut issues, 'timed-out read remained native-pending',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0)
+			win32_red_add(mut issues, 'timeout did not allocate exactly one sequence',
+				C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == 1)
+			core_timeout := win32_red_core_pending(app, request)
+			win32_red_add(mut issues, 'timeout terminal was not retained before delivery',
+
+				core_timeout.len == 1 && core_timeout[0].terminal)
+			timeout_delivery := app.drain_queued_events() or {
+				win32_w4_add_infra(mut issues, 'timeout terminal drain failed: ${err.msg()}')
+				[]QueuedEvent{}
+			}
+			win32_red_add(mut issues, 'timeout core terminal survived delivery', win32_red_core_pending(app,
+				request).len == 0)
+			win32_red_add(mut issues, 'timeout delivery lost global ordering',
+				win32_red_events_are_globally_ordered(timeout_delivery))
+			timeout_events := win32_red_clipboard_events(timeout_delivery, request)
+			win32_red_add(mut issues, 'timeout did not publish one exact failed envelope',
+				timeout_events.len == 1
+				&& win32_red_clipboard_envelope_matches(timeout_events[0], request, window, .clipboard_read, .failed)
+				&& timeout_events[0].service.clipboard.error == err_clipboard_timeout)
+			late_timeout := win32_w4_poll_collect(mut app, 4, 'timeout late', mut issues)
+			win32_red_add(mut issues, 'timed-out read was attempted again',
+				C.v_multiwindow_win32_service_test_clipboard_attempts(backend) == attempts_before_timeout)
+			win32_red_add(mut issues, 'timeout allocated a duplicate sequence',
+				C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == 1)
+			win32_red_add(mut issues, 'timeout produced a duplicate late terminal', win32_red_clipboard_events(late_timeout,
+				request).len == 0)
+			win32_red_add(mut issues, 'timeout late delivery lost global ordering',
+				win32_red_events_are_globally_ordered(late_timeout))
+		}
+		return issues
+	} $else {
+		_ = test_now_ns
+		return error('Win32 clipboard timeout case is unavailable')
+	}
+}
+
+fn win32_w4_clipboard_destroy_cancel_case(test_now_ns i64) ![]string {
+	$if windows {
+		mut app := new_app(backend: .win32)!
+		defer {
+			app.stop() or {}
+		}
+		window := app.create_window(title: 'Win32 clipboard destroy cancel')!
+		_ = app.drain_queued_events()!
+		backend := win32_red_backend_pointer(app)
+		C.v_multiwindow_win32_service_test_clipboard_configure(backend, test_now_ns, 16)
+		mut issues := []string{}
+		request := app.service_set_clipboard_text(window, 'destroy pending write 🙂') or {
+			issues << 'destroy-cancel write was not admitted: ${err.msg()}'
+			ServiceRequestId{}
+		}
+		if request != ServiceRequestId{} {
+			admitted := win32_red_core_pending(app, request)
+			win32_red_add(mut issues, 'destroy-cancel write was not retained non-terminal',
+
+				admitted.len == 1 && !admitted[0].terminal)
+			win32_red_add(mut issues, 'destroy-cancel write was not native-pending',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 1)
+			win32_red_add(mut issues, 'destroy-cancel admission owned an HGLOBAL',
+				C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend) == 0)
+			app.destroy_window(window) or {
+				issues << 'ordinary destroy-cancel failed: ${err.msg()}'
+			}
+			win32_red_add(mut issues, 'ordinary destroy did not purge the native request',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0)
+			win32_red_add(mut issues, 'ordinary destroy leaked HGLOBAL ownership',
+				C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend) == 0)
+			win32_red_add(mut issues, 'ordinary destroy allocated a native terminal sequence',
+				C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == 0)
+			terminal := win32_red_core_pending(app, request)
+			win32_red_add(mut issues, 'ordinary destroy did not retain one core cancellation',
+
+				terminal.len == 1 && terminal[0].terminal)
+			events := app.drain_queued_events() or {
+				win32_w4_add_infra(mut issues,
+					'ordinary destroy terminal drain failed: ${err.msg()}')
+				[]QueuedEvent{}
+			}
+			win32_red_add(mut issues, 'ordinary destroy delivery lost global ordering',
+				win32_red_events_are_globally_ordered(events))
+			win32_red_add(mut issues, 'ordinary destroy did not publish exactly two events',
+				events.len == 2)
+			if events.len == 2 {
+				win32_red_add(mut issues, 'ordinary destroy cancellation was not first', win32_red_clipboard_envelope_matches(events[0],
+					request, window, .clipboard_write, .cancelled))
+				win32_red_add(mut issues, 'ordinary destroy lifecycle event was not second',
+					events[1].kind == .lifecycle && events[1].lifecycle.kind == .window_destroyed
+					&& events[1].lifecycle.window_id == window && events[0].sequence > 0
+					&& events[1].sequence > events[0].sequence)
+			}
+			win32_red_add(mut issues, 'ordinary destroy left a core pending request',
+				app.services.pending.len == 0)
+			late := win32_w4_poll_collect(mut app, 4, 'ordinary destroy late', mut issues)
+			win32_red_add(mut issues, 'ordinary destroy produced a duplicate late terminal', win32_red_clipboard_events(late,
+				request).len == 0)
+			win32_red_add(mut issues, 'ordinary destroy late delivery lost global ordering',
+				win32_red_events_are_globally_ordered(late))
+		}
+		return issues
+	} $else {
+		_ = test_now_ns
+		return error('Win32 clipboard destroy-cancel case is unavailable')
+	}
+}
+
+fn win32_w4_clipboard_purge_fault_case(test_now_ns i64) ![]string {
+	$if windows {
+		mut app := new_app(backend: .win32)!
+		defer {
+			C.v_multiwindow_win32_test_modal_set_enable_failure(0)
+			app.stop() or {}
+		}
+		owner := app.create_window(title: 'Win32 clipboard purge-fault owner')!
+		modal := app.create_window(
+			title: 'Win32 clipboard purge-fault modal'
+			owner: owner
+			modal: true
+		)!
+		_ = app.drain_queued_events()!
+		backend := win32_red_backend_pointer(app)
+		hwnd := win32_red_hwnd(app, modal)!
+		sentinel := 'purge failure sentinel 🙂'
+		sentinel_wide := sentinel.to_wide()
+		mut issues := []string{}
+		fixture_ready := C.v_multiwindow_test_win32_set_clipboard(hwnd, sentinel_wide,
+			win32_red_utf16_units(sentinel)) == 1
+		if !fixture_ready {
+			win32_w4_add_infra(mut issues,
+				'purge-fault oracle could not install the clipboard sentinel')
+		}
+		if fixture_ready {
+			C.v_multiwindow_win32_service_test_clipboard_configure(backend, test_now_ns, 16)
+			request := app.service_set_clipboard_text(modal,
+				'must remain purged after modal release failure') or {
+				issues << 'purge-fault write was not admitted: ${err.msg()}'
+				ServiceRequestId{}
+			}
+			if request != ServiceRequestId{} {
+				admitted := win32_red_core_pending(app, request)
+				win32_red_add(mut issues, 'purge-fault write was not retained non-terminal',
+
+					admitted.len == 1 && !admitted[0].terminal)
+				win32_red_add(mut issues, 'purge-fault write was not native-pending',
+					C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 1)
+				attempts := C.v_multiwindow_win32_service_test_clipboard_attempts(backend)
+				sequences :=
+					C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend)
+				allocations :=
+					C.v_multiwindow_win32_service_test_clipboard_global_allocations(backend)
+				transfers := C.v_multiwindow_win32_service_test_clipboard_global_transfers(backend)
+				frees := C.v_multiwindow_win32_service_test_clipboard_global_frees(backend)
+				C.v_multiwindow_win32_test_modal_set_enable_failure(1)
+				mut destroy_error := ''
+				app.destroy_window(modal) or { destroy_error = err.msg() }
+				C.v_multiwindow_win32_test_modal_set_enable_failure(0)
+				win32_red_add(mut issues, 'modal release failure was not propagated',
+					destroy_error.contains(err_capability_unsupported))
+				win32_red_add(mut issues,
+					'fallible teardown did not purge the native request first',
+					C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0)
+				win32_red_add(mut issues,
+					'fallible teardown attempted or sequenced the purged native request',
+					C.v_multiwindow_win32_service_test_clipboard_attempts(backend) == attempts
+					&& C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == sequences)
+				win32_red_add(mut issues,
+					'fallible teardown allocated, transferred, or freed an HGLOBAL',
+					C.v_multiwindow_win32_service_test_clipboard_global_allocations(backend) == allocations
+					&& C.v_multiwindow_win32_service_test_clipboard_global_transfers(backend) == transfers
+					&& C.v_multiwindow_win32_service_test_clipboard_global_frees(backend) == frees
+					&& C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend) == 0)
+				win32_red_add(mut issues, 'fallible teardown mutated the real clipboard sentinel', C.v_multiwindow_test_win32_clipboard_equals(sentinel_wide,
+					win32_red_utf16_units(sentinel)) == 1)
+				core_terminal := win32_red_core_pending(app, request)
+				win32_red_add(mut issues, 'fallible teardown did not retain one core cancellation',
+
+					core_terminal.len == 1 && core_terminal[0].terminal)
+				events := app.drain_queued_events() or {
+					win32_w4_add_infra(mut issues,
+						'purge-fault terminal drain failed: ${err.msg()}')
+					[]QueuedEvent{}
+				}
+				win32_red_add(mut issues, 'purge-fault delivery lost global ordering',
+					win32_red_events_are_globally_ordered(events))
+				terminals := win32_red_clipboard_events(events, request)
+				destroyed := events.filter(it.kind == .lifecycle
+					&& it.lifecycle.kind == .window_destroyed && it.lifecycle.window_id == modal)
+				win32_red_add(mut issues, 'purge-fault did not publish one cancellation',
+					terminals.len == 1
+					&& win32_red_clipboard_envelope_matches(terminals[0], request, modal, .clipboard_write, .cancelled))
+				win32_red_add(mut issues, 'purge-fault did not publish one destroy lifecycle',
+					destroyed.len == 1)
+				if terminals.len == 1 && destroyed.len == 1 {
+					win32_red_add(mut issues,
+						'purge-fault cancellation was not ordered before destroy',
+						terminals[0].sequence < destroyed[0].sequence)
+				}
+				win32_red_add(mut issues, 'purge-fault core terminal survived delivery', win32_red_core_pending(app,
+					request).len == 0)
+				late := win32_w4_poll_collect(mut app, 4, 'purge-fault late', mut issues)
+				win32_red_add(mut issues, 'purge-fault produced a duplicate late terminal', win32_red_clipboard_events(late,
+					request).len == 0)
+				win32_red_add(mut issues, 'purge-fault late delivery lost global ordering',
+					win32_red_events_are_globally_ordered(late))
+				win32_red_add(mut issues,
+					'late poll attempted or sequenced the purged native request',
+					C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0
+					&& C.v_multiwindow_win32_service_test_clipboard_attempts(backend) == attempts
+					&& C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == sequences)
+				win32_red_add(mut issues,
+					'late poll changed HGLOBAL allocation/transfer/free ownership',
+					C.v_multiwindow_win32_service_test_clipboard_global_allocations(backend) == allocations
+					&& C.v_multiwindow_win32_service_test_clipboard_global_transfers(backend) == transfers
+					&& C.v_multiwindow_win32_service_test_clipboard_global_frees(backend) == frees
+					&& C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend) == 0)
+				win32_red_add(mut issues, 'late poll mutated the real clipboard sentinel', C.v_multiwindow_test_win32_clipboard_equals(sentinel_wide,
+					win32_red_utf16_units(sentinel)) == 1)
+			}
+		}
+		return issues
+	} $else {
+		_ = test_now_ns
+		return error('Win32 clipboard purge-fault case is unavailable')
+	}
+}
+
+fn win32_w4_clipboard_stop_cancel_case(test_now_ns i64) ![]string {
+	$if windows {
+		mut app := new_app(backend: .win32)!
+		mut stopped := false
+		defer {
+			if !stopped {
+				app.stop() or {}
+			}
+		}
+		window := app.create_window(title: 'Win32 clipboard stop cancel')!
+		_ = app.drain_queued_events()!
+		backend := win32_red_backend_pointer(app)
+		C.v_multiwindow_win32_service_test_clipboard_configure(backend, test_now_ns, 16)
+		mut issues := []string{}
+		request := app.service_set_clipboard_text(window, 'stop pending write 🙂') or {
+			issues << 'stop-cancel write was not admitted: ${err.msg()}'
+			ServiceRequestId{}
+		}
+		if request != ServiceRequestId{} {
+			admitted := win32_red_core_pending(app, request)
+			win32_red_add(mut issues, 'stop-cancel write was not retained non-terminal',
+
+				admitted.len == 1 && !admitted[0].terminal)
+			win32_red_add(mut issues, 'stop-cancel write was not native-pending',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 1)
+			win32_red_add(mut issues, 'stop-cancel admission owned an HGLOBAL',
+				C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend) == 0)
+			mut stop_failed := false
+			app.stop() or {
+				issues << 'stop-cancel stop failed: ${err.msg()}'
+				stop_failed = true
+			}
+			stopped = !stop_failed
+			win32_red_add(mut issues, 'stop did not purge the native request',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0)
+			win32_red_add(mut issues, 'stop leaked HGLOBAL ownership',
+				C.v_multiwindow_win32_service_test_clipboard_owned_globals(backend) == 0)
+			win32_red_add(mut issues, 'stop allocated a native clipboard sequence',
+				C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == 0)
+			terminal := win32_red_core_pending(app, request)
+			win32_red_add(mut issues, 'stop did not retain one core cancellation',
+
+				terminal.len == 1 && terminal[0].terminal)
+			events := app.drain_queued_events() or {
+				win32_w4_add_infra(mut issues, 'stop-cancel terminal drain failed: ${err.msg()}')
+				[]QueuedEvent{}
+			}
+			win32_red_add(mut issues, 'stop-cancel delivery lost global ordering',
+				win32_red_events_are_globally_ordered(events))
+			terminals := win32_red_clipboard_events(events, request)
+			destroyed := events.filter(it.kind == .lifecycle
+				&& it.lifecycle.kind == .window_destroyed && it.lifecycle.window_id == window)
+			win32_red_add(mut issues, 'stop did not publish one cancellation', terminals.len == 1
+				&& win32_red_clipboard_envelope_matches(terminals[0], request, window, .clipboard_write, .cancelled))
+			win32_red_add(mut issues, 'stop did not publish one destroy lifecycle',
+				destroyed.len == 1)
+			if terminals.len == 1 && destroyed.len == 1 {
+				win32_red_add(mut issues, 'stop cancellation was not ordered before destroy',
+					terminals[0].sequence < destroyed[0].sequence)
+			}
+			win32_red_add(mut issues, 'stop left a core pending request',
+				app.services.pending.len == 0)
+			late := app.drain_queued_events() or {
+				win32_w4_add_infra(mut issues, 'stop-cancel late drain failed: ${err.msg()}')
+				[]QueuedEvent{}
+			}
+			win32_red_add(mut issues, 'stop produced a duplicate late terminal', win32_red_clipboard_events(late,
+				request).len == 0)
+			win32_red_add(mut issues, 'stop late delivery lost global ordering',
+				win32_red_events_are_globally_ordered(late))
+		}
+		return issues
+	} $else {
+		_ = test_now_ns
+		return error('Win32 clipboard stop-cancel case is unavailable')
 	}
 }
 
@@ -1856,68 +3061,22 @@ fn test_win32_native_clipboard_occupancy_timeout_failure_and_cancel_red() {
 	$if windows {
 		eprintln('PACKAGE2_RED_TEST=test_win32_native_clipboard_occupancy_timeout_failure_and_cancel_red')
 		eprintln('PACKAGE2_RED_FAMILY=clipboard_occupancy_cancel')
+		test_now_ns := i64(20_000_000)
 		mut issues := []string{}
-		mut app := new_app(backend: .win32)!
-		window := app.create_window(title: 'Win32 clipboard occupied')!
-		_ = app.drain_queued_events()!
-		assert C.v_multiwindow_test_win32_start_clipboard_occupancy() == 1
-		request := app.service_request_clipboard_text(window) or {
-			issues << 'occupied clipboard request was not admitted asynchronously: ${err.msg()}'
-			ServiceRequestId{}
+		for issue in win32_w4_clipboard_timeout_case(test_now_ns)! {
+			issues << issue
 		}
-		if request != ServiceRequestId{} {
-			terminals := win32_red_clipboard_terminals(mut app, request, 400)!
-			win32_red_add(mut issues, 'occupied clipboard did not end in one bounded failure',
-
-				terminals.len == 1 && terminals[0].status == .failed)
+		for issue in win32_w4_clipboard_destroy_cancel_case(test_now_ns)! {
+			issues << issue
 		}
-		C.v_multiwindow_test_win32_stop_clipboard_occupancy()
-		app.stop()!
-
-		mut destroy_app := new_app(backend: .win32)!
-		destroy_window := destroy_app.create_window(title: 'Win32 clipboard destroy cancel')!
-		_ = destroy_app.drain_queued_events()!
-		assert C.v_multiwindow_test_win32_start_clipboard_occupancy() == 1
-		destroy_request := destroy_app.service_request_clipboard_text(destroy_window) or {
-			issues << 'destroy cancellation request was not admitted: ${err.msg()}'
-			ServiceRequestId{}
+		for issue in win32_w4_clipboard_purge_fault_case(test_now_ns)! {
+			issues << issue
 		}
-		destroy_app.destroy_window(destroy_window)!
-		destroy_events := destroy_app.drain_queued_events()!
-		if destroy_request != ServiceRequestId{} {
-			destroy_terminals := destroy_events.filter(it.kind == .service
-				&& it.service.kind == .clipboard && it.service.clipboard.id == destroy_request)
-			win32_red_add(mut issues,
-				'destroy did not queue exactly one cancelled clipboard terminal',
-				destroy_terminals.len == 1
-				&& destroy_terminals[0].service.clipboard.status == .cancelled)
+		for issue in win32_w4_clipboard_stop_cancel_case(test_now_ns)! {
+			issues << issue
 		}
-		C.v_multiwindow_test_win32_stop_clipboard_occupancy()
-		destroy_app.stop()!
-
-		mut stop_app := new_app(backend: .win32)!
-		stop_window := stop_app.create_window(title: 'Win32 clipboard stop cancel')!
-		_ = stop_app.drain_queued_events()!
-		assert C.v_multiwindow_test_win32_start_clipboard_occupancy() == 1
-		stop_request := stop_app.service_request_clipboard_text(stop_window) or {
-			issues << 'stop cancellation request was not admitted: ${err.msg()}'
-			ServiceRequestId{}
-		}
-		stop_app.stop()!
-		stop_events := stop_app.drain_queued_events()!
-		if stop_request != ServiceRequestId{} {
-			stop_terminals := stop_events.filter(it.kind == .service
-				&& it.service.kind == .clipboard && it.service.clipboard.id == stop_request)
-			win32_red_add(mut issues,
-				'stop did not queue exactly one cancelled clipboard terminal',
-
-				stop_terminals.len == 1 && stop_terminals[0].service.clipboard.status == .cancelled)
-		}
-		C.v_multiwindow_test_win32_stop_clipboard_occupancy()
-		if issues.len > 0 {
-			eprintln('PACKAGE2_RED_TERMINAL=behavioral_red:clipboard_occupancy_cancel')
-		}
-		assert issues.len == 0, 'Win32 clipboard occupancy RED:\n${issues.join('\n')}'
+		win32_w4_epilogue('clipboard_occupancy_cancel',
+			'Win32 clipboard occupancy/cancellation RED', issues)
 	}
 }
 

@@ -52,10 +52,6 @@ typedef struct VMultiwindowTestWin32WrongThreadProbe {
 	volatile LONG references;
 } VMultiwindowTestWin32WrongThreadProbe;
 
-static HANDLE v_multiwindow_test_clipboard_ready;
-static HANDLE v_multiwindow_test_clipboard_release;
-static HANDLE v_multiwindow_test_clipboard_thread;
-static volatile LONG v_multiwindow_test_clipboard_held;
 static volatile LONG v_multiwindow_test_win32_wrong_thread_active;
 static DWORD v_multiwindow_test_win32_wrong_thread_worker_delay;
 static DWORD v_multiwindow_test_win32_wrong_thread_wait_timeout = 5000;
@@ -621,13 +617,43 @@ static inline int v_multiwindow_test_win32_emit_dpi_change(void *hwnd,
 			SMTO_ABORTIFHUNG, 1000, &result) != 0;
 }
 
-static inline int v_multiwindow_test_win32_clipboard_equals(const wchar_t *expected) {
-	if (!OpenClipboard(NULL)) {
+#define V_MULTIWINDOW_TEST_WIN32_CLIPBOARD_MAX_BYTES (16u * 1024u * 1024u)
+
+static inline int v_multiwindow_test_win32_clipboard_equals(
+	const wchar_t *expected, size_t expected_units) {
+	if (!expected || expected_units == 0 ||
+		expected_units > V_MULTIWINDOW_TEST_WIN32_CLIPBOARD_MAX_BYTES /
+			sizeof(wchar_t) ||
+		expected[expected_units - 1] != L'\0' ||
+		!OpenClipboard(NULL)) {
 		return 0;
 	}
 	HGLOBAL data = (HGLOBAL)GetClipboardData(CF_UNICODETEXT);
-	wchar_t *actual = data ? (wchar_t *)GlobalLock(data) : NULL;
-	int equal = actual && expected && wcscmp(actual, expected) == 0;
+	size_t bytes = data ? GlobalSize(data) : 0;
+	if (!data || bytes < sizeof(wchar_t)) {
+		CloseClipboard();
+		return 0;
+	}
+	size_t scan_bytes = bytes;
+	if (scan_bytes > V_MULTIWINDOW_TEST_WIN32_CLIPBOARD_MAX_BYTES) {
+		scan_bytes = V_MULTIWINDOW_TEST_WIN32_CLIPBOARD_MAX_BYTES;
+	}
+	const wchar_t *actual = (const wchar_t *)GlobalLock(data);
+	size_t actual_units = 0;
+	if (actual) {
+		for (size_t offset = 0; offset + sizeof(wchar_t) <= scan_bytes;
+			offset += sizeof(wchar_t)) {
+			wchar_t unit = 0;
+			memcpy(&unit, (const unsigned char *)actual + offset,
+				sizeof(unit));
+			if (unit == L'\0') {
+				actual_units = offset / sizeof(wchar_t) + 1;
+				break;
+			}
+		}
+	}
+	int equal = actual && actual_units == expected_units &&
+		memcmp(actual, expected, expected_units * sizeof(wchar_t)) == 0;
 	if (actual) {
 		GlobalUnlock(data);
 	}
@@ -635,92 +661,83 @@ static inline int v_multiwindow_test_win32_clipboard_equals(const wchar_t *expec
 	return equal;
 }
 
-static inline size_t v_multiwindow_test_win32_clipboard_bytes(void) {
-	if (!OpenClipboard(NULL)) {
+static inline int v_multiwindow_test_win32_set_clipboard_raw(void *owner_ptr,
+	const void *payload, size_t bytes) {
+	HWND owner = (HWND)owner_ptr;
+	if (!owner || !IsWindow(owner) || !payload || bytes == 0 ||
+		!OpenClipboard(owner)) {
 		return 0;
 	}
-	HGLOBAL data = (HGLOBAL)GetClipboardData(CF_UNICODETEXT);
-	size_t bytes = data ? GlobalSize(data) : 0;
-	CloseClipboard();
-	return bytes;
-}
-
-static inline int v_multiwindow_test_win32_set_clipboard(const wchar_t *text,
-	size_t units) {
-	if (!text || units == 0 || !OpenClipboard(NULL)) {
-		return 0;
-	}
-	HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, units * sizeof(wchar_t));
-	wchar_t *target = data ? (wchar_t *)GlobalLock(data) : NULL;
+	HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, bytes);
+	void *target = data ? GlobalLock(data) : NULL;
 	if (!target) {
 		if (data) GlobalFree(data);
 		CloseClipboard();
 		return 0;
 	}
-	memcpy(target, text, units * sizeof(wchar_t));
+	memcpy(target, payload, bytes);
 	GlobalUnlock(data);
-	EmptyClipboard();
+	if (!EmptyClipboard()) {
+		GlobalFree(data);
+		CloseClipboard();
+		return 0;
+	}
 	if (!SetClipboardData(CF_UNICODETEXT, data)) {
 		GlobalFree(data);
 		CloseClipboard();
 		return 0;
 	}
-	CloseClipboard();
-	return 1;
+	return CloseClipboard() != 0;
 }
 
-static DWORD WINAPI v_multiwindow_test_win32_clipboard_holder(void *unused) {
-	(void)unused;
-	if (!OpenClipboard(NULL)) {
-		SetEvent(v_multiwindow_test_clipboard_ready);
-		return 1;
+static inline int v_multiwindow_test_win32_set_clipboard(void *owner_ptr,
+	const wchar_t *text, size_t units) {
+	if (!text || units == 0 ||
+		units > ((size_t)-1) / sizeof(wchar_t)) {
+		return 0;
 	}
-	InterlockedExchange(&v_multiwindow_test_clipboard_held, 1);
-	SetEvent(v_multiwindow_test_clipboard_ready);
-	WaitForSingleObject(v_multiwindow_test_clipboard_release, 10000);
-	CloseClipboard();
-	InterlockedExchange(&v_multiwindow_test_clipboard_held, 0);
-	return 0;
+	return v_multiwindow_test_win32_set_clipboard_raw(owner_ptr, text,
+		units * sizeof(wchar_t));
 }
 
-static inline int v_multiwindow_test_win32_start_clipboard_occupancy(void) {
-	if (v_multiwindow_test_clipboard_thread) {
+static inline int v_multiwindow_test_win32_set_clipboard_malformed(
+	void *owner_ptr, int kind) {
+	HWND owner = (HWND)owner_ptr;
+	if (!owner || !IsWindow(owner)) {
 		return 0;
 	}
-	v_multiwindow_test_clipboard_ready = CreateEventW(NULL, TRUE, FALSE, NULL);
-	v_multiwindow_test_clipboard_release = CreateEventW(NULL, TRUE, FALSE, NULL);
-	if (!v_multiwindow_test_clipboard_ready || !v_multiwindow_test_clipboard_release) {
+	if (kind == 2) {
+		const wchar_t invalid_surrogate[] = {
+			(wchar_t)0xd800, L'A', L'\0'
+		};
+		return v_multiwindow_test_win32_set_clipboard_raw(owner,
+			invalid_surrogate, sizeof(invalid_surrogate));
+	}
+	if (kind != 1 || !OpenClipboard(owner)) {
 		return 0;
 	}
-	v_multiwindow_test_clipboard_thread = CreateThread(NULL, 0,
-		v_multiwindow_test_win32_clipboard_holder, NULL, 0, NULL);
-	if (!v_multiwindow_test_clipboard_thread) {
+	HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, sizeof(wchar_t));
+	size_t actual_bytes = data ? GlobalSize(data) : 0;
+	void *target = actual_bytes >= sizeof(wchar_t) ? GlobalLock(data) : NULL;
+	if (!target) {
+		if (data) GlobalFree(data);
+		CloseClipboard();
 		return 0;
 	}
-	if (WaitForSingleObject(v_multiwindow_test_clipboard_ready, 2000) != WAIT_OBJECT_0) {
+	// Fill the allocator's complete reported extent so padding cannot supply a NUL.
+	memset(target, 0x41, actual_bytes);
+	GlobalUnlock(data);
+	if (!EmptyClipboard()) {
+		GlobalFree(data);
+		CloseClipboard();
 		return 0;
 	}
-	return InterlockedCompareExchange(&v_multiwindow_test_clipboard_held, 0, 0) != 0;
-}
-
-static inline void v_multiwindow_test_win32_stop_clipboard_occupancy(void) {
-	if (v_multiwindow_test_clipboard_release) {
-		SetEvent(v_multiwindow_test_clipboard_release);
+	if (!SetClipboardData(CF_UNICODETEXT, data)) {
+		GlobalFree(data);
+		CloseClipboard();
+		return 0;
 	}
-	if (v_multiwindow_test_clipboard_thread) {
-		WaitForSingleObject(v_multiwindow_test_clipboard_thread, 3000);
-		CloseHandle(v_multiwindow_test_clipboard_thread);
-	}
-	if (v_multiwindow_test_clipboard_ready) {
-		CloseHandle(v_multiwindow_test_clipboard_ready);
-	}
-	if (v_multiwindow_test_clipboard_release) {
-		CloseHandle(v_multiwindow_test_clipboard_release);
-	}
-	v_multiwindow_test_clipboard_thread = NULL;
-	v_multiwindow_test_clipboard_ready = NULL;
-	v_multiwindow_test_clipboard_release = NULL;
-	InterlockedExchange(&v_multiwindow_test_clipboard_held, 0);
+	return CloseClipboard() != 0;
 }
 
 static inline VMultiwindowTestGetRegisteredRawInputDevices
@@ -848,6 +865,514 @@ static inline int v_multiwindow_test_win32_dwm_dark(void *hwnd, int *value) {
 	*value = dark ? 1 : 0;
 	return 1;
 }
+
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST) \
+	&& !defined(V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ADAPTERS)
+#define V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ADAPTERS
+
+#define V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ROUTE_UNAVAILABLE (-2147483000)
+
+#if defined(V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_BACKEND_IMPLEMENTATION)
+
+#define V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_MAX_BACKENDS 32
+#define V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_MAX_REQUESTS 128
+
+typedef struct VMultiwindowWin32ClipboardTestRequest {
+	uint64_t app;
+	uint64_t serial;
+	int attempts;
+} VMultiwindowWin32ClipboardTestRequest;
+
+typedef struct VMultiwindowWin32ClipboardTestState {
+	void *backend;
+	int use_injected_clock;
+	int64_t now_ns;
+	int fail_open_attempts;
+	int attempts;
+	void *last_open_owner;
+	int owned_globals;
+	int owned_globals_peak;
+	int global_allocations;
+	int global_transfers;
+	int global_frees;
+	int fail_before_transfer;
+	int sequence_allocations;
+	VMultiwindowWin32ClipboardTestRequest
+		requests[V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_MAX_REQUESTS];
+	int request_count;
+} VMultiwindowWin32ClipboardTestState;
+
+static VMultiwindowWin32ClipboardTestState
+	v_multiwindow_win32_clipboard_test_states[
+		V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_MAX_BACKENDS];
+
+static inline VMultiwindowWin32ClipboardTestState *
+v_multiwindow_win32_clipboard_test_state(void *backend, int create) {
+	if (!backend) {
+		return NULL;
+	}
+	VMultiwindowWin32ClipboardTestState *available = NULL;
+	for (int index = 0;
+		index < V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_MAX_BACKENDS;
+		index++) {
+		VMultiwindowWin32ClipboardTestState *state =
+			&v_multiwindow_win32_clipboard_test_states[index];
+		if (state->backend == backend) {
+			return state;
+		}
+		if (!available && !state->backend) {
+			available = state;
+		}
+	}
+	if (!create || !available) {
+		return NULL;
+	}
+	available->backend = backend;
+	return available;
+}
+
+static inline VMultiwindowWin32ClipboardTestRequest *
+v_multiwindow_win32_clipboard_test_request(
+		VMultiwindowWin32ClipboardTestState *state, uint64_t app,
+		uint64_t serial, int create) {
+	if (!state) {
+		return NULL;
+	}
+	for (int index = 0; index < state->request_count; index++) {
+		VMultiwindowWin32ClipboardTestRequest *request =
+			&state->requests[index];
+		if (request->app == app && request->serial == serial) {
+			return request;
+		}
+	}
+	if (!create || state->request_count >=
+		V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_MAX_REQUESTS) {
+		return NULL;
+	}
+	VMultiwindowWin32ClipboardTestRequest *request =
+		&state->requests[state->request_count++];
+	request->app = app;
+	request->serial = serial;
+	return request;
+}
+
+static inline void v_multiwindow_win32_service_test_clipboard_configure(
+		void *backend, int64_t now_ns, int fail_open_attempts) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 1);
+	if (!state) {
+		return;
+	}
+	memset(state, 0, sizeof(*state));
+	state->backend = backend;
+	state->use_injected_clock = 1;
+	state->now_ns = now_ns;
+	state->fail_open_attempts =
+		fail_open_attempts > 0 ? fail_open_attempts : 0;
+}
+
+static inline void
+v_multiwindow_win32_service_test_clipboard_set_now_ns(
+		void *backend, int64_t now_ns) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 1);
+	if (!state) {
+		return;
+	}
+	state->use_injected_clock = 1;
+	state->now_ns = now_ns;
+}
+
+static inline void
+v_multiwindow_win32_service_test_clipboard_use_real_clock(void *backend) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 0);
+	if (state) {
+		state->use_injected_clock = 0;
+	}
+}
+
+static inline void
+v_multiwindow_win32_service_test_clipboard_fail_before_transfer(
+		void *backend, int count) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 1);
+	if (state) {
+		state->fail_before_transfer = count > 0 ? count : 0;
+	}
+}
+
+static inline int64_t v_multiwindow_win32_clipboard_now_for_test(
+		void *backend, int64_t real_now_ns) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 0);
+	return state && state->use_injected_clock
+		? state->now_ns : real_now_ns;
+}
+
+static inline int v_multiwindow_win32_clipboard_take_open_failure_for_test(
+		VMultiwindowWin32ClipboardTestState *state) {
+	if (!state || state->fail_open_attempts <= 0) {
+		return 0;
+	}
+	state->fail_open_attempts--;
+	return 1;
+}
+
+static inline void v_multiwindow_win32_clipboard_record_attempt_for_test(
+		VMultiwindowWin32ClipboardTestState *state, uint64_t request_app,
+		uint64_t request_serial, void *owner) {
+	if (!state) {
+		return;
+	}
+	state->attempts++;
+	state->last_open_owner = owner;
+	VMultiwindowWin32ClipboardTestRequest *request =
+		v_multiwindow_win32_clipboard_test_request(state, request_app,
+			request_serial, 1);
+	if (request) {
+		request->attempts++;
+	}
+}
+
+static inline int v_multiwindow_win32_clipboard_write_for_test(
+		void *backend, uint64_t request_app, uint64_t request_serial,
+		void *owner, const uint16_t *text, size_t units) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 1);
+	v_multiwindow_win32_clipboard_record_attempt_for_test(state,
+		request_app, request_serial, owner);
+	if (v_multiwindow_win32_clipboard_take_open_failure_for_test(state)) {
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_RETRY;
+	}
+	VMultiwindowWin32ClipboardWriteObserver observer = {0};
+	if (state) {
+		observer.owned_globals = &state->owned_globals;
+		observer.owned_globals_peak = &state->owned_globals_peak;
+		observer.global_allocations = &state->global_allocations;
+		observer.global_transfers = &state->global_transfers;
+		observer.global_frees = &state->global_frees;
+		observer.fail_before_transfer = &state->fail_before_transfer;
+	}
+	int status = v_multiwindow_win32_clipboard_write_observed(owner, text,
+		units, state ? &observer : NULL);
+	if (status == V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_CLEANED) {
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_FAILED;
+	}
+	return status;
+}
+
+static inline int v_multiwindow_win32_clipboard_read_for_test(
+		void *backend, uint64_t request_app, uint64_t request_serial,
+		void *owner, void **out_text, size_t *out_text_bytes) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 1);
+	v_multiwindow_win32_clipboard_record_attempt_for_test(state,
+		request_app, request_serial, owner);
+	if (v_multiwindow_win32_clipboard_take_open_failure_for_test(state)) {
+		if (out_text) {
+			*out_text = NULL;
+		}
+		if (out_text_bytes) {
+			*out_text_bytes = 0;
+		}
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_RETRY;
+	}
+	return v_multiwindow_win32_clipboard_read(owner, out_text,
+		out_text_bytes);
+}
+
+static inline void
+v_multiwindow_win32_clipboard_record_sequence_for_test(void *backend) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 1);
+	if (state) {
+		state->sequence_allocations++;
+	}
+}
+
+static inline int v_multiwindow_win32_service_test_clipboard_attempts(
+		void *backend) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 0);
+	return state ? state->attempts : 0;
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_request_attempts(
+		void *backend, uint64_t request_app, uint64_t request_serial) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 0);
+	VMultiwindowWin32ClipboardTestRequest *request =
+		v_multiwindow_win32_clipboard_test_request(state, request_app,
+			request_serial, 0);
+	return request ? request->attempts : 0;
+}
+
+static inline void *
+v_multiwindow_win32_service_test_clipboard_last_open_owner(
+		void *backend) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 0);
+	return state ? state->last_open_owner : NULL;
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_owned_globals(void *backend) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 0);
+	return state ? state->owned_globals : 0;
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_owned_globals_peak(
+		void *backend) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 0);
+	return state ? state->owned_globals_peak : 0;
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_global_allocations(
+		void *backend) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 0);
+	return state ? state->global_allocations : 0;
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_global_transfers(
+		void *backend) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 0);
+	return state ? state->global_transfers : 0;
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_global_frees(void *backend) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 0);
+	return state ? state->global_frees : 0;
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_sequence_allocations(
+		void *backend) {
+	VMultiwindowWin32ClipboardTestState *state =
+		v_multiwindow_win32_clipboard_test_state(backend, 0);
+	return state ? state->sequence_allocations : 0;
+}
+
+static inline int64_t
+v_multiwindow_win32_service_test_clipboard_timeout_ns(void *backend) {
+	(void)backend;
+	return INT64_C(2000000000);
+}
+
+static int x__multiwindow__win32_service_test_clipboard_pending_count(
+	void *backend);
+static int64_t
+x__multiwindow__win32_service_test_clipboard_pending_deadline_ns(
+	void *backend, int index);
+static int
+x__multiwindow__win32_service_test_clipboard_pending_write_matches(
+	void *backend, int index, uint64_t request_app,
+	uint64_t request_serial, uint64_t window_app, int window_slot,
+	uint32_t window_generation, uint16_t *text, size_t units);
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_pending_count(void *backend) {
+	return x__multiwindow__win32_service_test_clipboard_pending_count(
+		backend);
+}
+
+static inline int64_t
+v_multiwindow_win32_service_test_clipboard_pending_deadline_ns(
+		void *backend, int index) {
+	return
+		x__multiwindow__win32_service_test_clipboard_pending_deadline_ns(
+			backend, index);
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_pending_write_matches(
+		void *backend, int index, uint64_t request_app,
+		uint64_t request_serial, uint64_t window_app, int window_slot,
+		uint32_t window_generation, uint16_t *text, size_t units) {
+	return
+		x__multiwindow__win32_service_test_clipboard_pending_write_matches(
+			backend, index, request_app, request_serial, window_app,
+			window_slot, window_generation, text, units);
+}
+
+#else
+
+static inline void v_multiwindow_win32_service_test_clipboard_configure(
+		void *backend, int64_t now_ns, int fail_open_attempts) {
+	(void)backend;
+	(void)now_ns;
+	(void)fail_open_attempts;
+}
+
+static inline void
+v_multiwindow_win32_service_test_clipboard_set_now_ns(
+		void *backend, int64_t now_ns) {
+	(void)backend;
+	(void)now_ns;
+}
+
+static inline void
+v_multiwindow_win32_service_test_clipboard_use_real_clock(void *backend) {
+	(void)backend;
+}
+
+static inline void
+v_multiwindow_win32_service_test_clipboard_fail_before_transfer(
+		void *backend, int count) {
+	(void)backend;
+	(void)count;
+}
+
+static inline int64_t v_multiwindow_win32_clipboard_now_for_test(
+		void *backend, int64_t real_now_ns) {
+	(void)backend;
+	return real_now_ns;
+}
+
+static inline int v_multiwindow_win32_clipboard_write_for_test(
+		void *backend, uint64_t request_app, uint64_t request_serial,
+		void *owner, const uint16_t *text, size_t units) {
+	(void)backend;
+	(void)request_app;
+	(void)request_serial;
+	(void)owner;
+	(void)text;
+	(void)units;
+	return V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ROUTE_UNAVAILABLE;
+}
+
+static inline int v_multiwindow_win32_clipboard_read_for_test(
+		void *backend, uint64_t request_app, uint64_t request_serial,
+		void *owner, void **out_text, size_t *out_text_bytes) {
+	(void)backend;
+	(void)request_app;
+	(void)request_serial;
+	(void)owner;
+	if (out_text) {
+		*out_text = NULL;
+	}
+	if (out_text_bytes) {
+		*out_text_bytes = 0;
+	}
+	return V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ROUTE_UNAVAILABLE;
+}
+
+static inline void
+v_multiwindow_win32_clipboard_record_sequence_for_test(void *backend) {
+	(void)backend;
+}
+
+static inline int v_multiwindow_win32_service_test_clipboard_attempts(
+		void *backend) {
+	(void)backend;
+	return V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ROUTE_UNAVAILABLE;
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_request_attempts(
+		void *backend, uint64_t request_app, uint64_t request_serial) {
+	(void)backend;
+	(void)request_app;
+	(void)request_serial;
+	return V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ROUTE_UNAVAILABLE;
+}
+
+static inline void *
+v_multiwindow_win32_service_test_clipboard_last_open_owner(
+		void *backend) {
+	(void)backend;
+	return NULL;
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_owned_globals(void *backend) {
+	(void)backend;
+	return V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ROUTE_UNAVAILABLE;
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_owned_globals_peak(
+		void *backend) {
+	(void)backend;
+	return V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ROUTE_UNAVAILABLE;
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_global_allocations(
+		void *backend) {
+	(void)backend;
+	return V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ROUTE_UNAVAILABLE;
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_global_transfers(
+		void *backend) {
+	(void)backend;
+	return V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ROUTE_UNAVAILABLE;
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_global_frees(void *backend) {
+	(void)backend;
+	return V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ROUTE_UNAVAILABLE;
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_sequence_allocations(
+		void *backend) {
+	(void)backend;
+	return V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ROUTE_UNAVAILABLE;
+}
+
+static inline int64_t
+v_multiwindow_win32_service_test_clipboard_timeout_ns(void *backend) {
+	(void)backend;
+	return INT64_C(-1);
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_pending_count(void *backend) {
+	(void)backend;
+	return V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ROUTE_UNAVAILABLE;
+}
+
+static inline int64_t
+v_multiwindow_win32_service_test_clipboard_pending_deadline_ns(
+		void *backend, int index) {
+	(void)backend;
+	(void)index;
+	return INT64_C(-1);
+}
+
+static inline int
+v_multiwindow_win32_service_test_clipboard_pending_write_matches(
+		void *backend, int index, uint64_t request_app,
+		uint64_t request_serial, uint64_t window_app, int window_slot,
+		uint32_t window_generation, uint16_t *text, size_t units) {
+	(void)backend;
+	(void)index;
+	(void)request_app;
+	(void)request_serial;
+	(void)window_app;
+	(void)window_slot;
+	(void)window_generation;
+	(void)text;
+	(void)units;
+	return V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_ROUTE_UNAVAILABLE;
+}
+
+#endif
+#endif
 #endif
 
 #endif

@@ -92,12 +92,17 @@ jobs:
           $noFlagOnlyTest = 'test_win32_public_services_stay_disabled_without_opt_in'
           $diagnosticTest = 'test_win32_public_controls_publish_observed_state_red'
           $w3GreenTest = 'test_win32_public_monitor_projection_and_event_order_red'
+          $w4RedTest = 'test_win32_public_clipboard_cf_unicodetext_bmp_astral_roundtrip_red'
           $tests = @(
             'test_win32_public_hwnd_borrow_route_red'
             'test_win32_public_conditional_focus_refusal_is_not_a_capability_error_red'
             'test_win32_public_partial_focus_is_never_reported_as_success_red'
           )
-          $classifiedTests = @($noFlagOnlyTest) + $tests + @($diagnosticTest, $w3GreenTest)
+          $classifiedTests = @($noFlagOnlyTest) + $tests + @(
+            $diagnosticTest
+            $w3GreenTest
+            $w4RedTest
+          )
           $missingTests = @(
             $classifiedTests | Where-Object { $discoveredTests -cnotcontains $_ }
           )
@@ -189,6 +194,25 @@ jobs:
       - name: Package 2 native Win32 RED matrix
         shell: pwsh
         run: .\.github\workflows\run_multiwindow_win32_package2_red.ps1 -Compiler tcc
+      - name: Win32 W4 clipboard contracts
+        shell: pwsh
+        env:
+          VFLAGS: ''
+        run: |
+          .\.github\workflows\run_multiwindow_win32_w4.ps1 `
+            -Compiler tcc `
+            -Expectation Red `
+            -ExpectedOracleSha256 '39343dc1a87f27c44c841a4155e11e46817eb137881695280308fea4ba9c4485' `
+            -ExpectedNativeTestSha256 'a75b16032557d1b476646490c9f485c987a67a5db446c663b5036733c4713456' `
+            -ExpectedPublicTestSha256 'd08eafb919ae97b185fc480c22f6d990973396152e9a0b3a01035c3e9a30275c' `
+            -ExpectedNoOptProbeSha256 '288f148ca15b6694481f117c03be5f80c4045baf76d3b0e90db61b5e0596741c' `
+            -ExpectedServiceBackendSha256 '507686b3e29d22d9b913da79bb20d435394daf693e166be1c61569bd08b853d6' `
+            -ExpectedWin32BackendSha256 '2ae1143cd1e069727ac82f4d0ca97866686874562fcdd8d660d8706dfd7e7856' `
+            -ExpectedWin32ServiceBackendSha256 '5261f7fd1b9aefe3bb76c298f8eeeabd281f8fa26fe58b15868ceb6415dd8ba1' `
+            -ExpectedWin32ServiceNativeSha256 'c113d9361d0f55f5fd127d2a2ae7e05fa6930022350cb717161de07e5eeb0054' `
+            -ExpectedRedSurfaceSha256 '04b271a1ece4844a60a338358ec292d1e59448b962f6be7fb9c5765206678a7e' `
+            -ExpectedGreenSurfaceSha256 'b5ae060815efc906b8e3137c119e345d9dcc3b2b1b1250f0a7650efae52c9a0d' `
+            -ExpectedRunnerSha256 '69a911b8c9f7f6b9ef1cfb8af02a1c66e7f2ec9f5dc314b8ee9f3688623a85ed'
       - name: Public gg Win32 controls/state native diagnostic
         if: ${{ always() }}
         shell: pwsh

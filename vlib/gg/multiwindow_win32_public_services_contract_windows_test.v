@@ -1,6 +1,9 @@
 // vtest retry: 0
 module gg
 
+import os
+import time
+
 #flag windows -DV_MULTIWINDOW_WIN32_SERVICE_TEST
 
 $if windows {
@@ -19,6 +22,8 @@ $if windows && gg_multiwindow ? {
 	fn C.v_multiwindow_test_win32_monitor_enumeration_reset()
 	fn C.v_multiwindow_test_win32_monitor_enumeration_empty_calls() int
 	fn C.v_multiwindow_test_win32_monitor_enumeration_replay_calls() int
+	fn C.v_multiwindow_test_win32_clipboard_equals(expected &u16, expected_units usize) int
+	fn C.v_multiwindow_test_win32_set_clipboard(owner voidptr, text &u16, units usize) int
 	fn C.SetForegroundWindow(hwnd voidptr) int
 	fn C.GetForegroundWindow() voidptr
 	fn C.SetFocus(hwnd voidptr) voidptr
@@ -64,6 +69,109 @@ fn win32_public_hwnd(mut app App, window WindowId) !voidptr {
 		return error('gg.App.with_native_window returned a nil HWND')
 	}
 	return probe.hwnd
+}
+
+fn win32_public_utf16_units(text string) usize {
+	mut units := usize(1)
+	for codepoint in text.runes() {
+		units += if codepoint > 0xffff { usize(2) } else { usize(1) }
+	}
+	return units
+}
+
+fn win32_public_clipboard_events(events []WindowQueuedEvent, request ClipboardRequestId) []WindowQueuedEvent {
+	return events.filter(it.kind == .service && it.service.kind == .clipboard
+		&& it.service.clipboard.id == request)
+}
+
+fn win32_public_events_are_globally_ordered(events []WindowQueuedEvent) bool {
+	mut previous := u64(0)
+	for event in events {
+		if event.sequence == 0 || event.sequence <= previous {
+			return false
+		}
+		if event.kind == .service && event.service.sequence != event.sequence {
+			return false
+		}
+		previous = event.sequence
+	}
+	return true
+}
+
+fn win32_public_w4_add_infra(mut issues []string, message string) {
+	issues << 'PACKAGE2_W4_INFRA=${message}'
+}
+
+fn win32_public_poll_until_clipboard(mut app App, request ClipboardRequestId, attempts int, label string, mut issues []string) []WindowQueuedEvent {
+	mut delivered := []WindowQueuedEvent{}
+	for _ in 0 .. attempts {
+		mut poll_failed := false
+		app.poll_events() or {
+			win32_public_w4_add_infra(mut issues, '${label}: poll failed: ${err.msg()}')
+			poll_failed = true
+		}
+		if poll_failed {
+			break
+		}
+		delivered << app.drain_window_queued_events() or {
+			win32_public_w4_add_infra(mut issues, '${label}: event drain failed: ${err.msg()}')
+			[]WindowQueuedEvent{}
+		}
+		if win32_public_clipboard_events(delivered, request).len > 0 {
+			break
+		}
+		time.sleep(5 * time.millisecond)
+	}
+	return delivered
+}
+
+fn win32_public_poll_collect(mut app App, attempts int, label string, mut issues []string) []WindowQueuedEvent {
+	mut delivered := []WindowQueuedEvent{}
+	for _ in 0 .. attempts {
+		mut poll_failed := false
+		app.poll_events() or {
+			win32_public_w4_add_infra(mut issues, '${label}: poll failed: ${err.msg()}')
+			poll_failed = true
+		}
+		if poll_failed {
+			break
+		}
+		delivered << app.drain_window_queued_events() or {
+			win32_public_w4_add_infra(mut issues, '${label}: event drain failed: ${err.msg()}')
+			[]WindowQueuedEvent{}
+		}
+		time.sleep(5 * time.millisecond)
+	}
+	return delivered
+}
+
+fn win32_public_clipboard_envelope_matches(event WindowQueuedEvent, request ClipboardRequestId, window WindowId, operation WindowOperation, status WindowServiceStatus) bool {
+	return event.kind == .service && event.sequence > 0 && event.service.kind == .clipboard
+		&& event.service.sequence == event.sequence && event.service.operation == operation
+		&& event.service.window == window && event.service.clipboard.id == request
+		&& event.service.clipboard.window == window && event.service.clipboard.status == status
+}
+
+fn win32_public_run_no_opt_clipboard_child() ! {
+	parent_compiler := @CCOMPILER
+	child_compiler := if parent_compiler == 'tinyc' { 'tcc' } else { parent_compiler }
+	temp_dir := os.join_path(os.temp_dir(), 'v_multiwindow_win32_clipboard_no_opt_${os.getpid()}')
+	os.mkdir_all(temp_dir)!
+	defer {
+		os.rmdir_all(temp_dir) or {}
+	}
+	source_path := os.join_path(@VMODROOT, 'vlib', 'gg', 'testdata',
+		'multiwindow_win32_clipboard_no_optin_probe.v')
+	output_path := os.join_path(temp_dir, 'clipboard_no_opt.exe')
+	old_vflags := os.getenv('VFLAGS')
+	os.setenv('VFLAGS', '', true)
+	compile_result :=
+		os.execute('${os.quoted_path(@VEXE)} -no-retry-compilation -cc ${os.quoted_path(child_compiler)} -gc none -o ${os.quoted_path(output_path)} ${os.quoted_path(source_path)}')
+	os.setenv('VFLAGS', old_vflags, true)
+	assert compile_result.exit_code == 0, 'no-opt child compile failed with ${child_compiler}:\n${compile_result.output}'
+	run_result := os.execute(os.quoted_path(output_path))
+	assert run_result.exit_code == 0, 'no-opt child failed:\n${run_result.output}'
+	assert run_result.output.trim_space() == 'CCOMPILER=${parent_compiler}'
 }
 
 fn win32_public_request_refused_focus(mut app App, window WindowId) ! {
@@ -145,9 +253,21 @@ fn test_win32_public_services_stay_disabled_without_opt_in() {
 			rejected = record_disabled_public_service('set_window_fullscreen', err,
 				err_multiwindow_not_enabled, rejected)
 		}
+		_ = app.request_clipboard_text(window) or {
+			rejected = record_disabled_public_service('request_clipboard_text', err,
+				err_multiwindow_not_enabled, rejected)
+			ClipboardRequestId{}
+		}
+		_ = app.set_clipboard_text(window, 'disabled') or {
+			rejected = record_disabled_public_service('set_clipboard_text', err,
+				err_multiwindow_not_enabled, rejected)
+			ClipboardRequestId{}
+		}
 
-		assert rejected == 12
+		assert rejected == 14
 		assert !callback_called
+	} $else $if windows {
+		win32_public_run_no_opt_clipboard_child()!
 	}
 }
 
@@ -594,5 +714,108 @@ fn test_win32_public_monitor_projection_and_event_order_red() {
 			}
 			assert stale_id_rejected
 		}
+	}
+}
+
+fn test_win32_public_clipboard_cf_unicodetext_bmp_astral_roundtrip_red() {
+	$if windows && gg_multiwindow ? {
+		eprintln('PACKAGE2_RED_TEST=test_win32_public_clipboard_cf_unicodetext_bmp_astral_roundtrip_red')
+		eprintln('PACKAGE2_RED_FAMILY=public_clipboard_unicode')
+		mut app := new_app(backend: .win32)!
+		defer {
+			app.stop() or {}
+		}
+		window := app.create_window(title: 'Win32 public clipboard Unicode RED')!
+		_ = app.drain_window_queued_events()!
+		hwnd := win32_public_hwnd(mut app, window)!
+		mut issues := []string{}
+		for operation in [WindowOperation.clipboard_read, .clipboard_write] {
+			capability := app.window_operation_capability(window, operation) or {
+				issues << '${operation} capability query failed: ${err.msg()}'
+				WindowOperationCapability{}
+			}
+			if capability.support != .available || !capability.asynchronous
+				|| capability.requires_user_action || capability.state_observable {
+				issues << '${operation} capability is not available asynchronous'
+			}
+		}
+		mut last_sequence := u64(0)
+
+		external := 'external BMP € 漢字 astral 🙂 𝄞'
+		external_fixture_ready := C.v_multiwindow_test_win32_set_clipboard(hwnd,
+			external.to_wide(), win32_public_utf16_units(external)) == 1
+		if !external_fixture_ready {
+			win32_public_w4_add_infra(mut issues,
+				'public clipboard oracle could not install Unicode fixture')
+		}
+		if external_fixture_ready {
+			read_request := app.request_clipboard_text(window) or {
+				issues << 'gg clipboard read was not admitted: ${err.msg()}'
+				ClipboardRequestId{}
+			}
+			if read_request != ClipboardRequestId{} {
+				delivered := win32_public_poll_until_clipboard(mut app, read_request, 8,
+					'public Unicode read', mut issues)
+				terminals := win32_public_clipboard_events(delivered, read_request)
+				if !win32_public_events_are_globally_ordered(delivered) {
+					issues << 'gg clipboard read lost adjacent global event ordering'
+				}
+				if terminals.len != 1
+					|| !win32_public_clipboard_envelope_matches(terminals[0], read_request, window, .clipboard_read, .ready)
+					|| terminals[0].service.clipboard.text != external {
+					issues << 'gg clipboard read did not publish one exact ready envelope'
+				} else {
+					last_sequence = terminals[0].sequence
+				}
+				late_delivery := win32_public_poll_collect(mut app, 4, 'public Unicode read late', mut
+					issues)
+				late := win32_public_clipboard_events(late_delivery, read_request)
+				if late.len != 0 {
+					issues << 'gg clipboard read produced a duplicate late terminal'
+				}
+				if !win32_public_events_are_globally_ordered(late_delivery) {
+					issues << 'gg clipboard read late events lost global ordering'
+				}
+			}
+		}
+
+		written := 'public BMP Ω Ж astral 🙂 𝄞'
+		written_units := win32_public_utf16_units(written)
+		write_request := app.set_clipboard_text(window, written) or {
+			issues << 'gg clipboard write was not admitted: ${err.msg()}'
+			ClipboardRequestId{}
+		}
+		if write_request != ClipboardRequestId{} {
+			delivered := win32_public_poll_until_clipboard(mut app, write_request, 8,
+				'public Unicode write', mut issues)
+			terminals := win32_public_clipboard_events(delivered, write_request)
+			if !win32_public_events_are_globally_ordered(delivered) {
+				issues << 'gg clipboard write lost adjacent global event ordering'
+			}
+			if terminals.len != 1
+				|| !win32_public_clipboard_envelope_matches(terminals[0], write_request, window, .clipboard_write, .ready)
+				|| terminals[0].sequence <= last_sequence {
+				issues << 'gg clipboard write did not publish one exact ordered ready envelope'
+			}
+			if C.v_multiwindow_test_win32_clipboard_equals(written.to_wide(), written_units) != 1 {
+				issues << 'gg clipboard write did not preserve BMP and astral UTF-16 text'
+			}
+			late_delivery := win32_public_poll_collect(mut app, 4, 'public Unicode write late', mut
+				issues)
+			late := win32_public_clipboard_events(late_delivery, write_request)
+			if late.len != 0 {
+				issues << 'gg clipboard write produced a duplicate late terminal'
+			}
+			if !win32_public_events_are_globally_ordered(late_delivery) {
+				issues << 'gg clipboard write late events lost global ordering'
+			}
+		}
+		eprintln('PACKAGE2_W4_REACHED=public_clipboard_unicode')
+		infra_issues := issues.filter(it.starts_with('PACKAGE2_W4_INFRA='))
+		contract_issues := issues.filter(!it.starts_with('PACKAGE2_W4_INFRA='))
+		if infra_issues.len == 0 && contract_issues.len > 0 {
+			eprintln('PACKAGE2_RED_TERMINAL=behavioral_red:public_clipboard_unicode')
+		}
+		assert issues.len == 0, 'Win32 public CF_UNICODETEXT RED:\n${issues.join('\n')}'
 	}
 }
