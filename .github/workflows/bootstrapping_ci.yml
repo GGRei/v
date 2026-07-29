@@ -167,6 +167,12 @@ jobs:
             echo "::error::oldv must have a repository-local tcc dependency before v up"
             exit 1
           fi
+          rm -f -- cv
+          if [ -n "$(git status --porcelain=v1)" ]; then
+            echo "::error::oldv left unexpected changes in the tested checkout"
+            git status --short
+            exit 1
+          fi
           git config --local protocol.file.allow always
           git config --local url."https://github.com/vlang/vc".insteadOf https://github.com/vlang/vc
           git config --local url."file://$vup_remote".insteadOf https://github.com/vlang/v
