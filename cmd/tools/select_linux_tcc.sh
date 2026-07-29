@@ -79,6 +79,7 @@ trap 'rm -rf "$probe_dir"' EXIT HUP INT TERM
 probe_source="$probe_dir/probe.c"
 probe_exe="$probe_dir/probe"
 probe_log="$probe_dir/probe.log"
+search_dirs_log="$probe_dir/search-dirs.log"
 
 cat > "$probe_source" <<'EOF'
 #include <gc.h>
@@ -96,11 +97,31 @@ EOF
 
 probe_bundle() {
 	: > "$probe_log"
+	: > "$search_dirs_log"
 	if [ ! -f "$tcc_dir/lib/libgc.a" ] || [ ! -f "$vroot/thirdparty/libgc/include/gc.h" ]; then
 		echo 'the TCC bundle libgc.a or V libgc headers are missing' >> "$probe_log"
 		return 1
 	fi
 	if ! (cd "$vroot" && "$tcc_dir/tcc.exe" --version) >> "$probe_log" 2>&1; then
+		return 1
+	fi
+	if ! (
+		unset C_INCLUDE_PATH CPATH
+		cd "$vroot"
+		"$tcc_dir/tcc.exe" -print-search-dirs
+	) > "$search_dirs_log" 2>&1; then
+		echo 'the TCC bundle could not report its search directories' >> "$probe_log"
+		cat "$search_dirs_log" >> "$probe_log"
+		return 1
+	fi
+	{
+		echo 'TCC search directories:'
+		cat "$search_dirs_log"
+	} >> "$probe_log"
+	if ! sed -n '/^include:$/,/^[^[:space:]]/p' "$search_dirs_log" \
+		| grep -Fqx '  /usr/local/include'; then
+		echo 'the TCC bundle is missing required glibc include search path: /usr/local/include' \
+			>> "$probe_log"
 		return 1
 	fi
 	rm -f "$probe_exe"

@@ -6,6 +6,8 @@ const selector_path = os.join_path(@VEXEROOT, 'cmd', 'tools', 'select_linux_tcc.
 const git_argv_path = os.join_path(@VEXEROOT, 'cmd', 'tools', 'git_argv.sh')
 const linux_tcc_build_script_path = os.join_path(@VEXEROOT, 'thirdparty', 'build_scripts',
 	'thirdparty-linux-amd64_tcc.sh')
+const linux_amd64_sysinclude_paths = '{B}/include:/usr/local/include/x86_64-linux-gnu:' +
+	'/usr/local/include:/usr/include/x86_64-linux-gnu:/usr/include'
 
 struct TccHistoryFixture {
 	root             string
@@ -53,6 +55,7 @@ fn run_linux_tcc_source_git_case(with_options bool) {
 	git_wrapper := os.join_path(root, 'custom-git')
 	git_trace := os.join_path(root, 'git-trace')
 	bare_git_trace := os.join_path(root, 'bare-git-trace')
+	rsync_trace := os.join_path(root, 'rsync-trace')
 	real_git := os.find_abs_path_of_executable('git') or { panic(err) }
 	real_make := os.find_abs_path_of_executable('make') or { panic(err) }
 	os.mkdir_all(os.join_path(root, 'vlib', 'v')) or { panic(err) }
@@ -69,7 +72,13 @@ fn run_linux_tcc_source_git_case(with_options bool) {
 	configure_source_repo(tcc_dir)
 	write_executable(os.join_path(tcc_dir, 'tcc.exe'), '#!/bin/sh\necho old-tcc\n')
 	os.write_file(os.join_path(tcc_dir, 'lib', 'libgc.a'), 'preserved-libgc\n') or { panic(err) }
+	os.write_file(os.join_path(tcc_dir, 'lib', 'libgc_extra.a'), 'preserved-extra-libgc\n') or {
+		panic(err)
+	}
 	os.write_file(os.join_path(tcc_dir, 'lib', 'build_libgc.sh'), 'preserved build helper\n') or {
+		panic(err)
+	}
+	os.write_file(os.join_path(tcc_dir, 'lib', 'build_notes.txt'), 'preserved build notes\n') or {
 		panic(err)
 	}
 	os.write_file(os.join_path(tcc_dir, 'README.md'), 'preserved readme\n') or { panic(err) }
@@ -80,13 +89,17 @@ fn run_linux_tcc_source_git_case(with_options bool) {
 	write_executable(os.join_path(tinycc_source, 'configure'), '#!/bin/sh
 set -eu
 prefix=
+sysinclude_paths=
 for arg in "\$@"; do
 	case "\$arg" in
 		--prefix=*) prefix="\${arg#--prefix=}" ;;
+		--sysincludepaths=*) sysinclude_paths="\${arg#--sysincludepaths=}" ;;
 	esac
 done
 test -n "\$prefix"
+test -n "\$sysinclude_paths"
 printf "%s\\n" "\$prefix" > .test-prefix
+printf "%s\\n" "\$sysinclude_paths" > .test-sysincludepaths
 ')
 	write_executable(os.join_path(tinycc_source, 'fake-tcc'), '#!/bin/sh
 if [ "\${1:-}" = "--version" ]; then
@@ -113,6 +126,81 @@ exec ${os.quoted_path(real_git)} "\$@"
 echo bare-git >> ${os.quoted_path(bare_git_trace)}
 exit 97
 ')
+	write_executable(os.join_path(poison_bin, 'rsync'), '#!/bin/sh
+set -eu
+printf "%s\\n" "\$*" >> ${os.quoted_path(rsync_trace)}
+archive=0
+delete_destination=0
+while [ "\$#" -gt 0 ]; do
+	case "\$1" in
+		-a)
+			archive=1
+			shift
+			;;
+		--delete)
+			delete_destination=1
+			shift
+			;;
+		--)
+			shift
+			break
+			;;
+		-*)
+			echo "test rsync does not support option: \$1" >&2
+			exit 98
+			;;
+		*)
+			break
+			;;
+	esac
+done
+if [ "\$archive" != 1 ] || [ "\$#" -lt 2 ]; then
+	echo "test rsync expects -a, at least one source, and one destination" >&2
+	exit 98
+fi
+destination_path=
+for argument in "\$@"; do
+	destination_path=\$argument
+done
+source_count=\$((\$# - 1))
+if [ "\$delete_destination" = 1 ]; then
+	rm -rf -- "\$destination_path"
+	mkdir -p -- "\$destination_path"
+fi
+source_index=1
+for source_path in "\$@"; do
+	if [ "\$source_index" -gt "\$source_count" ]; then
+		break
+	fi
+	case "\$source_path" in
+		*/)
+			mkdir -p -- "\$destination_path"
+			cp -a -- "\${source_path}." "\$destination_path/"
+			;;
+		*)
+			copy_into_directory=0
+			if [ "\$source_count" -gt 1 ] || [ -d "\$destination_path" ]; then
+				copy_into_directory=1
+			else
+				case "\$destination_path" in
+					*/) copy_into_directory=1 ;;
+				esac
+			fi
+			if [ "\$copy_into_directory" = 1 ]; then
+				mkdir -p -- "\$destination_path"
+				cp -a -- "\$source_path" "\$destination_path/"
+			else
+				destination_parent=\${destination_path%/*}
+				if [ "\$destination_parent" != "\$destination_path" ]; then
+					mkdir -p -- "\$destination_parent"
+				fi
+				cp -a -- "\$source_path" "\$destination_path"
+			fi
+			;;
+	esac
+	source_index=\$((source_index + 1))
+done
+')
 	git_options := if with_options { ' -c vlang.source-test=enabled' } else { '' }
 	git_spec := '${git_wrapper}${git_options}'
 	path := '${poison_bin}:/usr/bin:/bin'
@@ -120,6 +208,9 @@ exit 97
 		os.execute('cd ${os.quoted_path(root)} && PATH=${os.quoted_path(path)} ${os.quoted_path(real_make)} --no-print-directory latest_tcc_source VROOT=. TCCOS=linux TCCARCH=amd64 TCC_COMMIT=${tinycc_sha} TCC_REPO=${os.quoted_path('file://${tinycc_source}')} GIT=${os.quoted_path(git_spec)} 2>&1')
 	assert result.exit_code == 0, result.output
 	assert !os.exists(bare_git_trace), result.output
+	configured_sysinclude_paths := (os.read_file(os.join_path(root, 'tinycc',
+		'.test-sysincludepaths')) or { panic(err) }).trim_space()
+	assert configured_sysinclude_paths == linux_amd64_sysinclude_paths, configured_sysinclude_paths
 	trace_contents := os.read_file(git_trace) or { panic(err) }
 	trace_lines := trace_contents.trim_space().split_into_lines()
 	assert trace_lines.len == 5, trace_lines.str()
@@ -127,9 +218,24 @@ exit 97
 	for i, operation in ['clone ', 'checkout ', 'rev-parse ', 'add ', 'commit '] {
 		assert trace_lines[i].starts_with('${option_prefix}${operation}'), trace_lines.str()
 	}
+	rsync_lines := (os.read_file(rsync_trace) or { panic(err) }).trim_space().split_into_lines()
+	assert rsync_lines.len == 7, rsync_lines.str()
+	assert rsync_lines[0].starts_with('-a thirdparty/tcc/ '), rsync_lines.str()
+	assert rsync_lines[1].starts_with('-a --delete '), rsync_lines.str()
+	assert rsync_lines[2].contains('thirdparty/tcc.original/.git/'), rsync_lines.str()
+	assert rsync_lines[3].contains('thirdparty/tcc.original/lib/libgc'), rsync_lines.str()
+	assert rsync_lines[4].contains('thirdparty/tcc.original/lib/build'), rsync_lines.str()
+	assert rsync_lines[5].contains('thirdparty/tcc.original/README.md'), rsync_lines.str()
+	assert rsync_lines[6].ends_with('/build.sh'), rsync_lines.str()
 	assert os.execute('${os.quoted_path(os.join_path(tcc_dir, 'tcc.exe'))} --version').output.trim_space() == 'source-test-tcc'
 	libgc := os.read_file(os.join_path(tcc_dir, 'lib', 'libgc.a')) or { panic(err) }
 	assert libgc == 'preserved-libgc\n'
+	extra_libgc := os.read_file(os.join_path(tcc_dir, 'lib', 'libgc_extra.a')) or { panic(err) }
+	build_libgc := os.read_file(os.join_path(tcc_dir, 'lib', 'build_libgc.sh')) or { panic(err) }
+	build_notes := os.read_file(os.join_path(tcc_dir, 'lib', 'build_notes.txt')) or { panic(err) }
+	assert extra_libgc == 'preserved-extra-libgc\n'
+	assert build_libgc == 'preserved build helper\n'
+	assert build_notes == 'preserved build notes\n'
 }
 
 fn test_linux_tcc_source_uses_custom_git_argv_for_every_operation() {
@@ -140,12 +246,34 @@ fn test_linux_tcc_source_uses_custom_git_argv_for_every_operation() {
 	run_linux_tcc_source_git_case(true)
 }
 
-fn compatible_tcc_script(version string) string {
+fn tcc_probe_script_prefix(version string, includes_local bool) string {
+	local_include_command := if includes_local { '\techo "  /usr/local/include"\n' } else { '' }
 	return '#!/bin/sh
 if [ "\${1:-}" = "--version" ]; then
 	echo "${version}"
 	exit 0
 fi
+if [ "\${1:-}" = "-print-search-dirs" ]; then
+	echo "install: thirdparty/tcc/lib/tcc"
+	echo "include:"
+	echo "  thirdparty/tcc/lib/tcc/include"
+	if [ -n "\${C_INCLUDE_PATH:-}" ]; then
+		echo "  \$C_INCLUDE_PATH"
+	fi
+	if [ -n "\${CPATH:-}" ]; then
+		echo "  \$CPATH"
+	fi
+${local_include_command}	echo "  /usr/include"
+	echo "libraries:"
+	echo "  thirdparty/tcc/lib/tcc"
+	exit 0
+fi
+'
+}
+
+fn gc_compatible_tcc_script(version string, includes_local bool) string {
+	return tcc_probe_script_prefix(version, includes_local) +
+		'
 if [ ! -f thirdparty/tcc/lib/tcc/include/stddef.h ]; then
 	echo "tcc: error: thirdparty/tcc/lib/tcc/include/stddef.h is unavailable from the current directory" >&2
 	exit 3
@@ -184,12 +312,17 @@ chmod +x "\$out"
 '
 }
 
-fn incompatible_tcc_script(version string) string {
-	return '#!/bin/sh
-if [ "\${1:-}" = "--version" ]; then
-	echo "${version}"
-	exit 0
-fi
+fn compatible_tcc_script(version string) string {
+	return gc_compatible_tcc_script(version, true)
+}
+
+fn missing_local_include_tcc_script(version string) string {
+	return gc_compatible_tcc_script(version, false)
+}
+
+fn runtime_incompatible_tcc_script(version string) string {
+	return tcc_probe_script_prefix(version, true) +
+		'
 out=
 while [ "\$#" -gt 0 ]; do
 	if [ "\$1" = "-o" ] && [ "\$#" -gt 1 ]; then
@@ -276,9 +409,13 @@ fn new_tcc_history_fixture(with_compatible_ancestor bool) TccHistoryFixture {
 			'compatible-libgc-v0\n')
 		compatible_sha = commit_bundle_state(source, 'compatible-v1',
 			compatible_tcc_script('compatible-tcc-v1'), 'compatible-libgc-v1\n')
+		commit_bundle_state(source, 'runtime-incompatible',
+			runtime_incompatible_tcc_script('runtime-incompatible-tcc'),
+			'runtime-incompatible-libgc\n')
 	}
-	incompatible_sha := commit_bundle_state(source, 'incompatible-head',
-		incompatible_tcc_script('incompatible-head-tcc'), 'incompatible-head-libgc\n')
+	incompatible_sha := commit_bundle_state(source, 'missing-local-include-head',
+		missing_local_include_tcc_script('missing-local-include-head-tcc'),
+		'missing-local-include-head-libgc\n')
 	run_checked('git -C ${os.quoted_path(source)} push --quiet ${os.quoted_path(remote)} HEAD:refs/heads/thirdparty-linux-amd64')
 	create_unknown_branch(root, remote)
 	create_musl_branch(root, remote)
@@ -360,9 +497,17 @@ fn test_linux_tcc_uses_newest_compatible_commit_and_returns_to_a_fixed_head() {
 		os.rmdir_all(fixture.root) or {}
 	}
 
-	fresh_result := os.execute('${fixture.fresh_cmd} 2>&1')
+	poisoned_search_result := os.execute('C_INCLUDE_PATH=/usr/local/include CPATH=/usr/local/include ${os.quoted_path(os.join_path(fixture.source,
+		'tcc.exe'))} -print-search-dirs 2>&1')
+	assert poisoned_search_result.exit_code == 0, poisoned_search_result.output
+	assert poisoned_search_result.output.split_into_lines().contains('  /usr/local/include'), poisoned_search_result.output
+
+	fresh_result :=
+		os.execute('export C_INCLUDE_PATH=/usr/local/include CPATH=/usr/local/include; ${fixture.fresh_cmd} 2>&1')
 	assert fresh_result.exit_code == 0, fresh_result.output
 	assert fresh_result.output.contains('is not host-compatible'), fresh_result.output
+	assert fresh_result.output.contains('TCC search directories:'), fresh_result.output
+	assert fresh_result.output.contains('the TCC bundle is missing required glibc include search path: /usr/local/include'), fresh_result.output
 	assert fresh_result.output.contains('Using newest host-compatible TCC commit ${fixture.compatible_sha}'), fresh_result.output
 
 	assert_historical_fallback(fixture)

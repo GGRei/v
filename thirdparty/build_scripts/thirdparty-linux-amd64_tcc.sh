@@ -74,6 +74,7 @@ export TCC_COMMIT_FULL_HASH
             --bindir=$TCC_FOLDER \
             --crtprefix=$TCC_FOLDER/lib:/usr/lib/x86_64-linux-gnu:/usr/lib64:/usr/lib:/lib/x86_64-linux-gnu:/lib \
             --libpaths=$TCC_FOLDER/lib/tcc:$TCC_FOLDER/lib:/usr/lib/x86_64-linux-gnu:/usr/lib64:/usr/lib:/lib/x86_64-linux-gnu:/lib:/usr/local/lib/x86_64-linux-gnu:/usr/local/lib \
+            --sysincludepaths="{B}/include:/usr/local/include/x86_64-linux-gnu:/usr/local/include:/usr/include/x86_64-linux-gnu:/usr/include" \
             --cc=$CC \
             --extra-cflags=-O3 \
             --config-bcheck=yes \
