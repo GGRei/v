@@ -42,7 +42,7 @@ export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-10.13}"
 ## the caller's rebuild-fingerprint check force a rebuild on a recipe
 ## change alone, e.g. a fixed configure flag, even when bdwgc/
 ## libatomic_ops/TinyCC haven't moved.
-export RECIPE_VERSION="${RECIPE_VERSION:-1}"
+export RECIPE_VERSION="${RECIPE_VERSION:-2}"
 
 clone_with_retry() {
   local repo_url=$1

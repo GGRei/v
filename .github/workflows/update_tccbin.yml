@@ -303,7 +303,7 @@ jobs:
       ## they call) changes materially, independent of any upstream
       ## SHA - lets "Check whether rebuild is needed" force a rebuild on
       ## a recipe change alone.
-      MACOS_AMD64_RECIPE_VERSION: '1'
+      MACOS_AMD64_RECIPE_VERSION: '2'
       ## Single source of truth for both halves of the macos-amd64
       ## pair - passed explicitly to both scripts below rather than
       ## relying on their own internal defaults, so this check step
@@ -328,6 +328,138 @@ jobs:
         ## libtoolize) - exact match to vlang/tccbin's own already-
         ## proven CI step for this same rebuild.
         run: brew install make automake libtool
+
+      - name: Test macOS deployment-target load-command parser
+        if: matrix.id == 'macos-amd64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          validator=thirdparty/build_scripts/thirdparty-macos-amd64_bdwgc_validate.sh
+          fixture_dir=$(mktemp -d)
+          trap 'rm -rf "$fixture_dir"' EXIT
+
+          cat > "$fixture_dir/build-version-10.13.txt" <<'EOF'
+          Load command 8
+                cmd LC_BUILD_VERSION
+            cmdsize 32
+           platform 1
+              minos 10.13
+                sdk 15.0
+             ntools 1
+          EOF
+          cat > "$fixture_dir/version-min-10.13.txt" <<'EOF'
+          Load command 8
+                cmd LC_VERSION_MIN_MACOSX
+            cmdsize 16
+            version 10.13
+                sdk 15.0
+          EOF
+          : > "$fixture_dir/empty.txt"
+          cat > "$fixture_dir/duplicate.txt" <<'EOF'
+          Load command 8
+                cmd LC_BUILD_VERSION
+            cmdsize 32
+           platform 1
+              minos 10.13
+                sdk 15.0
+             ntools 0
+          Load command 9
+                cmd LC_VERSION_MIN_MACOSX
+            cmdsize 16
+            version 10.13
+                sdk 15.0
+          EOF
+          cat > "$fixture_dir/version-min-10.6.txt" <<'EOF'
+          Load command 8
+                cmd LC_VERSION_MIN_MACOSX
+            cmdsize 16
+            version 10.6
+                sdk 15.0
+          EOF
+          cat > "$fixture_dir/build-version-ios.txt" <<'EOF'
+          Load command 8
+                cmd LC_BUILD_VERSION
+            cmdsize 24
+           platform 2
+              minos 10.13
+                sdk 15.0
+             ntools 0
+          EOF
+          cat > "$fixture_dir/build-version-platform-missing.txt" <<'EOF'
+          Load command 8
+                cmd LC_BUILD_VERSION
+            cmdsize 24
+              minos 10.13
+                sdk 15.0
+             ntools 0
+          EOF
+          cat > "$fixture_dir/build-version-platform-duplicate.txt" <<'EOF'
+          Load command 8
+                cmd LC_BUILD_VERSION
+            cmdsize 24
+           platform 1
+           platform 1
+              minos 10.13
+                sdk 15.0
+             ntools 0
+          EOF
+          cat > "$fixture_dir/build-version-platform-malformed.txt" <<'EOF'
+          Load command 8
+                cmd LC_BUILD_VERSION
+            cmdsize 24
+           platform 1 trailing-field
+              minos 10.13
+                sdk 15.0
+             ntools 0
+          EOF
+          cat > "$fixture_dir/build-version-platform-symbolic.txt" <<'EOF'
+          Load command 8
+                cmd LC_BUILD_VERSION
+            cmdsize 24
+           platform MACOS
+              minos 10.13
+                sdk 15.0
+             ntools 0
+          EOF
+          cat > "$fixture_dir/build-version-cmd-malformed.txt" <<'EOF'
+          Load command 8
+                cmd LC_BUILD_VERSION trailing-field
+            cmdsize 24
+           platform 1
+              minos 10.13
+                sdk 15.0
+             ntools 0
+          EOF
+
+          bash "$validator" --validate-macho-load-command-fixture \
+            "$fixture_dir/build-version-10.13.txt"
+          bash "$validator" --validate-macho-load-command-fixture \
+            "$fixture_dir/version-min-10.13.txt"
+
+          expect_rejected() {
+            local fixture=$1
+            local output
+            local status
+            set +e
+            output=$(bash "$validator" --validate-macho-load-command-fixture "$fixture" 2>&1)
+            status=$?
+            set -e
+            echo "$output"
+            if [ "$status" -eq 0 ]; then
+              echo "::error::deployment-target parser falsely accepted $fixture"
+              return 1
+            fi
+          }
+
+          expect_rejected "$fixture_dir/empty.txt"
+          expect_rejected "$fixture_dir/duplicate.txt"
+          expect_rejected "$fixture_dir/version-min-10.6.txt"
+          expect_rejected "$fixture_dir/build-version-ios.txt"
+          expect_rejected "$fixture_dir/build-version-platform-missing.txt"
+          expect_rejected "$fixture_dir/build-version-platform-duplicate.txt"
+          expect_rejected "$fixture_dir/build-version-platform-malformed.txt"
+          expect_rejected "$fixture_dir/build-version-platform-symbolic.txt"
+          expect_rejected "$fixture_dir/build-version-cmd-malformed.txt"
 
       - name: Clone resolved TinyCC source
         shell: bash
@@ -745,7 +877,7 @@ jobs:
           # directory - the staged bundle only got copied into the
           # isolated workspace's thirdparty/tcc, so that's the path a
           # correct run must actually reference.
-          expected_tcc_root="/tmp/v-bootstrap-workspace/thirdparty/tcc"
+          expected_tcc_root="$(cd /tmp/v-bootstrap-workspace/thirdparty/tcc && pwd -P)"
           expected_tcc="$expected_tcc_root/tcc.exe"
           expected_libgc="$expected_tcc_root/lib/libgc.dylib"
           expected_rpath="$expected_tcc_root/lib"
@@ -1157,6 +1289,75 @@ jobs:
           print(
               f'confirmed: parser accepted both valid probes and rejected '
               f'{len(adversarial_probes)} adversarial probes'
+          )
+
+          logical_tcc_root = '/tmp/v-bootstrap-workspace/thirdparty/tcc'
+          alias_tcc_root = logical_tcc_root
+          if alias_tcc_root == os.path.dirname(expected_tcc):
+              alias_tcc_root = os.path.join(alias_tcc_root, '..', 'tcc')
+          alias_tcc = os.path.join(alias_tcc_root, 'tcc.exe')
+          alias_libgc = os.path.join(alias_tcc_root, 'lib', 'libgc.dylib')
+          alias_rpath = f'-Wl,-rpath,{os.path.join(alias_tcc_root, "lib")}'
+          path_identity_probes = [
+              (
+                  'logical-alias-only',
+                  render_probe(
+                      [
+                          alias_tcc,
+                          alias_rpath,
+                          alias_libgc,
+                          '-o',
+                          expected_binary,
+                          '/tmp/showcc-parser-probe.c',
+                      ]
+                  ),
+                  'compiler-arity',
+              ),
+              (
+                  'physical-and-logical-mix',
+                  render_probe(
+                      [
+                          expected_tcc,
+                          alias_rpath,
+                          alias_libgc,
+                          '-o',
+                          expected_binary,
+                          '/tmp/showcc-parser-probe.c',
+                      ]
+                  ),
+                  'link-contract',
+              ),
+              (
+                  'arbitrary-root',
+                  render_probe(
+                      [
+                          '/tmp/arbitrary-tcc-root/tcc.exe',
+                          expected_rpath,
+                          expected_libgc,
+                          '-o',
+                          expected_binary,
+                          '/tmp/showcc-parser-probe.c',
+                      ]
+                  ),
+                  'compiler-arity',
+              ),
+          ]
+          for label, probe, expected_kind in path_identity_probes:
+              try:
+                  validate_showcc(probe)
+              except ValidationError as error:
+                  if error.kind != expected_kind:
+                      print(
+                          f'::error::path-identity probe {label!r} failed for '
+                          f'{error.kind!r}, expected {expected_kind!r}: {error}'
+                      )
+                      sys.exit(1)
+              else:
+                  print(f'::error::path-identity probe {label!r} was falsely accepted')
+                  sys.exit(1)
+          print(
+              'confirmed: physical-path command accepted; logical alias, '
+              'mixed-root, and arbitrary-root commands rejected'
           )
 
           try:
