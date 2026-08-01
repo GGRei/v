@@ -1,0 +1,1044 @@
+name: macOS TCC libgc dylib selector smoke
+
+on:
+  push:
+    branches:
+      - test/macos-tcc-libgc-dylib-selector-smoke
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: github.repository == 'GGRei/v' && github.event_name == 'push' && github.ref == 'refs/heads/test/macos-tcc-libgc-dylib-selector-smoke'
+    runs-on: macos-15-intel
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 6
+          persist-credentials: false
+
+      - name: Verify checkout revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = GGRei/v
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF" = refs/heads/test/macos-tcc-libgc-dylib-selector-smoke
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-list --parents -n 1 HEAD | awk '{print NF}')" -eq 2
+          test "$(git rev-parse HEAD^)" = "190564b33e563a4eeba1007f8172a03b3018f606"
+          git diff --quiet
+          git diff --cached --quiet
+          test -z "$(git status --porcelain)"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/macos_tcc_libgc_dylib_selector_smoke.yml"
+
+      - name: Build isolated V bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          parent=190564b33e563a4eeba1007f8172a03b3018f606
+          bootstrap="$RUNNER_TEMP/bootstrap-v"
+          git clone --no-hardlinks "$GITHUB_WORKSPACE" "$bootstrap"
+          git -C "$bootstrap" checkout --detach "$parent"
+          test "$(git -C "$bootstrap" rev-parse HEAD)" = "$parent"
+          vc_v_commit=4fbecda1c67643a484c996fb44abab11d8776e90
+          git -C "$bootstrap" merge-base --is-ancestor "$vc_v_commit" "$parent"
+          test "$(git -C "$bootstrap" rev-list --count "$vc_v_commit..$parent")" -eq 4
+
+          vc_sha=ca23b242d711337842d0873c07f9b500a47806a6
+          vc_sha256=f2f842adffa9fbaca5dbb702e9f4267a89a62b6708bcb8029197fad82ce3998e
+          vc_size=11478753
+          vc_dir="$bootstrap/vc"
+          vc_partial="$vc_dir/v.c.partial"
+          vc_file="$vc_dir/v.c"
+          test ! -e "$vc_dir"
+          mkdir "$vc_dir"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location \
+            --retry 4 --retry-all-errors --retry-delay 2 \
+            --output "$vc_partial" \
+            "https://raw.githubusercontent.com/vlang/vc/$vc_sha/v.c"
+          test -f "$vc_partial"
+          test ! -L "$vc_partial"
+          test "$(stat -f '%z' "$vc_partial")" -eq "$vc_size"
+          test "$(shasum -a 256 "$vc_partial" | awk '{print $1}')" = "$vc_sha256"
+          test "$(grep -Fxc '#define V_COMMIT_HASH "4fbecda1c67643a484c996fb44abab11d8776e90"' "$vc_partial")" -eq 1
+          test ! -e "$vc_file"
+          mv "$vc_partial" "$vc_file"
+          test -f "$vc_file"
+          test ! -L "$vc_file"
+          test "$(stat -f '%z' "$vc_file")" -eq "$vc_size"
+          test "$(shasum -a 256 "$vc_file" | awk '{print $1}')" = "$vc_sha256"
+          test "$(find "$vc_dir" -mindepth 1 -maxdepth 1 -print)" = "$vc_file"
+
+          system_cc=/usr/bin/clang
+          test -x "$system_cc"
+          test ! -e "$bootstrap/thirdparty/tcc"
+          make -C "$bootstrap" local=1 -j4 CC="$system_cc" VFLAGS="-gc none -cc $system_cc" POST_BOOTSTRAP_CCOMPILER_VFLAG="-gc none -cc $system_cc"
+          test -f "$bootstrap/v"
+          test ! -L "$bootstrap/v"
+          test -x "$bootstrap/v"
+          test ! -e "$bootstrap/thirdparty/tcc"
+          bootstrap_dependencies=$(otool -L "$bootstrap/v")
+          if grep -Eiq 'libgc|thirdparty/tcc' <<< "$bootstrap_dependencies"; then
+            echo '::error::bootstrap V unexpectedly depends on bundled TCC or libgc'
+            exit 1
+          fi
+          test -z "$(git -C "$bootstrap" status --porcelain --untracked-files=all)"
+          shasum -a 256 "$bootstrap/v" | awk '{print $1}' > "$RUNNER_TEMP/bootstrap-v.sha256"
+
+      - name: Stage exact published tccbin bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=da8ac5a4369accc67c485191d02535d77718a1c8
+          stage="$RUNNER_TEMP/tccbin-stage"
+          git clone https://github.com/vlang/tccbin.git "$stage"
+          git -C "$stage" checkout --detach "$commit"
+          test "$(git -C "$stage" rev-parse HEAD)" = "$commit"
+          ! git -C "$stage" symbolic-ref -q HEAD
+          git -C "$stage" diff --quiet
+          git -C "$stage" diff --cached --quiet
+          test -z "$(git -C "$stage" status --porcelain)"
+
+          test "$(cat "$stage/build_source_hash.txt")" = da58264ab1ef4fb2ecc9a42ded736d3190c0a8be
+          test "$(cat "$stage/lib/libgc_build_source_hash.txt")" = 39b0d4ecf9bdc65a971e9423f4080d40814da6ce
+          test "$(cat "$stage/lib/libgc_build_libatomic_ops_source_hash.txt")" = d007246aa70fef4f9bfcb84bcc5e6a97653b3d86
+          test "$(cat "$stage/lib/libgc_build_recipe_version.txt")" = 2
+          test "$(cat "$stage/build_macosx_deployment_target.txt")" = 10.13
+          test -f "$stage/bundle_checksums.txt"
+          (cd "$stage" && shasum -a 256 -c bundle_checksums.txt)
+
+          test -L "$stage/lib/libgc.dylib"
+          dylib_target=$(readlink "$stage/lib/libgc.dylib")
+          test "$dylib_target" = libgc.1.dylib
+          test -f "$stage/lib/$dylib_target"
+          test ! -L "$stage/lib/$dylib_target"
+
+          head=$(git -C "$stage" rev-parse HEAD)
+          tree=$(git -C "$stage" rev-parse 'HEAD^{tree}')
+          manifest_sha256=$(shasum -a 256 "$stage/bundle_checksums.txt" | awk '{print $1}')
+          dylib_sha256=$(shasum -a 256 "$stage/lib/$dylib_target" | awk '{print $1}')
+          test "$head" = da8ac5a4369accc67c485191d02535d77718a1c8
+          test "$tree" = 10539576b110a557a09b87037708436006d9c246
+          test "$manifest_sha256" = 46ae1db98501ff724679eba6856c068f168df1565633a489d81d7b270391965f
+          test "$dylib_sha256" = 0340bc2ebd9684cc0c5e64414b9c8842822b1f2a0536041db1bc368d8dafd83e
+          test "$(stat -f '%z' "$stage/bundle_checksums.txt")" -eq 477
+          test "$(stat -f '%z' "$stage/lib/libgc.1.dylib")" -eq 159072
+          test "$(stat -f '%z' "$stage/tcc.exe")" -eq 463464
+          test "$(shasum -a 256 "$stage/tcc.exe" | awk '{print $1}')" = d9004cf0549674194eae79237b7f8100c3658c3897fd0d2b672d47dd340a3151
+          test "$(git -C "$stage" ls-tree HEAD -- lib/libgc.1.dylib | awk '{print $1}')" = 100755
+          test "$(git -C "$stage" ls-tree HEAD -- lib/libgc.dylib | awk '{print $1}')" = 120000
+          test "$(git -C "$stage" cat-file -s HEAD:lib/libgc.dylib)" -eq 13
+          {
+            printf 'TCCBIN_HEAD=%q\n' "$head"
+            printf 'TCCBIN_TREE=%q\n' "$tree"
+            printf 'TCCBIN_BUNDLE_CHECKSUMS_SHA256=%q\n' "$manifest_sha256"
+            printf 'TCCBIN_LIBGC_DYLIB_SHA256=%q\n' "$dylib_sha256"
+          } > "$RUNNER_TEMP/tccbin-baseline.env"
+
+      - name: Validate staged macOS amd64 bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/tccbin-stage"
+          c0_commit=190564b33e563a4eeba1007f8172a03b3018f606
+
+          inventory() {
+            local root=$1
+            local LC_ALL=C
+            export LC_ALL
+            test -d "$root"
+            test ! -L "$root"
+            find "$root" -mindepth 1 \
+              ! -path "$root/.git" ! -path "$root/.git/*" -print0 |
+              LC_ALL=C sort -z |
+              while IFS= read -r -d '' path; do
+                relative=${path#"$root"/}
+                if [ -L "$path" ]; then
+                  mode=$(stat -f '%Lp' "$path")
+                  target=$(readlink "$path")
+                  target_text_digest=$(printf '%s' "$target" | shasum -a 256 | awk '{print $1}')
+                  case "$target" in
+                    /*)
+                      if [ "$relative" != lib/libc.dylib ] || \
+                        [ "$target" != /System/DriverKit/usr/lib/libSystem.dylib ] || \
+                        [ "$target_text_digest" != e7bcb0d6952965edf7ac86d2e8e787b12f191ae1b284614ded3958a824ab5cab ]; then
+                        printf '::error::unapproved absolute symlink in inventory: %q -> %q (%q)\n' \
+                          "$relative" "$target" "$target_text_digest" >&2
+                        exit 1
+                      fi
+                      printf 'L mode=%q target=%q target_text_sha256=%q path=%q\n' \
+                        "$mode" "$target" "$target_text_digest" "$relative"
+                      ;;
+                    *)
+                      if [ ! -e "$path" ]; then
+                        printf '::error::broken relative symlink in inventory: %q -> %q\n' "$relative" "$target" >&2
+                        exit 1
+                      fi
+                      if [ ! -f "$path" ]; then
+                        printf '::error::relative symlink target is not a regular file: %q -> %q\n' "$relative" "$target" >&2
+                        exit 1
+                      fi
+                      root_canonical=$(cd "$root" && pwd -P)
+                      target_canonical=$(python3 -c 'import os, sys; sys.stdout.write(os.path.realpath(sys.argv[1]))' "$path")
+                      case "$target_canonical" in
+                        "$root_canonical"/*) ;;
+                        *)
+                          printf '::error::relative symlink escapes inventory root: %q -> %q (%q)\n' \
+                            "$relative" "$target" "$target_canonical" >&2
+                          exit 1
+                          ;;
+                      esac
+                      target_type=$(stat -L -f '%HT' "$path")
+                      target_size=$(stat -L -f '%z' "$path")
+                      target_digest=$(shasum -a 256 "$path" | awk '{print $1}')
+                      printf 'L mode=%q target=%q target_text_sha256=%q target_type=%q target_size=%q target_sha256=%q path=%q\n' \
+                        "$mode" "$target" "$target_text_digest" "$target_type" "$target_size" "$target_digest" "$relative"
+                      ;;
+                  esac
+                elif [ -f "$path" ]; then
+                  mode=$(stat -f '%Lp' "$path")
+                  size=$(stat -f '%z' "$path")
+                  digest=$(shasum -a 256 "$path" | awk '{print $1}')
+                  printf 'F mode=%q size=%q sha256=%q path=%q\n' "$mode" "$size" "$digest" "$relative"
+                elif [ -d "$path" ]; then
+                  mode=$(stat -f '%Lp' "$path")
+                  printf 'D mode=%q path=%q\n' "$mode" "$relative"
+                else
+                  kind=$(stat -f '%HT' "$path")
+                  printf '::error::unsupported inventory entry type %q at %q\n' "$kind" "$relative" >&2
+                  exit 1
+                fi
+              done
+          }
+
+          attest_stage() {
+            source "$RUNNER_TEMP/tccbin-baseline.env"
+            test "$(git -C "$stage" rev-parse HEAD)" = "$TCCBIN_HEAD"
+            test "$(git -C "$stage" rev-parse 'HEAD^{tree}')" = "$TCCBIN_TREE"
+            ! git -C "$stage" symbolic-ref -q HEAD
+            git -C "$stage" diff --quiet
+            git -C "$stage" diff --cached --quiet
+            test -z "$(git -C "$stage" status --porcelain)"
+            test "$(shasum -a 256 "$stage/bundle_checksums.txt" | awk '{print $1}')" = "$TCCBIN_BUNDLE_CHECKSUMS_SHA256"
+            (cd "$stage" && shasum -a 256 -c bundle_checksums.txt)
+            test -f "$stage/tcc.exe"
+            test ! -L "$stage/tcc.exe"
+            test -x "$stage/tcc.exe"
+            test -L "$stage/lib/libgc.dylib"
+            test "$(readlink "$stage/lib/libgc.dylib")" = libgc.1.dylib
+            test -f "$stage/lib/libgc.1.dylib"
+            test ! -L "$stage/lib/libgc.1.dylib"
+            test "$(shasum -a 256 "$stage/tcc.exe" | awk '{print $1}')" = "$tcc_exe_sha256"
+            test "$(shasum -a 256 "$stage/lib/libgc.1.dylib" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          }
+
+          attest_copy() {
+            source "$RUNNER_TEMP/tccbin-baseline.env"
+            test "$(git -C "$validation_tcc" rev-parse HEAD)" = "$TCCBIN_HEAD"
+            test "$(git -C "$validation_tcc" rev-parse 'HEAD^{tree}')" = "$TCCBIN_TREE"
+            ! git -C "$validation_tcc" symbolic-ref -q HEAD
+            git -C "$validation_tcc" diff --quiet
+            git -C "$validation_tcc" diff --cached --quiet
+            test -z "$(git -C "$validation_tcc" status --porcelain)"
+            test "$(shasum -a 256 "$validation_tcc/bundle_checksums.txt" | awk '{print $1}')" = "$TCCBIN_BUNDLE_CHECKSUMS_SHA256"
+            (cd "$validation_tcc" && shasum -a 256 -c bundle_checksums.txt)
+            test -f "$validation_tcc/tcc.exe"
+            test ! -L "$validation_tcc/tcc.exe"
+            test -x "$validation_tcc/tcc.exe"
+            test -L "$validation_tcc/lib/libgc.dylib"
+            test "$(readlink "$validation_tcc/lib/libgc.dylib")" = libgc.1.dylib
+            test -f "$validation_tcc/lib/libgc.1.dylib"
+            test ! -L "$validation_tcc/lib/libgc.1.dylib"
+            test "$(shasum -a 256 "$validation_tcc/tcc.exe" | awk '{print $1}')" = "$tcc_exe_sha256"
+            test "$(shasum -a 256 "$validation_tcc/lib/libgc.1.dylib" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          }
+
+          validation_root_requested="$RUNNER_TEMP/tccbin-validation-root"
+          test ! -e "$validation_root_requested"
+          mkdir "$validation_root_requested"
+          validation_root=$(cd "$validation_root_requested" && pwd -P)
+          case "$validation_root" in
+            /*) ;;
+            *) echo '::error::validation root is not absolute' >&2; exit 1 ;;
+          esac
+          test "${validation_root#*,}" = "$validation_root"
+          mkdir "$validation_root/thirdparty"
+          cp -a "$stage" "$validation_root/thirdparty/tcc"
+          validation_tcc="$validation_root/thirdparty/tcc"
+
+          # The executable embeds these paths relative to its working directory.
+          git archive "$c0_commit" thirdparty/tccbin_tests thirdparty/libgc/include | tar -x -C "$validation_root"
+          support_reference_requested="$RUNNER_TEMP/tccbin-validation-c0-support-reference"
+          test ! -e "$support_reference_requested"
+          mkdir "$support_reference_requested"
+          support_reference=$(cd "$support_reference_requested" && pwd -P)
+          case "$support_reference" in
+            /*) ;;
+            *) echo '::error::support reference root is not absolute' >&2; exit 1 ;;
+          esac
+          git archive "$c0_commit" thirdparty/tccbin_tests thirdparty/libgc/include | tar -x -C "$support_reference"
+
+          source "$RUNNER_TEMP/tccbin-baseline.env"
+          test "$c0_commit" = "$(git rev-parse HEAD^)"
+          tcc_exe_sha256=$(shasum -a 256 "$stage/tcc.exe" | awk '{print $1}')
+          test -n "$tcc_exe_sha256"
+          attest_stage
+          attest_copy
+
+          stage_before="$RUNNER_TEMP/tccbin-validation-stage.before.inventory"
+          copy_before="$RUNNER_TEMP/tccbin-validation-copy.before.inventory"
+          tests_before="$RUNNER_TEMP/tccbin-validation-tests.before.inventory"
+          tests_reference_before="$RUNNER_TEMP/tccbin-validation-tests-reference.before.inventory"
+          include_before="$RUNNER_TEMP/tccbin-validation-include.before.inventory"
+          include_reference_before="$RUNNER_TEMP/tccbin-validation-include-reference.before.inventory"
+          for snapshot in "$stage_before" "$copy_before" "$tests_before" "$tests_reference_before" \
+            "$include_before" "$include_reference_before"; do
+            test ! -e "$snapshot"
+          done
+          inventory "$stage" > "$stage_before"
+          inventory "$validation_tcc" > "$copy_before"
+          inventory "$validation_root/thirdparty/tccbin_tests" > "$tests_before"
+          inventory "$support_reference/thirdparty/tccbin_tests" > "$tests_reference_before"
+          inventory "$validation_root/thirdparty/libgc/include" > "$include_before"
+          inventory "$support_reference/thirdparty/libgc/include" > "$include_reference_before"
+          diff -u "$stage_before" "$copy_before"
+          diff -u "$tests_before" "$tests_reference_before"
+          diff -u "$include_before" "$include_reference_before"
+
+          tcc_file=$(file "$stage/tcc.exe")
+          dylib_file=$(file "$stage/lib/libgc.1.dylib")
+          test "${tcc_file#*Mach-O 64-bit}" != "$tcc_file"
+          test "${tcc_file#*x86_64}" != "$tcc_file"
+          test "${dylib_file#*Mach-O 64-bit}" != "$dylib_file"
+          test "${dylib_file#*x86_64}" != "$dylib_file"
+          test "$(otool -D "$stage/lib/libgc.1.dylib" | tail -n 1)" = '@rpath/libgc.dylib'
+
+          validation_log="$RUNNER_TEMP/tccbin-bdwgc-validation.log"
+          test ! -e "$validation_log"
+          workflow_root=$(pwd -P)
+          cd "$validation_root"
+          set +e
+          bash "$GITHUB_WORKSPACE/thirdparty/build_scripts/thirdparty-macos-amd64_bdwgc_validate.sh" thirdparty/tcc \
+            2>&1 | tee "$validation_log"
+          validation_pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          cd "$workflow_root"
+
+          attest_stage
+          attest_copy
+
+          stage_after="$RUNNER_TEMP/tccbin-validation-stage.after.inventory"
+          copy_after="$RUNNER_TEMP/tccbin-validation-copy.after.inventory"
+          tests_after="$RUNNER_TEMP/tccbin-validation-tests.after.inventory"
+          tests_reference_after="$RUNNER_TEMP/tccbin-validation-tests-reference.after.inventory"
+          include_after="$RUNNER_TEMP/tccbin-validation-include.after.inventory"
+          include_reference_after="$RUNNER_TEMP/tccbin-validation-include-reference.after.inventory"
+          for snapshot in "$stage_after" "$copy_after" "$tests_after" "$tests_reference_after" \
+            "$include_after" "$include_reference_after"; do
+            test ! -e "$snapshot"
+          done
+          inventory "$stage" > "$stage_after"
+          inventory "$validation_tcc" > "$copy_after"
+          inventory "$validation_root/thirdparty/tccbin_tests" > "$tests_after"
+          inventory "$support_reference/thirdparty/tccbin_tests" > "$tests_reference_after"
+          inventory "$validation_root/thirdparty/libgc/include" > "$include_after"
+          inventory "$support_reference/thirdparty/libgc/include" > "$include_reference_after"
+          diff -u "$stage_before" "$stage_after"
+          diff -u "$copy_before" "$copy_after"
+          diff -u "$stage_after" "$copy_after"
+          diff -u "$tests_before" "$tests_after"
+          diff -u "$tests_reference_before" "$tests_reference_after"
+          diff -u "$tests_reference_before" "$tests_after"
+          diff -u "$include_before" "$include_after"
+          diff -u "$include_reference_before" "$include_reference_after"
+          diff -u "$include_reference_before" "$include_after"
+
+          validation_failed=0
+          if [ "${#validation_pipeline_status[@]}" -ne 2 ]; then
+            echo '::error::validator pipeline did not yield exactly two statuses' >&2
+            validation_failed=1
+          else
+            validator_status=${validation_pipeline_status[0]}
+            tee_status=${validation_pipeline_status[1]}
+            if [ "$validator_status" -ne 0 ]; then
+              echo "::error::bundle validator exited with status $validator_status" >&2
+              validation_failed=1
+            fi
+            if [ "$tee_status" -ne 0 ]; then
+              echo "::error::validation log tee exited with status $tee_status" >&2
+              validation_failed=1
+            fi
+          fi
+          if [ ! -f "$validation_log" ] || [ -L "$validation_log" ] || [ ! -s "$validation_log" ]; then
+            echo '::error::validation log is not a nonempty regular file' >&2
+            validation_failed=1
+          fi
+          if grep -Fq 'Static libgc.a linking now succeeds on macOS amd64' "$validation_log"; then
+            echo '::error::static libgc.a XPASS requires a separate gate update' >&2
+            validation_failed=1
+          fi
+          test "$validation_failed" -eq 0
+
+
+      - name: Run native Part C selector test without comma-path rewrite
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/tccbin-baseline.env"
+          bootstrap="$RUNNER_TEMP/bootstrap-v"
+          physical_bootstrap=$(cd "$bootstrap" && pwd -P)
+          test "${physical_bootstrap#*,}" = "$physical_bootstrap"
+          test "$(git -C "$bootstrap" rev-parse HEAD)" = 190564b33e563a4eeba1007f8172a03b3018f606
+          test "$(shasum -a 256 "$bootstrap/v" | awk '{print $1}')" = \
+            "$(cat "$RUNNER_TEMP/bootstrap-v.sha256")"
+
+          stage="$RUNNER_TEMP/tccbin-stage"
+          native_tcc="$bootstrap/thirdparty/tcc"
+          test ! -e "$native_tcc"
+          cp -a "$stage" "$native_tcc"
+          test "$(git -C "$native_tcc" rev-parse HEAD)" = "$TCCBIN_HEAD"
+          test "$(git -C "$native_tcc" rev-parse 'HEAD^{tree}')" = "$TCCBIN_TREE"
+          test "$(shasum -a 256 "$native_tcc/bundle_checksums.txt" | awk '{print $1}')" = \
+            "$TCCBIN_BUNDLE_CHECKSUMS_SHA256"
+          (cd "$native_tcc" && shasum -a 256 -c bundle_checksums.txt)
+
+          native_xdg_requested="$RUNNER_TEMP/part-c-native-xdg"
+          mkdir "$native_xdg_requested"
+          chmod 0700 "$native_xdg_requested"
+          native_xdg=$(cd "$native_xdg_requested" && pwd -P)
+          test "${native_xdg#*,}" = "$native_xdg"
+          test "$(stat -f '%Lp' "$native_xdg")" = 700
+
+          clean_env=(
+            -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+            -u http_proxy -u https_proxy -u all_proxy
+          )
+          while IFS= read -r variable; do
+            case "$variable" in
+              DYLD_*) clean_env+=(-u "$variable") ;;
+            esac
+          done < <(compgen -e)
+
+          suite="$bootstrap/vlib/v/builder/gc_flags_test.v"
+          test "$(grep -c '^fn test_' "$suite")" -eq 6
+          test "$(shasum -a 256 "$suite" | awk '{print $1}')" = \
+            1a9325cef61be373506251a684162948d8defafbf73eea59776eee6ef1924b17
+          vtest_bin="$RUNNER_TEMP/part-c-native-vtest"
+          test ! -e "$vtest_bin"
+          trap 'rm -f -- "$vtest_bin"' EXIT
+          env "${clean_env[@]}" \
+            XDG_DATA_HOME="$native_xdg" \
+            GIT_ALLOW_PROTOCOL=file \
+            "$bootstrap/v" -gc none -cc cc -no-retry-compilation -no-rsp -nocache \
+            -o "$vtest_bin" "$bootstrap/cmd/tools/vtest.v"
+          test -f "$vtest_bin"
+          test ! -L "$vtest_bin"
+          test -x "$vtest_bin"
+
+          test_log="$RUNNER_TEMP/part-c-native-selector-test.log"
+          set +e
+          env "${clean_env[@]}" \
+            XDG_DATA_HOME="$native_xdg" \
+            GIT_ALLOW_PROTOCOL=file \
+            VEXE="$bootstrap/v" \
+            "$vtest_bin" -gc none -cc cc -no-retry-compilation -no-rsp -nocache \
+            test "$suite" 2>&1 | tee "$test_log"
+          test_status=${PIPESTATUS[0]}
+          set -e
+          test "$test_status" -eq 0
+          grep -Fq '1 passed, 1 total' "$test_log"
+
+          rm -f -- "$vtest_bin"
+          trap - EXIT
+          test ! -e "$vtest_bin"
+          test "$(shasum -a 256 "$native_tcc/lib/libgc.1.dylib" | awk '{print $1}')" = \
+            "$TCCBIN_LIBGC_DYLIB_SHA256"
+          test -z "$(git -C "$native_tcc" status --porcelain)"
+          test -z "$(git -C "$bootstrap" status --porcelain --untracked-files=all)"
+
+      - name: Prepare comma-path Part C workspace and offline boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          parent=190564b33e563a4eeba1007f8172a03b3018f606
+          comma_root="$RUNNER_TEMP/part-c smoke,comma"
+          vroot="$comma_root/vroot"
+          mkdir -p "$comma_root"
+          git clone --no-hardlinks "$GITHUB_WORKSPACE" "$vroot"
+          git -C "$vroot" checkout --detach "$parent"
+          test "$(git -C "$vroot" rev-parse HEAD)" = "$parent"
+          physical_vroot=$(cd "$vroot" && pwd -P)
+          test "${physical_vroot#* }" != "$physical_vroot"
+          test "${physical_vroot#*,}" != "$physical_vroot"
+
+          bootstrap="$RUNNER_TEMP/bootstrap-v/v"
+          bootstrap_sha256=$(cat "$RUNNER_TEMP/bootstrap-v.sha256")
+          test -f "$bootstrap"
+          test ! -L "$bootstrap"
+          test -x "$bootstrap"
+          test "$(shasum -a 256 "$bootstrap" | awk '{print $1}')" = "$bootstrap_sha256"
+          test ! -e "$vroot/v"
+          cp -p "$bootstrap" "$vroot/v"
+          test -f "$vroot/v"
+          test ! -L "$vroot/v"
+          test -x "$vroot/v"
+          test "$(shasum -a 256 "$vroot/v" | awk '{print $1}')" = "$bootstrap_sha256"
+
+          stage="$RUNNER_TEMP/tccbin-stage"
+          tcc_target="$vroot/thirdparty/tcc"
+          rm -rf -- "$tcc_target"
+          cp -a "$stage" "$tcc_target"
+
+          xdg_requested="$RUNNER_TEMP/part-c-xdg"
+          mkdir "$xdg_requested"
+          chmod 0700 "$xdg_requested"
+          test ! -L "$xdg_requested"
+          xdg=$(cd "$xdg_requested" && pwd -P)
+          test "${xdg#*,}" = "$xdg"
+          test "$(stat -f '%u' "$xdg")" = "$(id -u)"
+          test "$(stat -f '%Lp' "$xdg")" = 700
+
+          source "$RUNNER_TEMP/tccbin-baseline.env"
+          test "$(git -C "$tcc_target" rev-parse HEAD)" = "$TCCBIN_HEAD"
+          test -z "$(git -C "$tcc_target" status --porcelain)"
+          test -L "$tcc_target/lib/libgc.dylib"
+          test "$(readlink "$tcc_target/lib/libgc.dylib")" = libgc.1.dylib
+          test -f "$tcc_target/lib/libgc.1.dylib"
+          test ! -L "$tcc_target/lib/libgc.1.dylib"
+          test "$(shasum -a 256 "$tcc_target/bundle_checksums.txt" | awk '{print $1}')" = "$TCCBIN_BUNDLE_CHECKSUMS_SHA256"
+          test "$(shasum -a 256 "$tcc_target/lib/libgc.1.dylib" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          (cd "$tcc_target" && shasum -a 256 -c bundle_checksums.txt)
+
+          {
+            printf 'VROOT=%q\n' "$physical_vroot"
+            printf 'XDG=%q\n' "$xdg"
+          } > "$RUNNER_TEMP/part-c-smoke.env"
+
+          # OFFLINE BOUNDARY: following steps must not use network, make, caches, or fallbacks.
+
+      - name: Run inherited C0 unit tests in the comma-path workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/part-c-smoke.env"
+          suite="$VROOT/vlib/v/builder/tcc_macos_libgc_store_test.v"
+          test "$(grep -c '^fn test_' "$suite")" -eq 44
+
+          clean_env=(
+            -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+            -u http_proxy -u https_proxy -u all_proxy
+          )
+          while IFS= read -r variable; do
+            case "$variable" in
+              DYLD_*) clean_env+=(-u "$variable") ;;
+            esac
+          done < <(compgen -e)
+
+          vtest_bin="$VROOT/cmd/tools/vtest"
+          test ! -e "$vtest_bin"
+          trap 'rm -f -- "$vtest_bin"' EXIT
+          env "${clean_env[@]}" \
+            XDG_DATA_HOME="$XDG" \
+            GIT_ALLOW_PROTOCOL=file \
+            "$VROOT/v" -gc none -cc cc -no-retry-compilation -no-rsp -nocache \
+            -o "$vtest_bin" "$VROOT/cmd/tools/vtest.v"
+          test -f "$vtest_bin"
+          test ! -L "$vtest_bin"
+          test -x "$vtest_bin"
+
+          test_log="$RUNNER_TEMP/c0-native-unit-tests.log"
+          set +e
+          env "${clean_env[@]}" \
+            XDG_DATA_HOME="$XDG" \
+            GIT_ALLOW_PROTOCOL=file \
+            VEXE="$VROOT/v" \
+            "$vtest_bin" -gc none -cc cc -no-retry-compilation -no-rsp -nocache \
+            test "$suite" 2>&1 | tee "$test_log"
+          test_status=${PIPESTATUS[0]}
+          set -e
+          test "$test_status" -eq 0
+          grep -Fq '1 passed, 1 total' "$test_log"
+
+          rm -f -- "$vtest_bin"
+          trap - EXIT
+          test ! -e "$vtest_bin"
+
+      - name: Compile and run the real comma-path Part C smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/part-c-smoke.env"
+          source "$RUNNER_TEMP/tccbin-baseline.env"
+
+          clean_env=(
+            -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+            -u http_proxy -u https_proxy -u all_proxy
+          )
+          while IFS= read -r variable; do
+            case "$variable" in
+              DYLD_*) clean_env+=(-u "$variable") ;;
+            esac
+          done < <(compgen -e)
+
+          smoke_source="$RUNNER_TEMP/part-c-real-smoke.v"
+          printf '%s\n' \
+            'module main' \
+            '' \
+            'fn main() {' \
+            '    mut values := []int{cap: 1024}' \
+            '    for i in 0 .. 1024 {' \
+            '        values << i' \
+            '    }' \
+            '    gc_collect()' \
+            '    println("part-c-ok:${values[1023]}")' \
+            '}' > "$smoke_source"
+          if grep -Fq '#flag' "$smoke_source"; then
+            echo '::error::the integrated Part C source must not contain manual linker flags'
+            exit 1
+          fi
+
+          tcc="$VROOT/thirdparty/tcc/tcc.exe"
+          smoke_binary="$RUNNER_TEMP/part-c-real-smoke"
+          compile_log="$RUNNER_TEMP/part-c-real-smoke.compile.log"
+          test -f "$tcc"
+          test ! -L "$tcc"
+          test -x "$tcc"
+          set +e
+          (
+            cd "$VROOT"
+            env "${clean_env[@]}" \
+              XDG_DATA_HOME="$XDG" \
+              GIT_ALLOW_PROTOCOL=file \
+              ./v -cc tcc -gc boehm -showcc \
+              -no-retry-compilation -no-rsp -nocache \
+              -o "$smoke_binary" "$smoke_source"
+          ) 2>&1 | tee "$compile_log"
+          compile_status=${PIPESTATUS[0]}
+          set -e
+          test "$compile_status" -eq 0
+          test -f "$smoke_binary"
+          test ! -L "$smoke_binary"
+          test -x "$smoke_binary"
+          if grep -Eiq 'fallback|retry' "$compile_log"; then
+            echo '::error::unexpected compiler fallback/retry indication'
+            exit 1
+          fi
+
+          source_lib_dir="$VROOT/thirdparty/tcc/lib"
+          source_dylib="$source_lib_dir/libgc.dylib"
+          source_rpath="-Wl,-rpath,$source_lib_dir"
+          store_dir="$XDG/v-tcc-libgc-v1/$TCCBIN_LIBGC_DYLIB_SHA256"
+          store_dylib="$store_dir/libgc.dylib"
+          store_rpath="-Wl,-rpath,$store_dir"
+          env \
+            TCC_EXPECTED="$tcc" \
+            SOURCE_DYLIB="$source_dylib" \
+            SOURCE_RPATH="$source_rpath" \
+            STORE_DYLIB="$store_dylib" \
+            STORE_RPATH="$store_rpath" \
+            SMOKE_BINARY="$smoke_binary" \
+            python3 - "$compile_log" <<'PY'
+          import collections
+          import os
+          import pathlib
+          import shlex
+          import sys
+
+          prefix = '> C compiler cmd: '
+          lines = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines()
+          commands = [line[len(prefix):] for line in lines if line.startswith(prefix)]
+          if len(commands) != 1:
+              raise SystemExit(f'expected exactly one C compiler command, found {len(commands)}')
+          try:
+              argv = shlex.split(commands[0], posix=True)
+          except ValueError as error:
+              raise SystemExit(f'could not parse C compiler command: {error}')
+          if not argv or argv[0] != os.environ['TCC_EXPECTED']:
+              raise SystemExit(f'wrong C compiler argv[0]: {argv[0] if argv else "<empty>"}')
+
+          counts = collections.Counter(argv)
+          for token, label in (
+              (os.environ['STORE_DYLIB'], 'store dylib'),
+              (os.environ['STORE_RPATH'], 'store rpath'),
+          ):
+              if counts[token] != 1:
+                  raise SystemExit(f'expected exactly one {label} token, found {counts[token]}')
+          for token, label in (
+              (os.environ['SOURCE_DYLIB'], 'source dylib'),
+              (os.environ['SOURCE_RPATH'], 'source rpath'),
+          ):
+              if counts[token] != 0:
+                  raise SystemExit(f'forbidden {label} token remains in compiler command')
+          if any('libgc.a' in token for token in argv):
+              raise SystemExit('compiler command contains libgc.a')
+          if counts['-lgc'] != 0:
+              raise SystemExit('compiler command contains -lgc')
+          if any(token.startswith('@') for token in argv):
+              raise SystemExit('compiler command contains a response-file token')
+
+          binary = os.environ['SMOKE_BINARY']
+          if counts['-o'] != 1:
+              raise SystemExit(f'expected exactly one -o token, found {counts["-o"]}')
+          joined_output_options = [token for token in argv if token != '-o' and token.startswith('-o')]
+          if joined_output_options:
+              raise SystemExit(f'joined -o option is forbidden: {joined_output_options}')
+          output_index = argv.index('-o')
+          if output_index + 1 >= len(argv) or argv[output_index + 1] != binary:
+              raise SystemExit('the sole -o token does not target the exact smoke binary')
+          compiler_names = {'cc', 'gcc', 'clang', 'clang++', 'tcc', 'tcc.exe'}
+          unexpected = [token for token in argv[1:] if os.path.basename(token) in compiler_names]
+          if unexpected:
+              raise SystemExit(f'compiler command names a different compiler: {unexpected}')
+          PY
+
+          store_root="$XDG/v-tcc-libgc-v1"
+          content_dir="$store_root/$TCCBIN_LIBGC_DYLIB_SHA256"
+          store_object="$content_dir/libgc.dylib"
+          source_target="$VROOT/thirdparty/tcc/lib/libgc.1.dylib"
+          test -d "$store_root"
+          test ! -L "$store_root"
+          test -d "$content_dir"
+          test ! -L "$content_dir"
+          test -f "$store_object"
+          test ! -L "$store_object"
+          test "$(find "$content_dir" -mindepth 1 -maxdepth 1 -print | awk 'END { print NR + 0 }')" -eq 1
+          test "$(stat -f '%u' "$store_root")" = "$(id -u)"
+          test "$(stat -f '%u' "$content_dir")" = "$(id -u)"
+          test "$(stat -f '%u' "$store_object")" = "$(id -u)"
+          test "$(stat -f '%Lp' "$store_root")" = 700
+          test "$(stat -f '%Lp' "$content_dir")" = 700
+          test "$(stat -f '%Lp' "$store_object")" = 700
+          test "$(shasum -a 256 "$store_object" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          test -f "$source_target"
+          test ! -L "$source_target"
+          test "$(shasum -a 256 "$source_target" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          cmp -s "$source_target" "$store_object"
+
+          runtime_stdout="$RUNNER_TEMP/part-c-real-smoke.stdout"
+          set +e
+          env "${clean_env[@]}" \
+            XDG_DATA_HOME="$XDG" \
+            GIT_ALLOW_PROTOCOL=file \
+            "$smoke_binary" > "$runtime_stdout"
+          runtime_status=$?
+          set -e
+          test "$runtime_status" -eq 0
+          test "$(LC_ALL=C wc -l < "$runtime_stdout" | tr -d ' ')" -eq 1
+          test "$(sed -n '1p' "$runtime_stdout")" = part-c-ok:1023
+
+      - name: Prove no compiler fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/part-c-smoke.env"
+          source "$RUNNER_TEMP/tccbin-baseline.env"
+
+          clean_env=(
+            -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+            -u http_proxy -u https_proxy -u all_proxy
+          )
+          while IFS= read -r variable; do
+            case "$variable" in
+              DYLD_*) clean_env+=(-u "$variable") ;;
+            esac
+          done < <(compgen -e)
+
+          fake_tcc="$RUNNER_TEMP/fake-tcc-no-fallback"
+          invocation_log="$RUNNER_TEMP/fake-tcc-no-fallback.invocations"
+          argument_log="$RUNNER_TEMP/fake-tcc-no-fallback.arguments"
+          test ! -e "$fake_tcc"
+          test ! -e "$invocation_log"
+          test ! -e "$argument_log"
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'set -euo pipefail' \
+            ': "${FAKE_TCC_INVOCATION_LOG:?}"' \
+            ': "${FAKE_TCC_ARGUMENT_LOG:?}"' \
+            'printf "invocation\\n" >> "$FAKE_TCC_INVOCATION_LOG"' \
+            'printf "%s\\0" "$@" >> "$FAKE_TCC_ARGUMENT_LOG"' \
+            'printf "%s\\n" "intentional no-fallback probe failure" >&2' \
+            'exit 86' > "$fake_tcc"
+          chmod 0700 "$fake_tcc"
+
+          negative_source="$RUNNER_TEMP/part-c-no-fallback-probe.v"
+          negative_binary="$RUNNER_TEMP/part-c-no-fallback-probe"
+          negative_log="$RUNNER_TEMP/part-c-no-fallback-probe.log"
+          printf '%s\n' 'fn main() {}' > "$negative_source"
+          set +e
+          (
+            cd "$VROOT"
+            env "${clean_env[@]}" \
+              XDG_DATA_HOME="$XDG" \
+              GIT_ALLOW_PROTOCOL=file \
+              FAKE_TCC_INVOCATION_LOG="$invocation_log" \
+              FAKE_TCC_ARGUMENT_LOG="$argument_log" \
+              "$VROOT/v" -cc "$fake_tcc" -gc boehm -showcc \
+              -no-retry-compilation -no-rsp -nocache \
+              -o "$negative_binary" "$negative_source"
+          ) 2>&1 | tee "$negative_log"
+          negative_status=${PIPESTATUS[0]}
+          set -e
+
+          test "$negative_status" -ne 0
+          test "$(awk '$0 == "invocation" { count++ } END { print count + 0 }' "$invocation_log")" -eq 1
+          python3 - "$argument_log" <<'PY'
+          import pathlib
+          import sys
+
+          raw = pathlib.Path(sys.argv[1]).read_bytes()
+          arguments = raw.split(b'\0')
+          if arguments and arguments[-1] == b'':
+              arguments.pop()
+          if not any(argument.endswith(b'.c') for argument in arguments):
+              raise SystemExit('fake TCC was not invoked with a generated .c argument')
+          PY
+          env \
+            FAKE_TCC_EXPECTED="$fake_tcc" \
+            NEGATIVE_BINARY="$negative_binary" \
+            STORE_DYLIB="$XDG/v-tcc-libgc-v1/$TCCBIN_LIBGC_DYLIB_SHA256/libgc.dylib" \
+            STORE_RPATH="-Wl,-rpath,$XDG/v-tcc-libgc-v1/$TCCBIN_LIBGC_DYLIB_SHA256" \
+            SOURCE_DYLIB="$VROOT/thirdparty/tcc/lib/libgc.dylib" \
+            SOURCE_RPATH="-Wl,-rpath,$VROOT/thirdparty/tcc/lib" \
+            python3 - "$negative_log" <<'PY'
+          import collections
+          import os
+          import pathlib
+          import shlex
+          import sys
+
+          prefix = '> C compiler cmd: '
+          lines = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines()
+          commands = [line[len(prefix):] for line in lines if line.startswith(prefix)]
+          if len(commands) != 1:
+              raise SystemExit(f'expected exactly one negative C compiler command, found {len(commands)}')
+          try:
+              argv = shlex.split(commands[0], posix=True)
+          except ValueError as error:
+              raise SystemExit(f'could not parse negative C compiler command: {error}')
+          fake_tcc = os.environ['FAKE_TCC_EXPECTED']
+          if not argv or argv[0] != fake_tcc:
+              raise SystemExit(f'negative compiler argv[0] is not the exact fake TCC: {argv[:1]}')
+          counts = collections.Counter(argv)
+          for token, label in (
+              (os.environ['STORE_DYLIB'], 'negative store dylib'),
+              (os.environ['STORE_RPATH'], 'negative store rpath'),
+          ):
+              if counts[token] != 1:
+                  raise SystemExit(f'expected exactly one {label} token, found {counts[token]}')
+          for token, label in (
+              (os.environ['SOURCE_DYLIB'], 'negative source dylib'),
+              (os.environ['SOURCE_RPATH'], 'negative source rpath'),
+          ):
+              if counts[token] != 0:
+                  raise SystemExit(f'forbidden {label} token remains in negative command')
+          if counts['-o'] != 1:
+              raise SystemExit(f'expected exactly one negative -o token, found {counts["-o"]}')
+          joined_output_options = [token for token in argv if token != '-o' and token.startswith('-o')]
+          if joined_output_options:
+              raise SystemExit(f'joined negative -o option is forbidden: {joined_output_options}')
+          output_index = argv.index('-o')
+          if output_index + 1 >= len(argv) or argv[output_index + 1] != os.environ['NEGATIVE_BINARY']:
+              raise SystemExit('the negative -o token does not target the exact negative binary')
+          compiler_names = {'cc', 'gcc', 'clang', 'clang++', 'tcc', 'tcc.exe'}
+          unexpected = [token for token in argv[1:] if os.path.basename(token) in compiler_names]
+          if unexpected:
+              raise SystemExit(f'negative command names a second compiler: {unexpected}')
+          PY
+          grep -Fq 'intentional no-fallback probe failure' "$negative_log"
+          test ! -e "$negative_binary"
+          test ! -L "$negative_binary"
+          if grep -Eiq 'falling back|retrying|recompilation loop|fallback compiler' "$negative_log"; then
+            echo '::error::negative probe observed a fallback/retry indication'
+            exit 1
+          fi
+
+          real_tcc="$VROOT/thirdparty/tcc"
+          test "$(shasum -a 256 "$real_tcc/bundle_checksums.txt" | awk '{print $1}')" = "$TCCBIN_BUNDLE_CHECKSUMS_SHA256"
+          (cd "$real_tcc" && shasum -a 256 -c bundle_checksums.txt)
+          test -z "$(git -C "$real_tcc" status --porcelain)"
+          store_object="$XDG/v-tcc-libgc-v1/$TCCBIN_LIBGC_DYLIB_SHA256/libgc.dylib"
+          source_target="$real_tcc/lib/libgc.1.dylib"
+          test -f "$store_object"
+          test ! -L "$store_object"
+          test "$(shasum -a 256 "$store_object" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          cmp -s "$source_target" "$store_object"
+
+      - name: Postflight attestations
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/part-c-smoke.env"
+          source "$RUNNER_TEMP/tccbin-baseline.env"
+          parent=190564b33e563a4eeba1007f8172a03b3018f606
+          workflow=.github/workflows/macos_tcc_libgc_dylib_selector_smoke.yml
+          smoke_source="$RUNNER_TEMP/part-c-real-smoke.v"
+          smoke_binary="$RUNNER_TEMP/part-c-real-smoke"
+          source_lib_dir="$VROOT/thirdparty/tcc/lib"
+          source_dylib="$source_lib_dir/libgc.dylib"
+          store_dir="$XDG/v-tcc-libgc-v1/$TCCBIN_LIBGC_DYLIB_SHA256"
+
+          clean_env=(
+            -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+            -u http_proxy -u https_proxy -u all_proxy
+          )
+          while IFS= read -r variable; do
+            case "$variable" in
+              DYLD_*) clean_env+=(-u "$variable") ;;
+            esac
+          done < <(compgen -e)
+
+          test "$GITHUB_REPOSITORY" = GGRei/v
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF" = refs/heads/test/macos-tcc-libgc-dylib-selector-smoke
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-list --parents -n 1 HEAD | awk '{print NF}')" -eq 2
+          test "$(git rev-parse HEAD^)" = "$parent"
+          git diff --quiet
+          git diff --cached --quiet
+          test -z "$(git status --porcelain)"
+          test "$(git diff --name-only HEAD^ HEAD)" = "$workflow"
+          git diff --check HEAD^ HEAD
+
+          test "$(git -C "$VROOT" rev-parse HEAD)" = "$parent"
+          git -C "$VROOT" diff --quiet
+          git -C "$VROOT" diff --cached --quiet
+          test -z "$(git -C "$VROOT" status --porcelain --untracked-files=all)"
+          test "$(shasum -a 256 "$VROOT/vlib/v/builder/cc.v" | awk '{print $1}')" = \
+            17c85cfecb014eac0cd53d9407ef9018f106a9ad651910930073c5f0e0d10bc7
+          test "$(shasum -a 256 "$VROOT/vlib/v/builder/tcc_macos_libgc_store.v" | awk '{print $1}')" = \
+            eb6bafbf382d1571632e3af114cb080ef0292da25daf18d9d4058d5b3e232e3f
+          test "$(shasum -a 256 "$VROOT/vlib/v/builder/tcc_macos_libgc_store_test.v" | awk '{print $1}')" = \
+            9c54db8a5e4993cd47d526d678343515177e23fbe3eb1208e24e987b8e7aa79e
+          test "$(shasum -a 256 "$VROOT/.github/workflows/update_tccbin.yml" | awk '{print $1}')" = \
+            3840d3478e30f849f4e738f2c99e595721d84928b5e418099c54eb3b4427a404
+          test "$(shasum -a 256 "$VROOT/vlib/builtin/builtin_d_gcboehm.c.v" | awk '{print $1}')" = \
+            6d203eea5b4b07111dd0dfbdb3838e3af0717ec03fd325018f12acc53799c160
+          test "$(shasum -a 256 "$VROOT/vlib/v/builder/gc_flags_test.v" | awk '{print $1}')" = \
+            1a9325cef61be373506251a684162948d8defafbf73eea59776eee6ef1924b17
+          bootstrap_sha256=$(cat "$RUNNER_TEMP/bootstrap-v.sha256")
+          test "$(shasum -a 256 "$RUNNER_TEMP/bootstrap-v/v" | awk '{print $1}')" = "$bootstrap_sha256"
+          test "$(shasum -a 256 "$VROOT/v" | awk '{print $1}')" = "$bootstrap_sha256"
+
+          for bundle in "$RUNNER_TEMP/tccbin-stage" "$RUNNER_TEMP/bootstrap-v/thirdparty/tcc" "$VROOT/thirdparty/tcc"; do
+            test "$(git -C "$bundle" rev-parse HEAD)" = da8ac5a4369accc67c485191d02535d77718a1c8
+            test "$(git -C "$bundle" rev-parse HEAD)" = "$TCCBIN_HEAD"
+            test "$(git -C "$bundle" rev-parse 'HEAD^{tree}')" = 10539576b110a557a09b87037708436006d9c246
+            test "$(git -C "$bundle" rev-parse 'HEAD^{tree}')" = "$TCCBIN_TREE"
+            git -C "$bundle" diff --quiet
+            git -C "$bundle" diff --cached --quiet
+            test -z "$(git -C "$bundle" status --porcelain)"
+            test "$(cat "$bundle/build_source_hash.txt")" = da58264ab1ef4fb2ecc9a42ded736d3190c0a8be
+            test "$(cat "$bundle/lib/libgc_build_source_hash.txt")" = 39b0d4ecf9bdc65a971e9423f4080d40814da6ce
+            test "$(cat "$bundle/lib/libgc_build_libatomic_ops_source_hash.txt")" = d007246aa70fef4f9bfcb84bcc5e6a97653b3d86
+            test "$(cat "$bundle/lib/libgc_build_recipe_version.txt")" = 2
+            test "$(cat "$bundle/build_macosx_deployment_target.txt")" = 10.13
+            test "$(stat -f '%z' "$bundle/bundle_checksums.txt")" -eq 477
+            test "$(shasum -a 256 "$bundle/bundle_checksums.txt" | awk '{print $1}')" = \
+              46ae1db98501ff724679eba6856c068f168df1565633a489d81d7b270391965f
+            test "$(shasum -a 256 "$bundle/bundle_checksums.txt" | awk '{print $1}')" = \
+              "$TCCBIN_BUNDLE_CHECKSUMS_SHA256"
+            (cd "$bundle" && shasum -a 256 -c bundle_checksums.txt)
+            test -L "$bundle/lib/libgc.dylib"
+            test "$(readlink "$bundle/lib/libgc.dylib")" = libgc.1.dylib
+            test -f "$bundle/lib/libgc.1.dylib"
+            test ! -L "$bundle/lib/libgc.1.dylib"
+            test "$(stat -f '%z' "$bundle/lib/libgc.1.dylib")" -eq 159072
+            test "$(shasum -a 256 "$bundle/lib/libgc.1.dylib" | awk '{print $1}')" = \
+              0340bc2ebd9684cc0c5e64414b9c8842822b1f2a0536041db1bc368d8dafd83e
+            test "$(shasum -a 256 "$bundle/lib/libgc.1.dylib" | awk '{print $1}')" = \
+              "$TCCBIN_LIBGC_DYLIB_SHA256"
+            test "$(stat -f '%z' "$bundle/tcc.exe")" -eq 463464
+            test "$(shasum -a 256 "$bundle/tcc.exe" | awk '{print $1}')" = \
+              d9004cf0549674194eae79237b7f8100c3658c3897fd0d2b672d47dd340a3151
+          done
+
+          store_root="$XDG/v-tcc-libgc-v1"
+          content_dir="$store_root/$TCCBIN_LIBGC_DYLIB_SHA256"
+          store_object="$content_dir/libgc.dylib"
+          source_target="$VROOT/thirdparty/tcc/lib/libgc.1.dylib"
+          test -d "$store_root"
+          test ! -L "$store_root"
+          test "$(find "$store_root" -mindepth 1 -maxdepth 1 -print | awk 'END { print NR + 0 }')" -eq 1
+          test -d "$content_dir"
+          test ! -L "$content_dir"
+          test -f "$store_object"
+          test ! -L "$store_object"
+          test "$(find "$content_dir" -mindepth 1 -maxdepth 1 -print | awk 'END { print NR + 0 }')" -eq 1
+          for directory in "$store_root" "$content_dir"; do
+            test "$(stat -f '%u' "$directory")" = "$(id -u)"
+            test "$(stat -f '%Lp' "$directory")" = 700
+          done
+          test "$(stat -f '%u' "$store_object")" = "$(id -u)"
+          test "$(stat -f '%Lp' "$store_object")" = 700
+          test -z "$(find "$store_root" -maxdepth 3 -type l -print -quit)"
+          test -z "$(find "$store_root" -maxdepth 3 -name '.libgc.dylib.tmp.*' -print -quit)"
+          test "$(shasum -a 256 "$store_object" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          test "$(shasum -a 256 "$source_target" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          cmp -s "$source_target" "$store_object"
+
+          test -f "$smoke_source"
+          if grep -Fq '#flag' "$smoke_source"; then
+            echo '::error::the integrated Part C source contains manual linker flags'
+            exit 1
+          fi
+          otool_libraries_log="$RUNNER_TEMP/part-c-real-smoke.otool-L.log"
+          otool -L "$smoke_binary" > "$otool_libraries_log"
+          dependency_count=$(awk '$1 == "@rpath/libgc.dylib" { count++ } END { print count + 0 }' \
+            "$otool_libraries_log")
+          libgc_dependency_count=$(awk 'NR > 1 && $1 ~ /libgc/ { count++ } END { print count + 0 }' \
+            "$otool_libraries_log")
+          test "$dependency_count" -eq 1
+          test "$libgc_dependency_count" -eq 1
+          if grep -Fq "$source_dylib" "$otool_libraries_log" \
+            || grep -Fq "$source_target" "$otool_libraries_log" \
+            || grep -Fq "$store_object" "$otool_libraries_log"; then
+            echo '::error::absolute source/store libgc path leaked into LC_LOAD_DYLIB'
+            exit 1
+          fi
+
+          otool_load_commands_log="$RUNNER_TEMP/part-c-real-smoke.otool-l.log"
+          otool -l "$smoke_binary" > "$otool_load_commands_log"
+          read -r total_rpath_count store_rpath_count source_rpath_count < <(
+            awk -v store="$store_dir" -v source="$source_lib_dir" '
+              $1 == "cmd" {
+                active = ($2 == "LC_RPATH")
+                next
+              }
+              active && $1 == "path" {
+                value = $0
+                sub(/^[[:space:]]*path[[:space:]]+/, "", value)
+                sub(/[[:space:]]+\(offset[[:space:]]+[0-9]+\)[[:space:]]*$/, "", value)
+                total_count++
+                if (value == store) store_count++
+                if (value == source) source_count++
+                active = 0
+              }
+              END { print total_count + 0, store_count + 0, source_count + 0 }
+            ' "$otool_load_commands_log"
+          )
+          test "$total_rpath_count" -eq 1
+          test "$store_rpath_count" -eq 1
+          test "$source_rpath_count" -eq 0
+
+          runtime_stdout="$RUNNER_TEMP/part-c-real-smoke.postflight.stdout"
+          set +e
+          env "${clean_env[@]}" \
+            XDG_DATA_HOME="$XDG" \
+            GIT_ALLOW_PROTOCOL=file \
+            "$smoke_binary" > "$runtime_stdout"
+          runtime_status=$?
+          set -e
+          test "$runtime_status" -eq 0
+          test "$(LC_ALL=C wc -l < "$runtime_stdout" | tr -d ' ')" -eq 1
+          test "$(sed -n '1p' "$runtime_stdout")" = part-c-ok:1023
+
+          test -L "$VROOT/thirdparty/tcc/lib/libgc.dylib"
+          test "$(readlink "$VROOT/thirdparty/tcc/lib/libgc.dylib")" = libgc.1.dylib
+          test -f "$source_target"
+          test ! -L "$source_target"
+          test "$(shasum -a 256 "$source_target" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          test "$(shasum -a 256 "$store_object" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          cmp -s "$source_target" "$store_object"
