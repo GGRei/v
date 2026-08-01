@@ -1,0 +1,1975 @@
+name: macOS TCC libgc HOME fallback smoke
+
+on:
+  push:
+    branches:
+      - test/macos-tcc-libgc-home-fallback-smoke
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: github.repository == 'GGRei/v' && github.event_name == 'push' && github.ref == 'refs/heads/test/macos-tcc-libgc-home-fallback-smoke'
+    runs-on: macos-15-intel
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 7
+          persist-credentials: false
+
+      - name: Verify checkout revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = GGRei/v
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF" = refs/heads/test/macos-tcc-libgc-home-fallback-smoke
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-list --parents -n 1 HEAD | awk '{print NF}')" -eq 2
+          test "$(git rev-parse HEAD^)" = "1f549e2de1dad5973e07769dd789ee28bc586c1b"
+          test "$(git rev-parse HEAD^^)" = "190564b33e563a4eeba1007f8172a03b3018f606"
+          test "$(git rev-parse HEAD^^^)" = "58a8f2a6d4287667c5bc8a9875079a2364a6d45b"
+          test "$(git rev-parse HEAD^^^^)" = "59b4b01ad991101fafcfd4e91282b2a36995bd35"
+          test "$(git show -s --format=%T HEAD^)" = "adcb611aea9bb8e6afdfc350cc4777116e3fa92f"
+          expected_p2_files=$(printf '%s\n' \
+            README.md \
+            vlib/v/builder/tcc_macos_libgc_store.v \
+            vlib/v/builder/tcc_macos_libgc_store_test.v)
+          test "$(git diff --name-only HEAD^^ HEAD^)" = "$expected_p2_files"
+          git diff --quiet
+          git diff --cached --quiet
+          test -z "$(git status --porcelain)"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/macos_tcc_libgc_home_fallback_smoke.yml"
+
+      - name: Build isolated V bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          parent=1f549e2de1dad5973e07769dd789ee28bc586c1b
+          bootstrap="$RUNNER_TEMP/bootstrap-v"
+          git clone --no-hardlinks "$GITHUB_WORKSPACE" "$bootstrap"
+          git -C "$bootstrap" checkout --detach "$parent"
+          test "$(git -C "$bootstrap" rev-parse HEAD)" = "$parent"
+          vc_v_commit=4fbecda1c67643a484c996fb44abab11d8776e90
+          git -C "$bootstrap" merge-base --is-ancestor "$vc_v_commit" "$parent"
+          test "$(git -C "$bootstrap" rev-list --count "$vc_v_commit..$parent")" -eq 5
+
+          vc_sha=ca23b242d711337842d0873c07f9b500a47806a6
+          vc_sha256=f2f842adffa9fbaca5dbb702e9f4267a89a62b6708bcb8029197fad82ce3998e
+          vc_size=11478753
+          vc_dir="$bootstrap/vc"
+          vc_partial="$vc_dir/v.c.partial"
+          vc_file="$vc_dir/v.c"
+          test ! -e "$vc_dir"
+          mkdir "$vc_dir"
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location \
+            --retry 4 --retry-all-errors --retry-delay 2 \
+            --output "$vc_partial" \
+            "https://raw.githubusercontent.com/vlang/vc/$vc_sha/v.c"
+          test -f "$vc_partial"
+          test ! -L "$vc_partial"
+          test "$(stat -f '%z' "$vc_partial")" -eq "$vc_size"
+          test "$(shasum -a 256 "$vc_partial" | awk '{print $1}')" = "$vc_sha256"
+          test "$(grep -Fxc '#define V_COMMIT_HASH "4fbecda1c67643a484c996fb44abab11d8776e90"' "$vc_partial")" -eq 1
+          test ! -e "$vc_file"
+          mv "$vc_partial" "$vc_file"
+          test -f "$vc_file"
+          test ! -L "$vc_file"
+          test "$(stat -f '%z' "$vc_file")" -eq "$vc_size"
+          test "$(shasum -a 256 "$vc_file" | awk '{print $1}')" = "$vc_sha256"
+          test "$(find "$vc_dir" -mindepth 1 -maxdepth 1 -print)" = "$vc_file"
+
+          system_cc=/usr/bin/clang
+          test -x "$system_cc"
+          test ! -e "$bootstrap/thirdparty/tcc"
+          make -C "$bootstrap" local=1 -j4 CC="$system_cc" VFLAGS="-gc none -cc $system_cc" POST_BOOTSTRAP_CCOMPILER_VFLAG="-gc none -cc $system_cc"
+          test -f "$bootstrap/v"
+          test ! -L "$bootstrap/v"
+          test -x "$bootstrap/v"
+          test ! -e "$bootstrap/thirdparty/tcc"
+          bootstrap_dependencies=$(otool -L "$bootstrap/v")
+          if grep -Eiq 'libgc|thirdparty/tcc' <<< "$bootstrap_dependencies"; then
+            echo '::error::bootstrap V unexpectedly depends on bundled TCC or libgc'
+            exit 1
+          fi
+          test -z "$(git -C "$bootstrap" status --porcelain --untracked-files=all)"
+          shasum -a 256 "$bootstrap/v" | awk '{print $1}' > "$RUNNER_TEMP/bootstrap-v.sha256"
+
+      - name: Stage exact published tccbin bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=da8ac5a4369accc67c485191d02535d77718a1c8
+          stage="$RUNNER_TEMP/tccbin-stage"
+          git clone https://github.com/vlang/tccbin.git "$stage"
+          git -C "$stage" checkout --detach "$commit"
+          test "$(git -C "$stage" rev-parse HEAD)" = "$commit"
+          ! git -C "$stage" symbolic-ref -q HEAD
+          git -C "$stage" diff --quiet
+          git -C "$stage" diff --cached --quiet
+          test -z "$(git -C "$stage" status --porcelain)"
+
+          test "$(cat "$stage/build_source_hash.txt")" = da58264ab1ef4fb2ecc9a42ded736d3190c0a8be
+          test "$(cat "$stage/lib/libgc_build_source_hash.txt")" = 39b0d4ecf9bdc65a971e9423f4080d40814da6ce
+          test "$(cat "$stage/lib/libgc_build_libatomic_ops_source_hash.txt")" = d007246aa70fef4f9bfcb84bcc5e6a97653b3d86
+          test "$(cat "$stage/lib/libgc_build_recipe_version.txt")" = 2
+          test "$(cat "$stage/build_macosx_deployment_target.txt")" = 10.13
+          test -f "$stage/bundle_checksums.txt"
+          (cd "$stage" && shasum -a 256 -c bundle_checksums.txt)
+
+          test -L "$stage/lib/libgc.dylib"
+          dylib_target=$(readlink "$stage/lib/libgc.dylib")
+          test "$dylib_target" = libgc.1.dylib
+          test -f "$stage/lib/$dylib_target"
+          test ! -L "$stage/lib/$dylib_target"
+
+          head=$(git -C "$stage" rev-parse HEAD)
+          tree=$(git -C "$stage" rev-parse 'HEAD^{tree}')
+          manifest_sha256=$(shasum -a 256 "$stage/bundle_checksums.txt" | awk '{print $1}')
+          dylib_sha256=$(shasum -a 256 "$stage/lib/$dylib_target" | awk '{print $1}')
+          test "$head" = da8ac5a4369accc67c485191d02535d77718a1c8
+          test "$tree" = 10539576b110a557a09b87037708436006d9c246
+          test "$manifest_sha256" = 46ae1db98501ff724679eba6856c068f168df1565633a489d81d7b270391965f
+          test "$dylib_sha256" = 0340bc2ebd9684cc0c5e64414b9c8842822b1f2a0536041db1bc368d8dafd83e
+          test "$(stat -f '%z' "$stage/bundle_checksums.txt")" -eq 477
+          test "$(stat -f '%z' "$stage/lib/libgc.1.dylib")" -eq 159072
+          test "$(stat -f '%z' "$stage/tcc.exe")" -eq 463464
+          test "$(shasum -a 256 "$stage/tcc.exe" | awk '{print $1}')" = d9004cf0549674194eae79237b7f8100c3658c3897fd0d2b672d47dd340a3151
+          test "$(git -C "$stage" ls-tree HEAD -- lib/libgc.1.dylib | awk '{print $1}')" = 100755
+          test "$(git -C "$stage" ls-tree HEAD -- lib/libgc.dylib | awk '{print $1}')" = 120000
+          test "$(git -C "$stage" cat-file -s HEAD:lib/libgc.dylib)" -eq 13
+          {
+            printf 'TCCBIN_HEAD=%q\n' "$head"
+            printf 'TCCBIN_TREE=%q\n' "$tree"
+            printf 'TCCBIN_BUNDLE_CHECKSUMS_SHA256=%q\n' "$manifest_sha256"
+            printf 'TCCBIN_LIBGC_DYLIB_SHA256=%q\n' "$dylib_sha256"
+          } > "$RUNNER_TEMP/tccbin-baseline.env"
+
+      - name: Validate staged macOS amd64 bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/tccbin-stage"
+          c0_commit=1f549e2de1dad5973e07769dd789ee28bc586c1b
+
+          inventory() {
+            local root=$1
+            local LC_ALL=C
+            export LC_ALL
+            test -d "$root"
+            test ! -L "$root"
+            find "$root" -mindepth 1 \
+              ! -path "$root/.git" ! -path "$root/.git/*" -print0 |
+              LC_ALL=C sort -z |
+              while IFS= read -r -d '' path; do
+                relative=${path#"$root"/}
+                if [ -L "$path" ]; then
+                  mode=$(stat -f '%Lp' "$path")
+                  target=$(readlink "$path")
+                  target_text_digest=$(printf '%s' "$target" | shasum -a 256 | awk '{print $1}')
+                  case "$target" in
+                    /*)
+                      if [ "$relative" != lib/libc.dylib ] || \
+                        [ "$target" != /System/DriverKit/usr/lib/libSystem.dylib ] || \
+                        [ "$target_text_digest" != e7bcb0d6952965edf7ac86d2e8e787b12f191ae1b284614ded3958a824ab5cab ]; then
+                        printf '::error::unapproved absolute symlink in inventory: %q -> %q (%q)\n' \
+                          "$relative" "$target" "$target_text_digest" >&2
+                        exit 1
+                      fi
+                      printf 'L mode=%q target=%q target_text_sha256=%q path=%q\n' \
+                        "$mode" "$target" "$target_text_digest" "$relative"
+                      ;;
+                    *)
+                      if [ ! -e "$path" ]; then
+                        printf '::error::broken relative symlink in inventory: %q -> %q\n' "$relative" "$target" >&2
+                        exit 1
+                      fi
+                      if [ ! -f "$path" ]; then
+                        printf '::error::relative symlink target is not a regular file: %q -> %q\n' "$relative" "$target" >&2
+                        exit 1
+                      fi
+                      root_canonical=$(cd "$root" && pwd -P)
+                      target_canonical=$(python3 -c 'import os, sys; sys.stdout.write(os.path.realpath(sys.argv[1]))' "$path")
+                      case "$target_canonical" in
+                        "$root_canonical"/*) ;;
+                        *)
+                          printf '::error::relative symlink escapes inventory root: %q -> %q (%q)\n' \
+                            "$relative" "$target" "$target_canonical" >&2
+                          exit 1
+                          ;;
+                      esac
+                      target_type=$(stat -L -f '%HT' "$path")
+                      target_size=$(stat -L -f '%z' "$path")
+                      target_digest=$(shasum -a 256 "$path" | awk '{print $1}')
+                      printf 'L mode=%q target=%q target_text_sha256=%q target_type=%q target_size=%q target_sha256=%q path=%q\n' \
+                        "$mode" "$target" "$target_text_digest" "$target_type" "$target_size" "$target_digest" "$relative"
+                      ;;
+                  esac
+                elif [ -f "$path" ]; then
+                  mode=$(stat -f '%Lp' "$path")
+                  size=$(stat -f '%z' "$path")
+                  digest=$(shasum -a 256 "$path" | awk '{print $1}')
+                  printf 'F mode=%q size=%q sha256=%q path=%q\n' "$mode" "$size" "$digest" "$relative"
+                elif [ -d "$path" ]; then
+                  mode=$(stat -f '%Lp' "$path")
+                  printf 'D mode=%q path=%q\n' "$mode" "$relative"
+                else
+                  kind=$(stat -f '%HT' "$path")
+                  printf '::error::unsupported inventory entry type %q at %q\n' "$kind" "$relative" >&2
+                  exit 1
+                fi
+              done
+          }
+
+          attest_stage() {
+            source "$RUNNER_TEMP/tccbin-baseline.env"
+            test "$(git -C "$stage" rev-parse HEAD)" = "$TCCBIN_HEAD"
+            test "$(git -C "$stage" rev-parse 'HEAD^{tree}')" = "$TCCBIN_TREE"
+            ! git -C "$stage" symbolic-ref -q HEAD
+            git -C "$stage" diff --quiet
+            git -C "$stage" diff --cached --quiet
+            test -z "$(git -C "$stage" status --porcelain)"
+            test "$(shasum -a 256 "$stage/bundle_checksums.txt" | awk '{print $1}')" = "$TCCBIN_BUNDLE_CHECKSUMS_SHA256"
+            (cd "$stage" && shasum -a 256 -c bundle_checksums.txt)
+            test -f "$stage/tcc.exe"
+            test ! -L "$stage/tcc.exe"
+            test -x "$stage/tcc.exe"
+            test -L "$stage/lib/libgc.dylib"
+            test "$(readlink "$stage/lib/libgc.dylib")" = libgc.1.dylib
+            test -f "$stage/lib/libgc.1.dylib"
+            test ! -L "$stage/lib/libgc.1.dylib"
+            test "$(shasum -a 256 "$stage/tcc.exe" | awk '{print $1}')" = "$tcc_exe_sha256"
+            test "$(shasum -a 256 "$stage/lib/libgc.1.dylib" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          }
+
+          attest_copy() {
+            source "$RUNNER_TEMP/tccbin-baseline.env"
+            test "$(git -C "$validation_tcc" rev-parse HEAD)" = "$TCCBIN_HEAD"
+            test "$(git -C "$validation_tcc" rev-parse 'HEAD^{tree}')" = "$TCCBIN_TREE"
+            ! git -C "$validation_tcc" symbolic-ref -q HEAD
+            git -C "$validation_tcc" diff --quiet
+            git -C "$validation_tcc" diff --cached --quiet
+            test -z "$(git -C "$validation_tcc" status --porcelain)"
+            test "$(shasum -a 256 "$validation_tcc/bundle_checksums.txt" | awk '{print $1}')" = "$TCCBIN_BUNDLE_CHECKSUMS_SHA256"
+            (cd "$validation_tcc" && shasum -a 256 -c bundle_checksums.txt)
+            test -f "$validation_tcc/tcc.exe"
+            test ! -L "$validation_tcc/tcc.exe"
+            test -x "$validation_tcc/tcc.exe"
+            test -L "$validation_tcc/lib/libgc.dylib"
+            test "$(readlink "$validation_tcc/lib/libgc.dylib")" = libgc.1.dylib
+            test -f "$validation_tcc/lib/libgc.1.dylib"
+            test ! -L "$validation_tcc/lib/libgc.1.dylib"
+            test "$(shasum -a 256 "$validation_tcc/tcc.exe" | awk '{print $1}')" = "$tcc_exe_sha256"
+            test "$(shasum -a 256 "$validation_tcc/lib/libgc.1.dylib" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          }
+
+          validation_root_requested="$RUNNER_TEMP/tccbin-validation-root"
+          test ! -e "$validation_root_requested"
+          mkdir "$validation_root_requested"
+          validation_root=$(cd "$validation_root_requested" && pwd -P)
+          case "$validation_root" in
+            /*) ;;
+            *) echo '::error::validation root is not absolute' >&2; exit 1 ;;
+          esac
+          test "${validation_root#*,}" = "$validation_root"
+          mkdir "$validation_root/thirdparty"
+          cp -a "$stage" "$validation_root/thirdparty/tcc"
+          validation_tcc="$validation_root/thirdparty/tcc"
+
+          # The executable embeds these paths relative to its working directory.
+          git archive "$c0_commit" thirdparty/tccbin_tests thirdparty/libgc/include | tar -x -C "$validation_root"
+          support_reference_requested="$RUNNER_TEMP/tccbin-validation-c0-support-reference"
+          test ! -e "$support_reference_requested"
+          mkdir "$support_reference_requested"
+          support_reference=$(cd "$support_reference_requested" && pwd -P)
+          case "$support_reference" in
+            /*) ;;
+            *) echo '::error::support reference root is not absolute' >&2; exit 1 ;;
+          esac
+          git archive "$c0_commit" thirdparty/tccbin_tests thirdparty/libgc/include | tar -x -C "$support_reference"
+
+          source "$RUNNER_TEMP/tccbin-baseline.env"
+          test "$c0_commit" = "$(git rev-parse HEAD^)"
+          tcc_exe_sha256=$(shasum -a 256 "$stage/tcc.exe" | awk '{print $1}')
+          test -n "$tcc_exe_sha256"
+          attest_stage
+          attest_copy
+
+          stage_before="$RUNNER_TEMP/tccbin-validation-stage.before.inventory"
+          copy_before="$RUNNER_TEMP/tccbin-validation-copy.before.inventory"
+          tests_before="$RUNNER_TEMP/tccbin-validation-tests.before.inventory"
+          tests_reference_before="$RUNNER_TEMP/tccbin-validation-tests-reference.before.inventory"
+          include_before="$RUNNER_TEMP/tccbin-validation-include.before.inventory"
+          include_reference_before="$RUNNER_TEMP/tccbin-validation-include-reference.before.inventory"
+          for snapshot in "$stage_before" "$copy_before" "$tests_before" "$tests_reference_before" \
+            "$include_before" "$include_reference_before"; do
+            test ! -e "$snapshot"
+          done
+          inventory "$stage" > "$stage_before"
+          inventory "$validation_tcc" > "$copy_before"
+          inventory "$validation_root/thirdparty/tccbin_tests" > "$tests_before"
+          inventory "$support_reference/thirdparty/tccbin_tests" > "$tests_reference_before"
+          inventory "$validation_root/thirdparty/libgc/include" > "$include_before"
+          inventory "$support_reference/thirdparty/libgc/include" > "$include_reference_before"
+          diff -u "$stage_before" "$copy_before"
+          diff -u "$tests_before" "$tests_reference_before"
+          diff -u "$include_before" "$include_reference_before"
+
+          tcc_file=$(file "$stage/tcc.exe")
+          dylib_file=$(file "$stage/lib/libgc.1.dylib")
+          test "${tcc_file#*Mach-O 64-bit}" != "$tcc_file"
+          test "${tcc_file#*x86_64}" != "$tcc_file"
+          test "${dylib_file#*Mach-O 64-bit}" != "$dylib_file"
+          test "${dylib_file#*x86_64}" != "$dylib_file"
+          test "$(otool -D "$stage/lib/libgc.1.dylib" | tail -n 1)" = '@rpath/libgc.dylib'
+
+          validation_log="$RUNNER_TEMP/tccbin-bdwgc-validation.log"
+          test ! -e "$validation_log"
+          workflow_root=$(pwd -P)
+          cd "$validation_root"
+          set +e
+          bash "$GITHUB_WORKSPACE/thirdparty/build_scripts/thirdparty-macos-amd64_bdwgc_validate.sh" thirdparty/tcc \
+            2>&1 | tee "$validation_log"
+          validation_pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          cd "$workflow_root"
+
+          attest_stage
+          attest_copy
+
+          stage_after="$RUNNER_TEMP/tccbin-validation-stage.after.inventory"
+          copy_after="$RUNNER_TEMP/tccbin-validation-copy.after.inventory"
+          tests_after="$RUNNER_TEMP/tccbin-validation-tests.after.inventory"
+          tests_reference_after="$RUNNER_TEMP/tccbin-validation-tests-reference.after.inventory"
+          include_after="$RUNNER_TEMP/tccbin-validation-include.after.inventory"
+          include_reference_after="$RUNNER_TEMP/tccbin-validation-include-reference.after.inventory"
+          for snapshot in "$stage_after" "$copy_after" "$tests_after" "$tests_reference_after" \
+            "$include_after" "$include_reference_after"; do
+            test ! -e "$snapshot"
+          done
+          inventory "$stage" > "$stage_after"
+          inventory "$validation_tcc" > "$copy_after"
+          inventory "$validation_root/thirdparty/tccbin_tests" > "$tests_after"
+          inventory "$support_reference/thirdparty/tccbin_tests" > "$tests_reference_after"
+          inventory "$validation_root/thirdparty/libgc/include" > "$include_after"
+          inventory "$support_reference/thirdparty/libgc/include" > "$include_reference_after"
+          diff -u "$stage_before" "$stage_after"
+          diff -u "$copy_before" "$copy_after"
+          diff -u "$stage_after" "$copy_after"
+          diff -u "$tests_before" "$tests_after"
+          diff -u "$tests_reference_before" "$tests_reference_after"
+          diff -u "$tests_reference_before" "$tests_after"
+          diff -u "$include_before" "$include_after"
+          diff -u "$include_reference_before" "$include_reference_after"
+          diff -u "$include_reference_before" "$include_after"
+
+          validation_failed=0
+          if [ "${#validation_pipeline_status[@]}" -ne 2 ]; then
+            echo '::error::validator pipeline did not yield exactly two statuses' >&2
+            validation_failed=1
+          else
+            validator_status=${validation_pipeline_status[0]}
+            tee_status=${validation_pipeline_status[1]}
+            if [ "$validator_status" -ne 0 ]; then
+              echo "::error::bundle validator exited with status $validator_status" >&2
+              validation_failed=1
+            fi
+            if [ "$tee_status" -ne 0 ]; then
+              echo "::error::validation log tee exited with status $tee_status" >&2
+              validation_failed=1
+            fi
+          fi
+          if [ ! -f "$validation_log" ] || [ -L "$validation_log" ] || [ ! -s "$validation_log" ]; then
+            echo '::error::validation log is not a nonempty regular file' >&2
+            validation_failed=1
+          fi
+          if grep -Fq 'Static libgc.a linking now succeeds on macOS amd64' "$validation_log"; then
+            echo '::error::static libgc.a XPASS requires a separate gate update' >&2
+            validation_failed=1
+          fi
+          test "$validation_failed" -eq 0
+
+
+      - name: Run native selector test with explicit XDG data root
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/tccbin-baseline.env"
+          bootstrap="$RUNNER_TEMP/bootstrap-v"
+          physical_bootstrap=$(cd "$bootstrap" && pwd -P)
+          test "${physical_bootstrap#*,}" = "$physical_bootstrap"
+          test "$(git -C "$bootstrap" rev-parse HEAD)" = 1f549e2de1dad5973e07769dd789ee28bc586c1b
+          test "$(shasum -a 256 "$bootstrap/v" | awk '{print $1}')" = \
+            "$(cat "$RUNNER_TEMP/bootstrap-v.sha256")"
+
+          stage="$RUNNER_TEMP/tccbin-stage"
+          native_tcc="$bootstrap/thirdparty/tcc"
+          test ! -e "$native_tcc"
+          cp -a "$stage" "$native_tcc"
+          test "$(git -C "$native_tcc" rev-parse HEAD)" = "$TCCBIN_HEAD"
+          test "$(git -C "$native_tcc" rev-parse 'HEAD^{tree}')" = "$TCCBIN_TREE"
+          test "$(shasum -a 256 "$native_tcc/bundle_checksums.txt" | awk '{print $1}')" = \
+            "$TCCBIN_BUNDLE_CHECKSUMS_SHA256"
+          (cd "$native_tcc" && shasum -a 256 -c bundle_checksums.txt)
+
+          native_xdg_requested="$RUNNER_TEMP/part-c-native-xdg"
+          mkdir "$native_xdg_requested"
+          chmod 0700 "$native_xdg_requested"
+          native_xdg=$(cd "$native_xdg_requested" && pwd -P)
+          test "${native_xdg#*,}" = "$native_xdg"
+          test "$(stat -f '%Lp' "$native_xdg")" = 700
+
+          clean_env=(
+            -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+            -u http_proxy -u https_proxy -u all_proxy
+          )
+          while IFS= read -r variable; do
+            case "$variable" in
+              DYLD_*) clean_env+=(-u "$variable") ;;
+            esac
+          done < <(compgen -e)
+
+          suite="$bootstrap/vlib/v/builder/gc_flags_test.v"
+          test "$(grep -c '^fn test_' "$suite")" -eq 6
+          test "$(shasum -a 256 "$suite" | awk '{print $1}')" = \
+            1a9325cef61be373506251a684162948d8defafbf73eea59776eee6ef1924b17
+          vtest_bin="$RUNNER_TEMP/part-c-native-vtest"
+          test ! -e "$vtest_bin"
+          trap 'rm -f -- "$vtest_bin"' EXIT
+          env "${clean_env[@]}" \
+            XDG_DATA_HOME="$native_xdg" \
+            GIT_ALLOW_PROTOCOL=file \
+            "$bootstrap/v" -gc none -cc cc -no-retry-compilation -no-rsp -nocache \
+            -o "$vtest_bin" "$bootstrap/cmd/tools/vtest.v"
+          test -f "$vtest_bin"
+          test ! -L "$vtest_bin"
+          test -x "$vtest_bin"
+
+          test_log="$RUNNER_TEMP/part-c-native-selector-test.log"
+          set +e
+          env "${clean_env[@]}" \
+            XDG_DATA_HOME="$native_xdg" \
+            GIT_ALLOW_PROTOCOL=file \
+            VEXE="$bootstrap/v" \
+            "$vtest_bin" -gc none -cc cc -no-retry-compilation -no-rsp -nocache \
+            test "$suite" 2>&1 | tee "$test_log"
+          test_status=${PIPESTATUS[0]}
+          set -e
+          test "$test_status" -eq 0
+          grep -Fq '1 passed, 1 total' "$test_log"
+
+          rm -f -- "$vtest_bin"
+          trap - EXIT
+          test ! -e "$vtest_bin"
+          test "$(shasum -a 256 "$native_tcc/lib/libgc.1.dylib" | awk '{print $1}')" = \
+            "$TCCBIN_LIBGC_DYLIB_SHA256"
+          test -z "$(git -C "$native_tcc" status --porcelain)"
+          test -z "$(git -C "$bootstrap" status --porcelain --untracked-files=all)"
+
+      - name: Prepare comma-path HOME fallback workspace and offline boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          parent=1f549e2de1dad5973e07769dd789ee28bc586c1b
+          comma_root="$RUNNER_TEMP/part-c smoke,comma"
+          vroot="$comma_root/vroot"
+          mkdir -p "$comma_root"
+          git clone --no-hardlinks "$GITHUB_WORKSPACE" "$vroot"
+          git -C "$vroot" checkout --detach "$parent"
+          test "$(git -C "$vroot" rev-parse HEAD)" = "$parent"
+          physical_vroot=$(cd "$vroot" && pwd -P)
+          test "${physical_vroot#* }" != "$physical_vroot"
+          test "${physical_vroot#*,}" != "$physical_vroot"
+
+          bootstrap="$RUNNER_TEMP/bootstrap-v/v"
+          bootstrap_sha256=$(cat "$RUNNER_TEMP/bootstrap-v.sha256")
+          test -f "$bootstrap"
+          test ! -L "$bootstrap"
+          test -x "$bootstrap"
+          test "$(shasum -a 256 "$bootstrap" | awk '{print $1}')" = "$bootstrap_sha256"
+          test ! -e "$vroot/v"
+          cp -p "$bootstrap" "$vroot/v"
+          test -f "$vroot/v"
+          test ! -L "$vroot/v"
+          test -x "$vroot/v"
+          test "$(shasum -a 256 "$vroot/v" | awk '{print $1}')" = "$bootstrap_sha256"
+
+          stage="$RUNNER_TEMP/tccbin-stage"
+          tcc_target="$vroot/thirdparty/tcc"
+          rm -rf -- "$tcc_target"
+          cp -a "$stage" "$tcc_target"
+
+          xdg_requested="$RUNNER_TEMP/part-c-xdg"
+          mkdir "$xdg_requested"
+          chmod 0700 "$xdg_requested"
+          test ! -L "$xdg_requested"
+          xdg=$(cd "$xdg_requested" && pwd -P)
+          test "${xdg#*,}" = "$xdg"
+          test "$(stat -f '%u' "$xdg")" = "$(id -u)"
+          test "$(stat -f '%Lp' "$xdg")" = 700
+
+          smoke_home_requested="$RUNNER_TEMP/home-fallback-smoke-home"
+          test ! -e "$smoke_home_requested"
+          mkdir "$smoke_home_requested"
+          chmod 0700 "$smoke_home_requested"
+          test ! -L "$smoke_home_requested"
+          smoke_home=$(cd "$smoke_home_requested" && pwd -P)
+          test "${smoke_home#*,}" = "$smoke_home"
+          test "$(stat -f '%u' "$smoke_home")" = "$(id -u)"
+          test "$(stat -f '%Lp' "$smoke_home")" = 700
+          test ! -e "$smoke_home/.local"
+          test -z "$(find "$smoke_home" -mindepth 1 -maxdepth 1 -print -quit)"
+
+          smoke_vcache_requested="$RUNNER_TEMP/home-fallback-smoke-vcache"
+          test ! -e "$smoke_vcache_requested"
+          mkdir "$smoke_vcache_requested"
+          chmod 0700 "$smoke_vcache_requested"
+          test ! -L "$smoke_vcache_requested"
+          smoke_vcache=$(cd "$smoke_vcache_requested" && pwd -P)
+          test "${smoke_vcache#*,}" = "$smoke_vcache"
+          test "$(stat -f '%u' "$smoke_vcache")" = "$(id -u)"
+          test "$(stat -f '%Lp' "$smoke_vcache")" = 700
+          test -z "$(find "$smoke_vcache" -mindepth 1 -maxdepth 1 -print -quit)"
+          for protected_root in "$smoke_home" "$xdg" "$physical_vroot"; do
+            case "$smoke_vcache" in
+              "$protected_root"|"$protected_root"/*)
+                echo '::error::explicit VCACHE overlaps a protected smoke root' >&2
+                exit 1
+                ;;
+            esac
+            case "$protected_root" in
+              "$smoke_vcache"|"$smoke_vcache"/*)
+                echo '::error::protected smoke root overlaps explicit VCACHE' >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          source "$RUNNER_TEMP/tccbin-baseline.env"
+          test "$(git -C "$tcc_target" rev-parse HEAD)" = "$TCCBIN_HEAD"
+          test -z "$(git -C "$tcc_target" status --porcelain)"
+          test -L "$tcc_target/lib/libgc.dylib"
+          test "$(readlink "$tcc_target/lib/libgc.dylib")" = libgc.1.dylib
+          test -f "$tcc_target/lib/libgc.1.dylib"
+          test ! -L "$tcc_target/lib/libgc.1.dylib"
+          test "$(shasum -a 256 "$tcc_target/bundle_checksums.txt" | awk '{print $1}')" = "$TCCBIN_BUNDLE_CHECKSUMS_SHA256"
+          test "$(shasum -a 256 "$tcc_target/lib/libgc.1.dylib" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          (cd "$tcc_target" && shasum -a 256 -c bundle_checksums.txt)
+
+          {
+            printf 'VROOT=%q\n' "$physical_vroot"
+            printf 'XDG=%q\n' "$xdg"
+            printf 'SMOKE_HOME=%q\n' "$smoke_home"
+            printf 'SMOKE_VCACHE=%q\n' "$smoke_vcache"
+          } > "$RUNNER_TEMP/part-c-smoke.env"
+
+          # OFFLINE BOUNDARY: following steps must not use network, make, implicit caches, or fallbacks.
+
+      - name: Run inherited P2 unit tests in the comma-path workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/part-c-smoke.env"
+          suite="$VROOT/vlib/v/builder/tcc_macos_libgc_store_test.v"
+          test "$(grep -c '^fn test_' "$suite")" -eq 47
+
+          clean_env=(
+            -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+            -u http_proxy -u https_proxy -u all_proxy
+          )
+          while IFS= read -r variable; do
+            case "$variable" in
+              DYLD_*) clean_env+=(-u "$variable") ;;
+            esac
+          done < <(compgen -e)
+
+          vtest_bin="$VROOT/cmd/tools/vtest"
+          test ! -e "$vtest_bin"
+          trap 'rm -f -- "$vtest_bin"' EXIT
+          env "${clean_env[@]}" \
+            XDG_DATA_HOME="$XDG" \
+            VCACHE="$SMOKE_VCACHE" \
+            GIT_ALLOW_PROTOCOL=file \
+            "$VROOT/v" -gc none -cc cc -no-retry-compilation -no-rsp -nocache \
+            -o "$vtest_bin" "$VROOT/cmd/tools/vtest.v"
+          test -f "$vtest_bin"
+          test ! -L "$vtest_bin"
+          test -x "$vtest_bin"
+
+          test_log="$RUNNER_TEMP/c0-native-unit-tests.log"
+          set +e
+          env "${clean_env[@]}" \
+            XDG_DATA_HOME="$XDG" \
+            VCACHE="$SMOKE_VCACHE" \
+            GIT_ALLOW_PROTOCOL=file \
+            VEXE="$VROOT/v" \
+            "$vtest_bin" -gc none -cc cc -no-retry-compilation -no-rsp -nocache \
+            test "$suite" 2>&1 | tee "$test_log"
+          test_status=${PIPESTATUS[0]}
+          set -e
+          test "$test_status" -eq 0
+          grep -Fq '1 passed, 1 total' "$test_log"
+
+          rm -f -- "$vtest_bin"
+          trap - EXIT
+          test ! -e "$vtest_bin"
+
+      - name: Compile and run explicit XDG and fresh HOME fallback smokes
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/part-c-smoke.env"
+          source "$RUNNER_TEMP/tccbin-baseline.env"
+
+          clean_env=(
+            -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+            -u http_proxy -u https_proxy -u all_proxy
+          )
+          while IFS= read -r variable; do
+            case "$variable" in
+              DYLD_*) clean_env+=(-u "$variable") ;;
+            esac
+          done < <(compgen -e)
+
+          smoke_source="$RUNNER_TEMP/part-c-real-smoke.v"
+          printf '%s\n' \
+            'module main' \
+            '' \
+            'fn main() {' \
+            '    mut values := []int{cap: 1024}' \
+            '    for i in 0 .. 1024 {' \
+            '        values << i' \
+            '    }' \
+            '    gc_collect()' \
+            '    println("part-c-ok:${values[1023]}")' \
+            '}' > "$smoke_source"
+          if grep -Fq '#flag' "$smoke_source"; then
+            echo '::error::the integrated Part C source must not contain manual linker flags'
+            exit 1
+          fi
+
+          tcc="$VROOT/thirdparty/tcc/tcc.exe"
+          smoke_binary="$RUNNER_TEMP/part-c-real-smoke"
+          compile_log="$RUNNER_TEMP/part-c-real-smoke.compile.log"
+          test -f "$tcc"
+          test ! -L "$tcc"
+          test -x "$tcc"
+          set +e
+          (
+            cd "$VROOT"
+            env "${clean_env[@]}" \
+              XDG_DATA_HOME="$XDG" \
+              VCACHE="$SMOKE_VCACHE" \
+              GIT_ALLOW_PROTOCOL=file \
+              ./v -cc tcc -gc boehm -showcc \
+              -no-retry-compilation -no-rsp -nocache \
+              -o "$smoke_binary" "$smoke_source"
+          ) 2>&1 | tee "$compile_log"
+          compile_status=${PIPESTATUS[0]}
+          set -e
+          test "$compile_status" -eq 0
+          test -f "$smoke_binary"
+          test ! -L "$smoke_binary"
+          test -x "$smoke_binary"
+          if grep -Eiq 'fallback|retry' "$compile_log"; then
+            echo '::error::unexpected compiler fallback/retry indication'
+            exit 1
+          fi
+
+          source_lib_dir="$VROOT/thirdparty/tcc/lib"
+          source_dylib="$source_lib_dir/libgc.dylib"
+          source_rpath="-Wl,-rpath,$source_lib_dir"
+          store_dir="$XDG/v-tcc-libgc-v1/$TCCBIN_LIBGC_DYLIB_SHA256"
+          store_dylib="$store_dir/libgc.dylib"
+          store_rpath="-Wl,-rpath,$store_dir"
+          env \
+            TCC_EXPECTED="$tcc" \
+            SOURCE_DYLIB="$source_dylib" \
+            SOURCE_RPATH="$source_rpath" \
+            STORE_DYLIB="$store_dylib" \
+            STORE_RPATH="$store_rpath" \
+            SMOKE_BINARY="$smoke_binary" \
+            python3 - "$compile_log" <<'PY'
+          import collections
+          import os
+          import pathlib
+          import shlex
+          import sys
+
+          prefix = '> C compiler cmd: '
+          lines = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines()
+          commands = [line[len(prefix):] for line in lines if line.startswith(prefix)]
+          if len(commands) != 1:
+              raise SystemExit(f'expected exactly one C compiler command, found {len(commands)}')
+          try:
+              argv = shlex.split(commands[0], posix=True)
+          except ValueError as error:
+              raise SystemExit(f'could not parse C compiler command: {error}')
+          if not argv or argv[0] != os.environ['TCC_EXPECTED']:
+              raise SystemExit(f'wrong C compiler argv[0]: {argv[0] if argv else "<empty>"}')
+
+          counts = collections.Counter(argv)
+          for token, label in (
+              (os.environ['STORE_DYLIB'], 'store dylib'),
+              (os.environ['STORE_RPATH'], 'store rpath'),
+          ):
+              if counts[token] != 1:
+                  raise SystemExit(f'expected exactly one {label} token, found {counts[token]}')
+          for token, label in (
+              (os.environ['SOURCE_DYLIB'], 'source dylib'),
+              (os.environ['SOURCE_RPATH'], 'source rpath'),
+          ):
+              if counts[token] != 0:
+                  raise SystemExit(f'forbidden {label} token remains in compiler command')
+          if any('libgc.a' in token for token in argv):
+              raise SystemExit('compiler command contains libgc.a')
+          if counts['-lgc'] != 0:
+              raise SystemExit('compiler command contains -lgc')
+          if any(token.startswith('@') for token in argv):
+              raise SystemExit('compiler command contains a response-file token')
+
+          binary = os.environ['SMOKE_BINARY']
+          if counts['-o'] != 1:
+              raise SystemExit(f'expected exactly one -o token, found {counts["-o"]}')
+          joined_output_options = [token for token in argv if token != '-o' and token.startswith('-o')]
+          if joined_output_options:
+              raise SystemExit(f'joined -o option is forbidden: {joined_output_options}')
+          output_index = argv.index('-o')
+          if output_index + 1 >= len(argv) or argv[output_index + 1] != binary:
+              raise SystemExit('the sole -o token does not target the exact smoke binary')
+          compiler_names = {'cc', 'gcc', 'clang', 'clang++', 'tcc', 'tcc.exe'}
+          unexpected = [token for token in argv[1:] if os.path.basename(token) in compiler_names]
+          if unexpected:
+              raise SystemExit(f'compiler command names a different compiler: {unexpected}')
+          PY
+
+          store_root="$XDG/v-tcc-libgc-v1"
+          content_dir="$store_root/$TCCBIN_LIBGC_DYLIB_SHA256"
+          store_object="$content_dir/libgc.dylib"
+          source_target="$VROOT/thirdparty/tcc/lib/libgc.1.dylib"
+          test -d "$store_root"
+          test ! -L "$store_root"
+          test -d "$content_dir"
+          test ! -L "$content_dir"
+          test -f "$store_object"
+          test ! -L "$store_object"
+          test "$(find "$content_dir" -mindepth 1 -maxdepth 1 -print | awk 'END { print NR + 0 }')" -eq 1
+          test "$(stat -f '%u' "$store_root")" = "$(id -u)"
+          test "$(stat -f '%u' "$content_dir")" = "$(id -u)"
+          test "$(stat -f '%u' "$store_object")" = "$(id -u)"
+          test "$(stat -f '%Lp' "$store_root")" = 700
+          test "$(stat -f '%Lp' "$content_dir")" = 700
+          test "$(stat -f '%Lp' "$store_object")" = 700
+          test "$(shasum -a 256 "$store_object" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          test -f "$source_target"
+          test ! -L "$source_target"
+          test "$(shasum -a 256 "$source_target" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          cmp -s "$source_target" "$store_object"
+
+          runtime_stdout="$RUNNER_TEMP/part-c-real-smoke.stdout"
+          set +e
+          env "${clean_env[@]}" \
+            XDG_DATA_HOME="$XDG" \
+            VCACHE="$SMOKE_VCACHE" \
+            GIT_ALLOW_PROTOCOL=file \
+            "$smoke_binary" > "$runtime_stdout"
+          runtime_status=$?
+          set -e
+          test "$runtime_status" -eq 0
+          test "$(LC_ALL=C wc -l < "$runtime_stdout" | tr -d ' ')" -eq 1
+          test "$(sed -n '1p' "$runtime_stdout")" = part-c-ok:1023
+
+          # The explicit XDG lane above must not touch the fresh HOME fallback.
+          test ! -e "$SMOKE_HOME/.local"
+
+          compile_home_lane() {
+            local mode=$1
+            local binary=$2
+            local log=$3
+            test ! -e "$binary"
+            test ! -e "$log"
+            set +e
+            (
+              cd "$VROOT"
+              case "$mode" in
+                unset)
+                  env "${clean_env[@]}" \
+                    -u XDG_DATA_HOME \
+                    HOME="$SMOKE_HOME" \
+                    VCACHE="$SMOKE_VCACHE" \
+                    SMOKE_HOME_EXPECTED="$SMOKE_HOME" \
+                    SMOKE_VCACHE_EXPECTED="$SMOKE_VCACHE" \
+                    GIT_ALLOW_PROTOCOL=file \
+                    bash -c '
+                      set -euo pipefail
+                      test "${XDG_DATA_HOME+x}" != x
+                      test "$HOME" = "$SMOKE_HOME_EXPECTED"
+                      test "$VCACHE" = "$SMOKE_VCACHE_EXPECTED"
+                      unset SMOKE_HOME_EXPECTED
+                      unset SMOKE_VCACHE_EXPECTED
+                      exec "$@"
+                    ' bash \
+                    ./v -cc tcc -gc boehm -showcc \
+                      -no-retry-compilation -no-rsp -nocache \
+                      -o "$binary" "$smoke_source"
+                  ;;
+                empty)
+                  env "${clean_env[@]}" \
+                    XDG_DATA_HOME= \
+                    HOME="$SMOKE_HOME" \
+                    VCACHE="$SMOKE_VCACHE" \
+                    SMOKE_HOME_EXPECTED="$SMOKE_HOME" \
+                    SMOKE_VCACHE_EXPECTED="$SMOKE_VCACHE" \
+                    GIT_ALLOW_PROTOCOL=file \
+                    bash -c '
+                      set -euo pipefail
+                      test "${XDG_DATA_HOME+x}" = x
+                      test -z "$XDG_DATA_HOME"
+                      test "$HOME" = "$SMOKE_HOME_EXPECTED"
+                      test "$VCACHE" = "$SMOKE_VCACHE_EXPECTED"
+                      unset SMOKE_HOME_EXPECTED
+                      unset SMOKE_VCACHE_EXPECTED
+                      exec "$@"
+                    ' bash \
+                    ./v -cc tcc -gc boehm -showcc \
+                      -no-retry-compilation -no-rsp -nocache \
+                      -o "$binary" "$smoke_source"
+                  ;;
+                *)
+                  echo "::error::unknown HOME fallback compile mode: $mode" >&2
+                  exit 1
+                  ;;
+              esac
+            ) 2>&1 | tee "$log"
+            local statuses=("${PIPESTATUS[@]}")
+            set -e
+            test "${#statuses[@]}" -eq 2
+            test "${statuses[0]}" -eq 0
+            test "${statuses[1]}" -eq 0
+            test -f "$binary"
+            test ! -L "$binary"
+            test -x "$binary"
+            test -f "$log"
+            test ! -L "$log"
+            test -s "$log"
+            if grep -Eiq 'fallback compiler|retrying|recompilation loop' "$log"; then
+              echo "::error::$mode HOME lane observed compiler fallback/retry" >&2
+              exit 1
+            fi
+          }
+
+          attest_home_store() {
+            local home_local="$SMOKE_HOME/.local"
+            local data_base="$home_local/share"
+            local root="$data_base/v-tcc-libgc-v1"
+            local content="$root/$TCCBIN_LIBGC_DYLIB_SHA256"
+            local object="$content/libgc.dylib"
+            local directory
+            for directory in "$SMOKE_HOME" "$home_local" "$data_base" "$root" "$content"; do
+              test -d "$directory"
+              test ! -L "$directory"
+              test "$(stat -f '%u' "$directory")" = "$(id -u)"
+              test "$(stat -f '%Lp' "$directory")" = 700
+            done
+            test "$(find "$SMOKE_HOME" -mindepth 1 -maxdepth 1 -print)" = "$home_local"
+            test "$(find "$home_local" -mindepth 1 -maxdepth 1 -print)" = "$data_base"
+            test "$(find "$data_base" -mindepth 1 -maxdepth 1 -print)" = "$root"
+            test "$(find "$root" -mindepth 1 -maxdepth 1 -print)" = "$content"
+            test "$(find "$content" -mindepth 1 -maxdepth 1 -print)" = "$object"
+            test -f "$object"
+            test ! -L "$object"
+            test "$(stat -f '%u' "$object")" = "$(id -u)"
+            test "$(stat -f '%Lp' "$object")" = 700
+            test "$(shasum -a 256 "$object" | awk '{print $1}')" = \
+              "$TCCBIN_LIBGC_DYLIB_SHA256"
+            test -z "$(find "$SMOKE_HOME" -maxdepth 6 -type l -print -quit)"
+            test -z "$(find "$root" -maxdepth 3 -name '.libgc.dylib.tmp.*' -print -quit)"
+            cmp -s "$source_target" "$object"
+          }
+
+          inventory_home_store() {
+            local root=$1
+            local path relative mode uid inode mtime size digest
+            local LC_ALL=C
+            export LC_ALL
+            test -d "$root"
+            test ! -L "$root"
+            find "$root" -print0 | LC_ALL=C sort -z |
+              while IFS= read -r -d '' path; do
+                if [ "$path" = "$root" ]; then
+                  relative=.
+                else
+                  relative=${path#"$root"/}
+                fi
+                if [ -L "$path" ]; then
+                  printf '::error::unexpected symlink in HOME store inventory: %q\n' \
+                    "$relative" >&2
+                  exit 1
+                fi
+                mode=$(stat -f '%Lp' "$path")
+                uid=$(stat -f '%u' "$path")
+                inode=$(stat -f '%i' "$path")
+                mtime=$(stat -f '%m' "$path")
+                if [ -d "$path" ]; then
+                  printf 'D mode=%q uid=%q inode=%q mtime=%q path=%q\n' \
+                    "$mode" "$uid" "$inode" "$mtime" "$relative"
+                elif [ -f "$path" ]; then
+                  size=$(stat -f '%z' "$path")
+                  digest=$(shasum -a 256 "$path" | awk '{print $1}')
+                  printf 'F mode=%q uid=%q inode=%q mtime=%q size=%q sha256=%q path=%q\n' \
+                    "$mode" "$uid" "$inode" "$mtime" "$size" "$digest" "$relative"
+                else
+                  printf '::error::unsupported HOME store inventory entry: %q\n' \
+                    "$relative" >&2
+                  exit 1
+                fi
+              done
+          }
+
+          source_target="$VROOT/thirdparty/tcc/lib/libgc.1.dylib"
+          home_data_base="$SMOKE_HOME/.local/share"
+          home_store_root="$home_data_base/v-tcc-libgc-v1"
+          home_store_dir="$home_store_root/$TCCBIN_LIBGC_DYLIB_SHA256"
+          home_store_object="$home_store_dir/libgc.dylib"
+          home_unset_binary="$RUNNER_TEMP/home-fallback-unset-xdg-smoke"
+          home_unset_log="$RUNNER_TEMP/home-fallback-unset-xdg-smoke.compile.log"
+          home_empty_binary="$RUNNER_TEMP/home-fallback-empty-xdg-smoke"
+          home_empty_log="$RUNNER_TEMP/home-fallback-empty-xdg-smoke.compile.log"
+          test "$home_unset_binary" != "$home_empty_binary"
+          test "$home_unset_log" != "$home_empty_log"
+
+          compile_home_lane unset "$home_unset_binary" "$home_unset_log"
+          attest_home_store
+          home_store_inventory_before="$RUNNER_TEMP/home-fallback-store.before.inventory"
+          test ! -e "$home_store_inventory_before"
+          inventory_home_store "$home_store_root" > "$home_store_inventory_before"
+          test -s "$home_store_inventory_before"
+          home_object_inode=$(stat -f '%i' "$home_store_object")
+          home_object_mtime=$(stat -f '%m' "$home_store_object")
+          home_object_sha256=$(shasum -a 256 "$home_store_object" | awk '{print $1}')
+          home_inventory_sha256=$(shasum -a 256 "$home_store_inventory_before" | awk '{print $1}')
+          test "$home_object_sha256" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+
+          compile_home_lane empty "$home_empty_binary" "$home_empty_log"
+          attest_home_store
+          home_store_inventory_after="$RUNNER_TEMP/home-fallback-store.after.inventory"
+          test ! -e "$home_store_inventory_after"
+          inventory_home_store "$home_store_root" > "$home_store_inventory_after"
+          test -s "$home_store_inventory_after"
+          diff -u "$home_store_inventory_before" "$home_store_inventory_after"
+          test "$(stat -f '%i' "$home_store_object")" = "$home_object_inode"
+          test "$(stat -f '%m' "$home_store_object")" = "$home_object_mtime"
+          test "$(shasum -a 256 "$home_store_object" | awk '{print $1}')" = \
+            "$home_object_sha256"
+          test "$(shasum -a 256 "$home_store_inventory_after" | awk '{print $1}')" = \
+            "$home_inventory_sha256"
+
+          env \
+            TCC_EXPECTED="$tcc" \
+            SOURCE_DYLIB="$source_dylib" \
+            SOURCE_RPATH="$source_rpath" \
+            STORE_DYLIB="$home_store_object" \
+            STORE_RPATH="-Wl,-rpath,$home_store_dir" \
+            UNSET_LOG="$home_unset_log" \
+            UNSET_BINARY="$home_unset_binary" \
+            EMPTY_LOG="$home_empty_log" \
+            EMPTY_BINARY="$home_empty_binary" \
+            python3 - <<'PY'
+          import collections
+          import os
+          import pathlib
+          import shlex
+
+          prefix = '> C compiler cmd: '
+          lanes = (
+              ('unset XDG', os.environ['UNSET_LOG'], os.environ['UNSET_BINARY']),
+              ('empty XDG', os.environ['EMPTY_LOG'], os.environ['EMPTY_BINARY']),
+          )
+          for lane, log, binary in lanes:
+              lines = pathlib.Path(log).read_text(encoding='utf-8').splitlines()
+              commands = [line[len(prefix):] for line in lines if line.startswith(prefix)]
+              if len(commands) != 1:
+                  raise SystemExit(f'{lane}: expected exactly one C compiler command, found {len(commands)}')
+              try:
+                  argv = shlex.split(commands[0], posix=True)
+              except ValueError as error:
+                  raise SystemExit(f'{lane}: could not parse compiler command: {error}')
+              if not argv or argv[0] != os.environ['TCC_EXPECTED']:
+                  raise SystemExit(f'{lane}: wrong compiler argv[0]: {argv[:1]}')
+              counts = collections.Counter(argv)
+              for token, label in (
+                  (os.environ['STORE_DYLIB'], 'store dylib'),
+                  (os.environ['STORE_RPATH'], 'store rpath'),
+              ):
+                  if counts[token] != 1:
+                      raise SystemExit(f'{lane}: expected one {label}, found {counts[token]}')
+              for token, label in (
+                  (os.environ['SOURCE_DYLIB'], 'source dylib'),
+                  (os.environ['SOURCE_RPATH'], 'source rpath'),
+              ):
+                  if counts[token] != 0:
+                      raise SystemExit(f'{lane}: forbidden {label} remains')
+              if any('libgc.a' in token for token in argv):
+                  raise SystemExit(f'{lane}: compiler command contains libgc.a')
+              if counts['-lgc'] != 0:
+                  raise SystemExit(f'{lane}: compiler command contains -lgc')
+              if any(token.startswith('@') for token in argv):
+                  raise SystemExit(f'{lane}: response-file token is forbidden')
+              if counts['-o'] != 1:
+                  raise SystemExit(f'{lane}: expected one -o token, found {counts["-o"]}')
+              joined = [token for token in argv if token != '-o' and token.startswith('-o')]
+              if joined:
+                  raise SystemExit(f'{lane}: joined -o option is forbidden: {joined}')
+              output_index = argv.index('-o')
+              if output_index + 1 >= len(argv) or argv[output_index + 1] != binary:
+                  raise SystemExit(f'{lane}: -o does not target the exact binary')
+              compiler_names = {'cc', 'gcc', 'clang', 'clang++', 'tcc', 'tcc.exe'}
+              unexpected = [token for token in argv[1:] if os.path.basename(token) in compiler_names]
+              if unexpected:
+                  raise SystemExit(f'{lane}: command names a second compiler: {unexpected}')
+          PY
+
+          attest_home_binary() {
+            local binary=$1
+            local label=$2
+            local file_text libraries_log load_commands_log
+            local dependency_count libgc_dependency_count
+            local total_rpath_count store_rpath_count source_rpath_count
+            file_text=$(file "$binary")
+            test "${file_text#*Mach-O 64-bit}" != "$file_text"
+            test "${file_text#*x86_64}" != "$file_text"
+            libraries_log="$RUNNER_TEMP/$label.otool-L.log"
+            load_commands_log="$RUNNER_TEMP/$label.otool-l.log"
+            test ! -e "$libraries_log"
+            test ! -e "$load_commands_log"
+            otool -L "$binary" > "$libraries_log"
+            dependency_count=$(awk '$1 == "@rpath/libgc.dylib" { count++ } END { print count + 0 }' \
+              "$libraries_log")
+            libgc_dependency_count=$(awk 'NR > 1 && $1 ~ /libgc/ { count++ } END { print count + 0 }' \
+              "$libraries_log")
+            test "$dependency_count" -eq 1
+            test "$libgc_dependency_count" -eq 1
+            if grep -Fq "$source_dylib" "$libraries_log" \
+              || grep -Fq "$source_target" "$libraries_log" \
+              || grep -Fq "$home_store_object" "$libraries_log"; then
+              echo "::error::$label leaked an absolute libgc path into LC_LOAD_DYLIB" >&2
+              exit 1
+            fi
+            otool -l "$binary" > "$load_commands_log"
+            read -r total_rpath_count store_rpath_count source_rpath_count < <(
+              awk -v store="$home_store_dir" -v source="$source_lib_dir" '
+                $1 == "cmd" { active = ($2 == "LC_RPATH"); next }
+                active && $1 == "path" {
+                  value = $0
+                  sub(/^[[:space:]]*path[[:space:]]+/, "", value)
+                  sub(/[[:space:]]+\(offset[[:space:]]+[0-9]+\)[[:space:]]*$/, "", value)
+                  total_count++
+                  if (value == store) store_count++
+                  if (value == source) source_count++
+                  active = 0
+                }
+                END { print total_count + 0, store_count + 0, source_count + 0 }
+              ' "$load_commands_log"
+            )
+            test "$total_rpath_count" -eq 1
+            test "$store_rpath_count" -eq 1
+            test "$source_rpath_count" -eq 0
+          }
+
+          run_home_binary() {
+            local mode=$1
+            local binary=$2
+            local stdout=$3
+            test ! -e "$stdout"
+            set +e
+            case "$mode" in
+              unset)
+                env "${clean_env[@]}" -u XDG_DATA_HOME HOME="$SMOKE_HOME" \
+                  VCACHE="$SMOKE_VCACHE" SMOKE_HOME_EXPECTED="$SMOKE_HOME" \
+                  SMOKE_VCACHE_EXPECTED="$SMOKE_VCACHE" GIT_ALLOW_PROTOCOL=file \
+                  bash -c '
+                    set -euo pipefail
+                    test "${XDG_DATA_HOME+x}" != x
+                    test "$HOME" = "$SMOKE_HOME_EXPECTED"
+                    test "$VCACHE" = "$SMOKE_VCACHE_EXPECTED"
+                    unset SMOKE_HOME_EXPECTED
+                    unset SMOKE_VCACHE_EXPECTED
+                    exec "$@"
+                  ' bash "$binary" > "$stdout"
+                ;;
+              empty)
+                env "${clean_env[@]}" XDG_DATA_HOME= HOME="$SMOKE_HOME" \
+                  VCACHE="$SMOKE_VCACHE" SMOKE_HOME_EXPECTED="$SMOKE_HOME" \
+                  SMOKE_VCACHE_EXPECTED="$SMOKE_VCACHE" GIT_ALLOW_PROTOCOL=file \
+                  bash -c '
+                    set -euo pipefail
+                    test "${XDG_DATA_HOME+x}" = x
+                    test -z "$XDG_DATA_HOME"
+                    test "$HOME" = "$SMOKE_HOME_EXPECTED"
+                    test "$VCACHE" = "$SMOKE_VCACHE_EXPECTED"
+                    unset SMOKE_HOME_EXPECTED
+                    unset SMOKE_VCACHE_EXPECTED
+                    exec "$@"
+                  ' bash "$binary" > "$stdout"
+                ;;
+              *) exit 1 ;;
+            esac
+            local status=$?
+            set -e
+            test "$status" -eq 0
+            test "$(LC_ALL=C wc -l < "$stdout" | tr -d ' ')" -eq 1
+            test "$(sed -n '1p' "$stdout")" = part-c-ok:1023
+          }
+
+          attest_home_binary "$home_unset_binary" home-fallback-unset-xdg-smoke
+          attest_home_binary "$home_empty_binary" home-fallback-empty-xdg-smoke
+          home_unset_stdout="$RUNNER_TEMP/home-fallback-unset-xdg-smoke.stdout"
+          home_empty_stdout="$RUNNER_TEMP/home-fallback-empty-xdg-smoke.stdout"
+          run_home_binary unset "$home_unset_binary" "$home_unset_stdout"
+          run_home_binary empty "$home_empty_binary" "$home_empty_stdout"
+
+          {
+            printf 'HOME_DATA_BASE=%q\n' "$home_data_base"
+            printf 'HOME_STORE_ROOT=%q\n' "$home_store_root"
+            printf 'HOME_STORE_DIR=%q\n' "$home_store_dir"
+            printf 'HOME_STORE_OBJECT=%q\n' "$home_store_object"
+            printf 'HOME_OBJECT_INODE=%q\n' "$home_object_inode"
+            printf 'HOME_OBJECT_MTIME=%q\n' "$home_object_mtime"
+            printf 'HOME_OBJECT_SHA256=%q\n' "$home_object_sha256"
+            printf 'HOME_INVENTORY_SHA256=%q\n' "$home_inventory_sha256"
+            printf 'HOME_UNSET_BINARY=%q\n' "$home_unset_binary"
+            printf 'HOME_EMPTY_BINARY=%q\n' "$home_empty_binary"
+          } > "$RUNNER_TEMP/home-fallback-smoke.env"
+
+      - name: Prove no compiler fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/part-c-smoke.env"
+          source "$RUNNER_TEMP/tccbin-baseline.env"
+
+          clean_env=(
+            -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+            -u http_proxy -u https_proxy -u all_proxy
+          )
+          while IFS= read -r variable; do
+            case "$variable" in
+              DYLD_*) clean_env+=(-u "$variable") ;;
+            esac
+          done < <(compgen -e)
+
+          fake_tcc="$RUNNER_TEMP/fake-tcc-no-fallback"
+          invocation_log="$RUNNER_TEMP/fake-tcc-no-fallback.invocations"
+          argument_log="$RUNNER_TEMP/fake-tcc-no-fallback.arguments"
+          test ! -e "$fake_tcc"
+          test ! -e "$invocation_log"
+          test ! -e "$argument_log"
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'set -euo pipefail' \
+            ': "${FAKE_TCC_INVOCATION_LOG:?}"' \
+            ': "${FAKE_TCC_ARGUMENT_LOG:?}"' \
+            'printf "invocation\\n" >> "$FAKE_TCC_INVOCATION_LOG"' \
+            'printf "%s\\0" "$@" >> "$FAKE_TCC_ARGUMENT_LOG"' \
+            'printf "%s\\n" "intentional no-fallback probe failure" >&2' \
+            'exit 86' > "$fake_tcc"
+          chmod 0700 "$fake_tcc"
+
+          negative_source="$RUNNER_TEMP/part-c-no-fallback-probe.v"
+          negative_binary="$RUNNER_TEMP/part-c-no-fallback-probe"
+          negative_log="$RUNNER_TEMP/part-c-no-fallback-probe.log"
+          printf '%s\n' 'fn main() {}' > "$negative_source"
+          set +e
+          (
+            cd "$VROOT"
+            env "${clean_env[@]}" \
+              XDG_DATA_HOME="$XDG" \
+              VCACHE="$SMOKE_VCACHE" \
+              GIT_ALLOW_PROTOCOL=file \
+              FAKE_TCC_INVOCATION_LOG="$invocation_log" \
+              FAKE_TCC_ARGUMENT_LOG="$argument_log" \
+              "$VROOT/v" -cc "$fake_tcc" -gc boehm -showcc \
+              -no-retry-compilation -no-rsp -nocache \
+              -o "$negative_binary" "$negative_source"
+          ) 2>&1 | tee "$negative_log"
+          negative_status=${PIPESTATUS[0]}
+          set -e
+
+          test "$negative_status" -ne 0
+          test "$(awk '$0 == "invocation" { count++ } END { print count + 0 }' "$invocation_log")" -eq 1
+          python3 - "$argument_log" <<'PY'
+          import pathlib
+          import sys
+
+          raw = pathlib.Path(sys.argv[1]).read_bytes()
+          arguments = raw.split(b'\0')
+          if arguments and arguments[-1] == b'':
+              arguments.pop()
+          if not any(argument.endswith(b'.c') for argument in arguments):
+              raise SystemExit('fake TCC was not invoked with a generated .c argument')
+          PY
+          env \
+            FAKE_TCC_EXPECTED="$fake_tcc" \
+            NEGATIVE_BINARY="$negative_binary" \
+            STORE_DYLIB="$XDG/v-tcc-libgc-v1/$TCCBIN_LIBGC_DYLIB_SHA256/libgc.dylib" \
+            STORE_RPATH="-Wl,-rpath,$XDG/v-tcc-libgc-v1/$TCCBIN_LIBGC_DYLIB_SHA256" \
+            SOURCE_DYLIB="$VROOT/thirdparty/tcc/lib/libgc.dylib" \
+            SOURCE_RPATH="-Wl,-rpath,$VROOT/thirdparty/tcc/lib" \
+            python3 - "$negative_log" <<'PY'
+          import collections
+          import os
+          import pathlib
+          import shlex
+          import sys
+
+          prefix = '> C compiler cmd: '
+          lines = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines()
+          commands = [line[len(prefix):] for line in lines if line.startswith(prefix)]
+          if len(commands) != 1:
+              raise SystemExit(f'expected exactly one negative C compiler command, found {len(commands)}')
+          try:
+              argv = shlex.split(commands[0], posix=True)
+          except ValueError as error:
+              raise SystemExit(f'could not parse negative C compiler command: {error}')
+          fake_tcc = os.environ['FAKE_TCC_EXPECTED']
+          if not argv or argv[0] != fake_tcc:
+              raise SystemExit(f'negative compiler argv[0] is not the exact fake TCC: {argv[:1]}')
+          counts = collections.Counter(argv)
+          for token, label in (
+              (os.environ['STORE_DYLIB'], 'negative store dylib'),
+              (os.environ['STORE_RPATH'], 'negative store rpath'),
+          ):
+              if counts[token] != 1:
+                  raise SystemExit(f'expected exactly one {label} token, found {counts[token]}')
+          for token, label in (
+              (os.environ['SOURCE_DYLIB'], 'negative source dylib'),
+              (os.environ['SOURCE_RPATH'], 'negative source rpath'),
+          ):
+              if counts[token] != 0:
+                  raise SystemExit(f'forbidden {label} token remains in negative command')
+          if counts['-o'] != 1:
+              raise SystemExit(f'expected exactly one negative -o token, found {counts["-o"]}')
+          joined_output_options = [token for token in argv if token != '-o' and token.startswith('-o')]
+          if joined_output_options:
+              raise SystemExit(f'joined negative -o option is forbidden: {joined_output_options}')
+          output_index = argv.index('-o')
+          if output_index + 1 >= len(argv) or argv[output_index + 1] != os.environ['NEGATIVE_BINARY']:
+              raise SystemExit('the negative -o token does not target the exact negative binary')
+          compiler_names = {'cc', 'gcc', 'clang', 'clang++', 'tcc', 'tcc.exe'}
+          unexpected = [token for token in argv[1:] if os.path.basename(token) in compiler_names]
+          if unexpected:
+              raise SystemExit(f'negative command names a second compiler: {unexpected}')
+          PY
+          grep -Fq 'intentional no-fallback probe failure' "$negative_log"
+          test ! -e "$negative_binary"
+          test ! -L "$negative_binary"
+          if grep -Eiq 'falling back|retrying|recompilation loop|fallback compiler' "$negative_log"; then
+            echo '::error::negative probe observed a fallback/retry indication'
+            exit 1
+          fi
+
+          home_fake_tcc="$RUNNER_TEMP/fake-tcc-home-fallback"
+          home_invocation_log="$RUNNER_TEMP/fake-tcc-home-fallback.invocations"
+          home_argument_log="$RUNNER_TEMP/fake-tcc-home-fallback.arguments"
+          home_negative_binary="$RUNNER_TEMP/home-fallback-no-compiler-fallback-probe"
+          home_negative_log="$RUNNER_TEMP/home-fallback-no-compiler-fallback-probe.log"
+          for path in "$home_fake_tcc" "$home_invocation_log" "$home_argument_log" \
+            "$home_negative_binary" "$home_negative_log"; do
+            test ! -e "$path"
+          done
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'set -euo pipefail' \
+            ': "${FAKE_TCC_INVOCATION_LOG:?}"' \
+            ': "${FAKE_TCC_ARGUMENT_LOG:?}"' \
+            'printf "invocation\n" >> "$FAKE_TCC_INVOCATION_LOG"' \
+            'printf "%s\0" "$@" >> "$FAKE_TCC_ARGUMENT_LOG"' \
+            'printf "%s\n" "intentional HOME fallback fake TCC failure" >&2' \
+            'exit 87' > "$home_fake_tcc"
+          chmod 0700 "$home_fake_tcc"
+
+          set +e
+          (
+            cd "$VROOT"
+            env "${clean_env[@]}" \
+              -u XDG_DATA_HOME \
+              HOME="$SMOKE_HOME" \
+              VCACHE="$SMOKE_VCACHE" \
+              SMOKE_HOME_EXPECTED="$SMOKE_HOME" \
+              SMOKE_VCACHE_EXPECTED="$SMOKE_VCACHE" \
+              GIT_ALLOW_PROTOCOL=file \
+              FAKE_TCC_INVOCATION_LOG="$home_invocation_log" \
+              FAKE_TCC_ARGUMENT_LOG="$home_argument_log" \
+              bash -c '
+                set -euo pipefail
+                test "${XDG_DATA_HOME+x}" != x
+                test "$HOME" = "$SMOKE_HOME_EXPECTED"
+                test "$VCACHE" = "$SMOKE_VCACHE_EXPECTED"
+                unset SMOKE_HOME_EXPECTED
+                unset SMOKE_VCACHE_EXPECTED
+                exec "$@"
+              ' bash \
+              "$VROOT/v" -cc "$home_fake_tcc" -gc boehm -showcc \
+                -no-retry-compilation -no-rsp -nocache \
+                -o "$home_negative_binary" "$negative_source"
+          ) 2>&1 | tee "$home_negative_log"
+          home_negative_pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          test "${#home_negative_pipeline_status[@]}" -eq 2
+          test "${home_negative_pipeline_status[0]}" -ne 0
+          test "${home_negative_pipeline_status[1]}" -eq 0
+          test -f "$home_negative_log"
+          test ! -L "$home_negative_log"
+          test -s "$home_negative_log"
+          test "$(awk '$0 == "invocation" { count++ } END { print count + 0 }' \
+            "$home_invocation_log")" -eq 1
+          python3 - "$home_argument_log" <<'PY'
+          import pathlib
+          import sys
+
+          raw = pathlib.Path(sys.argv[1]).read_bytes()
+          arguments = raw.split(b'\0')
+          if arguments and arguments[-1] == b'':
+              arguments.pop()
+          if not any(argument.endswith(b'.c') for argument in arguments):
+              raise SystemExit('HOME fallback fake TCC did not receive a generated .c argument')
+          PY
+          env \
+            FAKE_TCC_EXPECTED="$home_fake_tcc" \
+            NEGATIVE_BINARY="$home_negative_binary" \
+            STORE_DYLIB="$SMOKE_HOME/.local/share/v-tcc-libgc-v1/$TCCBIN_LIBGC_DYLIB_SHA256/libgc.dylib" \
+            STORE_RPATH="-Wl,-rpath,$SMOKE_HOME/.local/share/v-tcc-libgc-v1/$TCCBIN_LIBGC_DYLIB_SHA256" \
+            SOURCE_DYLIB="$VROOT/thirdparty/tcc/lib/libgc.dylib" \
+            SOURCE_RPATH="-Wl,-rpath,$VROOT/thirdparty/tcc/lib" \
+            python3 - "$home_negative_log" <<'PY'
+          import collections
+          import os
+          import pathlib
+          import shlex
+          import sys
+
+          prefix = '> C compiler cmd: '
+          lines = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines()
+          commands = [line[len(prefix):] for line in lines if line.startswith(prefix)]
+          if len(commands) != 1:
+              raise SystemExit(f'expected one HOME fallback fake command, found {len(commands)}')
+          try:
+              argv = shlex.split(commands[0], posix=True)
+          except ValueError as error:
+              raise SystemExit(f'could not parse HOME fallback fake command: {error}')
+          if not argv or argv[0] != os.environ['FAKE_TCC_EXPECTED']:
+              raise SystemExit(f'HOME fallback fake argv[0] is wrong: {argv[:1]}')
+          counts = collections.Counter(argv)
+          for token, label in (
+              (os.environ['STORE_DYLIB'], 'HOME store dylib'),
+              (os.environ['STORE_RPATH'], 'HOME store rpath'),
+          ):
+              if counts[token] != 1:
+                  raise SystemExit(f'expected one {label}, found {counts[token]}')
+          for token, label in (
+              (os.environ['SOURCE_DYLIB'], 'source dylib'),
+              (os.environ['SOURCE_RPATH'], 'source rpath'),
+          ):
+              if counts[token] != 0:
+                  raise SystemExit(f'forbidden {label} remains in HOME fake command')
+          if any('libgc.a' in token for token in argv):
+              raise SystemExit('HOME fake command contains libgc.a')
+          if counts['-lgc'] != 0:
+              raise SystemExit('HOME fake command contains -lgc')
+          if any(token.startswith('@') for token in argv):
+              raise SystemExit('HOME fake command contains a response-file token')
+          if counts['-o'] != 1:
+              raise SystemExit(f'expected one HOME fake -o token, found {counts["-o"]}')
+          joined = [token for token in argv if token != '-o' and token.startswith('-o')]
+          if joined:
+              raise SystemExit(f'joined HOME fake -o option is forbidden: {joined}')
+          output_index = argv.index('-o')
+          if output_index + 1 >= len(argv) or argv[output_index + 1] != os.environ['NEGATIVE_BINARY']:
+              raise SystemExit('HOME fake -o does not target the exact negative binary')
+          compiler_names = {'cc', 'gcc', 'clang', 'clang++', 'tcc', 'tcc.exe'}
+          unexpected = [token for token in argv[1:] if os.path.basename(token) in compiler_names]
+          if unexpected:
+              raise SystemExit(f'HOME fake command names a second compiler: {unexpected}')
+          PY
+          grep -Fq 'intentional HOME fallback fake TCC failure' "$home_negative_log"
+          test ! -e "$home_negative_binary"
+          test ! -L "$home_negative_binary"
+          if grep -Eiq 'falling back|retrying|recompilation loop|fallback compiler' \
+            "$home_negative_log"; then
+            echo '::error::HOME fake probe observed a fallback/retry indication' >&2
+            exit 1
+          fi
+          home_store_object="$SMOKE_HOME/.local/share/v-tcc-libgc-v1/$TCCBIN_LIBGC_DYLIB_SHA256/libgc.dylib"
+          test -f "$home_store_object"
+          test ! -L "$home_store_object"
+          test "$(shasum -a 256 "$home_store_object" | awk '{print $1}')" = \
+            "$TCCBIN_LIBGC_DYLIB_SHA256"
+
+          invocation_log_sha256=$(shasum -a 256 "$invocation_log" | awk '{print $1}')
+          argument_log_sha256=$(shasum -a 256 "$argument_log" | awk '{print $1}')
+          invocation_log_size=$(stat -f '%z' "$invocation_log")
+          argument_log_size=$(stat -f '%z' "$argument_log")
+          no_root_binary="$RUNNER_TEMP/home-fallback-no-data-root-probe"
+          no_root_log="$RUNNER_TEMP/home-fallback-no-data-root-probe.log"
+          test ! -e "$no_root_binary"
+          test ! -e "$no_root_log"
+          set +e
+          (
+            cd "$VROOT"
+            env "${clean_env[@]}" \
+              -u XDG_DATA_HOME \
+              -u HOME \
+              VCACHE="$SMOKE_VCACHE" \
+              GIT_ALLOW_PROTOCOL=file \
+              FAKE_TCC_INVOCATION_LOG="$invocation_log" \
+              FAKE_TCC_ARGUMENT_LOG="$argument_log" \
+              "$VROOT/v" -cc "$fake_tcc" -gc boehm -showcc \
+              -no-retry-compilation -no-rsp -nocache \
+              -o "$no_root_binary" "$negative_source"
+          ) 2>&1 | tee "$no_root_log"
+          no_root_pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          test "${#no_root_pipeline_status[@]}" -eq 2
+          test "${no_root_pipeline_status[0]}" -ne 0
+          test "${no_root_pipeline_status[1]}" -eq 0
+          test -f "$no_root_log"
+          test ! -L "$no_root_log"
+          test -s "$no_root_log"
+          grep -Fq 'XDG_DATA_HOME="" and HOME=""' "$no_root_log"
+          grep -Fq 'no persistent data root is configured' "$no_root_log"
+          test ! -e "$no_root_binary"
+          test ! -L "$no_root_binary"
+          test "$(awk '$0 == "invocation" { count++ } END { print count + 0 }' "$invocation_log")" -eq 1
+          test "$(stat -f '%z' "$invocation_log")" = "$invocation_log_size"
+          test "$(stat -f '%z' "$argument_log")" = "$argument_log_size"
+          test "$(shasum -a 256 "$invocation_log" | awk '{print $1}')" = "$invocation_log_sha256"
+          test "$(shasum -a 256 "$argument_log" | awk '{print $1}')" = "$argument_log_sha256"
+          python3 - "$no_root_log" <<'PY'
+          import pathlib
+          import sys
+
+          prefix = '> C compiler cmd: '
+          commands = [
+              line for line in pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines()
+              if line.startswith(prefix)
+          ]
+          if commands:
+              raise SystemExit(f'no-data-root probe reached a C compiler command: {commands}')
+          PY
+          if grep -Fq 'intentional no-fallback probe failure' "$no_root_log"; then
+            echo '::error::no-data-root probe unexpectedly invoked fake TCC' >&2
+            exit 1
+          fi
+          if grep -Eiq 'falling back|retrying|recompilation loop|fallback compiler' "$no_root_log"; then
+            echo '::error::no-data-root probe observed a fallback/retry indication' >&2
+            exit 1
+          fi
+
+          real_tcc="$VROOT/thirdparty/tcc"
+          test "$(shasum -a 256 "$real_tcc/bundle_checksums.txt" | awk '{print $1}')" = "$TCCBIN_BUNDLE_CHECKSUMS_SHA256"
+          (cd "$real_tcc" && shasum -a 256 -c bundle_checksums.txt)
+          test -z "$(git -C "$real_tcc" status --porcelain)"
+          store_object="$XDG/v-tcc-libgc-v1/$TCCBIN_LIBGC_DYLIB_SHA256/libgc.dylib"
+          source_target="$real_tcc/lib/libgc.1.dylib"
+          test -f "$store_object"
+          test ! -L "$store_object"
+          test "$(shasum -a 256 "$store_object" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          cmp -s "$source_target" "$store_object"
+
+          test -d "$SMOKE_VCACHE"
+          test ! -L "$SMOKE_VCACHE"
+          test "$(stat -f '%u' "$SMOKE_VCACHE")" = "$(id -u)"
+          test "$(stat -f '%Lp' "$SMOKE_VCACHE")" = 700
+          case "$SMOKE_VCACHE" in
+            "$SMOKE_HOME"|"$SMOKE_HOME"/*|"$XDG"|"$XDG"/*|"$VROOT"|"$VROOT"/*)
+              echo '::error::explicit VCACHE moved inside a protected smoke root' >&2
+              exit 1
+              ;;
+          esac
+          test "$(find "$SMOKE_HOME" -mindepth 1 -maxdepth 1 -print)" = "$SMOKE_HOME/.local"
+
+          inventory_smoke_vcache() {
+            local root=$1
+            local path relative mode uid inode mtime size digest target
+            local LC_ALL=C
+            export LC_ALL
+            find "$root" -print0 | LC_ALL=C sort -z |
+              while IFS= read -r -d '' path; do
+                if [ "$path" = "$root" ]; then
+                  relative=.
+                else
+                  relative=${path#"$root"/}
+                fi
+                mode=$(stat -f '%Lp' "$path")
+                uid=$(stat -f '%u' "$path")
+                inode=$(stat -f '%i' "$path")
+                mtime=$(stat -f '%m' "$path")
+                if [ -L "$path" ]; then
+                  target=$(readlink "$path")
+                  digest=$(printf '%s' "$target" | shasum -a 256 | awk '{print $1}')
+                  printf 'L mode=%q uid=%q inode=%q mtime=%q target=%q target_sha256=%q path=%q\n' \
+                    "$mode" "$uid" "$inode" "$mtime" "$target" "$digest" "$relative"
+                elif [ -d "$path" ]; then
+                  printf 'D mode=%q uid=%q inode=%q mtime=%q path=%q\n' \
+                    "$mode" "$uid" "$inode" "$mtime" "$relative"
+                elif [ -f "$path" ]; then
+                  size=$(stat -f '%z' "$path")
+                  digest=$(shasum -a 256 "$path" | awk '{print $1}')
+                  printf 'F mode=%q uid=%q inode=%q mtime=%q size=%q sha256=%q path=%q\n' \
+                    "$mode" "$uid" "$inode" "$mtime" "$size" "$digest" "$relative"
+                else
+                  printf '::error::unsupported explicit VCACHE entry: %q\n' "$relative" >&2
+                  exit 1
+                fi
+              done
+          }
+
+          smoke_vcache_inventory="$RUNNER_TEMP/home-fallback-vcache.final.inventory"
+          test ! -e "$smoke_vcache_inventory"
+          inventory_smoke_vcache "$SMOKE_VCACHE" > "$smoke_vcache_inventory"
+          test -s "$smoke_vcache_inventory"
+          smoke_vcache_inventory_sha256=$(shasum -a 256 "$smoke_vcache_inventory" | awk '{print $1}')
+          {
+            printf 'SMOKE_VCACHE_INODE=%q\n' "$(stat -f '%i' "$SMOKE_VCACHE")"
+            printf 'SMOKE_VCACHE_INVENTORY=%q\n' "$smoke_vcache_inventory"
+            printf 'SMOKE_VCACHE_INVENTORY_SHA256=%q\n' "$smoke_vcache_inventory_sha256"
+          } > "$RUNNER_TEMP/home-fallback-vcache.env"
+
+      - name: Postflight attestations
+        shell: bash
+        run: |
+          set -euo pipefail
+          source "$RUNNER_TEMP/part-c-smoke.env"
+          source "$RUNNER_TEMP/tccbin-baseline.env"
+          source "$RUNNER_TEMP/home-fallback-smoke.env"
+          source "$RUNNER_TEMP/home-fallback-vcache.env"
+          parent=1f549e2de1dad5973e07769dd789ee28bc586c1b
+          workflow=.github/workflows/macos_tcc_libgc_home_fallback_smoke.yml
+          smoke_source="$RUNNER_TEMP/part-c-real-smoke.v"
+          smoke_binary="$RUNNER_TEMP/part-c-real-smoke"
+          source_lib_dir="$VROOT/thirdparty/tcc/lib"
+          source_dylib="$source_lib_dir/libgc.dylib"
+          store_dir="$XDG/v-tcc-libgc-v1/$TCCBIN_LIBGC_DYLIB_SHA256"
+
+          clean_env=(
+            -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY
+            -u http_proxy -u https_proxy -u all_proxy
+          )
+          while IFS= read -r variable; do
+            case "$variable" in
+              DYLD_*) clean_env+=(-u "$variable") ;;
+            esac
+          done < <(compgen -e)
+
+          inventory_smoke_vcache() {
+            local root=$1
+            local path relative mode uid inode mtime size digest target
+            local LC_ALL=C
+            export LC_ALL
+            find "$root" -print0 | LC_ALL=C sort -z |
+              while IFS= read -r -d '' path; do
+                if [ "$path" = "$root" ]; then
+                  relative=.
+                else
+                  relative=${path#"$root"/}
+                fi
+                mode=$(stat -f '%Lp' "$path")
+                uid=$(stat -f '%u' "$path")
+                inode=$(stat -f '%i' "$path")
+                mtime=$(stat -f '%m' "$path")
+                if [ -L "$path" ]; then
+                  target=$(readlink "$path")
+                  digest=$(printf '%s' "$target" | shasum -a 256 | awk '{print $1}')
+                  printf 'L mode=%q uid=%q inode=%q mtime=%q target=%q target_sha256=%q path=%q\n' \
+                    "$mode" "$uid" "$inode" "$mtime" "$target" "$digest" "$relative"
+                elif [ -d "$path" ]; then
+                  printf 'D mode=%q uid=%q inode=%q mtime=%q path=%q\n' \
+                    "$mode" "$uid" "$inode" "$mtime" "$relative"
+                elif [ -f "$path" ]; then
+                  size=$(stat -f '%z' "$path")
+                  digest=$(shasum -a 256 "$path" | awk '{print $1}')
+                  printf 'F mode=%q uid=%q inode=%q mtime=%q size=%q sha256=%q path=%q\n' \
+                    "$mode" "$uid" "$inode" "$mtime" "$size" "$digest" "$relative"
+                else
+                  printf '::error::unsupported explicit VCACHE entry: %q\n' "$relative" >&2
+                  exit 1
+                fi
+              done
+          }
+
+          test -d "$SMOKE_VCACHE"
+          test ! -L "$SMOKE_VCACHE"
+          test "$(stat -f '%u' "$SMOKE_VCACHE")" = "$(id -u)"
+          test "$(stat -f '%Lp' "$SMOKE_VCACHE")" = 700
+          test "$(stat -f '%i' "$SMOKE_VCACHE")" = "$SMOKE_VCACHE_INODE"
+          case "$SMOKE_VCACHE" in
+            "$SMOKE_HOME"|"$SMOKE_HOME"/*|"$XDG"|"$XDG"/*|"$VROOT"|"$VROOT"/*)
+              echo '::error::explicit VCACHE overlaps a protected root in postflight' >&2
+              exit 1
+              ;;
+          esac
+          test "$(find "$SMOKE_HOME" -mindepth 1 -maxdepth 1 -print)" = "$SMOKE_HOME/.local"
+          test -f "$SMOKE_VCACHE_INVENTORY"
+          test ! -L "$SMOKE_VCACHE_INVENTORY"
+          test -s "$SMOKE_VCACHE_INVENTORY"
+          test "$(shasum -a 256 "$SMOKE_VCACHE_INVENTORY" | awk '{print $1}')" = \
+            "$SMOKE_VCACHE_INVENTORY_SHA256"
+          postflight_vcache_before="$RUNNER_TEMP/home-fallback-vcache.postflight-before.inventory"
+          test ! -e "$postflight_vcache_before"
+          inventory_smoke_vcache "$SMOKE_VCACHE" > "$postflight_vcache_before"
+          diff -u "$SMOKE_VCACHE_INVENTORY" "$postflight_vcache_before"
+
+          test "$GITHUB_REPOSITORY" = GGRei/v
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF" = refs/heads/test/macos-tcc-libgc-home-fallback-smoke
+          test "$(git remote)" = origin
+          case "$(git remote get-url origin)" in
+            https://github.com/GGRei/v|https://github.com/GGRei/v.git) ;;
+            *) echo '::error::workflow checkout origin is not the GGRei fork' >&2; exit 1 ;;
+          esac
+          case "$(git remote get-url --push origin)" in
+            https://github.com/GGRei/v|https://github.com/GGRei/v.git) ;;
+            *) echo '::error::workflow checkout push URL is not the GGRei fork' >&2; exit 1 ;;
+          esac
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-list --parents -n 1 HEAD | awk '{print NF}')" -eq 2
+          test "$(git rev-parse HEAD^)" = "$parent"
+          test "$(git show -s --format=%T HEAD^)" = adcb611aea9bb8e6afdfc350cc4777116e3fa92f
+          part_c_commit=190564b33e563a4eeba1007f8172a03b3018f606
+          part_c_base=58a8f2a6d4287667c5bc8a9875079a2364a6d45b
+          upstream_base=59b4b01ad991101fafcfd4e91282b2a36995bd35
+          test "$(git rev-parse "$parent^")" = "$part_c_commit"
+          test "$(git rev-parse "$part_c_commit^")" = "$part_c_base"
+          test "$(git rev-parse "$part_c_base^")" = "$upstream_base"
+          expected_p2_files=$(printf '%s\n' \
+            README.md \
+            vlib/v/builder/tcc_macos_libgc_store.v \
+            vlib/v/builder/tcc_macos_libgc_store_test.v)
+          test "$(git diff --name-only "$part_c_commit" "$parent")" = "$expected_p2_files"
+          git merge-base --is-ancestor 4fbecda1c67643a484c996fb44abab11d8776e90 "$parent"
+          test "$(git rev-list --count 4fbecda1c67643a484c996fb44abab11d8776e90..$parent)" -eq 5
+          git diff --quiet
+          git diff --cached --quiet
+          test -z "$(git status --porcelain)"
+          test "$(git diff --name-only HEAD^ HEAD)" = "$workflow"
+          git diff --check HEAD^ HEAD
+
+          test "$(git -C "$VROOT" rev-parse HEAD)" = "$parent"
+          test "$(git -C "$VROOT" rev-parse 'HEAD^{tree}')" = \
+            adcb611aea9bb8e6afdfc350cc4777116e3fa92f
+          git -C "$VROOT" diff --quiet
+          git -C "$VROOT" diff --cached --quiet
+          test -z "$(git -C "$VROOT" status --porcelain --untracked-files=all)"
+          test "$(shasum -a 256 "$VROOT/vlib/v/builder/cc.v" | awk '{print $1}')" = \
+            17c85cfecb014eac0cd53d9407ef9018f106a9ad651910930073c5f0e0d10bc7
+          test "$(shasum -a 256 "$VROOT/README.md" | awk '{print $1}')" = \
+            6045333a6885c8bc02d8a664fe2dc878b44c75ce597c25a0c5e58f72ceca204a
+          test "$(shasum -a 256 "$VROOT/vlib/v/builder/tcc_macos_libgc_store.v" | awk '{print $1}')" = \
+            ad2063e8d0bd59ae109e71ab5251e7b67227f113c8409fef1771fc34deb26193
+          test "$(shasum -a 256 "$VROOT/vlib/v/builder/tcc_macos_libgc_store_test.v" | awk '{print $1}')" = \
+            b93ce05636bba4615f7a735331cd31083a7e32e1a880128322f0ba5cf1c8a8ab
+          test "$(grep -c '^fn test_' "$VROOT/vlib/v/builder/tcc_macos_libgc_store_test.v")" -eq 47
+          test "$(shasum -a 256 "$VROOT/.github/workflows/update_tccbin.yml" | awk '{print $1}')" = \
+            3840d3478e30f849f4e738f2c99e595721d84928b5e418099c54eb3b4427a404
+          test "$(shasum -a 256 "$VROOT/vlib/builtin/builtin_d_gcboehm.c.v" | awk '{print $1}')" = \
+            6d203eea5b4b07111dd0dfbdb3838e3af0717ec03fd325018f12acc53799c160
+          test "$(shasum -a 256 "$VROOT/vlib/v/builder/gc_flags_test.v" | awk '{print $1}')" = \
+            1a9325cef61be373506251a684162948d8defafbf73eea59776eee6ef1924b17
+          bootstrap_sha256=$(cat "$RUNNER_TEMP/bootstrap-v.sha256")
+          test "$(shasum -a 256 "$RUNNER_TEMP/bootstrap-v/v" | awk '{print $1}')" = "$bootstrap_sha256"
+          test "$(shasum -a 256 "$VROOT/v" | awk '{print $1}')" = "$bootstrap_sha256"
+
+          for bundle in "$RUNNER_TEMP/tccbin-stage" "$RUNNER_TEMP/bootstrap-v/thirdparty/tcc" "$VROOT/thirdparty/tcc"; do
+            test "$(git -C "$bundle" rev-parse HEAD)" = da8ac5a4369accc67c485191d02535d77718a1c8
+            test "$(git -C "$bundle" rev-parse HEAD)" = "$TCCBIN_HEAD"
+            test "$(git -C "$bundle" rev-parse 'HEAD^{tree}')" = 10539576b110a557a09b87037708436006d9c246
+            test "$(git -C "$bundle" rev-parse 'HEAD^{tree}')" = "$TCCBIN_TREE"
+            git -C "$bundle" diff --quiet
+            git -C "$bundle" diff --cached --quiet
+            test -z "$(git -C "$bundle" status --porcelain)"
+            test "$(cat "$bundle/build_source_hash.txt")" = da58264ab1ef4fb2ecc9a42ded736d3190c0a8be
+            test "$(cat "$bundle/lib/libgc_build_source_hash.txt")" = 39b0d4ecf9bdc65a971e9423f4080d40814da6ce
+            test "$(cat "$bundle/lib/libgc_build_libatomic_ops_source_hash.txt")" = d007246aa70fef4f9bfcb84bcc5e6a97653b3d86
+            test "$(cat "$bundle/lib/libgc_build_recipe_version.txt")" = 2
+            test "$(cat "$bundle/build_macosx_deployment_target.txt")" = 10.13
+            test "$(stat -f '%z' "$bundle/bundle_checksums.txt")" -eq 477
+            test "$(shasum -a 256 "$bundle/bundle_checksums.txt" | awk '{print $1}')" = \
+              46ae1db98501ff724679eba6856c068f168df1565633a489d81d7b270391965f
+            test "$(shasum -a 256 "$bundle/bundle_checksums.txt" | awk '{print $1}')" = \
+              "$TCCBIN_BUNDLE_CHECKSUMS_SHA256"
+            (cd "$bundle" && shasum -a 256 -c bundle_checksums.txt)
+            test -L "$bundle/lib/libgc.dylib"
+            test "$(readlink "$bundle/lib/libgc.dylib")" = libgc.1.dylib
+            test -f "$bundle/lib/libgc.1.dylib"
+            test ! -L "$bundle/lib/libgc.1.dylib"
+            test "$(stat -f '%z' "$bundle/lib/libgc.1.dylib")" -eq 159072
+            test "$(shasum -a 256 "$bundle/lib/libgc.1.dylib" | awk '{print $1}')" = \
+              0340bc2ebd9684cc0c5e64414b9c8842822b1f2a0536041db1bc368d8dafd83e
+            test "$(shasum -a 256 "$bundle/lib/libgc.1.dylib" | awk '{print $1}')" = \
+              "$TCCBIN_LIBGC_DYLIB_SHA256"
+            test "$(stat -f '%z' "$bundle/tcc.exe")" -eq 463464
+            test "$(shasum -a 256 "$bundle/tcc.exe" | awk '{print $1}')" = \
+              d9004cf0549674194eae79237b7f8100c3658c3897fd0d2b672d47dd340a3151
+          done
+
+          store_root="$XDG/v-tcc-libgc-v1"
+          content_dir="$store_root/$TCCBIN_LIBGC_DYLIB_SHA256"
+          store_object="$content_dir/libgc.dylib"
+          source_target="$VROOT/thirdparty/tcc/lib/libgc.1.dylib"
+          test -d "$store_root"
+          test ! -L "$store_root"
+          test "$(find "$store_root" -mindepth 1 -maxdepth 1 -print | awk 'END { print NR + 0 }')" -eq 1
+          test -d "$content_dir"
+          test ! -L "$content_dir"
+          test -f "$store_object"
+          test ! -L "$store_object"
+          test "$(find "$content_dir" -mindepth 1 -maxdepth 1 -print | awk 'END { print NR + 0 }')" -eq 1
+          for directory in "$store_root" "$content_dir"; do
+            test "$(stat -f '%u' "$directory")" = "$(id -u)"
+            test "$(stat -f '%Lp' "$directory")" = 700
+          done
+          test "$(stat -f '%u' "$store_object")" = "$(id -u)"
+          test "$(stat -f '%Lp' "$store_object")" = 700
+          test -z "$(find "$store_root" -maxdepth 3 -type l -print -quit)"
+          test -z "$(find "$store_root" -maxdepth 3 -name '.libgc.dylib.tmp.*' -print -quit)"
+          test "$(shasum -a 256 "$store_object" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          test "$(shasum -a 256 "$source_target" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          cmp -s "$source_target" "$store_object"
+
+          home_local="$SMOKE_HOME/.local"
+          test "$HOME_DATA_BASE" = "$home_local/share"
+          test "$HOME_STORE_ROOT" = "$HOME_DATA_BASE/v-tcc-libgc-v1"
+          test "$HOME_STORE_DIR" = "$HOME_STORE_ROOT/$TCCBIN_LIBGC_DYLIB_SHA256"
+          test "$HOME_STORE_OBJECT" = "$HOME_STORE_DIR/libgc.dylib"
+          test "$HOME_STORE_ROOT" != "$store_root"
+          for directory in "$SMOKE_HOME" "$home_local" "$HOME_DATA_BASE" \
+            "$HOME_STORE_ROOT" "$HOME_STORE_DIR"; do
+            test -d "$directory"
+            test ! -L "$directory"
+            test "$(stat -f '%u' "$directory")" = "$(id -u)"
+            test "$(stat -f '%Lp' "$directory")" = 700
+          done
+          test "$(find "$SMOKE_HOME" -mindepth 1 -maxdepth 1 -print)" = "$home_local"
+          test "$(find "$home_local" -mindepth 1 -maxdepth 1 -print)" = "$HOME_DATA_BASE"
+          test "$(find "$HOME_DATA_BASE" -mindepth 1 -maxdepth 1 -print)" = "$HOME_STORE_ROOT"
+          test "$(find "$HOME_STORE_ROOT" -mindepth 1 -maxdepth 1 -print)" = "$HOME_STORE_DIR"
+          test "$(find "$HOME_STORE_DIR" -mindepth 1 -maxdepth 1 -print)" = "$HOME_STORE_OBJECT"
+          test -f "$HOME_STORE_OBJECT"
+          test ! -L "$HOME_STORE_OBJECT"
+          test "$(stat -f '%u' "$HOME_STORE_OBJECT")" = "$(id -u)"
+          test "$(stat -f '%Lp' "$HOME_STORE_OBJECT")" = 700
+          test "$(stat -f '%i' "$HOME_STORE_OBJECT")" = "$HOME_OBJECT_INODE"
+          test "$(stat -f '%m' "$HOME_STORE_OBJECT")" = "$HOME_OBJECT_MTIME"
+          test "$(shasum -a 256 "$HOME_STORE_OBJECT" | awk '{print $1}')" = \
+            "$HOME_OBJECT_SHA256"
+          test "$HOME_OBJECT_SHA256" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          test -z "$(find "$SMOKE_HOME" -maxdepth 6 -type l -print -quit)"
+          test -z "$(find "$HOME_STORE_ROOT" -maxdepth 3 -name '.libgc.dylib.tmp.*' -print -quit)"
+          home_inventory_before="$RUNNER_TEMP/home-fallback-store.before.inventory"
+          home_inventory_after="$RUNNER_TEMP/home-fallback-store.after.inventory"
+          test -f "$home_inventory_before"
+          test ! -L "$home_inventory_before"
+          test -s "$home_inventory_before"
+          test -f "$home_inventory_after"
+          test ! -L "$home_inventory_after"
+          test -s "$home_inventory_after"
+          diff -u "$home_inventory_before" "$home_inventory_after"
+          test "$(shasum -a 256 "$home_inventory_before" | awk '{print $1}')" = \
+            "$HOME_INVENTORY_SHA256"
+          test "$(shasum -a 256 "$home_inventory_after" | awk '{print $1}')" = \
+            "$HOME_INVENTORY_SHA256"
+          test "$(shasum -a 256 "$source_target" | awk '{print $1}')" = \
+            "$TCCBIN_LIBGC_DYLIB_SHA256"
+          cmp -s "$source_target" "$HOME_STORE_OBJECT"
+          test "$HOME_UNSET_BINARY" != "$HOME_EMPTY_BINARY"
+          test "$HOME_UNSET_BINARY" != "$smoke_binary"
+          test "$HOME_EMPTY_BINARY" != "$smoke_binary"
+
+          test -f "$smoke_source"
+          if grep -Fq '#flag' "$smoke_source"; then
+            echo '::error::the integrated Part C source contains manual linker flags'
+            exit 1
+          fi
+          otool_libraries_log="$RUNNER_TEMP/part-c-real-smoke.otool-L.log"
+          otool -L "$smoke_binary" > "$otool_libraries_log"
+          dependency_count=$(awk '$1 == "@rpath/libgc.dylib" { count++ } END { print count + 0 }' \
+            "$otool_libraries_log")
+          libgc_dependency_count=$(awk 'NR > 1 && $1 ~ /libgc/ { count++ } END { print count + 0 }' \
+            "$otool_libraries_log")
+          test "$dependency_count" -eq 1
+          test "$libgc_dependency_count" -eq 1
+          if grep -Fq "$source_dylib" "$otool_libraries_log" \
+            || grep -Fq "$source_target" "$otool_libraries_log" \
+            || grep -Fq "$store_object" "$otool_libraries_log"; then
+            echo '::error::absolute source/store libgc path leaked into LC_LOAD_DYLIB'
+            exit 1
+          fi
+
+          otool_load_commands_log="$RUNNER_TEMP/part-c-real-smoke.otool-l.log"
+          otool -l "$smoke_binary" > "$otool_load_commands_log"
+          read -r total_rpath_count store_rpath_count source_rpath_count < <(
+            awk -v store="$store_dir" -v source="$source_lib_dir" '
+              $1 == "cmd" {
+                active = ($2 == "LC_RPATH")
+                next
+              }
+              active && $1 == "path" {
+                value = $0
+                sub(/^[[:space:]]*path[[:space:]]+/, "", value)
+                sub(/[[:space:]]+\(offset[[:space:]]+[0-9]+\)[[:space:]]*$/, "", value)
+                total_count++
+                if (value == store) store_count++
+                if (value == source) source_count++
+                active = 0
+              }
+              END { print total_count + 0, store_count + 0, source_count + 0 }
+            ' "$otool_load_commands_log"
+          )
+          test "$total_rpath_count" -eq 1
+          test "$store_rpath_count" -eq 1
+          test "$source_rpath_count" -eq 0
+
+          runtime_stdout="$RUNNER_TEMP/part-c-real-smoke.postflight.stdout"
+          set +e
+          env "${clean_env[@]}" \
+            XDG_DATA_HOME="$XDG" \
+            VCACHE="$SMOKE_VCACHE" \
+            GIT_ALLOW_PROTOCOL=file \
+            "$smoke_binary" > "$runtime_stdout"
+          runtime_status=$?
+          set -e
+          test "$runtime_status" -eq 0
+          test "$(LC_ALL=C wc -l < "$runtime_stdout" | tr -d ' ')" -eq 1
+          test "$(sed -n '1p' "$runtime_stdout")" = part-c-ok:1023
+
+          postflight_home_binary() {
+            local mode=$1
+            local binary=$2
+            local label=$3
+            local file_text libraries_log load_commands_log stdout
+            local dependency_count libgc_dependency_count
+            local total_rpath_count store_rpath_count source_rpath_count status
+            test -f "$binary"
+            test ! -L "$binary"
+            test -x "$binary"
+            file_text=$(file "$binary")
+            test "${file_text#*Mach-O 64-bit}" != "$file_text"
+            test "${file_text#*x86_64}" != "$file_text"
+            libraries_log="$RUNNER_TEMP/$label.postflight.otool-L.log"
+            load_commands_log="$RUNNER_TEMP/$label.postflight.otool-l.log"
+            stdout="$RUNNER_TEMP/$label.postflight.stdout"
+            test ! -e "$libraries_log"
+            test ! -e "$load_commands_log"
+            test ! -e "$stdout"
+            otool -L "$binary" > "$libraries_log"
+            dependency_count=$(awk '$1 == "@rpath/libgc.dylib" { count++ } END { print count + 0 }' \
+              "$libraries_log")
+            libgc_dependency_count=$(awk 'NR > 1 && $1 ~ /libgc/ { count++ } END { print count + 0 }' \
+              "$libraries_log")
+            test "$dependency_count" -eq 1
+            test "$libgc_dependency_count" -eq 1
+            if grep -Fq "$source_dylib" "$libraries_log" \
+              || grep -Fq "$source_target" "$libraries_log" \
+              || grep -Fq "$HOME_STORE_OBJECT" "$libraries_log"; then
+              echo "::error::$label leaked an absolute libgc path into LC_LOAD_DYLIB" >&2
+              exit 1
+            fi
+            otool -l "$binary" > "$load_commands_log"
+            read -r total_rpath_count store_rpath_count source_rpath_count < <(
+              awk -v store="$HOME_STORE_DIR" -v source="$source_lib_dir" '
+                $1 == "cmd" { active = ($2 == "LC_RPATH"); next }
+                active && $1 == "path" {
+                  value = $0
+                  sub(/^[[:space:]]*path[[:space:]]+/, "", value)
+                  sub(/[[:space:]]+\(offset[[:space:]]+[0-9]+\)[[:space:]]*$/, "", value)
+                  total_count++
+                  if (value == store) store_count++
+                  if (value == source) source_count++
+                  active = 0
+                }
+                END { print total_count + 0, store_count + 0, source_count + 0 }
+              ' "$load_commands_log"
+            )
+            test "$total_rpath_count" -eq 1
+            test "$store_rpath_count" -eq 1
+            test "$source_rpath_count" -eq 0
+            set +e
+            case "$mode" in
+              unset)
+                env "${clean_env[@]}" -u XDG_DATA_HOME HOME="$SMOKE_HOME" \
+                  VCACHE="$SMOKE_VCACHE" SMOKE_HOME_EXPECTED="$SMOKE_HOME" \
+                  SMOKE_VCACHE_EXPECTED="$SMOKE_VCACHE" GIT_ALLOW_PROTOCOL=file \
+                  bash -c '
+                    set -euo pipefail
+                    test "${XDG_DATA_HOME+x}" != x
+                    test "$HOME" = "$SMOKE_HOME_EXPECTED"
+                    test "$VCACHE" = "$SMOKE_VCACHE_EXPECTED"
+                    unset SMOKE_HOME_EXPECTED
+                    unset SMOKE_VCACHE_EXPECTED
+                    exec "$@"
+                  ' bash "$binary" > "$stdout"
+                ;;
+              empty)
+                env "${clean_env[@]}" XDG_DATA_HOME= HOME="$SMOKE_HOME" \
+                  VCACHE="$SMOKE_VCACHE" SMOKE_HOME_EXPECTED="$SMOKE_HOME" \
+                  SMOKE_VCACHE_EXPECTED="$SMOKE_VCACHE" GIT_ALLOW_PROTOCOL=file \
+                  bash -c '
+                    set -euo pipefail
+                    test "${XDG_DATA_HOME+x}" = x
+                    test -z "$XDG_DATA_HOME"
+                    test "$HOME" = "$SMOKE_HOME_EXPECTED"
+                    test "$VCACHE" = "$SMOKE_VCACHE_EXPECTED"
+                    unset SMOKE_HOME_EXPECTED
+                    unset SMOKE_VCACHE_EXPECTED
+                    exec "$@"
+                  ' bash "$binary" > "$stdout"
+                ;;
+              *) exit 1 ;;
+            esac
+            status=$?
+            set -e
+            test "$status" -eq 0
+            test "$(LC_ALL=C wc -l < "$stdout" | tr -d ' ')" -eq 1
+            test "$(sed -n '1p' "$stdout")" = part-c-ok:1023
+          }
+
+          postflight_home_binary unset "$HOME_UNSET_BINARY" home-fallback-unset-xdg-smoke
+          postflight_home_binary empty "$HOME_EMPTY_BINARY" home-fallback-empty-xdg-smoke
+
+          test -L "$VROOT/thirdparty/tcc/lib/libgc.dylib"
+          test "$(readlink "$VROOT/thirdparty/tcc/lib/libgc.dylib")" = libgc.1.dylib
+          test -f "$source_target"
+          test ! -L "$source_target"
+          test "$(shasum -a 256 "$source_target" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          test "$(shasum -a 256 "$store_object" | awk '{print $1}')" = "$TCCBIN_LIBGC_DYLIB_SHA256"
+          cmp -s "$source_target" "$store_object"
+
+          test -d "$SMOKE_VCACHE"
+          test ! -L "$SMOKE_VCACHE"
+          test "$(stat -f '%u' "$SMOKE_VCACHE")" = "$(id -u)"
+          test "$(stat -f '%Lp' "$SMOKE_VCACHE")" = 700
+          test "$(stat -f '%i' "$SMOKE_VCACHE")" = "$SMOKE_VCACHE_INODE"
+          for protected_root in "$SMOKE_HOME" "$XDG" "$VROOT"; do
+            case "$SMOKE_VCACHE" in
+              "$protected_root"|"$protected_root"/*)
+                echo '::error::explicit VCACHE overlaps a protected root after postflight' >&2
+                exit 1
+                ;;
+            esac
+            case "$protected_root" in
+              "$SMOKE_VCACHE"|"$SMOKE_VCACHE"/*)
+                echo '::error::protected root overlaps explicit VCACHE after postflight' >&2
+                exit 1
+                ;;
+            esac
+          done
+          test "$(find "$SMOKE_HOME" -mindepth 1 -maxdepth 1 -print)" = "$SMOKE_HOME/.local"
+          postflight_vcache_after="$RUNNER_TEMP/home-fallback-vcache.postflight-after.inventory"
+          test ! -e "$postflight_vcache_after"
+          inventory_smoke_vcache "$SMOKE_VCACHE" > "$postflight_vcache_after"
+          diff -u "$SMOKE_VCACHE_INVENTORY" "$postflight_vcache_after"
+          diff -u "$postflight_vcache_before" "$postflight_vcache_after"
+          test "$(shasum -a 256 "$postflight_vcache_after" | awk '{print $1}')" = \
+            "$SMOKE_VCACHE_INVENTORY_SHA256"
