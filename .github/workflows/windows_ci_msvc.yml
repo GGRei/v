@@ -87,6 +87,14 @@ jobs:
             -ExpectedRedSurfaceSha256 '04b271a1ece4844a60a338358ec292d1e59448b962f6be7fb9c5765206678a7e' `
             -ExpectedGreenSurfaceSha256 '2b885ad0dc0e8b2accb837712b1b94325fe182b0ad755d65ef633aaad7566932' `
             -ExpectedRunnerSha256 '151c6b7c23576217e1f31b72988cec8297f2c5b33dc3bfe3e4dd5c09beb133fb'
+      - name: Win32 W5 raw-input A0 preflight
+        shell: pwsh
+        run: |
+          .\.github\workflows\run_multiwindow_win32_w5_a0.ps1 -Compiler msvc `
+            -ExpectedHeaderSha256 'af2d1c408018b9b1a3793ffb4affb2c65c4c38e57c05c94116065394bae7de1f' `
+            -ExpectedMainSha256 '76858c48379f5572ef652e819eb977eca9ee0eb7305a030c07fe531a88347e77' `
+            -ExpectedTupleSha256 '41cf626d4bc5257427a0296d7db62dcdf62893d0676ef093451295aaea01282e' `
+            -ExpectedRunnerSha256 'c58cbdd1480b40fa9026cc902e90a51df6975ef50a252533830c2b8e9b28b08b'
       - name: Prepare multiwindow Job Object watchdog
         shell: pwsh
         run: |
