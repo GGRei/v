@@ -77,7 +77,7 @@ jobs:
             -Compiler msvc `
             -Expectation Green `
             -ExpectedOracleSha256 '804e8cbc5f5f7c390e90736d54a60d65d19b649a94afa4915bd9cb4e95c4e04d' `
-            -ExpectedNativeTestSha256 'c1a45e61d5f8caf6876f2a30182432712dd1a9ee958e815bb7cfe7198d8a641d' `
+            -ExpectedNativeTestSha256 'f43ac5c72ccd83869da339a6bf64c70d2a4a6ed2134a75c586f79bc436ab0ad0' `
             -ExpectedPublicTestSha256 'd08eafb919ae97b185fc480c22f6d990973396152e9a0b3a01035c3e9a30275c' `
             -ExpectedNoOptProbeSha256 '288f148ca15b6694481f117c03be5f80c4045baf76d3b0e90db61b5e0596741c' `
             -ExpectedServiceBackendSha256 '21e6bf254ffcaadd4360d0eefea2eeac90c946c79bff028c00ca34d493214add' `
@@ -86,7 +86,7 @@ jobs:
             -ExpectedWin32ServiceNativeSha256 '9ab0a4c7e55b6afac85152c3b1127207f1f99fdedd0a07309026e44527770a01' `
             -ExpectedRedSurfaceSha256 '04b271a1ece4844a60a338358ec292d1e59448b962f6be7fb9c5765206678a7e' `
             -ExpectedGreenSurfaceSha256 '2b885ad0dc0e8b2accb837712b1b94325fe182b0ad755d65ef633aaad7566932' `
-            -ExpectedRunnerSha256 'e86a15efc4334723d14d30ad996e1d73e5d3ebbcee251af05eb9a4907b5096d4'
+            -ExpectedRunnerSha256 '18e684a74838c76162d4f15d9d12ca58f8b4a3a2d775641f8fc6adb843c7410f'
       - name: Prepare multiwindow Job Object watchdog
         shell: pwsh
         run: |

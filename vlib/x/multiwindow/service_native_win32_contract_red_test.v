@@ -2177,9 +2177,12 @@ fn test_win32_native_clipboard_exact_utf8_limit_and_over_red() {
 		if exact_request != ServiceRequestId{} {
 			exact_delivery := win32_w4_finish_single_clipboard(mut app, backend, exact_request, 8,
 				'exact UTF-8 write', mut issues)
+			exact_terminals := win32_red_clipboard_events(exact_delivery, exact_request)
 			win32_red_add(mut issues, 'exact UTF-8 write did not publish one ready envelope',
-				exact_delivery.len == 1
-				&& win32_red_clipboard_envelope_matches(exact_delivery[0], exact_request, window, .clipboard_write, .ready))
+				exact_terminals.len == 1
+				&& win32_red_clipboard_envelope_matches(exact_terminals[0], exact_request, window, .clipboard_write, .ready)
+				&& exact_terminals[0].service.clipboard.text == ''
+				&& exact_terminals[0].service.clipboard.error == '')
 			win32_red_add(mut issues, 'exact UTF-8 write lost global ordering',
 				win32_red_events_are_globally_ordered(exact_delivery))
 			win32_red_add(mut issues, 'exact UTF-8 write lost CF_UNICODETEXT integrity', C.v_multiwindow_test_win32_clipboard_equals(exact.to_wide(),
