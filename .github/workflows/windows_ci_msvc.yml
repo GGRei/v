@@ -82,11 +82,11 @@ jobs:
             -ExpectedNoOptProbeSha256 '288f148ca15b6694481f117c03be5f80c4045baf76d3b0e90db61b5e0596741c' `
             -ExpectedServiceBackendSha256 '21e6bf254ffcaadd4360d0eefea2eeac90c946c79bff028c00ca34d493214add' `
             -ExpectedWin32BackendSha256 '39e8529a5cfa8c60728687d496c487b25c7dc98d0c664d598e27a8a66ed97420' `
-            -ExpectedWin32ServiceBackendSha256 'b1c1050c5e4eaf19827b84a46cd8da78a2bbf21ce881552e8d66aab74672ee53' `
+            -ExpectedWin32ServiceBackendSha256 '3afb83208a21c31a01e5bdb2baaa343e3e5b4a1f87e216fe1909cf7335565b66' `
             -ExpectedWin32ServiceNativeSha256 '9ab0a4c7e55b6afac85152c3b1127207f1f99fdedd0a07309026e44527770a01' `
             -ExpectedRedSurfaceSha256 '04b271a1ece4844a60a338358ec292d1e59448b962f6be7fb9c5765206678a7e' `
-            -ExpectedGreenSurfaceSha256 '7c46e7e4c1c85d282f9734e07b8a0a09efdf2e51156f8bd853a4d417c1c346b9' `
-            -ExpectedRunnerSha256 'cdbbcbc59489963ef72ed92808248bd675b63f5e1fa52d66773884f6b274f3c4'
+            -ExpectedGreenSurfaceSha256 '2b885ad0dc0e8b2accb837712b1b94325fe182b0ad755d65ef633aaad7566932' `
+            -ExpectedRunnerSha256 'bebd7cebc03f7356766e0c34c5963dac0f608436d3a70a5797d5b5987ea144e6'
       - name: Prepare multiwindow Job Object watchdog
         shell: pwsh
         run: |

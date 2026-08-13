@@ -66,7 +66,7 @@ $if windows {
 	#insert "@VMODROOT/vlib/x/multiwindow/win32_service_native.h"
 	$if test {
 		#flag windows -DV_MULTIWINDOW_WIN32_CLIPBOARD_TEST_BACKEND_IMPLEMENTATION
-		#insert "@VMODROOT/vlib/x/multiwindow/testdata/win32_nonreadback_test_oracle.h"
+		#include "@VMODROOT/vlib/x/multiwindow/testdata/win32_nonreadback_test_oracle.h"
 	}
 
 	fn C.v_multiwindow_win32_service_authority(state voidptr) int
@@ -549,20 +549,16 @@ fn (mut backend Win32Backend) collect_clipboard_events() []Win32NativeQueuedEven
 				C.v_multiwindow_win32_clipboard_text_free(native_text)
 			}
 		}
-		return match status {
-			win32_clipboard_attempt_retry {
-				[]Win32NativeQueuedEvent{}
-			}
-			win32_clipboard_attempt_ready {
-				[backend.finish_clipboard_head(.ready, text, '')]
-			}
-			win32_clipboard_attempt_capacity {
-				[backend.finish_clipboard_head(.failed, '', err_clipboard_capacity)]
-			}
-			else {
-				[backend.finish_clipboard_head(.failed, '', err_capability_unsupported)]
-			}
+		if status == win32_clipboard_attempt_retry {
+			return []Win32NativeQueuedEvent{}
 		}
+		if status == win32_clipboard_attempt_ready {
+			return [backend.finish_clipboard_head(.ready, text, '')]
+		}
+		if status == win32_clipboard_attempt_capacity {
+			return [backend.finish_clipboard_head(.failed, '', err_clipboard_capacity)]
+		}
+		return [backend.finish_clipboard_head(.failed, '', err_capability_unsupported)]
 	} $else {
 		return []Win32NativeQueuedEvent{}
 	}
