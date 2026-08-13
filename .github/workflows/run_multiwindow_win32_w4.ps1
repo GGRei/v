@@ -506,6 +506,9 @@ function Test-W4Classifier {
     $synthetic = @(
         @{ Name = 'valid RED'; State = 'Red'; Expected = 'BehavioralRed'; Exit = 1; Output = $validRed; TimedOut = $false; Infra = '' }
         @{ Name = 'valid GREEN'; State = 'Green'; Expected = 'BehavioralGreen'; Exit = 0; Output = $validGreen; TimedOut = $false; Infra = '' }
+        @{ Name = 'GREEN missing test'; State = 'Green'; Expected = 'IdentityFailure'; Exit = 0; Output = @($family, $reached, $greenSummary); TimedOut = $false; Infra = '' }
+        @{ Name = 'GREEN missing family'; State = 'Green'; Expected = 'IdentityFailure'; Exit = 0; Output = @($test, $reached, $greenSummary); TimedOut = $false; Infra = '' }
+        @{ Name = 'GREEN missing reached'; State = 'Green'; Expected = 'ReachedFailure'; Exit = 0; Output = @($test, $family, $greenSummary); TimedOut = $false; Infra = '' }
         @{ Name = 'missing test'; State = 'Red'; Expected = 'IdentityFailure'; Exit = 1; Output = @($family, $reached, $terminal, $redSummary); TimedOut = $false; Infra = '' }
         @{ Name = 'duplicate family'; State = 'Red'; Expected = 'IdentityFailure'; Exit = 1; Output = @($test, $family, $family, $reached, $terminal, $redSummary); TimedOut = $false; Infra = '' }
         @{ Name = 'missing reached'; State = 'Red'; Expected = 'ReachedFailure'; Exit = 1; Output = @($test, $family, $terminal, $redSummary); TimedOut = $false; Infra = '' }
@@ -898,6 +901,7 @@ try {
         try {
             Write-Host "PACKAGE2_W4_CASE_START compiler=$Compiler expectation=$Expectation kind=$($case.Kind) case=$($case.Name) family=$($case.Family)"
             $result = Invoke-W4BoundedProcess -FileName $vexe -Arguments @(
+                '-stats',
                 '-cc', $Compiler,
                 '-no-retry-compilation',
                 '-no-parallel',

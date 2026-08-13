@@ -212,7 +212,7 @@ jobs:
             -ExpectedWin32ServiceNativeSha256 '9ab0a4c7e55b6afac85152c3b1127207f1f99fdedd0a07309026e44527770a01' `
             -ExpectedRedSurfaceSha256 '04b271a1ece4844a60a338358ec292d1e59448b962f6be7fb9c5765206678a7e' `
             -ExpectedGreenSurfaceSha256 '2b885ad0dc0e8b2accb837712b1b94325fe182b0ad755d65ef633aaad7566932' `
-            -ExpectedRunnerSha256 'bebd7cebc03f7356766e0c34c5963dac0f608436d3a70a5797d5b5987ea144e6'
+            -ExpectedRunnerSha256 'ac8752291cc8df2d0274724415f9346a5650a72c0b02b3d2da2374560f603bd8'
       - name: Public gg Win32 controls/state native diagnostic
         if: ${{ always() }}
         shell: pwsh
