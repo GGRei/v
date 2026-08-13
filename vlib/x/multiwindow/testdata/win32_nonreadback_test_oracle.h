@@ -700,44 +700,57 @@ static inline int v_multiwindow_test_win32_set_clipboard(void *owner_ptr,
 		units * sizeof(wchar_t));
 }
 
+static inline int
+v_multiwindow_test_win32_clipboard_unterminated_parser_probe(void) {
+	HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, sizeof(uint16_t));
+	if (!data) {
+		return -1;
+	}
+	size_t actual_bytes = GlobalSize(data);
+	if (actual_bytes < sizeof(uint16_t)) {
+		(void)GlobalFree(data);
+		return -1;
+	}
+	void *target = GlobalLock(data);
+	if (!target) {
+		(void)GlobalFree(data);
+		return -1;
+	}
+	memset(target, 0x41, actual_bytes);
+	size_t units = (size_t)-1;
+	size_t utf8_bytes = (size_t)-1;
+	int parse_status = v_multiwindow_win32_parse_clipboard_utf16(target,
+		actual_bytes, &units, &utf8_bytes);
+	int passed = parse_status == V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_INVALID
+		&& units == 0 && utf8_bytes == 0;
+	(void)GlobalUnlock(data);
+	if (GlobalFree(data) != NULL) {
+		return -1;
+	}
+	return passed ? 1 : 0;
+}
+
 static inline int v_multiwindow_test_win32_set_clipboard_malformed(
 	void *owner_ptr, int kind) {
 	HWND owner = (HWND)owner_ptr;
 	if (!owner || !IsWindow(owner)) {
 		return 0;
 	}
-	if (kind == 2) {
-		const wchar_t invalid_surrogate[] = {
-			(wchar_t)0xd800, L'A', L'\0'
+	if (kind == 1) {
+		const uint16_t invalid_low_surrogate[] = {
+			0xdc00u, 0u
 		};
 		return v_multiwindow_test_win32_set_clipboard_raw(owner,
-			invalid_surrogate, sizeof(invalid_surrogate));
+			invalid_low_surrogate, sizeof(invalid_low_surrogate));
 	}
-	if (kind != 1 || !OpenClipboard(owner)) {
-		return 0;
+	if (kind == 2) {
+		const uint16_t invalid_high_surrogate[] = {
+			0xd800u, 0x0041u, 0u
+		};
+		return v_multiwindow_test_win32_set_clipboard_raw(owner,
+			invalid_high_surrogate, sizeof(invalid_high_surrogate));
 	}
-	HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, sizeof(wchar_t));
-	size_t actual_bytes = data ? GlobalSize(data) : 0;
-	void *target = actual_bytes >= sizeof(wchar_t) ? GlobalLock(data) : NULL;
-	if (!target) {
-		if (data) GlobalFree(data);
-		CloseClipboard();
-		return 0;
-	}
-	// Fill the allocator's complete reported extent so padding cannot supply a NUL.
-	memset(target, 0x41, actual_bytes);
-	GlobalUnlock(data);
-	if (!EmptyClipboard()) {
-		GlobalFree(data);
-		CloseClipboard();
-		return 0;
-	}
-	if (!SetClipboardData(CF_UNICODETEXT, data)) {
-		GlobalFree(data);
-		CloseClipboard();
-		return 0;
-	}
-	return CloseClipboard() != 0;
+	return 0;
 }
 
 static inline VMultiwindowTestGetRegisteredRawInputDevices

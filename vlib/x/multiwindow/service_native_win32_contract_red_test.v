@@ -86,6 +86,7 @@ $if windows {
 	fn C.v_multiwindow_test_win32_monitor_enumeration_growth_callbacks() int
 	fn C.v_multiwindow_test_win32_clipboard_equals(expected &u16, expected_units usize) int
 	fn C.v_multiwindow_test_win32_set_clipboard(owner voidptr, text &u16, units usize) int
+	fn C.v_multiwindow_test_win32_clipboard_unterminated_parser_probe() int
 	fn C.v_multiwindow_test_win32_set_clipboard_malformed(owner voidptr, kind int) int
 	fn C.v_multiwindow_win32_service_test_clipboard_configure(backend voidptr, now_ns i64, fail_open_attempts int)
 	fn C.v_multiwindow_win32_service_test_clipboard_set_now_ns(backend voidptr, now_ns i64)
@@ -2089,6 +2090,14 @@ fn test_win32_native_clipboard_malformed_read_bounds_red() {
 		backend := win32_red_backend_pointer(app)
 		hwnd := win32_red_hwnd(app, window)!
 		mut issues := []string{}
+		unterminated_probe := C.v_multiwindow_test_win32_clipboard_unterminated_parser_probe()
+		if unterminated_probe == -1 {
+			win32_w4_add_infra(mut issues,
+				'independent oracle could not complete the unterminated HGLOBAL parser probe')
+		} else {
+			win32_red_add(mut issues, 'bounded parser accepted an unterminated HGLOBAL extent',
+				unterminated_probe == 1)
+		}
 		for kind in 1 .. 3 {
 			fixture_ready := C.v_multiwindow_test_win32_set_clipboard_malformed(hwnd, kind) == 1
 			if !fixture_ready {
