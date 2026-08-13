@@ -238,6 +238,41 @@ fn win32_red_events_are_globally_ordered(events []QueuedEvent) bool {
 	return true
 }
 
+fn win32_w4_settle_window_setup(mut app App, window WindowId, label string, mut issues []string) bool {
+	mut quiet_cycles := 0
+	for attempt in 0 .. 12 {
+		accepted := app.poll_events() or {
+			win32_w4_add_infra(mut issues, '${label}: poll failed: ${err.msg()}')
+			return false
+		}
+		batch := app.drain_queued_events() or {
+			win32_w4_add_infra(mut issues, '${label}: event drain failed: ${err.msg()}')
+			return false
+		}
+		for event in batch {
+			if event.kind == .lifecycle && event.lifecycle.window_id == window
+				&& (event.lifecycle.kind == .window_close_requested
+				|| event.lifecycle.kind == .window_destroyed) {
+				issues << '${label}: target window emitted close/destroy during setup'
+				return false
+			}
+		}
+		if accepted == 0 && batch.len == 0 {
+			quiet_cycles++
+			if quiet_cycles == 3 {
+				return true
+			}
+		} else {
+			quiet_cycles = 0
+		}
+		if attempt + 1 < 12 {
+			time.sleep(5 * time.millisecond)
+		}
+	}
+	win32_w4_add_infra(mut issues, '${label}: did not reach three consecutive quiet cycles')
+	return false
+}
+
 fn win32_w4_poll_collect(mut app App, attempts int, label string, mut issues []string) []QueuedEvent {
 	mut delivered := []QueuedEvent{}
 	for _ in 0 .. attempts {
@@ -2585,22 +2620,36 @@ fn test_win32_native_clipboard_real_wm_close_global_order_red() {
 		defer {
 			app.stop() or {}
 		}
-		window := app.create_window(title: 'Win32 clipboard WM_CLOSE order RED')!
-		_ = app.drain_queued_events()!
+		window := app.create_window(
+			title:   'Win32 clipboard WM_CLOSE order RED'
+			visible: false
+		)!
 		backend := win32_red_backend_pointer(app)
 		hwnd := win32_red_hwnd(app, window)!
+		mut issues := []string{}
+		if !win32_w4_settle_window_setup(mut app, window, 'WM_CLOSE setup', mut issues) {
+			win32_w4_epilogue('clipboard_global_order',
+				'Win32 clipboard/WM_CLOSE global ordering RED', issues)
+			return
+		}
+		hwnd_alive := C.v_multiwindow_test_win32_is_window(hwnd) == 1
+		window_alive := app.window_exists(window)
+		win32_red_add(mut issues, 'WM_CLOSE setup destroyed the HWND', hwnd_alive)
+		win32_red_add(mut issues, 'WM_CLOSE setup removed the public window', window_alive)
+		win32_red_add(mut issues, 'WM_CLOSE setup left App events queued', app.events.len == 0)
+		if !hwnd_alive || !window_alive {
+			win32_w4_epilogue('clipboard_global_order',
+				'Win32 clipboard/WM_CLOSE global ordering RED', issues)
+			return
+		}
 		C.v_multiwindow_win32_service_test_clipboard_configure(backend, test_now_ns, 0)
 		defer {
 			C.v_multiwindow_win32_service_test_clipboard_use_real_clock(backend)
 		}
-		mut issues := []string{}
-		initial_events := app.drain_queued_events() or {
-			win32_w4_add_infra(mut issues, 'WM_CLOSE initial event drain failed: ${err.msg()}')
-			[]QueuedEvent{}
-		}
-		if initial_events.len != 0 {
-			win32_w4_add_infra(mut issues, 'WM_CLOSE setup left queued events')
-		}
+		win32_red_add(mut issues, 'WM_CLOSE setup retained a native clipboard request',
+			C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0)
+		win32_red_add(mut issues, 'WM_CLOSE setup allocated a clipboard sequence',
+			C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == 0)
 
 		first := app.service_set_clipboard_text(window, 'first before WM_CLOSE') or {
 			issues << 'pre-WM_CLOSE clipboard write was not admitted: ${err.msg()}'
