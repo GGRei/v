@@ -98,6 +98,8 @@ mut:
 	event_sequence_terminal          string
 	windows                          []&Win32WindowRecord
 	service_monitors                 []Win32ServiceMonitorRecord
+	clipboard_pending                []Win32ClipboardPending
+	clipboard_pending_bytes          usize
 }
 
 struct Win32D3DDeviceLaneAttempt {
@@ -953,6 +955,7 @@ fn (mut backend Win32Backend) finish_window_teardown(id WindowId) ! {
 	$if windows {
 		index := backend.window_record_index(id) or { return error(err_window_not_found) }
 		mut record := backend.windows[index]
+		backend.purge_clipboard_window(id)
 		if !backend.release_window_render_resources(index, win32_window_operation_seed(record.id,
 			record.render_target_generation, .shutdown_release)) {
 			backend.render_health = renderer_health_latch_unavailable(backend.render_health)
@@ -1084,6 +1087,9 @@ fn (mut backend Win32Backend) poll_queued_events() ![]QueuedEvent {
 			record.queued_events.clear()
 			i++
 		}
+		for event in backend.collect_clipboard_events() {
+			native_events << event
+		}
 	}
 	win32_sort_native_events(mut native_events)
 	mut events := []QueuedEvent{cap: native_events.len}
@@ -1112,6 +1118,7 @@ fn (mut backend Win32Backend) event_sequence_terminal_error() string {
 
 fn (mut backend Win32Backend) stop() ! {
 	$if windows {
+		backend.purge_all_clipboard_requests()
 		if !backend.started && !backend.retains_native_ownership() {
 			terminal_error := backend.retained_stop_error('')
 			if terminal_error != '' {

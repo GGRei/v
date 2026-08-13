@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wchar.h>
 
 #if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
@@ -15,6 +16,347 @@
 #define V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE 0
 #define V_MULTIWINDOW_WIN32_SERVICE_WRONG_THREAD -1
 #define V_MULTIWINDOW_WIN32_SERVICE_INVALID -2
+
+#define V_MULTIWINDOW_WIN32_CLIPBOARD_MAX_BYTES \
+	((size_t)16u * (size_t)1024u * (size_t)1024u)
+#define V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_FAILED -1
+#define V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_RETRY 0
+#define V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_READY 1
+#define V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_CAPACITY -2
+#define V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_CLEANED -3
+#define V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_INVALID 0
+#define V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_READY 1
+#define V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_CAPACITY -1
+
+static inline int64_t v_multiwindow_win32_clipboard_now_ns(void) {
+	LARGE_INTEGER frequency;
+	LARGE_INTEGER counter;
+	if (QueryPerformanceFrequency(&frequency) && frequency.QuadPart > 0
+		&& QueryPerformanceCounter(&counter)) {
+		int64_t seconds = counter.QuadPart / frequency.QuadPart;
+		int64_t remainder = counter.QuadPart % frequency.QuadPart;
+		return seconds * INT64_C(1000000000)
+			+ remainder * INT64_C(1000000000) / frequency.QuadPart;
+	}
+	return (int64_t)GetTickCount() * INT64_C(1000000);
+}
+
+static inline int v_multiwindow_win32_parse_clipboard_utf16(
+	const void *data, size_t bytes, size_t *out_utf16_units,
+	size_t *out_utf8_bytes) {
+	if (out_utf16_units) {
+		*out_utf16_units = 0;
+	}
+	if (out_utf8_bytes) {
+		*out_utf8_bytes = 0;
+	}
+	if (!data || bytes < sizeof(uint16_t)) {
+		return 0;
+	}
+	size_t scan_bytes = bytes;
+	if (scan_bytes > V_MULTIWINDOW_WIN32_CLIPBOARD_MAX_BYTES) {
+		scan_bytes = V_MULTIWINDOW_WIN32_CLIPBOARD_MAX_BYTES;
+	}
+	size_t units = 0;
+	for (size_t offset = 0;
+		offset + sizeof(uint16_t) <= scan_bytes;
+		offset += sizeof(uint16_t)) {
+		uint16_t unit = 0;
+		memcpy(&unit, (const unsigned char *)data + offset, sizeof(unit));
+		if (unit == 0) {
+			units = offset / sizeof(uint16_t) + 1;
+			break;
+		}
+	}
+	if (units == 0) {
+		return 0;
+	}
+	size_t utf8_bytes = 1;
+	for (size_t index = 0; index + 1 < units; index++) {
+		uint16_t unit = 0;
+		memcpy(&unit,
+			(const unsigned char *)data + index * sizeof(uint16_t),
+			sizeof(unit));
+		size_t encoded = 0;
+		if (unit >= 0xd800u && unit <= 0xdbffu) {
+			if (index + 2 >= units) {
+				return 0;
+			}
+			uint16_t low = 0;
+			memcpy(&low,
+				(const unsigned char *)data
+					+ (index + 1) * sizeof(uint16_t),
+				sizeof(low));
+			if (low < 0xdc00u || low > 0xdfffu) {
+				return 0;
+			}
+			encoded = 4;
+			index++;
+		} else if (unit >= 0xdc00u && unit <= 0xdfffu) {
+			return 0;
+		} else if (unit <= 0x007fu) {
+			encoded = 1;
+		} else if (unit <= 0x07ffu) {
+			encoded = 2;
+		} else {
+			encoded = 3;
+		}
+		if (utf8_bytes >
+			V_MULTIWINDOW_WIN32_CLIPBOARD_MAX_BYTES - encoded) {
+			return V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_CAPACITY;
+		}
+		utf8_bytes += encoded;
+	}
+	if (out_utf16_units) {
+		*out_utf16_units = units;
+	}
+	if (out_utf8_bytes) {
+		*out_utf8_bytes = utf8_bytes;
+	}
+	return 1;
+}
+
+static inline int v_multiwindow_win32_clipboard_utf8_to_utf16(
+	const char *text, size_t text_bytes, uint16_t *output,
+	size_t output_units, size_t *out_units) {
+	if (out_units) {
+		*out_units = 0;
+	}
+	if (text_bytes > V_MULTIWINDOW_WIN32_CLIPBOARD_MAX_BYTES - 1) {
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_CAPACITY;
+	}
+	if ((!text && text_bytes > 0)
+		|| (text_bytes > 0 && memchr(text, '\0', text_bytes))) {
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_INVALID;
+	}
+	int converted_units = 0;
+	if (text_bytes > 0) {
+		converted_units = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+			text, (int)text_bytes, NULL, 0);
+		if (converted_units <= 0) {
+			return V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_INVALID;
+		}
+	}
+	size_t required_units = (size_t)converted_units + 1;
+	if (required_units >
+		V_MULTIWINDOW_WIN32_CLIPBOARD_MAX_BYTES / sizeof(uint16_t)) {
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_CAPACITY;
+	}
+	if (out_units) {
+		*out_units = required_units;
+	}
+	if (!output) {
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_READY;
+	}
+	if (output_units < required_units) {
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_INVALID;
+	}
+	if (converted_units > 0
+		&& MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text,
+			(int)text_bytes, (wchar_t *)output, converted_units)
+			!= converted_units) {
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_INVALID;
+	}
+	output[converted_units] = 0;
+	return V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_READY;
+}
+
+typedef struct VMultiwindowWin32ClipboardWriteObserver {
+	int *owned_globals;
+	int *owned_globals_peak;
+	int *global_allocations;
+	int *global_transfers;
+	int *global_frees;
+	int *fail_before_transfer;
+} VMultiwindowWin32ClipboardWriteObserver;
+
+static inline void v_multiwindow_win32_clipboard_observe_allocation(
+		VMultiwindowWin32ClipboardWriteObserver *observer) {
+	if (!observer) {
+		return;
+	}
+	if (observer->global_allocations) {
+		(*observer->global_allocations)++;
+	}
+	if (observer->owned_globals) {
+		(*observer->owned_globals)++;
+		if (observer->owned_globals_peak
+			&& *observer->owned_globals > *observer->owned_globals_peak) {
+			*observer->owned_globals_peak = *observer->owned_globals;
+		}
+	}
+}
+
+static inline void v_multiwindow_win32_clipboard_observe_free(
+		VMultiwindowWin32ClipboardWriteObserver *observer) {
+	if (!observer) {
+		return;
+	}
+	if (observer->global_frees) {
+		(*observer->global_frees)++;
+	}
+	if (observer->owned_globals && *observer->owned_globals > 0) {
+		(*observer->owned_globals)--;
+	}
+}
+
+static inline void v_multiwindow_win32_clipboard_observe_transfer(
+		VMultiwindowWin32ClipboardWriteObserver *observer) {
+	if (!observer) {
+		return;
+	}
+	if (observer->global_transfers) {
+		(*observer->global_transfers)++;
+	}
+	if (observer->owned_globals && *observer->owned_globals > 0) {
+		(*observer->owned_globals)--;
+	}
+}
+
+static inline void v_multiwindow_win32_clipboard_free_owned_global(
+		HGLOBAL global, VMultiwindowWin32ClipboardWriteObserver *observer) {
+	if (global && !GlobalFree(global)) {
+		v_multiwindow_win32_clipboard_observe_free(observer);
+	}
+}
+
+static inline int v_multiwindow_win32_clipboard_take_pretransfer_failure(
+		VMultiwindowWin32ClipboardWriteObserver *observer) {
+	if (!observer || !observer->fail_before_transfer
+		|| *observer->fail_before_transfer <= 0) {
+		return 0;
+	}
+	(*observer->fail_before_transfer)--;
+	return 1;
+}
+
+static inline int v_multiwindow_win32_clipboard_write_observed(
+		void *owner_ptr, const uint16_t *text, size_t units,
+		VMultiwindowWin32ClipboardWriteObserver *observer) {
+	HWND owner = (HWND)owner_ptr;
+	if (!owner || !IsWindow(owner) || !text || units == 0
+			|| units > V_MULTIWINDOW_WIN32_CLIPBOARD_MAX_BYTES
+			/ sizeof(uint16_t)
+		|| text[units - 1] != 0) {
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_FAILED;
+	}
+	if (!OpenClipboard(owner)) {
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_RETRY;
+	}
+	size_t bytes = units * sizeof(uint16_t);
+	HGLOBAL global = GlobalAlloc(GMEM_MOVEABLE, bytes);
+	if (global) {
+		v_multiwindow_win32_clipboard_observe_allocation(observer);
+	}
+	void *target = global ? GlobalLock(global) : NULL;
+	if (!target) {
+		if (global) {
+			v_multiwindow_win32_clipboard_free_owned_global(global,
+				observer);
+		}
+		CloseClipboard();
+		return global
+			? V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_CLEANED
+			: V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_FAILED;
+	}
+	memcpy(target, text, bytes);
+	GlobalUnlock(global);
+	if (v_multiwindow_win32_clipboard_take_pretransfer_failure(observer)) {
+		v_multiwindow_win32_clipboard_free_owned_global(global, observer);
+		CloseClipboard();
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_CLEANED;
+	}
+	if (!EmptyClipboard()) {
+		v_multiwindow_win32_clipboard_free_owned_global(global, observer);
+		CloseClipboard();
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_CLEANED;
+	}
+	if (!SetClipboardData(CF_UNICODETEXT, global)) {
+		v_multiwindow_win32_clipboard_free_owned_global(global, observer);
+		CloseClipboard();
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_CLEANED;
+	}
+	v_multiwindow_win32_clipboard_observe_transfer(observer);
+	CloseClipboard();
+	return V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_READY;
+}
+
+static inline int v_multiwindow_win32_clipboard_write(
+		void *owner_ptr, const uint16_t *text, size_t units) {
+	return v_multiwindow_win32_clipboard_write_observed(owner_ptr, text,
+		units, NULL);
+}
+
+static inline int v_multiwindow_win32_clipboard_read(
+	void *owner_ptr, void **out_text, size_t *out_text_bytes) {
+	if (out_text) {
+		*out_text = NULL;
+	}
+	if (out_text_bytes) {
+		*out_text_bytes = 0;
+	}
+	HWND owner = (HWND)owner_ptr;
+	if (!owner || !IsWindow(owner)) {
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_FAILED;
+	}
+	if (!OpenClipboard(owner)) {
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_RETRY;
+	}
+	HGLOBAL global = (HGLOBAL)GetClipboardData(CF_UNICODETEXT);
+	size_t bytes = global ? GlobalSize(global) : 0;
+	void *source = bytes >= sizeof(uint16_t) ? GlobalLock(global) : NULL;
+	size_t units = 0;
+	size_t utf8_bytes = 0;
+	int parse_status = source
+		? v_multiwindow_win32_parse_clipboard_utf16(source, bytes,
+			&units, &utf8_bytes)
+		: V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_INVALID;
+	if (parse_status != V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_READY) {
+		if (source) {
+			GlobalUnlock(global);
+		}
+		CloseClipboard();
+		return parse_status == V_MULTIWINDOW_WIN32_CLIPBOARD_CONVERT_CAPACITY
+				|| bytes > V_MULTIWINDOW_WIN32_CLIPBOARD_MAX_BYTES
+			? V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_CAPACITY
+			: V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_FAILED;
+	}
+	char *converted = (char *)malloc(utf8_bytes);
+	if (!converted) {
+		GlobalUnlock(global);
+		CloseClipboard();
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_FAILED;
+	}
+	int source_units = (int)(units - 1);
+	int converted_bytes = 0;
+	if (source_units > 0) {
+		converted_bytes = WideCharToMultiByte(CP_UTF8, 0,
+			(const wchar_t *)source, source_units, converted,
+			(int)(utf8_bytes - 1), NULL, NULL);
+	}
+	GlobalUnlock(global);
+	CloseClipboard();
+	if ((source_units > 0 && converted_bytes != (int)(utf8_bytes - 1))
+		|| (source_units == 0 && utf8_bytes != 1)) {
+		free(converted);
+		return V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_FAILED;
+	}
+	converted[utf8_bytes - 1] = '\0';
+	if (out_text) {
+		*out_text = (void *)converted;
+	} else {
+		free(converted);
+		converted = NULL;
+	}
+	if (out_text_bytes) {
+		*out_text_bytes = utf8_bytes - 1;
+	}
+	return V_MULTIWINDOW_WIN32_CLIPBOARD_ATTEMPT_READY;
+}
+
+static inline void v_multiwindow_win32_clipboard_text_free(void *text) {
+	free(text);
+}
 
 #define V_MULTIWINDOW_WIN32_SERVICE_TEST_FAIL_NONE 0
 #define V_MULTIWINDOW_WIN32_SERVICE_TEST_FAIL_EXIT_EXSTYLE 1
