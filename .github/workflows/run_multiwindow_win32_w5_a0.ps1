@@ -662,7 +662,7 @@ try {
         Write-W5A0ProcessOutput -Result $run
         $classification = Get-W5A0Classification -Result $run
         if ($classification.Kind -cne 'NativePreflightPass') {
-            throw "W5 A0 native gate rejected $Compiler: $($classification.Kind): $($classification.Detail)"
+            throw "W5 A0 native gate rejected ${Compiler}: $($classification.Kind): $($classification.Detail)"
         }
         Write-Host "PACKAGE2_W5_A0_CASE_ACCEPT compiler=$Compiler classification=NativePreflightPass"
         Write-Host "PACKAGE2_W5_A0_RUNNER_SUMMARY compiler=$Compiler accepted=1 rejected=0 total=1"
