@@ -212,40 +212,67 @@ static void v_multiwindow_w5_set_cleanup_error(
 	}
 }
 
+static int v_multiwindow_w5_resolve_procedure(HMODULE module,
+	const char *name, void *destination, size_t destination_size) {
+	FARPROC procedure;
+	if (!module || !name || !destination
+		|| destination_size != sizeof(procedure)) {
+		return 0;
+	}
+	memset(destination, 0, destination_size);
+	procedure = GetProcAddress(module, name);
+	if (!procedure) {
+		return 0;
+	}
+	memcpy(destination, &procedure, sizeof(procedure));
+	return 1;
+}
+
 static int v_multiwindow_w5_resolve_apis(VMultiwindowW5Apis *apis) {
 	HMODULE user32;
+	VMultiwindowW5Apis resolved;
 	if (!apis) {
 		return 0;
 	}
-	memset(apis, 0, sizeof(*apis));
+	memset(&resolved, 0, sizeof(resolved));
 	user32 = GetModuleHandleW(L"user32.dll");
 	if (!user32) {
 		return 0;
 	}
-	apis->get_registered_raw_input_devices =
-		(VMultiwindowW5GetRegisteredRawInputDevices)GetProcAddress(user32,
-			"GetRegisteredRawInputDevices");
-	apis->register_raw_input_devices =
-		(VMultiwindowW5RegisterRawInputDevices)GetProcAddress(user32,
-			"RegisterRawInputDevices");
-	apis->get_raw_input_data =
-		(VMultiwindowW5GetRawInputData)GetProcAddress(user32,
-			"GetRawInputData");
-	apis->send_input = (VMultiwindowW5SendInput)GetProcAddress(user32,
-		"SendInput");
-	apis->set_windows_hook_ex_w =
-		(VMultiwindowW5SetWindowsHookExW)GetProcAddress(user32,
-			"SetWindowsHookExW");
-	apis->call_next_hook_ex =
-		(VMultiwindowW5CallNextHookEx)GetProcAddress(user32,
-			"CallNextHookEx");
-	apis->unhook_windows_hook_ex =
-		(VMultiwindowW5UnhookWindowsHookEx)GetProcAddress(user32,
-			"UnhookWindowsHookEx");
-	return apis->get_registered_raw_input_devices
-		&& apis->register_raw_input_devices && apis->get_raw_input_data
-		&& apis->send_input && apis->set_windows_hook_ex_w
-		&& apis->call_next_hook_ex && apis->unhook_windows_hook_ex;
+	if (!v_multiwindow_w5_resolve_procedure(user32,
+		"GetRegisteredRawInputDevices", &resolved.get_registered_raw_input_devices,
+		sizeof(resolved.get_registered_raw_input_devices))) {
+		return 0;
+	}
+	if (!v_multiwindow_w5_resolve_procedure(user32,
+		"RegisterRawInputDevices", &resolved.register_raw_input_devices,
+		sizeof(resolved.register_raw_input_devices))) {
+		return 0;
+	}
+	if (!v_multiwindow_w5_resolve_procedure(user32, "GetRawInputData",
+		&resolved.get_raw_input_data, sizeof(resolved.get_raw_input_data))) {
+		return 0;
+	}
+	if (!v_multiwindow_w5_resolve_procedure(user32, "SendInput",
+		&resolved.send_input, sizeof(resolved.send_input))) {
+		return 0;
+	}
+	if (!v_multiwindow_w5_resolve_procedure(user32, "SetWindowsHookExW",
+		&resolved.set_windows_hook_ex_w,
+		sizeof(resolved.set_windows_hook_ex_w))) {
+		return 0;
+	}
+	if (!v_multiwindow_w5_resolve_procedure(user32, "CallNextHookEx",
+		&resolved.call_next_hook_ex, sizeof(resolved.call_next_hook_ex))) {
+		return 0;
+	}
+	if (!v_multiwindow_w5_resolve_procedure(user32, "UnhookWindowsHookEx",
+		&resolved.unhook_windows_hook_ex,
+		sizeof(resolved.unhook_windows_hook_ex))) {
+		return 0;
+	}
+	*apis = resolved;
+	return 1;
 }
 
 static void v_multiwindow_w5_free_inventory(

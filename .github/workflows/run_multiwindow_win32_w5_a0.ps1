@@ -26,9 +26,9 @@ $ErrorActionPreference = 'Stop'
 
 $header = 'vlib/x/multiwindow/testdata/win32_raw_input_w5_preflight.h'
 $main = 'vlib/x/multiwindow/testdata/win32_raw_input_w5_preflight.c'
-$knownHeaderSha256 = 'e9d7813220dd47cb2a3557f3bcf3469e24ef9329df6360026214bf2422cc51f4'
+$knownHeaderSha256 = 'f2460dbd728b0c6b4fcd4617da3c826320b38a2f12ab3ece3243834c3288e2cd'
 $knownMainSha256 = '70f120accf182ff921bf6bf5814f2a406071669850e6909534168e0ad4ecbc11'
-$knownTupleSha256 = 'a0eec28f6dd35f4874e6f861fcc3605a1bcc240adad244165830b46bdcf8f0e2'
+$knownTupleSha256 = '75bb7fd766a0dd93fa08a299001a4ce199e918feb641c0c68bb96a2dd2469c99'
 
 $runtimeMarkers = @(
     'PACKAGE2_W5_A0_IDENTITY=win32_raw_input_sendinput_preflight'

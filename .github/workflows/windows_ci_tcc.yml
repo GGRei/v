@@ -217,10 +217,10 @@ jobs:
         shell: pwsh
         run: |
           .\.github\workflows\run_multiwindow_win32_w5_a0.ps1 -Compiler tcc `
-            -ExpectedHeaderSha256 'e9d7813220dd47cb2a3557f3bcf3469e24ef9329df6360026214bf2422cc51f4' `
+            -ExpectedHeaderSha256 'f2460dbd728b0c6b4fcd4617da3c826320b38a2f12ab3ece3243834c3288e2cd' `
             -ExpectedMainSha256 '70f120accf182ff921bf6bf5814f2a406071669850e6909534168e0ad4ecbc11' `
-            -ExpectedTupleSha256 'a0eec28f6dd35f4874e6f861fcc3605a1bcc240adad244165830b46bdcf8f0e2' `
-            -ExpectedRunnerSha256 '997a20eb72d286c6a6fcd01efb4d5e09b34f5e88d072984b51b296ddc4da97b7'
+            -ExpectedTupleSha256 '75bb7fd766a0dd93fa08a299001a4ce199e918feb641c0c68bb96a2dd2469c99' `
+            -ExpectedRunnerSha256 '04dc1d0d84f1936b7fdecbb42e074fb331724b6a4174b246445da2c7f46b23be'
       - name: Public gg Win32 controls/state native diagnostic
         if: ${{ always() }}
         shell: pwsh
