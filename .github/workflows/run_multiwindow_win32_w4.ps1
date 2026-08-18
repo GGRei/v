@@ -690,8 +690,8 @@ foreach ($group in @($cases | Group-Object File)) {
 
 $testPaths = @($oracle, $nativeTest, $publicTest, $noOptProbe)
 $knownTestFileHashes = @(
-    '804e8cbc5f5f7c390e90736d54a60d65d19b649a94afa4915bd9cb4e95c4e04d'
-    'ffa750256854dbe9cb0697368b73365ed9bb14939363fc0fd55dccd562329c0e'
+    '9ca5f25c117ecf650731b6c12e6b02f8463801fd590056607a84ae9ad2816923'
+    '5fc4867c93295b2191b076563b09e8a3115eae7d080dd258a119d26bdd2b6607'
     'd08eafb919ae97b185fc480c22f6d990973396152e9a0b3a01035c3e9a30275c'
     '288f148ca15b6694481f117c03be5f80c4045baf76d3b0e90db61b5e0596741c'
 )
@@ -726,7 +726,7 @@ $testTupleRecords += @(
     }
 )
 $testTupleSha256 = Get-W4TextSha256 -Text (($testTupleRecords -join "`n") + "`n")
-$knownTestTupleSha256 = 'a85bd929127ebbdb99b2abfc681539209ef10ca26d9e21a11e4fa54005975e1a'
+$knownTestTupleSha256 = '3fcd003a7d3a358b02856175d2bf3afa48dbd4534f8d9d8715afbe0939cfc674'
 if ($testTupleSha256 -cne $knownTestTupleSha256) {
     throw "W4 frozen ordered test tuple mismatch: expected=$knownTestTupleSha256 actual=$testTupleSha256"
 }
