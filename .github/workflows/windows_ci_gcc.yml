@@ -79,7 +79,7 @@ jobs:
             -ExpectedHeaderSha256 'af2d1c408018b9b1a3793ffb4affb2c65c4c38e57c05c94116065394bae7de1f' `
             -ExpectedMainSha256 '76858c48379f5572ef652e819eb977eca9ee0eb7305a030c07fe531a88347e77' `
             -ExpectedTupleSha256 '41cf626d4bc5257427a0296d7db62dcdf62893d0676ef093451295aaea01282e' `
-            -ExpectedRunnerSha256 'c58cbdd1480b40fa9026cc902e90a51df6975ef50a252533830c2b8e9b28b08b'
+            -ExpectedRunnerSha256 '5a47ffc3452a00c7eb7d7253dde169b8e22a68840c6439666d05e6e0a4fba5a0'
       - name: Setup MinGW-w64 D3D11 headers for GCC and Clang
         uses: msys2/setup-msys2@v2
         with:

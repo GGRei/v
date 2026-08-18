@@ -475,7 +475,7 @@ function Assert-W5A0CommandGreen {
     if ($Result.InfrastructureError) {
         throw "$Label infrastructure failure: $($Result.InfrastructureError)"
     }
-    if ($null -eq $Result.ExitCode -or $Result.ExitCode -ne 0
+    if ($null -eq $Result.ExitCode -or $Result.ExitCode -ne 0 `
         -or $Result.ExitCode -in $crashExitCodes -or $text -match $fatalPattern) {
         throw "$Label failed with exit $($Result.ExitCode)"
     }
@@ -646,7 +646,7 @@ try {
         Write-W5A0ProcessOutput -Result $compile
         Assert-W5A0CommandGreen -Label "W5 A0 compile/$Compiler" `
             -Result $compile -RejectCompilerDiagnostics
-        if (-not (Test-Path -LiteralPath $probeExe -PathType Leaf)
+        if (-not (Test-Path -LiteralPath $probeExe -PathType Leaf) `
             -or (Get-Item -LiteralPath $probeExe).Length -le 0) {
             throw "W5 A0 compiler did not produce a fresh nonempty executable: $probeExe"
         }
