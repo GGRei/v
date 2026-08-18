@@ -26,9 +26,9 @@ $ErrorActionPreference = 'Stop'
 
 $header = 'vlib/x/multiwindow/testdata/win32_raw_input_w5_preflight.h'
 $main = 'vlib/x/multiwindow/testdata/win32_raw_input_w5_preflight.c'
-$knownHeaderSha256 = 'af2d1c408018b9b1a3793ffb4affb2c65c4c38e57c05c94116065394bae7de1f'
-$knownMainSha256 = '76858c48379f5572ef652e819eb977eca9ee0eb7305a030c07fe531a88347e77'
-$knownTupleSha256 = '41cf626d4bc5257427a0296d7db62dcdf62893d0676ef093451295aaea01282e'
+$knownHeaderSha256 = '30c0ac6dce72efeab05bb895f57dcd7c613f0bcd499947d619cb0a6c8bbb35e6'
+$knownMainSha256 = '5a806001507578f3903bcbfc06a5c5f893b341b35c1d041fc1eea31cfa8a654e'
+$knownTupleSha256 = '940a504698b9b90c76d3f4046355ba714aca1f6399b67daad0cd4fab28b6260b'
 
 $runtimeMarkers = @(
     'PACKAGE2_W5_A0_IDENTITY=win32_raw_input_sendinput_preflight'
@@ -505,7 +505,17 @@ function Get-W5A0CompilerIdentity {
         }
         $versionArguments = @('-v')
     } elseif ($SelectedCompiler -ceq 'gcc') {
-        $compilerPath = (Get-Command gcc.exe -CommandType Application -ErrorAction Stop).Source
+        $gccCommands = @(
+            Get-Command x86_64-w64-mingw32-gcc.exe -CommandType Application `
+                -All -ErrorAction SilentlyContinue
+        )
+        if ($gccCommands.Count -ne 1) {
+            throw "W5 A0 expected exactly one x86_64-w64-mingw32-gcc.exe, found $($gccCommands.Count)"
+        }
+        $compilerPath = [string]$gccCommands[0].Source
+        if ([string]::IsNullOrWhiteSpace($compilerPath)) {
+            throw "W5 A0 target-prefixed GCC resolved to an empty source"
+        }
         $versionArguments = @('--version')
         $machine = Invoke-W5A0BoundedProcess -FileName $compilerPath `
             -Arguments @('-dumpmachine') -WorkingDirectory $WorkingDirectory `
@@ -537,9 +547,18 @@ function Get-W5A0CompilerIdentity {
     if ($versionLines.Count -eq 0) {
         throw "W5 A0 $SelectedCompiler version output was empty"
     }
-    $version = $versionLines[0]
-    if ($SelectedCompiler -ceq 'msvc' -and $version -cnotmatch '(?i) for x64') {
-        throw "W5 A0 MSVC version does not identify x64: '$version'"
+    if ($SelectedCompiler -ceq 'msvc') {
+        $msvcVersionLines = @(
+            $versionLines | Where-Object {
+                $_ -cmatch '^Microsoft \(R\) C/C\+\+ Optimizing Compiler Version [0-9]+(?:\.[0-9]+){2,3} for x64$'
+            }
+        )
+        if ($msvcVersionLines.Count -ne 1) {
+            throw "W5 A0 expected exactly one MSVC x64 banner, found $($msvcVersionLines.Count)"
+        }
+        $version = [string]$msvcVersionLines[0]
+    } else {
+        $version = [string]$versionLines[0]
     }
     $sha256 = (Get-FileHash -LiteralPath $compilerPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $encodedPath = [Uri]::EscapeDataString([IO.Path]::GetFullPath($compilerPath))

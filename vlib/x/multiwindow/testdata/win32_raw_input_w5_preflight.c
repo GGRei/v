@@ -51,7 +51,7 @@ int main(void) {
 		"PACKAGE2_W5_A0_IDENTITY=win32_raw_input_sendinput_preflight\n");
 	fprintf(stderr, "PACKAGE2_W5_A0_FAMILY=raw_input_environment\n");
 	fprintf(stderr,
-		"PACKAGE2_W5_INFRA=stage:2 error:50 proof:0 cleanup:127 cleanup_error:0\n");
+		"PACKAGE2_W5_INFRA=stage:2 error:50 proof:0 cleanup:255 cleanup_error:0\n");
 	fprintf(stderr,
 		"PACKAGE2_W5_A0_TERMINAL=infra:raw_input_environment\n");
 	fflush(stderr);

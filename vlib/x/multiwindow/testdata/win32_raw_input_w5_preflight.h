@@ -20,6 +20,10 @@
 #define RIDEV_PAGEONLY 0x00000020
 #endif
 
+#define V_MULTIWINDOW_W5_WH_MOUSE_LL 14
+#define V_MULTIWINDOW_W5_HC_ACTION 0
+#define V_MULTIWINDOW_W5_LLMHF_INJECTED 0x00000001u
+
 enum VMultiwindowW5PreflightStage {
 	V_MULTIWINDOW_W5_STAGE_NONE = 0,
 	V_MULTIWINDOW_W5_STAGE_ARGUMENTS = 1,
@@ -35,7 +39,15 @@ enum VMultiwindowW5PreflightStage {
 	V_MULTIWINDOW_W5_STAGE_SEND_INPUT = 11,
 	V_MULTIWINDOW_W5_STAGE_WAIT_INPUT = 12,
 	V_MULTIWINDOW_W5_STAGE_DECODE_INPUT = 13,
-	V_MULTIWINDOW_W5_STAGE_COMPLETE = 14
+	V_MULTIWINDOW_W5_STAGE_COMPLETE = 14,
+	V_MULTIWINDOW_W5_STAGE_HOOK_INSTALL = 15
+};
+
+enum VMultiwindowW5InputEpochState {
+	V_MULTIWINDOW_W5_INPUT_IDLE = 0,
+	V_MULTIWINDOW_W5_INPUT_EXPECT_HOOK = 1,
+	V_MULTIWINDOW_W5_INPUT_EXPECT_RAW = 2,
+	V_MULTIWINDOW_W5_INPUT_COMPLETE = 3
 };
 
 enum VMultiwindowW5PreflightProof {
@@ -63,28 +75,20 @@ enum VMultiwindowW5PreflightCleanup {
 	V_MULTIWINDOW_W5_CLEANUP_DESKTOP_STATE = 1u << 4,
 	V_MULTIWINDOW_W5_CLEANUP_WINDOW = 1u << 5,
 	V_MULTIWINDOW_W5_CLEANUP_CLASS = 1u << 6,
-	V_MULTIWINDOW_W5_CLEANUP_ALL = 0x7fu
+	V_MULTIWINDOW_W5_CLEANUP_HOOK = 1u << 7,
+	V_MULTIWINDOW_W5_CLEANUP_ALL = 0xffu
 };
 
-enum VMultiwindowW5InputMessageDeviceType {
-	V_MULTIWINDOW_W5_IMDT_UNAVAILABLE = 0,
-	V_MULTIWINDOW_W5_IMDT_KEYBOARD = 1,
-	V_MULTIWINDOW_W5_IMDT_MOUSE = 2,
-	V_MULTIWINDOW_W5_IMDT_TOUCH = 4,
-	V_MULTIWINDOW_W5_IMDT_PEN = 8
-};
+typedef struct VMultiwindowW5LowLevelMouseInput {
+	POINT point;
+	DWORD mouse_data;
+	DWORD flags;
+	DWORD time;
+	ULONG_PTR extra_info;
+} VMultiwindowW5LowLevelMouseInput;
 
-enum VMultiwindowW5InputMessageOriginId {
-	V_MULTIWINDOW_W5_IMO_UNAVAILABLE = 0,
-	V_MULTIWINDOW_W5_IMO_HARDWARE = 1,
-	V_MULTIWINDOW_W5_IMO_INJECTED = 2,
-	V_MULTIWINDOW_W5_IMO_SYSTEM = 4
-};
-
-typedef struct VMultiwindowW5InputMessageSource {
-	DWORD device_type;
-	DWORD origin_id;
-} VMultiwindowW5InputMessageSource;
+typedef LRESULT(CALLBACK *VMultiwindowW5LowLevelMouseProc)(
+	int, WPARAM, LPARAM);
 
 typedef UINT(WINAPI *VMultiwindowW5GetRegisteredRawInputDevices)(
 	PRAWINPUTDEVICE, PUINT, UINT);
@@ -93,17 +97,20 @@ typedef BOOL(WINAPI *VMultiwindowW5RegisterRawInputDevices)(
 typedef UINT(WINAPI *VMultiwindowW5GetRawInputData)(
 	HRAWINPUT, UINT, LPVOID, PUINT, UINT);
 typedef UINT(WINAPI *VMultiwindowW5SendInput)(UINT, LPINPUT, int);
-typedef BOOL(WINAPI *VMultiwindowW5GetCurrentInputMessageSource)(
-	VMultiwindowW5InputMessageSource *);
-typedef LPARAM(WINAPI *VMultiwindowW5GetMessageExtraInfo)(void);
+typedef HANDLE(WINAPI *VMultiwindowW5SetWindowsHookExW)(
+	int, VMultiwindowW5LowLevelMouseProc, HINSTANCE, DWORD);
+typedef LRESULT(WINAPI *VMultiwindowW5CallNextHookEx)(
+	HANDLE, int, WPARAM, LPARAM);
+typedef BOOL(WINAPI *VMultiwindowW5UnhookWindowsHookEx)(HANDLE);
 
 typedef struct VMultiwindowW5Apis {
 	VMultiwindowW5GetRegisteredRawInputDevices get_registered_raw_input_devices;
 	VMultiwindowW5RegisterRawInputDevices register_raw_input_devices;
 	VMultiwindowW5GetRawInputData get_raw_input_data;
 	VMultiwindowW5SendInput send_input;
-	VMultiwindowW5GetCurrentInputMessageSource get_current_input_message_source;
-	VMultiwindowW5GetMessageExtraInfo get_message_extra_info;
+	VMultiwindowW5SetWindowsHookExW set_windows_hook_ex_w;
+	VMultiwindowW5CallNextHookEx call_next_hook_ex;
+	VMultiwindowW5UnhookWindowsHookEx unhook_windows_hook_ex;
 } VMultiwindowW5Apis;
 
 typedef struct VMultiwindowW5RawInventory {
@@ -132,15 +139,20 @@ typedef struct VMultiwindowW5Context {
 	const wchar_t *class_name;
 	HWND window;
 	ATOM class_atom;
+	HANDLE mouse_hook;
 	uint32_t proof;
 	uint32_t cleanup;
 	uint32_t primary_stage;
 	uint32_t primary_error;
 	uint32_t cleanup_error;
+	uint32_t input_state;
 	ULONG_PTR expected_tag;
 	LONG raw_dx;
 	LONG raw_dy;
 	int armed;
+	int cleaning;
+	int exact_hook_inputs;
+	int unexpected_hook_inputs;
 	int exact_raw_inputs;
 	int unexpected_raw_inputs;
 	int raw_registered;
@@ -150,6 +162,8 @@ typedef struct VMultiwindowW5Context {
 } VMultiwindowW5Context;
 
 static VMultiwindowW5Context *v_multiwindow_w5_preflight_context = NULL;
+static VMultiwindowW5CallNextHookEx
+	v_multiwindow_w5_preflight_call_next_hook_ex = NULL;
 
 static void v_multiwindow_w5_set_primary(VMultiwindowW5Context *context,
 	uint32_t stage, uint32_t error_code) {
@@ -187,16 +201,19 @@ static int v_multiwindow_w5_resolve_apis(VMultiwindowW5Apis *apis) {
 			"GetRawInputData");
 	apis->send_input = (VMultiwindowW5SendInput)GetProcAddress(user32,
 		"SendInput");
-	apis->get_current_input_message_source =
-		(VMultiwindowW5GetCurrentInputMessageSource)GetProcAddress(user32,
-			"GetCurrentInputMessageSource");
-	apis->get_message_extra_info =
-		(VMultiwindowW5GetMessageExtraInfo)GetProcAddress(user32,
-			"GetMessageExtraInfo");
+	apis->set_windows_hook_ex_w =
+		(VMultiwindowW5SetWindowsHookExW)GetProcAddress(user32,
+			"SetWindowsHookExW");
+	apis->call_next_hook_ex =
+		(VMultiwindowW5CallNextHookEx)GetProcAddress(user32,
+			"CallNextHookEx");
+	apis->unhook_windows_hook_ex =
+		(VMultiwindowW5UnhookWindowsHookEx)GetProcAddress(user32,
+			"UnhookWindowsHookEx");
 	return apis->get_registered_raw_input_devices
 		&& apis->register_raw_input_devices && apis->get_raw_input_data
-		&& apis->send_input && apis->get_current_input_message_source
-		&& apis->get_message_extra_info;
+		&& apis->send_input && apis->set_windows_hook_ex_w
+		&& apis->call_next_hook_ex && apis->unhook_windows_hook_ex;
 }
 
 static void v_multiwindow_w5_free_inventory(
@@ -379,17 +396,44 @@ static int v_multiwindow_w5_cursor_info_equal(const CURSORINFO *left,
 		&& left->ptScreenPos.y == right->ptScreenPos.y;
 }
 
+static LRESULT CALLBACK v_multiwindow_w5_preflight_mouse_hook(int code,
+	WPARAM wparam, LPARAM lparam) {
+	VMultiwindowW5Context *context = v_multiwindow_w5_preflight_context;
+	HANDLE hook = context ? context->mouse_hook : NULL;
+	if (context && context->armed && !context->cleaning && code >= 0) {
+		const VMultiwindowW5LowLevelMouseInput *mouse =
+			(const VMultiwindowW5LowLevelMouseInput *)lparam;
+		if (code != V_MULTIWINDOW_W5_HC_ACTION
+			|| wparam != (WPARAM)WM_MOUSEMOVE || !mouse
+			|| context->input_state != V_MULTIWINDOW_W5_INPUT_EXPECT_HOOK
+			|| context->exact_hook_inputs != 0
+			|| (mouse->flags & V_MULTIWINDOW_W5_LLMHF_INJECTED) == 0
+			|| mouse->extra_info != context->expected_tag) {
+			context->unexpected_hook_inputs++;
+			v_multiwindow_w5_set_primary(context,
+				V_MULTIWINDOW_W5_STAGE_DECODE_INPUT, ERROR_INVALID_DATA);
+		} else {
+			context->exact_hook_inputs = 1;
+			context->proof |= V_MULTIWINDOW_W5_PROOF_SOURCE
+				| V_MULTIWINDOW_W5_PROOF_EXTRA_TAG;
+			context->input_state = V_MULTIWINDOW_W5_INPUT_EXPECT_RAW;
+		}
+	}
+	return v_multiwindow_w5_preflight_call_next_hook_ex(hook, code, wparam,
+		lparam);
+}
+
 static void v_multiwindow_w5_observe_raw_input(
 	VMultiwindowW5Context *context, WPARAM wparam, LPARAM lparam) {
-	VMultiwindowW5InputMessageSource source;
-	LPARAM message_extra;
 	UINT size = 0;
 	UINT copied;
 	UINT read;
 	unsigned char *bytes = NULL;
 	RAWINPUT *raw;
 	uint32_t error_code = ERROR_INVALID_DATA;
-	if (!context || !context->armed || context->exact_raw_inputs != 0) {
+	if (!context || !context->armed || context->cleaning
+		|| context->input_state != V_MULTIWINDOW_W5_INPUT_EXPECT_RAW
+		|| context->exact_raw_inputs != 0) {
 		if (context) {
 			context->unexpected_raw_inputs++;
 			v_multiwindow_w5_set_primary(context,
@@ -397,26 +441,10 @@ static void v_multiwindow_w5_observe_raw_input(
 		}
 		return;
 	}
-	memset(&source, 0, sizeof(source));
-	SetLastError(ERROR_SUCCESS);
-	if (!context->apis.get_current_input_message_source(&source)) {
-		error_code = GetLastError() ? GetLastError() : ERROR_INVALID_DATA;
-		goto invalid;
-	}
-	message_extra = context->apis.get_message_extra_info();
 	if ((UINT)(wparam & 0xffu) != RIM_INPUT) {
 		goto invalid;
 	}
 	context->proof |= V_MULTIWINDOW_W5_PROOF_WM_INPUT;
-	if (source.device_type != V_MULTIWINDOW_W5_IMDT_MOUSE
-		|| source.origin_id != V_MULTIWINDOW_W5_IMO_INJECTED) {
-		goto invalid;
-	}
-	context->proof |= V_MULTIWINDOW_W5_PROOF_SOURCE;
-	if ((ULONG_PTR)message_extra != context->expected_tag) {
-		goto invalid;
-	}
-	context->proof |= V_MULTIWINDOW_W5_PROOF_EXTRA_TAG;
 	SetLastError(ERROR_SUCCESS);
 	if (context->apis.get_raw_input_data((HRAWINPUT)lparam, RID_INPUT, NULL,
 		&size, sizeof(RAWINPUTHEADER)) != 0
@@ -452,6 +480,7 @@ static void v_multiwindow_w5_observe_raw_input(
 	}
 	context->proof |= V_MULTIWINDOW_W5_PROOF_RELATIVE_NONZERO;
 	context->exact_raw_inputs = 1;
+	context->input_state = V_MULTIWINDOW_W5_INPUT_COMPLETE;
 	free(bytes);
 	return;
 
@@ -570,11 +599,15 @@ static int v_multiwindow_w5_wait_for_raw_input(
 			return 0;
 		}
 		if (context->primary_stage != V_MULTIWINDOW_W5_STAGE_NONE
+			|| context->unexpected_hook_inputs != 0
 			|| context->unexpected_raw_inputs != 0
+			|| context->exact_hook_inputs > 1
 			|| context->exact_raw_inputs > 1) {
 			return 0;
 		}
-		if (context->exact_raw_inputs == 1) {
+		if (context->input_state == V_MULTIWINDOW_W5_INPUT_COMPLETE
+			&& context->exact_hook_inputs == 1
+			&& context->exact_raw_inputs == 1) {
 			if (activity) {
 				quiet = 0;
 			} else {
@@ -621,7 +654,21 @@ static void v_multiwindow_w5_cleanup(VMultiwindowW5Context *context) {
 		return;
 	}
 	memset(&final_inventory, 0, sizeof(final_inventory));
-	quiet_ok = v_multiwindow_w5_pump_until_quiet(context, 40);
+	quiet_ok = 1;
+	context->cleaning = 1;
+	context->armed = 0;
+	if (context->mouse_hook) {
+		SetLastError(ERROR_SUCCESS);
+		if (context->apis.unhook_windows_hook_ex(context->mouse_hook)) {
+			context->mouse_hook = NULL;
+			context->cleanup |= V_MULTIWINDOW_W5_CLEANUP_HOOK;
+		} else {
+			v_multiwindow_w5_set_cleanup_error(context,
+				GetLastError() ? GetLastError() : ERROR_INVALID_DATA);
+		}
+	} else {
+		context->cleanup |= V_MULTIWINDOW_W5_CLEANUP_HOOK;
+	}
 	if (context->raw_registered) {
 		RAWINPUTDEVICE remove_device;
 		memset(&remove_device, 0, sizeof(remove_device));
@@ -641,7 +688,6 @@ static void v_multiwindow_w5_cleanup(VMultiwindowW5Context *context) {
 	} else {
 		context->cleanup |= V_MULTIWINDOW_W5_CLEANUP_RAW_REMOVE;
 	}
-	context->armed = 0;
 	if (!v_multiwindow_w5_pump_until_quiet(context, 40)) {
 		quiet_ok = 0;
 	}
@@ -650,7 +696,8 @@ static void v_multiwindow_w5_cleanup(VMultiwindowW5Context *context) {
 	} else {
 		v_multiwindow_w5_set_cleanup_error(context, WAIT_TIMEOUT);
 	}
-	if (context->unexpected_raw_inputs != 0 || context->saw_quit) {
+	if (context->unexpected_hook_inputs != 0
+		|| context->unexpected_raw_inputs != 0 || context->saw_quit) {
 		v_multiwindow_w5_set_cleanup_error(context,
 			context->saw_quit ? ERROR_CANCELLED : ERROR_BUSY);
 	}
@@ -784,6 +831,8 @@ static int v_multiwindow_test_win32_w5_a0_run(uint32_t timeout_ms,
 			V_MULTIWINDOW_W5_STAGE_APIS, ERROR_PROC_NOT_FOUND);
 		goto cleanup;
 	}
+	v_multiwindow_w5_preflight_call_next_hook_ex =
+		context.apis.call_next_hook_ex;
 	context.proof |= V_MULTIWINDOW_W5_PROOF_APIS;
 	if (!v_multiwindow_w5_query_inventory(
 		context.apis.get_registered_raw_input_devices,
@@ -924,12 +973,23 @@ static int v_multiwindow_test_win32_w5_a0_run(uint32_t timeout_ms,
 			V_MULTIWINDOW_W5_STAGE_QUIET, WAIT_TIMEOUT);
 		goto cleanup;
 	}
+	SetLastError(ERROR_SUCCESS);
+	context.mouse_hook = context.apis.set_windows_hook_ex_w(
+		V_MULTIWINDOW_W5_WH_MOUSE_LL,
+		v_multiwindow_w5_preflight_mouse_hook, context.instance, 0);
+	if (!context.mouse_hook) {
+		v_multiwindow_w5_set_primary(&context,
+			V_MULTIWINDOW_W5_STAGE_HOOK_INSTALL,
+			GetLastError() ? GetLastError() : ERROR_INVALID_HANDLE);
+		goto cleanup;
+	}
 	memset(&input, 0, sizeof(input));
 	input.type = INPUT_MOUSE;
 	input.mi.dx = 2;
 	input.mi.dy = -2;
 	input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE;
 	input.mi.dwExtraInfo = context.expected_tag;
+	context.input_state = V_MULTIWINDOW_W5_INPUT_EXPECT_HOOK;
 	context.armed = 1;
 	SetLastError(ERROR_SUCCESS);
 	if (context.apis.send_input(1, &input, sizeof(INPUT)) != 1) {
@@ -942,10 +1002,14 @@ static int v_multiwindow_test_win32_w5_a0_run(uint32_t timeout_ms,
 	if (!v_multiwindow_w5_wait_for_raw_input(&context, timeout_ms)) {
 		v_multiwindow_w5_set_primary(&context,
 			V_MULTIWINDOW_W5_STAGE_WAIT_INPUT,
-			context.unexpected_raw_inputs ? ERROR_BUSY : WAIT_TIMEOUT);
+			context.unexpected_hook_inputs || context.unexpected_raw_inputs
+				? ERROR_BUSY : WAIT_TIMEOUT);
 		goto cleanup;
 	}
-	if (context.exact_raw_inputs != 1 || context.unexpected_raw_inputs != 0
+	if (context.input_state != V_MULTIWINDOW_W5_INPUT_COMPLETE
+		|| context.exact_hook_inputs != 1
+		|| context.unexpected_hook_inputs != 0
+		|| context.exact_raw_inputs != 1 || context.unexpected_raw_inputs != 0
 		|| context.proof != V_MULTIWINDOW_W5_PROOF_ALL) {
 		v_multiwindow_w5_set_primary(&context,
 			V_MULTIWINDOW_W5_STAGE_DECODE_INPUT, ERROR_INVALID_DATA);
@@ -966,7 +1030,11 @@ cleanup:
 		&& context.primary_error == 0
 		&& context.proof == V_MULTIWINDOW_W5_PROOF_ALL
 		&& context.cleanup == V_MULTIWINDOW_W5_CLEANUP_ALL
-		&& context.cleanup_error == 0 && context.exact_raw_inputs == 1
+		&& context.cleanup_error == 0
+		&& context.input_state == V_MULTIWINDOW_W5_INPUT_COMPLETE
+		&& context.exact_hook_inputs == 1
+		&& context.unexpected_hook_inputs == 0
+		&& context.exact_raw_inputs == 1
 		&& context.unexpected_raw_inputs == 0 && !context.saw_quit;
 	if (result) {
 		return 1;
