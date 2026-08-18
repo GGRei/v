@@ -26,9 +26,9 @@ $ErrorActionPreference = 'Stop'
 
 $header = 'vlib/x/multiwindow/testdata/win32_raw_input_w5_preflight.h'
 $main = 'vlib/x/multiwindow/testdata/win32_raw_input_w5_preflight.c'
-$knownHeaderSha256 = 'f2460dbd728b0c6b4fcd4617da3c826320b38a2f12ab3ece3243834c3288e2cd'
-$knownMainSha256 = '70f120accf182ff921bf6bf5814f2a406071669850e6909534168e0ad4ecbc11'
-$knownTupleSha256 = '75bb7fd766a0dd93fa08a299001a4ce199e918feb641c0c68bb96a2dd2469c99'
+$knownHeaderSha256 = '9decdc2e825c91da2b9d2ce0c98cb8ccdad5c4800a690863d166135eb188e916'
+$knownMainSha256 = '5f30869ae97f680032e622273ea69986d612cc82cad2adf53e4c3b1415154301'
+$knownTupleSha256 = '99ef24bf101dc83543f26f86cb23a80c82607e0f1b35c32e9dbb431368ecc7c4'
 
 $runtimeMarkers = @(
     'PACKAGE2_W5_A0_IDENTITY=win32_raw_input_sendinput_preflight'
@@ -97,20 +97,51 @@ function Test-W5A0SourceTokenAbsent {
 
     $matched = [System.Text.RegularExpressions.Regex]::IsMatch(
         $Text,
-        '(?<![A-Za-z0-9_])ShowCursor(?![A-Za-z0-9_])',
+        '(?<![A-Za-z0-9_])(?:ShowCursor|SetCursor|SetSystemCursor|DestroyCursor|SetClassLong(?:Ptr)?(?:A|W)?)(?![A-Za-z0-9_])',
         [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
     )
     return -not $matched
 }
 
 function Test-W5A0SourceTokenGate {
-    $cleanAccepted = Test-W5A0SourceTokenAbsent -Text 'int cursor_state = 0;'
-    $callRejected = -not (Test-W5A0SourceTokenAbsent -Text 'ShowCursor(TRUE);')
-    $stringRejected = -not (Test-W5A0SourceTokenAbsent -Text '"ShowCursor"')
-    if (-not $cleanAccepted -or -not $callRejected -or -not $stringRejected) {
+    $cleanAccepted = 0
+    foreach ($fixture in @(
+        'int cursor_state = 0;',
+        'SetCursorPos(1, 2);',
+        'window_class.hCursor = snapshot.hCursor;'
+    )) {
+        if (Test-W5A0SourceTokenAbsent -Text $fixture) {
+            $cleanAccepted++
+        }
+    }
+    $forbiddenTokens = @(
+        'ShowCursor',
+        'SetCursor',
+        'SetSystemCursor',
+        'DestroyCursor',
+        'SetClassLong',
+        'SetClassLongA',
+        'SetClassLongW',
+        'SetClassLongPtr',
+        'SetClassLongPtrA',
+        'SetClassLongPtrW'
+    )
+    $forbiddenRejected = 0
+    foreach ($token in $forbiddenTokens) {
+        foreach ($fixture in @(
+            ('{0}(0);' -f $token),
+            ('"{0}"' -f $token),
+            ('/* {0} */' -f $token)
+        )) {
+            if (-not (Test-W5A0SourceTokenAbsent -Text $fixture)) {
+                $forbiddenRejected++
+            }
+        }
+    }
+    if ($cleanAccepted -ne 3 -or $forbiddenRejected -ne 30) {
         throw 'W5 A0 source-token self-test failed'
     }
-    Write-Host 'PACKAGE2_W5_A0_SOURCE_TOKEN_SELF_TEST accepted=1 rejected=2 total=3'
+    Write-Host 'PACKAGE2_W5_A0_SOURCE_TOKEN_SELF_TEST accepted=3 rejected=30 total=33'
 }
 
 function Assert-W5A0FailedReap {
@@ -621,7 +652,7 @@ foreach ($sourceInput in @($header, $main)) {
         (Resolve-Path -LiteralPath $sourceInput -ErrorAction Stop).Path
     )
     if (-not (Test-W5A0SourceTokenAbsent -Text $sourceText)) {
-        throw "W5 A0 forbidden cursor-visibility counter token in source: $sourceInput"
+        throw "W5 A0 forbidden cursor-state mutation token in source: $sourceInput"
     }
     Write-Host "PACKAGE2_W5_A0_SOURCE_TOKEN_OK path=$sourceInput"
 }
