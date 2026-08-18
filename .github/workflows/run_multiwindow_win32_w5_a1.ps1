@@ -180,12 +180,12 @@ $knownPublicRoutingSurfaceSha256 = '7104f779d02f2e22d302c4483e2474675093acf33248
 $greenProductionSurface = @(
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_backend.v'; Known = '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d'; Passed = $ExpectedServiceBackendSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/event_dispatch_d_gg_multiwindow.v'; Known = '7ef6c7cbd34511d6c19c1a3a269b46876db791b9412bb88e3a8d4dcd543bfd4e'; Passed = $ExpectedEventDispatchSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend.c.v'; Known = 'abce389643414b84d8d7a675ff68563d0b7c22175a2f46956f77774f2945ff41'; Passed = $ExpectedWin32BackendSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend_helpers.h'; Known = '1804ff477fb372e68cfa03e52ad54b13ac6457ef2d10dee4c51edcf931dc044d'; Passed = $ExpectedWin32BackendHelpersSha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend.c.v'; Known = '3c19ecb2815e7d49b71c19affad89a8a14d8795b8b96c11f4e7e465063d4a29c'; Passed = $ExpectedWin32BackendSha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend_helpers.h'; Known = 'eef8fc485a4774fd380b9b2c7deebbf6b349b432430d0182bad7325a6e684329'; Passed = $ExpectedWin32BackendHelpersSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_backend.c.v'; Known = '02076f74e9537323f688e256d3613f87534cd304ca1bc99b7433f406ffd6ebad'; Passed = $ExpectedWin32ServiceBackendSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_native.h'; Known = '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73'; Passed = $ExpectedWin32ServiceNativeSha256 }
 )
-$knownGreenProductionSurfaceSha256 = '7b46a813c9bffb704c67f9aa584580615bc48fafbccbed43538d7ea0724357bb'
+$knownGreenProductionSurfaceSha256 = 'dc79eb68a7b83f56f3e6afdfb4e8b90dea7d7ab69f8930516d2e80263d54c363'
 
 $fatalPattern = '(?i)(fatal error|unhandled exception|access violation|STATUS_ACCESS_VIOLATION|0xC0000005|segmentation fault|stack overflow|illegal instruction|abort trap|process crashed|application crashed|V panic:)'
 $compilerDiagnosticPattern = '(?im)(C compilation error|builder error|failed to compile|cannot compile|fatal error|error C[0-9]{4}|warning C[0-9]{4}|warning:|error:|undefined reference|unresolved external symbol|LNK[0-9]{4})'

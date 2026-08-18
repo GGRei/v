@@ -896,14 +896,16 @@ static LRESULT CALLBACK v_multiwindow_win32_wnd_proc(HWND hwnd, UINT msg, WPARAM
 			}
 			int x = v_multiwindow_win32_lparam_x(lparam);
 			int y = v_multiwindow_win32_lparam_y(lparam);
-			if (v_multiwindow_win32_window_suppress_legacy_mouse_tail(
-				data, x, y)) {
-				return 0;
-			}
+			int suppress_legacy_tail =
+				v_multiwindow_win32_window_suppress_legacy_mouse_tail(
+					data, x, y);
 			uint32_t modifiers = v_multiwindow_win32_modifiers();
 			if (v_multiwindow_win32_begin_mouse_tracking(hwnd)) {
 				uint64_t enter_sequence = v_multiwindow_win32_next_event_sequence();
 				v_multiwindow_win32_window_input_event(data, enter_sequence, V_MULTIWINDOW_WIN32_INPUT_MOUSE_ENTER, 0, 0, 0, modifiers, V_MULTIWINDOW_WIN32_MOUSE_BUTTON_INVALID, x, y, 0, 0);
+			}
+			if (suppress_legacy_tail) {
+				return 0;
 			}
 			uint64_t sequence = v_multiwindow_win32_next_event_sequence();
 			v_multiwindow_win32_window_input_event(data, sequence, V_MULTIWINDOW_WIN32_INPUT_MOUSE_MOVE, 0, 0, 0, modifiers, V_MULTIWINDOW_WIN32_MOUSE_BUTTON_INVALID, x, y, 0, 0);

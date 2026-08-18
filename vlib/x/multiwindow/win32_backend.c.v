@@ -586,6 +586,7 @@ $if windows {
 			return 0
 		}
 		if record.mouse_raw_x == mouse_x && record.mouse_raw_y == mouse_y {
+			record.clear_mouse_lock_legacy_tail()
 			return 1
 		}
 		record.clear_mouse_lock_legacy_tail()
@@ -736,6 +737,7 @@ fn (record &Win32WindowRecord) input_event(kind InputEventKind) InputEvent {
 
 @[markused]
 fn (mut record Win32WindowRecord) update_mouse_position(x int, y int, clear_delta bool) {
+	record.clear_mouse_lock_legacy_tail()
 	new_x := f32(x)
 	new_y := f32(y)
 	if clear_delta || !record.mouse_pos_valid {
@@ -1246,13 +1248,6 @@ fn (mut backend Win32Backend) poll_queued_events() ![]QueuedEvent {
 			return []QueuedEvent{}
 		}
 		C.v_multiwindow_win32_pump_messages()
-		mut tail_index := 0
-		for tail_index < backend.windows.len {
-			if backend.windows[tail_index].mouse_tail_generation != 0 {
-				backend.windows[tail_index].clear_mouse_lock_legacy_tail()
-			}
-			tail_index++
-		}
 		for event in backend.collect_service_refresh_events()! {
 			native_events << event
 		}
