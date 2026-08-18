@@ -91,10 +91,10 @@ jobs:
         shell: pwsh
         run: |
           .\.github\workflows\run_multiwindow_win32_w5_a0.ps1 -Compiler msvc `
-            -ExpectedHeaderSha256 '30c0ac6dce72efeab05bb895f57dcd7c613f0bcd499947d619cb0a6c8bbb35e6' `
-            -ExpectedMainSha256 '5a806001507578f3903bcbfc06a5c5f893b341b35c1d041fc1eea31cfa8a654e' `
-            -ExpectedTupleSha256 '940a504698b9b90c76d3f4046355ba714aca1f6399b67daad0cd4fab28b6260b' `
-            -ExpectedRunnerSha256 '43d3ebfbdc6412005f26b37c5f01a027feafcb604b80deea084cdc5a4b7a107d'
+            -ExpectedHeaderSha256 '9f790c11a4b705186080de256d5fe93503eea020edc3376f330577e24212b1d3' `
+            -ExpectedMainSha256 '01764788178fb51e417a5ff779d268f8c6cadaf6312f92ed26e27654532fa3af' `
+            -ExpectedTupleSha256 'f7b92d8b3aa20c76b3191f891ab0eb0f51fa98ffafc0a815b1ab923fbcf3061c' `
+            -ExpectedRunnerSha256 'dac51d3dd802ce601db06927bbc27566d0890f96696870e4d0df23b7371a0f90'
       - name: Prepare multiwindow Job Object watchdog
         shell: pwsh
         run: |

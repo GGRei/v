@@ -26,9 +26,9 @@ $ErrorActionPreference = 'Stop'
 
 $header = 'vlib/x/multiwindow/testdata/win32_raw_input_w5_preflight.h'
 $main = 'vlib/x/multiwindow/testdata/win32_raw_input_w5_preflight.c'
-$knownHeaderSha256 = '30c0ac6dce72efeab05bb895f57dcd7c613f0bcd499947d619cb0a6c8bbb35e6'
-$knownMainSha256 = '5a806001507578f3903bcbfc06a5c5f893b341b35c1d041fc1eea31cfa8a654e'
-$knownTupleSha256 = '940a504698b9b90c76d3f4046355ba714aca1f6399b67daad0cd4fab28b6260b'
+$knownHeaderSha256 = '9f790c11a4b705186080de256d5fe93503eea020edc3376f330577e24212b1d3'
+$knownMainSha256 = '01764788178fb51e417a5ff779d268f8c6cadaf6312f92ed26e27654532fa3af'
+$knownTupleSha256 = 'f7b92d8b3aa20c76b3191f891ab0eb0f51fa98ffafc0a815b1ab923fbcf3061c'
 
 $runtimeMarkers = @(
     'PACKAGE2_W5_A0_IDENTITY=win32_raw_input_sendinput_preflight'
@@ -509,13 +509,37 @@ function Get-W5A0CompilerIdentity {
             Get-Command x86_64-w64-mingw32-gcc.exe -CommandType Application `
                 -All -ErrorAction SilentlyContinue
         )
-        if ($gccCommands.Count -ne 1) {
-            throw "W5 A0 expected exactly one x86_64-w64-mingw32-gcc.exe, found $($gccCommands.Count)"
+        $gccPathSet = [System.Collections.Generic.HashSet[string]]::new(
+            [System.StringComparer]::OrdinalIgnoreCase
+        )
+        $gccPaths = [System.Collections.Generic.List[string]]::new()
+        foreach ($gccCommand in $gccCommands) {
+            $gccSource = [string]$gccCommand.Source
+            if ([string]::IsNullOrWhiteSpace($gccSource)) {
+                throw 'W5 A0 target-prefixed GCC resolved to an empty source'
+            }
+            $resolvedGccSource = (Resolve-Path -LiteralPath $gccSource `
+                -ErrorAction Stop).Path
+            $fullGccSource = [IO.Path]::GetFullPath($resolvedGccSource)
+            if ($gccPathSet.Add($fullGccSource)) {
+                [void]$gccPaths.Add($fullGccSource)
+            }
         }
-        $compilerPath = [string]$gccCommands[0].Source
-        if ([string]::IsNullOrWhiteSpace($compilerPath)) {
-            throw "W5 A0 target-prefixed GCC resolved to an empty source"
+        if ($gccPaths.Count -ne 1) {
+            $gccPathDiagnostic = @(
+                $gccPaths | Select-Object -First 4 | ForEach-Object {
+                    [Uri]::EscapeDataString($_)
+                }
+            ) -join ','
+            if ($gccPathDiagnostic.Length -gt 512) {
+                $gccPathDiagnostic = $gccPathDiagnostic.Substring(0, 512)
+            }
+            if ($gccPathDiagnostic -eq '') {
+                $gccPathDiagnostic = '<none>'
+            }
+            throw "W5 A0 expected exactly one canonical x86_64-w64-mingw32-gcc.exe path, found $($gccPaths.Count): $gccPathDiagnostic"
         }
+        $compilerPath = [string]$gccPaths[0]
         $versionArguments = @('--version')
         $machine = Invoke-W5A0BoundedProcess -FileName $compilerPath `
             -Arguments @('-dumpmachine') -WorkingDirectory $WorkingDirectory `
