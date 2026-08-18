@@ -167,6 +167,7 @@ fn (mut backend Backend) service_set_mouse_lock(id WindowId, enabled bool) !Serv
 		.x11 { backend.x11.service_set_mouse_lock(id, enabled)! }
 		.wayland { backend.wayland.service_set_mouse_lock(id, enabled)! }
 		.appkit { backend.appkit.service_set_mouse_lock(id, enabled)! }
+		.win32 { backend.win32.service_set_mouse_lock(id, enabled)! }
 		else { error(err_capability_unsupported) }
 	}
 }

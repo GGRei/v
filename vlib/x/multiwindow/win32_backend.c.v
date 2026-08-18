@@ -48,6 +48,7 @@ mut:
 	pending_drop_modifiers     u32
 	pending_high_surrogate     u32
 	suppress_control_char      u32
+	raw_input_failed           bool
 	service_monitor_ids        []ServiceMonitorId
 	service_dpi                u32
 	service_refresh_sequence   u64
@@ -95,6 +96,7 @@ mut:
 	render_health                    NativeRendererHealth
 	poll_error                       string
 	lifetime_release_error           string
+	native_input_release_error       string
 	event_sequence_terminal          string
 	windows                          []&Win32WindowRecord
 	service_monitors                 []Win32ServiceMonitorRecord
@@ -191,13 +193,20 @@ fn (mut backend Win32Backend) finish_renderer_shutdown_health() {
 	backend.render_health = .abandoned
 }
 
+fn (mut backend Win32Backend) record_native_input_release_error(message string) {
+	if message != '' && backend.native_input_release_error == '' {
+		backend.native_input_release_error = message
+	}
+}
+
 fn (mut backend Win32Backend) retained_stop_error(operation_error string) string {
-	return merge_backend_errors(operation_error, merge_backend_errors(backend.lifetime_release_error,
-		backend.event_sequence_terminal_error()))
+	return merge_backend_errors(operation_error, merge_backend_errors(backend.native_input_release_error, merge_backend_errors(backend.lifetime_release_error,
+		backend.event_sequence_terminal_error())))
 }
 
 fn (backend &Win32Backend) renderer_probe_error(operation_error string) string {
-	return merge_backend_errors(operation_error, backend.lifetime_release_error)
+	return merge_backend_errors(operation_error, merge_backend_errors(backend.native_input_release_error,
+		backend.lifetime_release_error))
 }
 
 $if windows {
@@ -452,6 +461,66 @@ $if windows {
 				record.suppress_control_char = control_char
 			}
 		}
+	}
+
+	@[export: 'v_multiwindow_win32_window_mouse_lock_active']
+	@[markused]
+	fn win32_window_mouse_lock_active(data voidptr) int {
+		if data == unsafe { nil } {
+			return 0
+		}
+		record := unsafe { &Win32WindowRecord(data) }
+		if record.service_state == unsafe { nil } {
+			return 0
+		}
+		return C.v_multiwindow_win32_service_mouse_delivery_active(record.service_state)
+	}
+
+	@[export: 'v_multiwindow_win32_window_raw_mouse_event']
+	@[markused]
+	fn win32_window_raw_mouse_event(data voidptr, sequence u64, mouse_x int, mouse_y int, mouse_dx int, mouse_dy int, modifiers u32) {
+		if data == unsafe { nil } || sequence == 0 || (mouse_dx == 0 && mouse_dy == 0) {
+			return
+		}
+		mut record := unsafe { &Win32WindowRecord(data) }
+		if record.service_state == unsafe { nil } {
+			return
+		}
+		record.mouse_x = f32(mouse_x)
+		record.mouse_y = f32(mouse_y)
+		record.mouse_dx = f32(mouse_dx)
+		record.mouse_dy = f32(mouse_dy)
+		record.mouse_pos_valid = true
+		record.enqueue_native_event(sequence, queued_input_event(InputEvent{
+			kind:               .mouse_move
+			window_id:          record.id
+			modifiers:          modifiers
+			mouse_x:            record.mouse_x
+			mouse_y:            record.mouse_y
+			mouse_dx:           record.mouse_dx
+			mouse_dy:           record.mouse_dy
+			window_width:       record.width
+			window_height:      record.height
+			framebuffer_width:  record.width
+			framebuffer_height: record.height
+			mouse_button:       256
+		}))
+	}
+
+	@[export: 'v_multiwindow_win32_window_raw_input_error']
+	@[markused]
+	fn win32_window_raw_input_error(data voidptr) {
+		if data == unsafe { nil } {
+			return
+		}
+		mut record := unsafe { &Win32WindowRecord(data) }
+		if record.service_state != unsafe { nil } {
+			_ = C.v_multiwindow_win32_service_disable_mouse_delivery(record.service_state)
+		}
+		record.mouse_dx = 0
+		record.mouse_dy = 0
+		record.mouse_pos_valid = false
+		record.raw_input_failed = true
 	}
 
 	@[export: 'v_multiwindow_win32_window_drop_begin']
@@ -753,6 +822,9 @@ fn (mut backend Win32Backend) close_start_attempt() string {
 
 fn (mut backend Win32Backend) probe_renderer_capabilities() !Capabilities {
 	$if windows {
+		if backend.native_input_release_error != '' {
+			return error(backend.renderer_probe_error(''))
+		}
 		if !backend.start_attempt_closed() {
 			return error(backend.renderer_probe_error(err_render_native_renderer_unavailable))
 		}
@@ -956,6 +1028,16 @@ fn (mut backend Win32Backend) finish_window_teardown(id WindowId) ! {
 		index := backend.window_record_index(id) or { return error(err_window_not_found) }
 		mut record := backend.windows[index]
 		backend.purge_clipboard_window(id)
+		if record.service_state != unsafe { nil } {
+			record.mouse_dx = 0
+			record.mouse_dy = 0
+			record.mouse_pos_valid = false
+			win32_service_prepare_window_teardown(record.service_state) or {
+				prepare_error := err.msg()
+				backend.record_native_input_release_error(prepare_error)
+				return error(prepare_error)
+			}
+		}
 		if !backend.release_window_render_resources(index, win32_window_operation_seed(record.id,
 			record.render_target_generation, .shutdown_release)) {
 			backend.render_health = renderer_health_latch_unavailable(backend.render_health)
@@ -1081,6 +1163,11 @@ fn (mut backend Win32Backend) poll_queued_events() ![]QueuedEvent {
 		mut i := 0
 		for i < backend.windows.len {
 			mut record := backend.windows[i]
+			if record.raw_input_failed {
+				backend.poll_error = merge_backend_errors(backend.poll_error,
+					err_capability_unsupported)
+				record.raw_input_failed = false
+			}
 			for event in record.queued_events {
 				native_events << event
 			}
@@ -1129,6 +1216,15 @@ fn (mut backend Win32Backend) stop() ! {
 		for backend.windows.len > 0 {
 			index := backend.windows.len - 1
 			mut record := backend.windows[index]
+			if record.service_state != unsafe { nil } {
+				record.mouse_dx = 0
+				record.mouse_dy = 0
+				record.mouse_pos_valid = false
+				win32_service_prepare_window_teardown(record.service_state) or {
+					backend.record_native_input_release_error(err.msg())
+					return error(backend.retained_stop_error(''))
+				}
+			}
 			if !backend.release_window_render_resources(index, win32_window_operation_seed(record.id,
 				record.render_target_generation, .shutdown_release)) {
 				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
@@ -1147,12 +1243,8 @@ fn (mut backend Win32Backend) stop() ! {
 			}
 			if record.service_state != unsafe { nil } {
 				service_result := C.v_multiwindow_win32_service_release(record.service_state)
-				if service_result != win32_service_ok {
-					return error(backend.retained_stop_error(if service_result == win32_service_wrong_thread {
-						err_owner_thread_required
-					} else {
-						err_window_not_found
-					}))
+				win32_service_result(service_result) or {
+					return error(backend.retained_stop_error(err.msg()))
 				}
 				record.service_state = unsafe { nil }
 			}

@@ -72,7 +72,11 @@ $if windows {
 	fn C.v_multiwindow_win32_service_authority(state voidptr) int
 	fn C.v_multiwindow_win32_service_create(hwnd voidptr, record_data voidptr, initial_fullscreen int, width int, height int, resizable int, borderless int) voidptr
 	fn C.v_multiwindow_win32_service_release(state voidptr) int
-	fn C.v_multiwindow_win32_service_window_state(state voidptr, out_mapping &int, out_visibility &int, out_active &int, out_focused &int, out_minimized &int, out_maximized &int, out_fullscreen &int, out_position_known &int, out_x &int, out_y &int) int
+	fn C.v_multiwindow_win32_service_window_state_with_mouse_lock(state voidptr, out_mapping &int, out_visibility &int, out_active &int, out_focused &int, out_minimized &int, out_maximized &int, out_fullscreen &int, out_mouse_locked &int, out_position_known &int, out_x &int, out_y &int) int
+	fn C.v_multiwindow_win32_service_set_mouse_lock(state voidptr, enabled int) int
+	fn C.v_multiwindow_win32_service_mouse_delivery_active(state voidptr) int
+	fn C.v_multiwindow_win32_service_disable_mouse_delivery(state voidptr) int
+	fn C.v_multiwindow_win32_service_prepare_window_teardown(state voidptr) int
 	fn C.v_multiwindow_win32_service_show_window(state voidptr) int
 	fn C.v_multiwindow_win32_service_hide_window(state voidptr) int
 	fn C.v_multiwindow_win32_service_focus_window(state voidptr) int
@@ -113,6 +117,7 @@ struct Win32ServiceRawWindowState {
 	minimized      int
 	maximized      int
 	fullscreen     int
+	mouse_locked   int
 	position_known int
 	x              int
 	y              int
@@ -629,6 +634,12 @@ fn (backend &Win32Backend) service_operation_capability(id WindowId, operation S
 				asynchronous: true
 			}
 		}
+		.mouse_lock {
+			ServiceOperationCapability{
+				support:          .conditional
+				state_observable: true
+			}
+		}
 		else {
 			ServiceOperationCapability{}
 		}
@@ -641,9 +652,9 @@ fn (backend &Win32Backend) service_raw_window_state(index int) !Win32ServiceRawW
 			return error(err_window_not_found)
 		}
 		mut raw := Win32ServiceRawWindowState{}
-		result := C.v_multiwindow_win32_service_window_state(backend.windows[index].service_state,
+		result := C.v_multiwindow_win32_service_window_state_with_mouse_lock(backend.windows[index].service_state,
 			&raw.mapping, &raw.visibility, &raw.active, &raw.focused, &raw.minimized,
-			&raw.maximized, &raw.fullscreen, &raw.position_known, &raw.x, &raw.y)
+			&raw.maximized, &raw.fullscreen, &raw.mouse_locked, &raw.position_known, &raw.x, &raw.y)
 		win32_service_result(result)!
 		return raw
 	} $else {
@@ -664,19 +675,20 @@ fn (backend &Win32Backend) service_window_state_with_monitors(index int, monitor
 	}
 	native_monitor := win32_service_window_monitor(backend.windows[index].hwnd)
 	return ServiceWindowState{
-		mapping:     win32_service_mapping(raw.mapping)
-		visibility:  win32_service_visibility(raw.visibility)
-		active:      win32_service_observed_bool(raw.active)
-		focused:     win32_service_observed_bool(raw.focused)
-		minimized:   win32_service_observed_bool(raw.minimized)
-		maximized:   win32_service_observed_bool(raw.maximized)
-		fullscreen:  win32_service_observed_bool(raw.fullscreen)
-		position:    ServicePosition{
+		mapping:      win32_service_mapping(raw.mapping)
+		visibility:   win32_service_visibility(raw.visibility)
+		active:       win32_service_observed_bool(raw.active)
+		focused:      win32_service_observed_bool(raw.focused)
+		minimized:    win32_service_observed_bool(raw.minimized)
+		maximized:    win32_service_observed_bool(raw.maximized)
+		fullscreen:   win32_service_observed_bool(raw.fullscreen)
+		mouse_locked: win32_service_observed_bool(raw.mouse_locked)
+		position:     ServicePosition{
 			known: raw.position_known != 0
 			x:     raw.x
 			y:     raw.y
 		}
-		monitor_ids: win32_service_monitor_ids_for_native(monitors, native_monitor, app_instance)
+		monitor_ids:  win32_service_monitor_ids_for_native(monitors, native_monitor, app_instance)
 	}
 }
 
@@ -976,6 +988,40 @@ fn (mut backend Win32Backend) service_set_fullscreen(id WindowId, enabled bool) 
 	backend.windows[index].config = win32_window_config_with_fullscreen(backend.windows[index].config,
 		enabled)
 	return backend.service_window_state(id)!
+}
+
+fn (mut backend Win32Backend) service_set_mouse_lock(id WindowId, enabled bool) !ServiceWindowState {
+	index := backend.ensure_service_window(id)!
+	$if windows {
+		mut record := backend.windows[index]
+		if !enabled {
+			record.mouse_dx = 0
+			record.mouse_dy = 0
+			record.mouse_pos_valid = false
+		}
+		result := C.v_multiwindow_win32_service_set_mouse_lock(record.service_state,
+			win32_bool_to_int(enabled))
+		win32_service_result(result)!
+		if enabled {
+			record.mouse_dx = 0
+			record.mouse_dy = 0
+			record.mouse_pos_valid = false
+		}
+		return ServiceWindowState{
+			mouse_locked: if enabled { .on } else { .off }
+		}
+	}
+	return backend.service_window_state(id)!
+}
+
+fn win32_service_prepare_window_teardown(state voidptr) ! {
+	$if windows {
+		win32_service_result(C.v_multiwindow_win32_service_prepare_window_teardown(state))!
+		return
+	} $else {
+		_ = state
+		return error(err_backend_unsupported)
+	}
 }
 
 fn (mut backend Win32Backend) service_set_clipboard_text(id WindowId, request ServiceRequestId, text string) !BackendClipboardStart {

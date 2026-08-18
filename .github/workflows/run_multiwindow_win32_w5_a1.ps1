@@ -5,7 +5,7 @@ param(
     [string]$Compiler,
 
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Red', 'Green')]
+    [ValidateSet('Green')]
     [string]$Expectation,
 
     [Parameter(Mandatory = $true)]
@@ -106,7 +106,7 @@ param(
 
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-fA-F]{64}$')]
-    [string]$ExpectedRedProductionSurfaceSha256,
+    [string]$ExpectedGreenProductionSurfaceSha256,
 
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-fA-F]{64}$')]
@@ -122,7 +122,7 @@ $caseName = 'test_win32_public_mouse_lock_real_raw_delta_red'
 $family = 'mouse_lock_raw_delta_public'
 $knownTestSha256 = '005d3f7c7668bd18d593ba5f42e94cf247058c5f61ca46ce6d6a42bac03b5000'
 $knownOracleSha256 = '7362f17f06ea6b0ab5a64c74abf2407a0e284cbace2c10809a5235d406d16461'
-$knownTupleSha256 = '08e25c33c4934721017181a1b07576f8d3b7c651b55291aed547c4f92a4e173e'
+$knownTupleSha256 = '16739d9b8b73d9615ba3037c9e18219d6bf1271ef1d2f7dba4b2f2e53b1efac5'
 
 $a0Header = 'vlib/x/multiwindow/testdata/win32_raw_input_w5_preflight.h'
 $a0Main = 'vlib/x/multiwindow/testdata/win32_raw_input_w5_preflight.c'
@@ -177,15 +177,15 @@ $publicSurface = @(
 )
 $knownPublicRoutingSurfaceSha256 = '7104f779d02f2e22d302c4483e2474675093acf33248addd3de70ac91e21dc25'
 
-$redProductionSurface = @(
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_backend.v'; Known = '21e6bf254ffcaadd4360d0eefea2eeac90c946c79bff028c00ca34d493214add'; Passed = $ExpectedServiceBackendSha256 }
+$greenProductionSurface = @(
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_backend.v'; Known = '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d'; Passed = $ExpectedServiceBackendSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/event_dispatch_d_gg_multiwindow.v'; Known = '7ef6c7cbd34511d6c19c1a3a269b46876db791b9412bb88e3a8d4dcd543bfd4e'; Passed = $ExpectedEventDispatchSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend.c.v'; Known = '39e8529a5cfa8c60728687d496c487b25c7dc98d0c664d598e27a8a66ed97420'; Passed = $ExpectedWin32BackendSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend_helpers.h'; Known = '1ac56f4334d7008986faceb494a43523228292320ab11df832dfa95497a8dcfb'; Passed = $ExpectedWin32BackendHelpersSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_backend.c.v'; Known = '3afb83208a21c31a01e5bdb2baaa343e3e5b4a1f87e216fe1909cf7335565b66'; Passed = $ExpectedWin32ServiceBackendSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_native.h'; Known = '9ab0a4c7e55b6afac85152c3b1127207f1f99fdedd0a07309026e44527770a01'; Passed = $ExpectedWin32ServiceNativeSha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend.c.v'; Known = '3e67a6c7d829682fce61dd81cb8d3160175c5ab8cd675659ed4f1ebead3b4dbd'; Passed = $ExpectedWin32BackendSha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend_helpers.h'; Known = '99d33c77aabe1ad24a3037238a5efc21b4bae010ff9731fe4da7f7e1959bb48b'; Passed = $ExpectedWin32BackendHelpersSha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_backend.c.v'; Known = '541898871e4d8700258b7d459cb4a3a6c66c27362d9a3563a70d41fe0c2e6b98'; Passed = $ExpectedWin32ServiceBackendSha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_native.h'; Known = '70d9c44011262e85d2ff9571a802d60b09bd39c25fbd2c1782ea303cd648a5e8'; Passed = $ExpectedWin32ServiceNativeSha256 }
 )
-$knownRedProductionSurfaceSha256 = '26ac5490748842c55a6d13ed46057b8697b75fa87e83b24f6a2b9cbc20c72865'
+$knownGreenProductionSurfaceSha256 = 'dd94ebd73efa2edb38c1ad71faf0d6f899dba8182fea072362f05a03b829dc5f'
 
 $fatalPattern = '(?i)(fatal error|unhandled exception|access violation|STATUS_ACCESS_VIOLATION|0xC0000005|segmentation fault|stack overflow|illegal instruction|abort trap|process crashed|application crashed|V panic:)'
 $compilerDiagnosticPattern = '(?im)(C compilation error|builder error|failed to compile|cannot compile|fatal error|error C[0-9]{4}|warning C[0-9]{4}|warning:|error:|undefined reference|unresolved external symbol|LNK[0-9]{4})'
@@ -1192,10 +1192,10 @@ Assert-W5A1Surface -Name 'public-routing-frozen' `
     -Schema 'package2-win32-w5-a1-public-routing-surface-v1' -StateRecord 'state=frozen' `
     -Entries $publicSurface -KnownComposite $knownPublicRoutingSurfaceSha256 `
     -PassedComposite $ExpectedPublicRoutingSurfaceSha256
-Assert-W5A1Surface -Name 'production-red' `
-    -Schema 'package2-win32-w5-a1-production-surface-v1' -StateRecord 'expectation=Red' `
-    -Entries $redProductionSurface -KnownComposite $knownRedProductionSurfaceSha256 `
-    -PassedComposite $ExpectedRedProductionSurfaceSha256
+Assert-W5A1Surface -Name 'production-green' `
+    -Schema 'package2-win32-w5-a1-production-surface-v1' -StateRecord 'expectation=Green' `
+    -Entries $greenProductionSurface -KnownComposite $knownGreenProductionSurfaceSha256 `
+    -PassedComposite $ExpectedGreenProductionSurfaceSha256
 
 Test-W5A1SourcePolicy
 Assert-W5A1FileHash -Path $PSCommandPath -Expected $ExpectedRunnerSha256
@@ -1208,7 +1208,7 @@ $tupleRecords = @(
     "file=$testFile|sha256=$knownTestSha256"
     "file=$oracle|sha256=$knownOracleSha256"
     "case=noflag|define=disabled|run_only=$caseName|expectation=BehavioralGreen|summary=1_passed_1_total|package_markers=0"
-    "case=enabled|define=gg_multiwindow|run_only=$caseName|expectation=BehavioralRed|summary=1_failed_1_total"
+    "case=enabled|define=gg_multiwindow|run_only=$caseName|expectation=BehavioralGreen|summary=1_passed_1_total"
 )
 $tupleRecords += @($redMarkers | ForEach-Object { "marker=red|$_" })
 $tupleRecords += @($greenMarkers | ForEach-Object { "marker=green|$_" })
@@ -1222,10 +1222,6 @@ Test-W5A1Classifier
 Test-W5A1NoFlagClassifier
 Test-W5A1ControlledExitClassifier
 Test-W5A1FailedReapGate
-
-if ($Expectation -ceq 'Green') {
-    throw 'W5 A1 Green execution is blocked until the internal implementation map is reviewed and anchored'
-}
 
 $repositoryRoot = (Get-Location).Path
 $vexe = (Resolve-Path -LiteralPath '.\v.exe' -ErrorAction Stop).Path
@@ -1291,10 +1287,10 @@ try {
         Write-W5A1ProcessOutput -Result $enabled
         $classification = Get-W5A1Classification -Result $enabled -ExpectedState $Expectation `
             -ExpectedFailureExitCode $expectedFailureExitCode
-        if ($classification.Kind -cne 'BehavioralRed') {
+        if ($classification.Kind -cne 'BehavioralGreen') {
             throw "W5 A1 $Expectation gate rejected ${Compiler}: $($classification.Kind): $($classification.Detail)"
         }
-        Write-Host "PACKAGE2_W5_A1_CASE_ACCEPT compiler=$Compiler expectation=$Expectation case=$caseName family=$family classification=BehavioralRed"
+        Write-Host "PACKAGE2_W5_A1_CASE_ACCEPT compiler=$Compiler expectation=$Expectation case=$caseName family=$family classification=BehavioralGreen"
         Write-Host "PACKAGE2_W5_A1_RUNNER_SUMMARY compiler=$Compiler accepted=1 rejected=0 total=1"
     } finally {
         Write-Host '::endgroup::'

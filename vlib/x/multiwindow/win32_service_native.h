@@ -3,6 +3,7 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +17,31 @@
 #define V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE 0
 #define V_MULTIWINDOW_WIN32_SERVICE_WRONG_THREAD -1
 #define V_MULTIWINDOW_WIN32_SERVICE_INVALID -2
+
+#ifndef SIZE_MAX
+#define SIZE_MAX ((size_t)-1)
+#endif
+#ifndef RIDEV_REMOVE
+#define RIDEV_REMOVE 0x00000001
+#endif
+#ifndef RIDEV_PAGEONLY
+#define RIDEV_PAGEONLY 0x00000020
+#endif
+#ifndef V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP
+#define V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP L"V_x_multiwindow_mouse_lock_active"
+#endif
+#ifndef V_MULTIWINDOW_WIN32_MOUSE_TRACKED_PROP
+#define V_MULTIWINDOW_WIN32_MOUSE_TRACKED_PROP L"V_x_multiwindow_mouse_tracked"
+#endif
+
+#define V_MULTIWINDOW_WIN32_MOUSE_LOCK_OFF 0
+#define V_MULTIWINDOW_WIN32_MOUSE_LOCK_LOCKED 1
+#define V_MULTIWINDOW_WIN32_MOUSE_LOCK_CLEANUP 2
+#define V_MULTIWINDOW_WIN32_MOUSE_LOCK_TEARDOWN_PREPARED 3
+
+#define V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_DIRTY -1
+#define V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_BASELINE 0
+#define V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_LOCKED 1
 
 #define V_MULTIWINDOW_WIN32_CLIPBOARD_MAX_BYTES \
 	((size_t)16u * (size_t)1024u * (size_t)1024u)
@@ -384,7 +410,53 @@ typedef struct VMultiwindowWin32ServiceState {
 	int requested_height;
 	int resizable;
 	int borderless;
+	int mouse_lock_state;
+	int mouse_lock_committed;
+	int mouse_delivery_enabled;
+	int mouse_raw_owned;
+	int mouse_clip_owned;
+	int mouse_baseline_valid;
+	RECT mouse_baseline_clip;
+	RECT mouse_locked_clip;
+	RAWINPUTDEVICE *mouse_baseline_devices;
+	UINT mouse_baseline_count;
 } VMultiwindowWin32ServiceState;
+
+typedef UINT(WINAPI *VMultiwindowWin32GetRegisteredRawInputDevices)(
+	PRAWINPUTDEVICE, PUINT, UINT);
+typedef BOOL(WINAPI *VMultiwindowWin32RegisterRawInputDevices)(
+	const RAWINPUTDEVICE *, UINT, UINT);
+
+typedef struct VMultiwindowWin32MouseApis {
+	VMultiwindowWin32GetRegisteredRawInputDevices get_registered_devices;
+	VMultiwindowWin32RegisterRawInputDevices register_devices;
+} VMultiwindowWin32MouseApis;
+
+typedef struct VMultiwindowWin32RawInventory {
+	RAWINPUTDEVICE *items;
+	UINT count;
+} VMultiwindowWin32RawInventory;
+
+static PVOID volatile v_multiwindow_win32_mouse_lock_owner = NULL;
+
+static inline VMultiwindowWin32ServiceState *
+v_multiwindow_win32_mouse_lock_owner_load(void) {
+	return (VMultiwindowWin32ServiceState *)InterlockedCompareExchangePointer(
+		&v_multiwindow_win32_mouse_lock_owner, NULL, NULL);
+}
+
+static inline int v_multiwindow_win32_mouse_lock_owner_claim(
+	VMultiwindowWin32ServiceState *state) {
+	return state && InterlockedCompareExchangePointer(
+		&v_multiwindow_win32_mouse_lock_owner, (PVOID)state, NULL) == NULL;
+}
+
+static inline int v_multiwindow_win32_mouse_lock_owner_release(
+	VMultiwindowWin32ServiceState *state) {
+	return state && InterlockedCompareExchangePointer(
+		&v_multiwindow_win32_mouse_lock_owner, NULL, (PVOID)state)
+		== (PVOID)state;
+}
 
 typedef struct VMultiwindowWin32NativeWindowSnapshot {
 	LONG_PTR style;
@@ -814,6 +886,887 @@ static inline int v_multiwindow_win32_service_authority(void *state_ptr) {
 	return V_MULTIWINDOW_WIN32_SERVICE_OK;
 }
 
+static inline int v_multiwindow_win32_mouse_resolve_proc(HMODULE module,
+	const char *name, void *destination, size_t destination_size) {
+	FARPROC procedure;
+	if (!module || !name || !destination
+		|| destination_size != sizeof(procedure)) {
+		return 0;
+	}
+	memset(destination, 0, destination_size);
+	procedure = GetProcAddress(module, name);
+	if (!procedure) {
+		return 0;
+	}
+	memcpy(destination, &procedure, sizeof(procedure));
+	return 1;
+}
+
+static inline int v_multiwindow_win32_mouse_resolve_apis(
+	VMultiwindowWin32MouseApis *apis) {
+	HMODULE user32;
+	VMultiwindowWin32MouseApis resolved;
+	if (!apis) {
+		return 0;
+	}
+	memset(&resolved, 0, sizeof(resolved));
+	user32 = GetModuleHandleW(L"user32.dll");
+	if (!user32
+		|| !v_multiwindow_win32_mouse_resolve_proc(user32,
+			"GetRegisteredRawInputDevices", &resolved.get_registered_devices,
+			sizeof(resolved.get_registered_devices))
+		|| !v_multiwindow_win32_mouse_resolve_proc(user32,
+			"RegisterRawInputDevices", &resolved.register_devices,
+			sizeof(resolved.register_devices))) {
+		return 0;
+	}
+	*apis = resolved;
+	return 1;
+}
+
+static inline void v_multiwindow_win32_raw_inventory_free(
+	VMultiwindowWin32RawInventory *inventory) {
+	if (!inventory) {
+		return;
+	}
+	free(inventory->items);
+	inventory->items = NULL;
+	inventory->count = 0;
+}
+
+static inline int v_multiwindow_win32_raw_inventory_query(
+	VMultiwindowWin32GetRegisteredRawInputDevices query,
+	VMultiwindowWin32RawInventory *inventory) {
+	UINT count = 0;
+	UINT copied;
+	UINT result;
+	RAWINPUTDEVICE *items;
+	if (!query || !inventory) {
+		return 0;
+	}
+	memset(inventory, 0, sizeof(*inventory));
+	result = query(NULL, &count, sizeof(RAWINPUTDEVICE));
+	if (result != 0) {
+		return 0;
+	}
+	if (count == 0) {
+		return 1;
+	}
+	if ((size_t)count > SIZE_MAX / sizeof(RAWINPUTDEVICE)) {
+		return 0;
+	}
+	items = (RAWINPUTDEVICE *)calloc((size_t)count, sizeof(RAWINPUTDEVICE));
+	if (!items) {
+		return 0;
+	}
+	copied = count;
+	result = query(items, &copied, sizeof(RAWINPUTDEVICE));
+	if (result == (UINT)-1 || result != copied || copied > count) {
+		free(items);
+		return 0;
+	}
+	inventory->items = items;
+	inventory->count = copied;
+	return 1;
+}
+
+static inline int v_multiwindow_win32_raw_device_equal(
+	const RAWINPUTDEVICE *left, const RAWINPUTDEVICE *right) {
+	return left && right && left->usUsagePage == right->usUsagePage
+		&& left->usUsage == right->usUsage && left->dwFlags == right->dwFlags
+		&& left->hwndTarget == right->hwndTarget;
+}
+
+static inline int v_multiwindow_win32_raw_inventory_equal(
+	const RAWINPUTDEVICE *left, UINT left_count,
+	const RAWINPUTDEVICE *right, UINT right_count) {
+	unsigned char *matched;
+	UINT left_index;
+	if (left_count != right_count || (left_count > 0 && (!left || !right))) {
+		return 0;
+	}
+	if (left_count == 0) {
+		return 1;
+	}
+	if ((size_t)right_count > SIZE_MAX / sizeof(unsigned char)) {
+		return 0;
+	}
+	matched = (unsigned char *)calloc((size_t)right_count,
+		sizeof(unsigned char));
+	if (!matched) {
+		return 0;
+	}
+	for (left_index = 0; left_index < left_count; left_index++) {
+		UINT right_index;
+		int found = 0;
+		for (right_index = 0; right_index < right_count; right_index++) {
+			if (!matched[right_index]
+				&& v_multiwindow_win32_raw_device_equal(&left[left_index],
+					&right[right_index])) {
+				matched[right_index] = 1;
+				found = 1;
+				break;
+			}
+		}
+		if (!found) {
+			free(matched);
+			return 0;
+		}
+	}
+	free(matched);
+	return 1;
+}
+
+static inline int v_multiwindow_win32_raw_inventory_mouse_free(
+	const VMultiwindowWin32RawInventory *inventory) {
+	UINT index;
+	if (!inventory) {
+		return 0;
+	}
+	for (index = 0; index < inventory->count; index++) {
+		const RAWINPUTDEVICE *item = &inventory->items[index];
+		if (item->usUsagePage == 0x01
+			&& (item->usUsage == 0x02
+				|| (item->usUsage == 0
+					&& (item->dwFlags & RIDEV_PAGEONLY) != 0))) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static inline int v_multiwindow_win32_raw_inventory_locked_exact(
+	const VMultiwindowWin32ServiceState *state,
+	const VMultiwindowWin32RawInventory *current) {
+	RAWINPUTDEVICE *remainder;
+	UINT source_index;
+	UINT remainder_index = 0;
+	int exact_count = 0;
+	int equal;
+	if (!state || !state->mouse_baseline_valid || !current
+		|| state->mouse_baseline_count == UINT_MAX
+		|| current->count != state->mouse_baseline_count + 1) {
+		return 0;
+	}
+	remainder = NULL;
+	if (state->mouse_baseline_count > 0) {
+		if ((size_t)state->mouse_baseline_count
+			> SIZE_MAX / sizeof(RAWINPUTDEVICE)) {
+			return 0;
+		}
+		remainder = (RAWINPUTDEVICE *)calloc(
+			(size_t)state->mouse_baseline_count, sizeof(RAWINPUTDEVICE));
+		if (!remainder) {
+			return 0;
+		}
+	}
+	for (source_index = 0; source_index < current->count; source_index++) {
+		const RAWINPUTDEVICE *item = &current->items[source_index];
+		if (item->usUsagePage == 0x01 && item->usUsage == 0x02
+			&& item->dwFlags == 0 && item->hwndTarget == state->hwnd) {
+			exact_count++;
+			continue;
+		}
+		if (remainder_index >= state->mouse_baseline_count) {
+			free(remainder);
+			return 0;
+		}
+		remainder[remainder_index++] = *item;
+	}
+	equal = exact_count == 1
+		&& remainder_index == state->mouse_baseline_count
+		&& v_multiwindow_win32_raw_inventory_equal(
+			state->mouse_baseline_devices, state->mouse_baseline_count,
+			remainder, remainder_index);
+	free(remainder);
+	return equal;
+}
+
+static inline int v_multiwindow_win32_rect_equal(
+	const RECT *left, const RECT *right) {
+	return left && right && left->left == right->left
+		&& left->top == right->top && left->right == right->right
+		&& left->bottom == right->bottom;
+}
+
+static inline int v_multiwindow_win32_virtual_screen_rect(RECT *out_rect) {
+	int width;
+	int height;
+	if (!out_rect) {
+		return 0;
+	}
+	width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+	height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+	if (width <= 0 || height <= 0) {
+		return 0;
+	}
+	out_rect->left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+	out_rect->top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+	out_rect->right = out_rect->left + width;
+	out_rect->bottom = out_rect->top + height;
+	return out_rect->right > out_rect->left
+		&& out_rect->bottom > out_rect->top;
+}
+
+static inline int v_multiwindow_win32_client_screen_rect(
+	HWND hwnd, RECT *out_rect) {
+	RECT client;
+	POINT points[2];
+	int mapped;
+	if (!hwnd || !out_rect || !GetClientRect(hwnd, &client)
+		|| client.right <= client.left || client.bottom <= client.top) {
+		return 0;
+	}
+	points[0].x = client.left;
+	points[0].y = client.top;
+	points[1].x = client.right;
+	points[1].y = client.bottom;
+	SetLastError(ERROR_SUCCESS);
+	mapped = MapWindowPoints(hwnd, NULL, points, 2);
+	if (mapped == 0 && GetLastError() != ERROR_SUCCESS) {
+		return 0;
+	}
+	out_rect->left = points[0].x;
+	out_rect->top = points[0].y;
+	out_rect->right = points[1].x;
+	out_rect->bottom = points[1].y;
+	return out_rect->right > out_rect->left
+		&& out_rect->bottom > out_rect->top;
+}
+
+static inline void v_multiwindow_win32_mouse_baseline_free(
+	VMultiwindowWin32ServiceState *state) {
+	if (!state) {
+		return;
+	}
+	free(state->mouse_baseline_devices);
+	state->mouse_baseline_devices = NULL;
+	state->mouse_baseline_count = 0;
+	state->mouse_baseline_valid = 0;
+}
+
+static inline int v_multiwindow_win32_mouse_raw_resource_state(
+	const VMultiwindowWin32ServiceState *state,
+	const VMultiwindowWin32MouseApis *apis) {
+	VMultiwindowWin32RawInventory current;
+	int resource_state = V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_DIRTY;
+	if (!state || !apis || !state->mouse_baseline_valid
+		|| !apis->get_registered_devices
+		|| (state->mouse_baseline_count > 0
+			&& !state->mouse_baseline_devices)) {
+		return V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_DIRTY;
+	}
+	memset(&current, 0, sizeof(current));
+	if (!v_multiwindow_win32_raw_inventory_query(
+		apis->get_registered_devices, &current)) {
+		return V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_DIRTY;
+	}
+	if (v_multiwindow_win32_raw_inventory_equal(
+			state->mouse_baseline_devices, state->mouse_baseline_count,
+			current.items, current.count)) {
+		resource_state = V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_BASELINE;
+	} else if (v_multiwindow_win32_raw_inventory_locked_exact(state,
+		&current)) {
+		resource_state = V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_LOCKED;
+	}
+	v_multiwindow_win32_raw_inventory_free(&current);
+	return resource_state;
+}
+
+static inline int v_multiwindow_win32_mouse_clip_resource_state(
+	const VMultiwindowWin32ServiceState *state) {
+	RECT current_clip;
+	if (!state || !state->mouse_baseline_valid
+		|| !GetClipCursor(&current_clip)) {
+		return V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_DIRTY;
+	}
+	if (v_multiwindow_win32_rect_equal(&current_clip,
+		&state->mouse_baseline_clip)) {
+		return V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_BASELINE;
+	}
+	if (v_multiwindow_win32_rect_equal(&current_clip,
+		&state->mouse_locked_clip)) {
+		return V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_LOCKED;
+	}
+	return V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_DIRTY;
+}
+
+static inline int v_multiwindow_win32_mouse_cancel_tracking(
+	VMultiwindowWin32ServiceState *state, int live_window) {
+	TRACKMOUSEEVENT tracking;
+	if (!state) {
+		return 0;
+	}
+	if (!live_window) {
+		return 1;
+	}
+	if (GetPropW(state->hwnd, V_MULTIWINDOW_WIN32_MOUSE_TRACKED_PROP)
+		== NULL) {
+		return 1;
+	}
+	memset(&tracking, 0, sizeof(tracking));
+	tracking.cbSize = sizeof(tracking);
+	tracking.dwFlags = TME_CANCEL | TME_LEAVE;
+	tracking.hwndTrack = state->hwnd;
+	if (!TrackMouseEvent(&tracking)) {
+		return 0;
+	}
+	RemovePropW(state->hwnd, V_MULTIWINDOW_WIN32_MOUSE_TRACKED_PROP);
+	return GetPropW(state->hwnd,
+		V_MULTIWINDOW_WIN32_MOUSE_TRACKED_PROP) == NULL;
+}
+
+static inline int v_multiwindow_win32_mouse_off_exact(
+	const VMultiwindowWin32ServiceState *state, int live_window) {
+	return state
+		&& state->mouse_lock_state == V_MULTIWINDOW_WIN32_MOUSE_LOCK_OFF
+		&& !state->mouse_lock_committed && !state->mouse_delivery_enabled
+		&& !state->mouse_raw_owned && !state->mouse_clip_owned
+		&& !state->mouse_baseline_valid && !state->mouse_baseline_devices
+		&& state->mouse_baseline_count == 0
+		&& v_multiwindow_win32_mouse_lock_owner_load() != state
+		&& (!live_window || GetPropW(state->hwnd,
+			V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP) == NULL);
+}
+
+static inline int v_multiwindow_win32_mouse_prepared_exact(
+	const VMultiwindowWin32ServiceState *state) {
+	return state
+		&& state->mouse_lock_state
+			== V_MULTIWINDOW_WIN32_MOUSE_LOCK_TEARDOWN_PREPARED
+		&& !state->mouse_lock_committed && !state->mouse_delivery_enabled
+		&& !state->mouse_raw_owned && !state->mouse_clip_owned
+		&& !state->mouse_baseline_valid && !state->mouse_baseline_devices
+		&& state->mouse_baseline_count == 0
+		&& v_multiwindow_win32_mouse_lock_owner_load() != state;
+}
+
+static inline int v_multiwindow_win32_mouse_live_environment_exact(
+	const VMultiwindowWin32ServiceState *state) {
+	return state
+		&& v_multiwindow_win32_service_authority((void *)state)
+			== V_MULTIWINDOW_WIN32_SERVICE_OK
+		&& IsWindowVisible(state->hwnd)
+		&& GetForegroundWindow() == state->hwnd
+		&& GetFocus() == state->hwnd && GetCapture() == NULL;
+}
+
+static inline int v_multiwindow_win32_mouse_client_clip_exact(
+	const VMultiwindowWin32ServiceState *state) {
+	RECT client_clip;
+	return state
+		&& v_multiwindow_win32_client_screen_rect(state->hwnd, &client_clip)
+		&& v_multiwindow_win32_rect_equal(&client_clip,
+			&state->mouse_locked_clip)
+		&& v_multiwindow_win32_mouse_clip_resource_state(state)
+			== V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_LOCKED;
+}
+
+static inline int v_multiwindow_win32_mouse_locked_exact(
+	VMultiwindowWin32ServiceState *state,
+	const VMultiwindowWin32MouseApis *apis) {
+	return state && apis
+		&& state->mouse_lock_state == V_MULTIWINDOW_WIN32_MOUSE_LOCK_LOCKED
+		&& state->mouse_lock_committed && state->mouse_delivery_enabled
+		&& state->mouse_raw_owned && state->mouse_clip_owned
+		&& state->mouse_baseline_valid
+		&& v_multiwindow_win32_mouse_lock_owner_load() == state
+		&& GetPropW(state->hwnd, V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP)
+			== (HANDLE)state->record_data
+		&& v_multiwindow_win32_mouse_live_environment_exact(state)
+		&& v_multiwindow_win32_mouse_raw_resource_state(state, apis)
+			== V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_LOCKED
+		&& v_multiwindow_win32_mouse_client_clip_exact(state);
+}
+
+static inline int v_multiwindow_win32_mouse_acquire_candidate_exact(
+	VMultiwindowWin32ServiceState *state,
+	const VMultiwindowWin32MouseApis *apis) {
+	return state && apis
+		&& state->mouse_lock_state == V_MULTIWINDOW_WIN32_MOUSE_LOCK_CLEANUP
+		&& !state->mouse_lock_committed && !state->mouse_delivery_enabled
+		&& state->mouse_raw_owned && state->mouse_clip_owned
+		&& state->mouse_baseline_valid
+		&& v_multiwindow_win32_mouse_lock_owner_load() == state
+		&& GetPropW(state->hwnd, V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP)
+			== (HANDLE)state->record_data
+		&& v_multiwindow_win32_mouse_live_environment_exact(state)
+		&& v_multiwindow_win32_mouse_raw_resource_state(state, apis)
+			== V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_LOCKED
+		&& v_multiwindow_win32_mouse_client_clip_exact(state);
+}
+
+static inline int v_multiwindow_win32_service_mouse_cleanup_raw(
+	VMultiwindowWin32ServiceState *state,
+	const VMultiwindowWin32MouseApis *apis) {
+	RAWINPUTDEVICE remove_device;
+	int resource_state;
+	if (!state || !apis || !state->mouse_baseline_valid
+		|| !apis->get_registered_devices || !apis->register_devices) {
+		return 0;
+	}
+	resource_state = v_multiwindow_win32_mouse_raw_resource_state(state,
+		apis);
+	if (resource_state == V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_BASELINE) {
+		state->mouse_raw_owned = 0;
+		return 1;
+	}
+	if (resource_state != V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_LOCKED
+		|| !state->mouse_raw_owned) {
+		return 0;
+	}
+	memset(&remove_device, 0, sizeof(remove_device));
+	remove_device.usUsagePage = 0x01;
+	remove_device.usUsage = 0x02;
+	remove_device.dwFlags = RIDEV_REMOVE;
+	remove_device.hwndTarget = NULL;
+	(void)apis->register_devices(&remove_device, 1, sizeof(RAWINPUTDEVICE));
+	if (v_multiwindow_win32_mouse_raw_resource_state(state, apis)
+		!= V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_BASELINE) {
+		return 0;
+	}
+	state->mouse_raw_owned = 0;
+	return 1;
+}
+
+static inline int v_multiwindow_win32_service_mouse_cleanup_clip(
+	VMultiwindowWin32ServiceState *state) {
+	int resource_state;
+	if (!state || !state->mouse_baseline_valid) {
+		return 0;
+	}
+	resource_state = v_multiwindow_win32_mouse_clip_resource_state(state);
+	if (resource_state == V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_BASELINE) {
+		state->mouse_clip_owned = 0;
+		return 1;
+	}
+	if (resource_state != V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_LOCKED
+		|| !state->mouse_clip_owned) {
+		return 0;
+	}
+	(void)ClipCursor(NULL);
+	if (v_multiwindow_win32_mouse_clip_resource_state(state)
+		!= V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_BASELINE) {
+		return 0;
+	}
+	state->mouse_clip_owned = 0;
+	return 1;
+}
+
+static inline int v_multiwindow_win32_service_mouse_restore_raw(
+	VMultiwindowWin32ServiceState *state,
+	const VMultiwindowWin32MouseApis *apis) {
+	RAWINPUTDEVICE device;
+	int resource_state;
+	if (!state || !apis || !state->mouse_baseline_valid
+		|| !apis->get_registered_devices || !apis->register_devices) {
+		return 0;
+	}
+	resource_state = v_multiwindow_win32_mouse_raw_resource_state(state,
+		apis);
+	if (resource_state == V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_LOCKED) {
+		return state->mouse_raw_owned;
+	}
+	if (resource_state != V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_BASELINE) {
+		return 0;
+	}
+	memset(&device, 0, sizeof(device));
+	device.usUsagePage = 0x01;
+	device.usUsage = 0x02;
+	device.dwFlags = 0;
+	device.hwndTarget = state->hwnd;
+	if (!apis->register_devices(&device, 1, sizeof(RAWINPUTDEVICE))) {
+		return 0;
+	}
+	state->mouse_raw_owned = 1;
+	return v_multiwindow_win32_mouse_raw_resource_state(state, apis)
+		== V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_LOCKED;
+}
+
+static inline int v_multiwindow_win32_service_mouse_restore_clip(
+	VMultiwindowWin32ServiceState *state) {
+	int resource_state;
+	if (!state || !state->mouse_baseline_valid) {
+		return 0;
+	}
+	resource_state = v_multiwindow_win32_mouse_clip_resource_state(state);
+	if (resource_state == V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_LOCKED) {
+		return state->mouse_clip_owned;
+	}
+	if (resource_state != V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_BASELINE
+		|| !ClipCursor(&state->mouse_locked_clip)) {
+		return 0;
+	}
+	state->mouse_clip_owned = 1;
+	return v_multiwindow_win32_mouse_clip_resource_state(state)
+		== V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_LOCKED;
+}
+
+static inline int v_multiwindow_win32_service_mouse_complete_cleanup(
+	VMultiwindowWin32ServiceState *state, int teardown) {
+	if (!state || !v_multiwindow_win32_mouse_lock_owner_release(state)) {
+		return 0;
+	}
+	state->mouse_lock_committed = 0;
+	state->mouse_delivery_enabled = 0;
+	state->mouse_raw_owned = 0;
+	state->mouse_clip_owned = 0;
+	v_multiwindow_win32_mouse_baseline_free(state);
+	memset(&state->mouse_baseline_clip, 0, sizeof(state->mouse_baseline_clip));
+	memset(&state->mouse_locked_clip, 0, sizeof(state->mouse_locked_clip));
+	state->mouse_lock_state = teardown
+		? V_MULTIWINDOW_WIN32_MOUSE_LOCK_TEARDOWN_PREPARED
+		: V_MULTIWINDOW_WIN32_MOUSE_LOCK_OFF;
+	return 1;
+}
+
+static inline int v_multiwindow_win32_service_mouse_restore_locked(
+	VMultiwindowWin32ServiceState *state,
+	const VMultiwindowWin32MouseApis *apis) {
+	HANDLE property;
+	int raw_restored;
+	int clip_restored;
+	if (!state || !apis || !state->mouse_baseline_valid
+		|| v_multiwindow_win32_mouse_lock_owner_load() != state
+		|| v_multiwindow_win32_service_authority(state)
+			!= V_MULTIWINDOW_WIN32_SERVICE_OK) {
+		return 0;
+	}
+	property = GetPropW(state->hwnd, V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP);
+	if (!v_multiwindow_win32_mouse_live_environment_exact(state)
+		|| (property != NULL && property != (HANDLE)state->record_data)) {
+		return 0;
+	}
+	raw_restored = v_multiwindow_win32_service_mouse_restore_raw(state, apis);
+	clip_restored = v_multiwindow_win32_service_mouse_restore_clip(state);
+	if (!raw_restored || !clip_restored) {
+		return 0;
+	}
+	property = GetPropW(state->hwnd, V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP);
+	if (property == NULL) {
+		if (!SetPropW(state->hwnd, V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP,
+			(HANDLE)state->record_data)) {
+			return 0;
+		}
+	} else if (property != (HANDLE)state->record_data) {
+		return 0;
+	}
+	if (!v_multiwindow_win32_mouse_live_environment_exact(state)
+		|| GetPropW(state->hwnd, V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP)
+			!= (HANDLE)state->record_data
+		|| v_multiwindow_win32_mouse_raw_resource_state(state, apis)
+			!= V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_LOCKED
+		|| !v_multiwindow_win32_mouse_client_clip_exact(state)) {
+		return 0;
+	}
+	state->mouse_lock_committed = 1;
+	state->mouse_lock_state = V_MULTIWINDOW_WIN32_MOUSE_LOCK_LOCKED;
+	state->mouse_delivery_enabled = 1;
+	if (!v_multiwindow_win32_mouse_locked_exact(state, apis)) {
+		state->mouse_delivery_enabled = 0;
+		state->mouse_lock_state = V_MULTIWINDOW_WIN32_MOUSE_LOCK_CLEANUP;
+		return 0;
+	}
+	return 1;
+}
+
+static inline int v_multiwindow_win32_service_mouse_cleanup(
+	VMultiwindowWin32ServiceState *state, int teardown, int rollback) {
+	VMultiwindowWin32MouseApis apis;
+	int authority;
+	int apis_ready;
+	int live_window;
+	int restore_allowed = 0;
+	int tracking_clean = 0;
+	int raw_clean = 0;
+	int clip_clean = 0;
+	int raw_baseline = 0;
+	int clip_baseline = 0;
+	int property_clean = 0;
+	int authority_clean = 0;
+	int capture_clean = 0;
+	int clean;
+	HANDLE property;
+	if (!state) {
+		return V_MULTIWINDOW_WIN32_SERVICE_INVALID;
+	}
+	if (GetCurrentThreadId() != state->owner_thread) {
+		return V_MULTIWINDOW_WIN32_SERVICE_WRONG_THREAD;
+	}
+	if (GetCurrentProcessId() != state->owner_process) {
+		return V_MULTIWINDOW_WIN32_SERVICE_INVALID;
+	}
+	if (v_multiwindow_win32_mouse_prepared_exact(state)) {
+		return teardown ? V_MULTIWINDOW_WIN32_SERVICE_OK
+			: V_MULTIWINDOW_WIN32_SERVICE_INVALID;
+	}
+	live_window = state->hwnd && IsWindow(state->hwnd);
+	authority = v_multiwindow_win32_service_authority(state);
+	if (live_window && authority != V_MULTIWINDOW_WIN32_SERVICE_OK) {
+		return authority;
+	}
+	if (!live_window && !teardown) {
+		return V_MULTIWINDOW_WIN32_SERVICE_INVALID;
+	}
+	if (v_multiwindow_win32_mouse_off_exact(state, live_window)) {
+		if (teardown) {
+			if (!v_multiwindow_win32_mouse_cancel_tracking(state,
+				live_window)) {
+				return V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE;
+			}
+			state->mouse_lock_state =
+				V_MULTIWINDOW_WIN32_MOUSE_LOCK_TEARDOWN_PREPARED;
+		}
+		return V_MULTIWINDOW_WIN32_SERVICE_OK;
+	}
+	if (!live_window
+		&& (!state->hwnd || !state->record_data
+			|| v_multiwindow_win32_mouse_lock_owner_load() != state
+			|| !state->mouse_baseline_valid
+			|| (state->mouse_lock_state != V_MULTIWINDOW_WIN32_MOUSE_LOCK_LOCKED
+				&& state->mouse_lock_state
+					!= V_MULTIWINDOW_WIN32_MOUSE_LOCK_CLEANUP))) {
+		return V_MULTIWINDOW_WIN32_SERVICE_INVALID;
+	}
+	if (!state->record_data || !state->mouse_baseline_valid
+		|| v_multiwindow_win32_mouse_lock_owner_load() != state
+		|| (state->mouse_lock_state != V_MULTIWINDOW_WIN32_MOUSE_LOCK_LOCKED
+			&& state->mouse_lock_state != V_MULTIWINDOW_WIN32_MOUSE_LOCK_CLEANUP)) {
+		return V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE;
+	}
+	memset(&apis, 0, sizeof(apis));
+	apis_ready = v_multiwindow_win32_mouse_resolve_apis(&apis);
+	if (!teardown && !rollback && live_window && apis_ready) {
+		restore_allowed = v_multiwindow_win32_mouse_locked_exact(state, &apis);
+	}
+	state->mouse_lock_state = V_MULTIWINDOW_WIN32_MOUSE_LOCK_CLEANUP;
+	state->mouse_delivery_enabled = 0;
+	tracking_clean = v_multiwindow_win32_mouse_cancel_tracking(state,
+		live_window);
+	if (rollback) {
+		if (live_window) {
+			property = GetPropW(state->hwnd,
+				V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP);
+			if (property == (HANDLE)state->record_data) {
+				RemovePropW(state->hwnd,
+					V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP);
+			}
+			property_clean = GetPropW(state->hwnd,
+				V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP) == NULL;
+		}
+		clip_clean = v_multiwindow_win32_service_mouse_cleanup_clip(state);
+		raw_clean = apis_ready
+			? v_multiwindow_win32_service_mouse_cleanup_raw(state, &apis) : 0;
+	} else {
+		raw_clean = apis_ready
+			? v_multiwindow_win32_service_mouse_cleanup_raw(state, &apis) : 0;
+		clip_clean = v_multiwindow_win32_service_mouse_cleanup_clip(state);
+	}
+	if (apis_ready) {
+		raw_baseline = v_multiwindow_win32_mouse_raw_resource_state(state,
+			&apis) == V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_BASELINE;
+	}
+	clip_baseline = v_multiwindow_win32_mouse_clip_resource_state(state)
+		== V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_BASELINE;
+	if (live_window) {
+		authority_clean = v_multiwindow_win32_service_authority(state)
+			== V_MULTIWINDOW_WIN32_SERVICE_OK;
+		capture_clean = GetCapture() == NULL;
+		property = GetPropW(state->hwnd, V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP);
+		if (!rollback && tracking_clean && raw_clean && clip_clean
+			&& raw_baseline && clip_baseline && authority_clean
+			&& capture_clean
+			&& (property == NULL || property == (HANDLE)state->record_data)) {
+			if (property == (HANDLE)state->record_data) {
+				RemovePropW(state->hwnd,
+					V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP);
+			}
+			property_clean = GetPropW(state->hwnd,
+				V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP) == NULL;
+		}
+	} else {
+		authority_clean = GetCurrentThreadId() == state->owner_thread
+			&& GetCurrentProcessId() == state->owner_process
+			&& v_multiwindow_win32_mouse_lock_owner_load() == state;
+		capture_clean = GetCapture() == NULL;
+		property_clean = 1;
+	}
+	clean = tracking_clean && raw_clean && clip_clean
+		&& raw_baseline && clip_baseline && property_clean
+		&& authority_clean && capture_clean
+		&& !state->mouse_raw_owned && !state->mouse_clip_owned
+		&& v_multiwindow_win32_mouse_lock_owner_load() == state;
+	if (!clean) {
+		if (!teardown && !rollback && restore_allowed && live_window
+			&& apis_ready
+			&& v_multiwindow_win32_service_mouse_restore_locked(state,
+				&apis)) {
+			return V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE;
+		}
+		state->mouse_lock_state = V_MULTIWINDOW_WIN32_MOUSE_LOCK_CLEANUP;
+		state->mouse_delivery_enabled = 0;
+		return V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE;
+	}
+	if (!v_multiwindow_win32_service_mouse_complete_cleanup(state, teardown)) {
+		state->mouse_lock_state = V_MULTIWINDOW_WIN32_MOUSE_LOCK_CLEANUP;
+		state->mouse_delivery_enabled = 0;
+		return V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE;
+	}
+	return V_MULTIWINDOW_WIN32_SERVICE_OK;
+}
+
+static inline int v_multiwindow_win32_service_mouse_acquire(
+	VMultiwindowWin32ServiceState *state) {
+	VMultiwindowWin32MouseApis apis;
+	VMultiwindowWin32RawInventory baseline;
+	RAWINPUTDEVICE device;
+	RECT virtual_screen;
+	RECT current_clip;
+	RECT client_clip;
+	int authority;
+	int result = V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE;
+	if (!state) {
+		return V_MULTIWINDOW_WIN32_SERVICE_INVALID;
+	}
+	authority = v_multiwindow_win32_service_authority(state);
+	if (authority != V_MULTIWINDOW_WIN32_SERVICE_OK) {
+		return authority;
+	}
+	if (!v_multiwindow_win32_mouse_off_exact(state, 1)
+		|| v_multiwindow_win32_mouse_lock_owner_load() != NULL
+		|| !state->record_data
+		|| !IsWindowVisible(state->hwnd)
+		|| GetForegroundWindow() != state->hwnd
+		|| GetFocus() != state->hwnd || GetCapture() != NULL) {
+		return V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE;
+	}
+	memset(&apis, 0, sizeof(apis));
+	memset(&baseline, 0, sizeof(baseline));
+	if (!v_multiwindow_win32_mouse_resolve_apis(&apis)
+		|| !v_multiwindow_win32_raw_inventory_query(
+			apis.get_registered_devices, &baseline)
+		|| !v_multiwindow_win32_raw_inventory_mouse_free(&baseline)
+		|| !v_multiwindow_win32_virtual_screen_rect(&virtual_screen)
+		|| !GetClipCursor(&current_clip)
+		|| !v_multiwindow_win32_rect_equal(&current_clip, &virtual_screen)
+		|| !v_multiwindow_win32_client_screen_rect(state->hwnd, &client_clip)) {
+		v_multiwindow_win32_raw_inventory_free(&baseline);
+		return V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE;
+	}
+	if (!v_multiwindow_win32_mouse_lock_owner_claim(state)) {
+		v_multiwindow_win32_raw_inventory_free(&baseline);
+		return V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE;
+	}
+	state->mouse_baseline_devices = baseline.items;
+	state->mouse_baseline_count = baseline.count;
+	state->mouse_baseline_clip = current_clip;
+	state->mouse_locked_clip = client_clip;
+	state->mouse_baseline_valid = 1;
+	state->mouse_lock_state = V_MULTIWINDOW_WIN32_MOUSE_LOCK_CLEANUP;
+	memset(&device, 0, sizeof(device));
+	device.usUsagePage = 0x01;
+	device.usUsage = 0x02;
+	device.dwFlags = 0;
+	device.hwndTarget = state->hwnd;
+	if (!apis.register_devices(&device, 1, sizeof(RAWINPUTDEVICE))) {
+		goto rollback;
+	}
+	state->mouse_raw_owned = 1;
+	if (v_multiwindow_win32_mouse_raw_resource_state(state, &apis)
+		!= V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_LOCKED) {
+		goto rollback;
+	}
+	if (!ClipCursor(&client_clip)) {
+		goto rollback;
+	}
+	state->mouse_clip_owned = 1;
+	if (v_multiwindow_win32_mouse_clip_resource_state(state)
+		!= V_MULTIWINDOW_WIN32_MOUSE_RESOURCE_LOCKED) {
+		goto rollback;
+	}
+	if (!SetPropW(state->hwnd, V_MULTIWINDOW_WIN32_MOUSE_LOCK_PROP,
+		(HANDLE)state->record_data)
+		|| !v_multiwindow_win32_mouse_acquire_candidate_exact(state,
+			&apis)) {
+		goto rollback;
+	}
+	state->mouse_lock_committed = 1;
+	state->mouse_delivery_enabled = 1;
+	state->mouse_lock_state = V_MULTIWINDOW_WIN32_MOUSE_LOCK_LOCKED;
+	return V_MULTIWINDOW_WIN32_SERVICE_OK;
+
+rollback:
+	(void)v_multiwindow_win32_service_mouse_cleanup(state, 0, 1);
+	return result;
+}
+
+static inline int v_multiwindow_win32_service_set_mouse_lock(
+	void *state_ptr, int enabled) {
+	VMultiwindowWin32ServiceState *state =
+		(VMultiwindowWin32ServiceState *)state_ptr;
+	if (enabled) {
+		return v_multiwindow_win32_service_mouse_acquire(state);
+	}
+	return v_multiwindow_win32_service_mouse_cleanup(state, 0, 0);
+}
+
+static inline int v_multiwindow_win32_service_mouse_delivery_active(
+	void *state_ptr) {
+	VMultiwindowWin32ServiceState *state =
+		(VMultiwindowWin32ServiceState *)state_ptr;
+	VMultiwindowWin32MouseApis apis;
+	memset(&apis, 0, sizeof(apis));
+	return v_multiwindow_win32_mouse_resolve_apis(&apis)
+		&& v_multiwindow_win32_mouse_locked_exact(state, &apis);
+}
+
+static inline int v_multiwindow_win32_service_disable_mouse_delivery(
+	void *state_ptr) {
+	VMultiwindowWin32ServiceState *state =
+		(VMultiwindowWin32ServiceState *)state_ptr;
+	int authority = v_multiwindow_win32_service_authority(state);
+	if (authority != V_MULTIWINDOW_WIN32_SERVICE_OK) {
+		return authority;
+	}
+	if (state->mouse_lock_state != V_MULTIWINDOW_WIN32_MOUSE_LOCK_LOCKED
+		|| !state->mouse_lock_committed || !state->mouse_delivery_enabled) {
+		return V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE;
+	}
+	state->mouse_delivery_enabled = 0;
+	return V_MULTIWINDOW_WIN32_SERVICE_OK;
+}
+
+static inline int v_multiwindow_win32_service_prepare_window_teardown(
+	void *state_ptr) {
+	return v_multiwindow_win32_service_mouse_cleanup(
+		(VMultiwindowWin32ServiceState *)state_ptr, 1, 0);
+}
+
+static inline int v_multiwindow_win32_service_mouse_observation(
+	VMultiwindowWin32ServiceState *state, int *out_locked) {
+	VMultiwindowWin32MouseApis apis;
+	int authority;
+	if (out_locked) {
+		*out_locked = 0;
+	}
+	authority = v_multiwindow_win32_service_authority(state);
+	if (authority != V_MULTIWINDOW_WIN32_SERVICE_OK) {
+		return authority;
+	}
+	if (v_multiwindow_win32_mouse_off_exact(state, 1)) {
+		return V_MULTIWINDOW_WIN32_SERVICE_OK;
+	}
+	memset(&apis, 0, sizeof(apis));
+	if (!v_multiwindow_win32_mouse_resolve_apis(&apis)
+		|| !v_multiwindow_win32_mouse_locked_exact(state, &apis)) {
+		return V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE;
+	}
+	if (out_locked) {
+		*out_locked = 1;
+	}
+	return V_MULTIWINDOW_WIN32_SERVICE_OK;
+}
+
 static inline int v_multiwindow_win32_service_capture_restore(
 	VMultiwindowWin32ServiceState *state) {
 	if (v_multiwindow_win32_service_authority(state)
@@ -934,26 +1887,38 @@ static inline int v_multiwindow_win32_service_release(void *state_ptr) {
 	if (GetCurrentThreadId() != state->owner_thread) {
 		return V_MULTIWINDOW_WIN32_SERVICE_WRONG_THREAD;
 	}
+	if (GetCurrentProcessId() != state->owner_process) {
+		return V_MULTIWINDOW_WIN32_SERVICE_INVALID;
+	}
+	if (!v_multiwindow_win32_mouse_prepared_exact(state)) {
+		return V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE;
+	}
 	state->hwnd = NULL;
 	free(state);
 	return V_MULTIWINDOW_WIN32_SERVICE_OK;
 }
 
-static inline int v_multiwindow_win32_service_window_state(void *state_ptr,
+static inline int v_multiwindow_win32_service_window_state_with_mouse_lock(void *state_ptr,
 	int *out_mapping, int *out_visibility, int *out_active, int *out_focused,
 	int *out_minimized, int *out_maximized, int *out_fullscreen,
-	int *out_position_known, int *out_x, int *out_y) {
+	int *out_mouse_locked, int *out_position_known, int *out_x, int *out_y) {
 	VMultiwindowWin32ServiceState *state =
 		(VMultiwindowWin32ServiceState *)state_ptr;
-	int authority = v_multiwindow_win32_service_authority(state);
-	if (authority != V_MULTIWINDOW_WIN32_SERVICE_OK) {
-		return authority;
-	}
 	RECT rect;
+	int mouse_locked = 0;
+	int observation;
+	int position_known;
+	int visible;
+	int active;
+	observation = v_multiwindow_win32_service_mouse_observation(state,
+		&mouse_locked);
+	if (observation != V_MULTIWINDOW_WIN32_SERVICE_OK) {
+		return observation;
+	}
 	ZeroMemory(&rect, sizeof(rect));
-	int position_known = GetWindowRect(state->hwnd, &rect) != 0;
-	int visible = IsWindowVisible(state->hwnd) != 0;
-	int active = GetForegroundWindow() == state->hwnd;
+	position_known = GetWindowRect(state->hwnd, &rect) != 0;
+	visible = IsWindowVisible(state->hwnd) != 0;
+	active = GetForegroundWindow() == state->hwnd;
 	if (out_mapping) *out_mapping = visible ? 2 : 1;
 	if (out_visibility) *out_visibility = visible ? 2 : 1;
 	if (out_active) *out_active = active ? 2 : 1;
@@ -963,10 +1928,22 @@ static inline int v_multiwindow_win32_service_window_state(void *state_ptr,
 	if (out_fullscreen) {
 		*out_fullscreen = state->fullscreen_known ? (state->fullscreen ? 2 : 1) : 0;
 	}
+	if (out_mouse_locked) {
+		*out_mouse_locked = mouse_locked ? 2 : 1;
+	}
 	if (out_position_known) *out_position_known = position_known;
 	if (out_x) *out_x = position_known ? rect.left : 0;
 	if (out_y) *out_y = position_known ? rect.top : 0;
 	return V_MULTIWINDOW_WIN32_SERVICE_OK;
+}
+
+static inline int v_multiwindow_win32_service_window_state(void *state_ptr,
+	int *out_mapping, int *out_visibility, int *out_active, int *out_focused,
+	int *out_minimized, int *out_maximized, int *out_fullscreen,
+	int *out_position_known, int *out_x, int *out_y) {
+	return v_multiwindow_win32_service_window_state_with_mouse_lock(state_ptr,
+		out_mapping, out_visibility, out_active, out_focused, out_minimized,
+		out_maximized, out_fullscreen, NULL, out_position_known, out_x, out_y);
 }
 
 static inline int v_multiwindow_win32_service_show_window(void *state_ptr) {
