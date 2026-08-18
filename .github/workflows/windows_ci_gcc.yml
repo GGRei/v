@@ -87,9 +87,9 @@ jobs:
         run: |
           .\.github\workflows\run_multiwindow_win32_w5_a1.ps1 -Compiler gcc `
             -Expectation Green `
-            -ExpectedTestSha256 '005d3f7c7668bd18d593ba5f42e94cf247058c5f61ca46ce6d6a42bac03b5000' `
+            -ExpectedTestSha256 '210e1d220995ae52d6241ffa65895c590e6953dc3066509c7f0c9c0f8a05adf9' `
             -ExpectedOracleSha256 '7362f17f06ea6b0ab5a64c74abf2407a0e284cbace2c10809a5235d406d16461' `
-            -ExpectedTupleSha256 '16739d9b8b73d9615ba3037c9e18219d6bf1271ef1d2f7dba4b2f2e53b1efac5' `
+            -ExpectedTupleSha256 'e0b747232349fedadef54c827d356c450cf8f3967b1cdb125f16a4f2b0f604b2' `
             -ExpectedA0HeaderSha256 '9decdc2e825c91da2b9d2ce0c98cb8ccdad5c4800a690863d166135eb188e916' `
             -ExpectedA0MainSha256 '5f30869ae97f680032e622273ea69986d612cc82cad2adf53e4c3b1415154301' `
             -ExpectedA0TupleSha256 '99ef24bf101dc83543f26f86cb23a80c82607e0f1b35c32e9dbb431368ecc7c4' `
@@ -112,7 +112,7 @@ jobs:
             -ExpectedWin32ServiceBackendSha256 '02076f74e9537323f688e256d3613f87534cd304ca1bc99b7433f406ffd6ebad' `
             -ExpectedWin32ServiceNativeSha256 '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73' `
             -ExpectedGreenProductionSurfaceSha256 '7b46a813c9bffb704c67f9aa584580615bc48fafbccbed43538d7ea0724357bb' `
-            -ExpectedRunnerSha256 'd16e6ce5cfba36a8706fdc504450f969bbb75470caf5f3c768e4702890800dc3'
+            -ExpectedRunnerSha256 '84ae81266eb14bb850b4549f37c1d29ef7b527a3201aa90bef12f85df114d12f'
       - name: Setup MinGW-w64 D3D11 headers for GCC and Clang
         uses: msys2/setup-msys2@v2
         with:

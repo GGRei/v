@@ -122,6 +122,14 @@ $if windows && gg_multiwindow ? {
 		events      []gg.WindowQueuedEvent
 	}
 
+	struct W5A1UnlockPollResult {
+		ok                  bool
+		quiet               bool
+		events              []gg.WindowQueuedEvent
+		poll_indices        []int
+		diagnostic_overflow bool
+	}
+
 	struct W5A1Runtime {
 	mut:
 		oracle         voidptr
@@ -226,6 +234,47 @@ $if windows && gg_multiwindow ? {
 		}
 	}
 
+	fn w5_a1_collect_unlock_trace(mut app gg.App, attempts int) W5A1UnlockPollResult {
+		mut events := []gg.WindowQueuedEvent{}
+		mut poll_indices := []int{}
+		mut diagnostic_overflow := false
+		mut quiet_cycles := 0
+		for poll_index in 0 .. attempts {
+			accepted := app.poll_events() or { return W5A1UnlockPollResult{} }
+			batch := app.drain_window_queued_events() or { return W5A1UnlockPollResult{} }
+			for _ in batch {
+				if poll_indices.len < 64 {
+					poll_indices << poll_index
+				} else {
+					diagnostic_overflow = true
+				}
+			}
+			events << batch
+			if accepted == 0 && batch.len == 0 {
+				quiet_cycles++
+			} else {
+				quiet_cycles = 0
+			}
+			if quiet_cycles >= 3 {
+				return W5A1UnlockPollResult{
+					ok:                  true
+					quiet:               true
+					events:              events
+					poll_indices:        poll_indices
+					diagnostic_overflow: diagnostic_overflow
+				}
+			}
+			time.sleep(5 * time.millisecond)
+		}
+		return W5A1UnlockPollResult{
+			ok:                  true
+			quiet:               false
+			events:              events
+			poll_indices:        poll_indices
+			diagnostic_overflow: diagnostic_overflow
+		}
+	}
+
 	fn w5_a1_mouse_lock_events(events []gg.WindowQueuedEvent) []gg.WindowQueuedEvent {
 		return events.filter(it.kind == .service && it.service.kind == .state
 			&& it.service.operation == .mouse_lock && it.service.sequence == it.sequence)
@@ -233,6 +282,67 @@ $if windows && gg_multiwindow ? {
 
 	fn w5_a1_mouse_moves(events []gg.WindowQueuedEvent) []gg.WindowQueuedEvent {
 		return events.filter(it.kind == .input && it.input.event.typ == .mouse_move)
+	}
+
+	fn w5_a1_tail_trace_flag(value bool) int {
+		return if value { 1 } else { 0 }
+	}
+
+	fn w5_a1_tail_trace_event_index(events []gg.WindowQueuedEvent, sequence u64) int {
+		for index, event in events {
+			if event.sequence == sequence {
+				return index
+			}
+		}
+		return -1
+	}
+
+	fn w5_a1_tail_trace_poll(result W5A1UnlockPollResult, index int) int {
+		if index < 0 || index >= result.poll_indices.len {
+			return -1
+		}
+		return result.poll_indices[index]
+	}
+
+	fn w5_a1_tail_trace(raw_result W5A1PollResult, raw gg.WindowQueuedEvent, unlock_result W5A1UnlockPollResult, off gg.WindowQueuedEvent, late_moves []gg.WindowQueuedEvent, target gg.WindowId, peer gg.WindowId) {
+		raw_index := w5_a1_tail_trace_event_index(raw_result.events, raw.sequence)
+		off_index := w5_a1_tail_trace_event_index(unlock_result.events, off.sequence)
+		diagnostic_valid := !unlock_result.diagnostic_overflow
+			&& unlock_result.poll_indices.len == unlock_result.events.len
+		eprintln('MULTIWINDOW_W5_A1_TAIL_TRACE_RAW index=${raw_index} poll=-1 seq=${raw.sequence} kind=${int(raw.kind)} target=${w5_a1_tail_trace_flag(raw.input.window == target)} peer=${w5_a1_tail_trace_flag(raw.input.window == peer)} x=${raw.input.event.mouse_x} y=${raw.input.event.mouse_y} dx=${raw.input.event.mouse_dx} dy=${raw.input.event.mouse_dy}')
+		eprintln('MULTIWINDOW_W5_A1_TAIL_TRACE_OFF index=${off_index} poll=${w5_a1_tail_trace_poll(unlock_result,
+			off_index)} seq=${off.sequence} kind=${int(off.kind)} target=${w5_a1_tail_trace_flag(off.service.window == target)} peer=${w5_a1_tail_trace_flag(off.service.window == peer)} x=0 y=0 dx=0 dy=0')
+		trace_count := if unlock_result.events.len < 64 { unlock_result.events.len } else { 64 }
+		eprintln('MULTIWINDOW_W5_A1_TAIL_TRACE_BATCH index=-1 poll=-1 seq=0 kind=-1 target=0 peer=0 x=0 y=0 dx=0 dy=0 events=${unlock_result.events.len} metadata=${unlock_result.poll_indices.len} late_total=${late_moves.len} traced_events=${trace_count} omitted_events=${unlock_result.events.len - trace_count} verdict=late_public_mouse_move diagnostic_valid=${w5_a1_tail_trace_flag(diagnostic_valid)} overflow=${w5_a1_tail_trace_flag(unlock_result.diagnostic_overflow)}')
+		for index in 0 .. trace_count {
+			event := unlock_result.events[index]
+			poll_index := w5_a1_tail_trace_poll(unlock_result, index)
+			match event.kind {
+				.input {
+					label := match event.input.event.typ {
+						.mouse_enter { 'enter' }
+						.mouse_move { 'move' }
+						.mouse_leave { 'leave' }
+						else { 'input' }
+					}
+					late := event.input.event.typ == .mouse_move
+					eprintln('MULTIWINDOW_W5_A1_TAIL_TRACE_EVENT_INPUT index=${index} poll=${poll_index} seq=${event.sequence} kind=${int(event.input.event.typ)} label=${label} target=${w5_a1_tail_trace_flag(event.input.window == target)} peer=${w5_a1_tail_trace_flag(event.input.window == peer)} x=${event.input.event.mouse_x} y=${event.input.event.mouse_y} dx=${event.input.event.mouse_dx} dy=${event.input.event.mouse_dy} late=${w5_a1_tail_trace_flag(late)} same_xy_as_raw=${w5_a1_tail_trace_flag(
+						late && event.input.event.mouse_x == raw.input.event.mouse_x
+						&& event.input.event.mouse_y == raw.input.event.mouse_y)} seq_before_off=${w5_a1_tail_trace_flag(
+						late && event.sequence < off.sequence)} poll_after_first=${w5_a1_tail_trace_flag(
+						late && poll_index > 0)}')
+				}
+				.service {
+					eprintln('MULTIWINDOW_W5_A1_TAIL_TRACE_EVENT_SERVICE index=${index} poll=${poll_index} seq=${event.sequence} kind=${int(event.service.kind)} target=${w5_a1_tail_trace_flag(event.service.window == target)} peer=${w5_a1_tail_trace_flag(event.service.window == peer)} x=0 y=0 dx=0 dy=0 operation=${int(event.service.operation)} mouse_locked=${int(event.service.state.mouse_locked)}')
+				}
+				.lifecycle {
+					eprintln('MULTIWINDOW_W5_A1_TAIL_TRACE_EVENT_FALLBACK index=${index} poll=${poll_index} seq=${event.sequence} kind=${int(event.kind)} target=${w5_a1_tail_trace_flag(event.lifecycle.window == target)} peer=${w5_a1_tail_trace_flag(event.lifecycle.window == peer)} x=0 y=0 dx=0 dy=0')
+				}
+				.readback {
+					eprintln('MULTIWINDOW_W5_A1_TAIL_TRACE_EVENT_FALLBACK index=${index} poll=${poll_index} seq=${event.sequence} kind=${int(event.kind)} target=${w5_a1_tail_trace_flag(event.readback.window == target)} peer=${w5_a1_tail_trace_flag(event.readback.window == peer)} x=0 y=0 dx=0 dy=0')
+				}
+			}
+		}
 	}
 
 	fn w5_a1_borrow_baseline(mut app gg.App, window gg.WindowId, oracle voidptr) !&W5A1NativeProbe {
@@ -470,7 +580,7 @@ $if windows && gg_multiwindow ? {
 			return w5_a1_red('explicit_unlock', 'mouse_lock_unlock_failed', 'pending_cleanup')
 		}
 		runtime.lock_attempted = false
-		unlocked_events := w5_a1_collect_until_quiet(mut app, 20)
+		unlocked_events := w5_a1_collect_unlock_trace(mut app, 20)
 		if !unlocked_events.ok || !unlocked_events.quiet
 			|| !w5_a1_events_ordered(unlocked_events.events) {
 			return w5_a1_infra('explicit_unlock', 'unlock_event_settle_failed', 'pending_cleanup')
@@ -480,8 +590,12 @@ $if windows && gg_multiwindow ? {
 			|| off_events[0].service.state.mouse_locked != .off {
 			return w5_a1_red('explicit_unlock', 'unlocked_state_event_mismatch', 'pending_cleanup')
 		}
-		if w5_a1_mouse_moves(unlocked_events.events).len != 0 {
-			return w5_a1_red('explicit_unlock', 'late_public_mouse_move', 'pending_cleanup')
+		late_moves := w5_a1_mouse_moves(unlocked_events.events)
+		if late_moves.len != 0 {
+			red := w5_a1_red('explicit_unlock', 'late_public_mouse_move', 'pending_cleanup')
+			w5_a1_tail_trace(raw_events, move, unlocked_events, off_events[0], late_moves, window,
+				peer)
+			return red
 		}
 		if move.sequence >= off_events[0].sequence {
 			return w5_a1_red('explicit_unlock', 'input_and_unlock_order_mismatch',

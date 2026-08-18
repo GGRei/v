@@ -120,9 +120,9 @@ $testFile = 'vlib/gg/testdata/multiwindow_win32_raw_input_w5_a1_public_red_test.
 $oracle = 'vlib/x/multiwindow/testdata/win32_raw_input_w5_a1_oracle.h'
 $caseName = 'test_win32_public_mouse_lock_real_raw_delta_red'
 $family = 'mouse_lock_raw_delta_public'
-$knownTestSha256 = '005d3f7c7668bd18d593ba5f42e94cf247058c5f61ca46ce6d6a42bac03b5000'
+$knownTestSha256 = '210e1d220995ae52d6241ffa65895c590e6953dc3066509c7f0c9c0f8a05adf9'
 $knownOracleSha256 = '7362f17f06ea6b0ab5a64c74abf2407a0e284cbace2c10809a5235d406d16461'
-$knownTupleSha256 = '16739d9b8b73d9615ba3037c9e18219d6bf1271ef1d2f7dba4b2f2e53b1efac5'
+$knownTupleSha256 = 'e0b747232349fedadef54c827d356c450cf8f3967b1cdb125f16a4f2b0f604b2'
 
 $a0Header = 'vlib/x/multiwindow/testdata/win32_raw_input_w5_preflight.h'
 $a0Main = 'vlib/x/multiwindow/testdata/win32_raw_input_w5_preflight.c'
