@@ -1002,6 +1002,7 @@ fn (mut backend Win32Backend) service_set_mouse_lock(id WindowId, enabled bool) 
 	$if windows {
 		mut record := backend.windows[index]
 		if !enabled {
+			record.mouse_tail_generation = 0
 			record.mouse_dx = 0
 			record.mouse_dy = 0
 			record.mouse_pos_valid = false
@@ -1010,9 +1011,13 @@ fn (mut backend Win32Backend) service_set_mouse_lock(id WindowId, enabled bool) 
 			win32_bool_to_int(enabled))
 		win32_service_result(result)!
 		if enabled {
+			record.begin_mouse_lock_generation()
 			record.mouse_dx = 0
 			record.mouse_dy = 0
 			record.mouse_pos_valid = false
+		} else if record.mouse_lock_generation != 0
+			&& record.mouse_raw_generation == record.mouse_lock_generation {
+			record.mouse_tail_generation = record.mouse_lock_generation
 		}
 		return ServiceWindowState{
 			mouse_locked: if enabled { .on } else { .off }

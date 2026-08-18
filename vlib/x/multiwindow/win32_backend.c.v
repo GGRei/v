@@ -43,6 +43,11 @@ mut:
 	mouse_dx                   f32
 	mouse_dy                   f32
 	mouse_pos_valid            bool
+	mouse_lock_generation      u64
+	mouse_raw_generation       u64
+	mouse_raw_x                int
+	mouse_raw_y                int
+	mouse_tail_generation      u64
 	iconified                  bool
 	pending_dropped_files      []string
 	pending_drop_modifiers     u32
@@ -66,6 +71,22 @@ mut:
 	depth_stencil_view         voidptr
 	depth_stencil_view_ticket  u64
 	render_target_generation   u64 = 1
+}
+
+fn (mut record Win32WindowRecord) clear_mouse_lock_legacy_tail() {
+	record.mouse_raw_generation = 0
+	record.mouse_raw_x = 0
+	record.mouse_raw_y = 0
+	record.mouse_tail_generation = 0
+}
+
+fn (mut record Win32WindowRecord) begin_mouse_lock_generation() {
+	record.mouse_lock_generation = if record.mouse_lock_generation == max_u64 {
+		u64(1)
+	} else {
+		record.mouse_lock_generation + 1
+	}
+	record.clear_mouse_lock_legacy_tail()
 }
 
 struct Win32Backend {
@@ -290,6 +311,7 @@ $if windows {
 			return
 		}
 		mut record := unsafe { &Win32WindowRecord(data) }
+		record.clear_mouse_lock_legacy_tail()
 		record.destroyed = true
 		record.hwnd = unsafe { nil }
 		record.enqueue_native_event(sequence, queued_lifecycle_event(Event{
@@ -544,6 +566,29 @@ $if windows {
 			framebuffer_height: record.height
 			mouse_button:       256
 		}))
+		record.mouse_raw_generation = record.mouse_lock_generation
+		record.mouse_raw_x = mouse_x
+		record.mouse_raw_y = mouse_y
+	}
+
+	@[export: 'v_multiwindow_win32_window_suppress_legacy_mouse_tail']
+	@[markused]
+	fn win32_window_suppress_legacy_mouse_tail(data voidptr, mouse_x int, mouse_y int) int {
+		if data == unsafe { nil } {
+			return 0
+		}
+		mut record := unsafe { &Win32WindowRecord(data) }
+		if record.mouse_tail_generation == 0
+			|| record.mouse_tail_generation != record.mouse_lock_generation
+			|| record.mouse_raw_generation != record.mouse_lock_generation {
+			record.clear_mouse_lock_legacy_tail()
+			return 0
+		}
+		if record.mouse_raw_x == mouse_x && record.mouse_raw_y == mouse_y {
+			return 1
+		}
+		record.clear_mouse_lock_legacy_tail()
+		return 0
 	}
 
 	@[export: 'v_multiwindow_win32_window_raw_input_error']
@@ -553,6 +598,7 @@ $if windows {
 			return
 		}
 		mut record := unsafe { &Win32WindowRecord(data) }
+		record.clear_mouse_lock_legacy_tail()
 		if record.service_state != unsafe { nil } {
 			_ = C.v_multiwindow_win32_service_disable_mouse_delivery(record.service_state)
 		}
@@ -1067,6 +1113,7 @@ fn (mut backend Win32Backend) finish_window_teardown(id WindowId) ! {
 		index := backend.window_record_index(id) or { return error(err_window_not_found) }
 		mut record := backend.windows[index]
 		backend.purge_clipboard_window(id)
+		record.clear_mouse_lock_legacy_tail()
 		if record.service_state != unsafe { nil } {
 			record.mouse_dx = 0
 			record.mouse_dy = 0
@@ -1198,6 +1245,13 @@ fn (mut backend Win32Backend) poll_queued_events() ![]QueuedEvent {
 			return []QueuedEvent{}
 		}
 		C.v_multiwindow_win32_pump_messages()
+		mut tail_index := 0
+		for tail_index < backend.windows.len {
+			if backend.windows[tail_index].mouse_tail_generation != 0 {
+				backend.windows[tail_index].clear_mouse_lock_legacy_tail()
+			}
+			tail_index++
+		}
 		for event in backend.collect_service_refresh_events()! {
 			native_events << event
 		}
@@ -1257,6 +1311,7 @@ fn (mut backend Win32Backend) stop() ! {
 		for backend.windows.len > 0 {
 			index := backend.windows.len - 1
 			mut record := backend.windows[index]
+			record.clear_mouse_lock_legacy_tail()
 			if record.service_state != unsafe { nil } {
 				record.mouse_dx = 0
 				record.mouse_dy = 0
@@ -2769,5 +2824,6 @@ fn (mut backend Win32Backend) abandon_renderer_ownership() {
 
 fn (mut backend Win32Backend) accept_native_render_window_loss(id WindowId) {
 	index := backend.window_record_index(id) or { return }
+	backend.windows[index].clear_mouse_lock_legacy_tail()
 	backend.windows[index].destroyed = true
 }

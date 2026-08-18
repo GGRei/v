@@ -81,12 +81,12 @@ jobs:
             -ExpectedPublicTestSha256 'd08eafb919ae97b185fc480c22f6d990973396152e9a0b3a01035c3e9a30275c' `
             -ExpectedNoOptProbeSha256 '288f148ca15b6694481f117c03be5f80c4045baf76d3b0e90db61b5e0596741c' `
             -ExpectedServiceBackendSha256 '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d' `
-            -ExpectedWin32BackendSha256 '646aacf62aa08fc842f0c4cdc45bf881dcfb8e27222d2492ca1f7ba7063f23a0' `
-            -ExpectedWin32ServiceBackendSha256 '671c1623aa84d6d16d8ef33d6fc0ad1013322166da2f06fae316a8b8d9548fd5' `
+            -ExpectedWin32BackendSha256 '543eff9f3719ff3a1a58c87010f1e8b4c3c87afbea35f16a245f005d209fb07b' `
+            -ExpectedWin32ServiceBackendSha256 '02076f74e9537323f688e256d3613f87534cd304ca1bc99b7433f406ffd6ebad' `
             -ExpectedWin32ServiceNativeSha256 '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73' `
             -ExpectedRedSurfaceSha256 '04b271a1ece4844a60a338358ec292d1e59448b962f6be7fb9c5765206678a7e' `
-            -ExpectedGreenSurfaceSha256 '0d73653854d7ef5ca3da35d559f6ae1a7bc3080d649891c0ab4c7d57424f6954' `
-            -ExpectedRunnerSha256 'fe571336eb1cc89b4f93fab9c0ad48245411dacbb6912c6b059bf2ecf1687ae6'
+            -ExpectedGreenSurfaceSha256 '00b36a07c4edff9d6daf50561783bbeb1f5dc5234add3548ce2f82277e89aabf' `
+            -ExpectedRunnerSha256 '9ea8f048600e9508dac62eb83eff4c66a94ae3c2a59ff1b4f32b6b3f153b51a8'
       - name: Win32 W5 raw-input A0 preflight
         shell: pwsh
         run: |
@@ -122,12 +122,12 @@ jobs:
             -ExpectedPublicRoutingSurfaceSha256 '7104f779d02f2e22d302c4483e2474675093acf33248addd3de70ac91e21dc25' `
             -ExpectedServiceBackendSha256 '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d' `
             -ExpectedEventDispatchSha256 '7ef6c7cbd34511d6c19c1a3a269b46876db791b9412bb88e3a8d4dcd543bfd4e' `
-            -ExpectedWin32BackendSha256 '646aacf62aa08fc842f0c4cdc45bf881dcfb8e27222d2492ca1f7ba7063f23a0' `
-            -ExpectedWin32BackendHelpersSha256 '99d33c77aabe1ad24a3037238a5efc21b4bae010ff9731fe4da7f7e1959bb48b' `
-            -ExpectedWin32ServiceBackendSha256 '671c1623aa84d6d16d8ef33d6fc0ad1013322166da2f06fae316a8b8d9548fd5' `
+            -ExpectedWin32BackendSha256 '543eff9f3719ff3a1a58c87010f1e8b4c3c87afbea35f16a245f005d209fb07b' `
+            -ExpectedWin32BackendHelpersSha256 '1804ff477fb372e68cfa03e52ad54b13ac6457ef2d10dee4c51edcf931dc044d' `
+            -ExpectedWin32ServiceBackendSha256 '02076f74e9537323f688e256d3613f87534cd304ca1bc99b7433f406ffd6ebad' `
             -ExpectedWin32ServiceNativeSha256 '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73' `
-            -ExpectedGreenProductionSurfaceSha256 '4e0db6107a54120ecebb02c031d8154b49b1c17d83e35c7371d3271445f065b1' `
-            -ExpectedRunnerSha256 '7d99fbcd67aa0d4fbb13c8dc9f6e513f0db60637b135892ea214f7c1ffae50fe'
+            -ExpectedGreenProductionSurfaceSha256 'b9c21454b72ba8cb7cf65a3def2952d051938cc1b5daec32a975c0fb8c348cbb' `
+            -ExpectedRunnerSha256 'c945a525eb37742677931876440eb1f5f1ce264fbeafb01055718174d3df58e3'
       - name: Prepare multiwindow Job Object watchdog
         shell: pwsh
         run: |
