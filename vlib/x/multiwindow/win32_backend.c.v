@@ -73,6 +73,7 @@ mut:
 	render_target_generation   u64 = 1
 }
 
+@[markused]
 fn (mut record Win32WindowRecord) clear_mouse_lock_legacy_tail() {
 	record.mouse_raw_generation = 0
 	record.mouse_raw_x = 0
