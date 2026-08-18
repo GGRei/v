@@ -767,8 +767,8 @@ $knownSurfaceFiles = @{
     Green = @(
         '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d'
         '646aacf62aa08fc842f0c4cdc45bf881dcfb8e27222d2492ca1f7ba7063f23a0'
-        '541898871e4d8700258b7d459cb4a3a6c66c27362d9a3563a70d41fe0c2e6b98'
-        '70d9c44011262e85d2ff9571a802d60b09bd39c25fbd2c1782ea303cd648a5e8'
+        '671c1623aa84d6d16d8ef33d6fc0ad1013322166da2f06fae316a8b8d9548fd5'
+        '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73'
     )
 }
 $knownSurfaceComposites = @{

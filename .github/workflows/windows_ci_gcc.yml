@@ -67,11 +67,11 @@ jobs:
             -ExpectedNoOptProbeSha256 '288f148ca15b6694481f117c03be5f80c4045baf76d3b0e90db61b5e0596741c' `
             -ExpectedServiceBackendSha256 '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d' `
             -ExpectedWin32BackendSha256 '646aacf62aa08fc842f0c4cdc45bf881dcfb8e27222d2492ca1f7ba7063f23a0' `
-            -ExpectedWin32ServiceBackendSha256 '541898871e4d8700258b7d459cb4a3a6c66c27362d9a3563a70d41fe0c2e6b98' `
-            -ExpectedWin32ServiceNativeSha256 '70d9c44011262e85d2ff9571a802d60b09bd39c25fbd2c1782ea303cd648a5e8' `
+            -ExpectedWin32ServiceBackendSha256 '671c1623aa84d6d16d8ef33d6fc0ad1013322166da2f06fae316a8b8d9548fd5' `
+            -ExpectedWin32ServiceNativeSha256 '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73' `
             -ExpectedRedSurfaceSha256 '04b271a1ece4844a60a338358ec292d1e59448b962f6be7fb9c5765206678a7e' `
-            -ExpectedGreenSurfaceSha256 '573c12466c674ac773cb8712b09a3d15c08dc421e6ed536a5e3a6916db35dc14' `
-            -ExpectedRunnerSha256 'fff39c04794e704877ef05d175eb752b6dc423ad4d5571c33114a2c35fc75f9d'
+            -ExpectedGreenSurfaceSha256 '0d73653854d7ef5ca3da35d559f6ae1a7bc3080d649891c0ab4c7d57424f6954' `
+            -ExpectedRunnerSha256 'fe571336eb1cc89b4f93fab9c0ad48245411dacbb6912c6b059bf2ecf1687ae6'
       - name: Win32 W5 raw-input A0 preflight
         shell: pwsh
         run: |
@@ -109,10 +109,10 @@ jobs:
             -ExpectedEventDispatchSha256 '7ef6c7cbd34511d6c19c1a3a269b46876db791b9412bb88e3a8d4dcd543bfd4e' `
             -ExpectedWin32BackendSha256 '646aacf62aa08fc842f0c4cdc45bf881dcfb8e27222d2492ca1f7ba7063f23a0' `
             -ExpectedWin32BackendHelpersSha256 '99d33c77aabe1ad24a3037238a5efc21b4bae010ff9731fe4da7f7e1959bb48b' `
-            -ExpectedWin32ServiceBackendSha256 '541898871e4d8700258b7d459cb4a3a6c66c27362d9a3563a70d41fe0c2e6b98' `
-            -ExpectedWin32ServiceNativeSha256 '70d9c44011262e85d2ff9571a802d60b09bd39c25fbd2c1782ea303cd648a5e8' `
-            -ExpectedGreenProductionSurfaceSha256 '965b48d836d2bec1dec1be50076190c66352ac5cb830f4ae31f3249c39a83185' `
-            -ExpectedRunnerSha256 'b00a11df9287a0396d2dcc4093a2c900d0a5bbf3e2c2247599124cb279c23a3b'
+            -ExpectedWin32ServiceBackendSha256 '671c1623aa84d6d16d8ef33d6fc0ad1013322166da2f06fae316a8b8d9548fd5' `
+            -ExpectedWin32ServiceNativeSha256 '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73' `
+            -ExpectedGreenProductionSurfaceSha256 '4e0db6107a54120ecebb02c031d8154b49b1c17d83e35c7371d3271445f065b1' `
+            -ExpectedRunnerSha256 '7d99fbcd67aa0d4fbb13c8dc9f6e513f0db60637b135892ea214f7c1ffae50fe'
       - name: Setup MinGW-w64 D3D11 headers for GCC and Clang
         uses: msys2/setup-msys2@v2
         with:

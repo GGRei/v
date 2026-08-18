@@ -77,6 +77,7 @@ $if windows {
 	fn C.v_multiwindow_win32_service_mouse_delivery_active(state voidptr) int
 	fn C.v_multiwindow_win32_service_disable_mouse_delivery(state voidptr) int
 	fn C.v_multiwindow_win32_service_prepare_window_teardown(state voidptr) int
+	fn C.v_multiwindow_win32_service_teardown_prepared(state voidptr) int
 	fn C.v_multiwindow_win32_service_show_window(state voidptr) int
 	fn C.v_multiwindow_win32_service_hide_window(state voidptr) int
 	fn C.v_multiwindow_win32_service_focus_window(state voidptr) int
@@ -820,6 +821,9 @@ fn (mut backend Win32Backend) collect_service_refresh_events() ![]Win32NativeQue
 				if record.destroyed || record.hwnd == unsafe { nil } {
 					continue
 				}
+				if C.v_multiwindow_win32_service_teardown_prepared(record.service_state) == 1 {
+					continue
+				}
 				observation := backend.service_metrics_observation(index, staged_records)!
 				observations << Win32ServiceRefreshObservation{
 					index:       index
@@ -857,6 +861,9 @@ fn (mut backend Win32Backend) collect_service_refresh_events() ![]Win32NativeQue
 				continue
 			}
 			pending_indices << index
+			if C.v_multiwindow_win32_service_teardown_prepared(record.service_state) == 1 {
+				continue
+			}
 			sequence := record.service_refresh_sequence
 			dpi_refresh := record.pending_dpi_refresh
 			if record.destroyed || record.hwnd == unsafe { nil } {

@@ -1241,6 +1241,12 @@ static inline int v_multiwindow_win32_mouse_prepared_exact(
 		&& v_multiwindow_win32_mouse_lock_owner_load() != state;
 }
 
+static inline int v_multiwindow_win32_service_teardown_prepared(
+	void *service_state) {
+	return v_multiwindow_win32_mouse_prepared_exact(
+		(const VMultiwindowWin32ServiceState *)service_state);
+}
+
 static inline int v_multiwindow_win32_mouse_live_environment_exact(
 	const VMultiwindowWin32ServiceState *state) {
 	return state
