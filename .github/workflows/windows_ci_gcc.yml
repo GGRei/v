@@ -61,8 +61,8 @@ jobs:
           .\.github\workflows\run_multiwindow_win32_w4.ps1 `
             -Compiler gcc `
             -Expectation Green `
-            -ExpectedOracleSha256 '9ca5f25c117ecf650731b6c12e6b02f8463801fd590056607a84ae9ad2816923' `
-            -ExpectedNativeTestSha256 '5fc4867c93295b2191b076563b09e8a3115eae7d080dd258a119d26bdd2b6607' `
+            -ExpectedOracleSha256 '804e8cbc5f5f7c390e90736d54a60d65d19b649a94afa4915bd9cb4e95c4e04d' `
+            -ExpectedNativeTestSha256 'ffa750256854dbe9cb0697368b73365ed9bb14939363fc0fd55dccd562329c0e' `
             -ExpectedPublicTestSha256 'd08eafb919ae97b185fc480c22f6d990973396152e9a0b3a01035c3e9a30275c' `
             -ExpectedNoOptProbeSha256 '288f148ca15b6694481f117c03be5f80c4045baf76d3b0e90db61b5e0596741c' `
             -ExpectedServiceBackendSha256 '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d' `
@@ -71,7 +71,7 @@ jobs:
             -ExpectedWin32ServiceNativeSha256 '70d9c44011262e85d2ff9571a802d60b09bd39c25fbd2c1782ea303cd648a5e8' `
             -ExpectedRedSurfaceSha256 '04b271a1ece4844a60a338358ec292d1e59448b962f6be7fb9c5765206678a7e' `
             -ExpectedGreenSurfaceSha256 '573c12466c674ac773cb8712b09a3d15c08dc421e6ed536a5e3a6916db35dc14' `
-            -ExpectedRunnerSha256 '1cb50c6dd3d86064166c1ade095530b3b18ae10492fb50cdb29c40faf390dd75'
+            -ExpectedRunnerSha256 'fff39c04794e704877ef05d175eb752b6dc423ad4d5571c33114a2c35fc75f9d'
       - name: Win32 W5 raw-input A0 preflight
         shell: pwsh
         run: |

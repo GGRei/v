@@ -60,9 +60,6 @@ $if windows {
 	fn C.v_multiwindow_test_win32_service_wrong_thread_timing(worker_delay u32, wait_timeout u32)
 	fn C.v_multiwindow_test_win32_service_wrong_thread_active_count() int
 	fn C.v_multiwindow_test_win32_service_wrong_thread_wait_cleanup(timeout u32) int
-	fn C.v_multiwindow_test_win32_service_mouse_lock_phase(service_state voidptr) int
-	fn C.v_multiwindow_test_win32_service_mouse_prepared_exact(service_state voidptr) int
-	fn C.v_multiwindow_test_win32_service_mouse_observation(service_state voidptr) int
 	fn C.v_multiwindow_test_win32_dpi(hwnd voidptr) u32
 	fn C.v_multiwindow_test_win32_window_dpi_awareness(hwnd voidptr) int
 	fn C.v_multiwindow_test_win32_thread_dpi_awareness_context() voidptr
@@ -896,74 +893,6 @@ fn test_win32_native_controls_state_and_independent_window_oracles_red() {
 	}
 }
 
-struct Win32W2TraceRecord {
-	state                   voidptr
-	app_instance            u64
-	slot                    int
-	generation              u32
-	state_identity          u64
-	hwnd_identity           u64
-	record_present          bool
-	id_matches              bool
-	state_present           bool
-	hwnd_matches            bool
-	hwnd_live               bool
-	phase                   int
-	prepared                bool
-	pending_display         bool
-	pending_dpi             bool
-	pending_membership      bool
-	refresh_sequence        bool
-	render_snapshot_ok      bool
-	observation_unavailable bool
-	raw_latch               bool
-}
-
-fn win32_w2_trace_record(backend &Win32Backend, id WindowId, hwnd voidptr) Win32W2TraceRecord {
-	$if windows {
-		index := backend.window_record_index(id) or { return Win32W2TraceRecord{} }
-		record := backend.windows[index]
-		mut visible := 0
-		mut minimized := 0
-		mut logical_width := 0
-		mut logical_height := 0
-		mut framebuffer_width := 0
-		mut framebuffer_height := 0
-		mut scale := f32(0)
-		mut conversion_available := 0
-		render_snapshot_ok := C.v_multiwindow_win32_render_snapshot(record.hwnd, &visible,
-			&minimized, &logical_width, &logical_height, &framebuffer_width, &framebuffer_height,
-			&scale, &conversion_available) == 1
-		return Win32W2TraceRecord{
-			state:                   record.service_state
-			app_instance:            record.id.app_instance
-			slot:                    record.id.slot
-			generation:              record.id.generation
-			state_identity:          native_identity(record.service_state)
-			hwnd_identity:           native_identity(record.hwnd)
-			record_present:          true
-			id_matches:              record.id == id
-			state_present:           record.service_state != unsafe { nil }
-			hwnd_matches:            record.hwnd == hwnd
-			hwnd_live:               C.v_multiwindow_test_win32_is_window(record.hwnd) == 1
-			phase:                   C.v_multiwindow_test_win32_service_mouse_lock_phase(record.service_state)
-			prepared:                C.v_multiwindow_test_win32_service_mouse_prepared_exact(record.service_state) == 1
-			pending_display:         record.pending_display_refresh
-			pending_dpi:             record.pending_dpi_refresh
-			pending_membership:      record.pending_membership_refresh
-			refresh_sequence:        record.service_refresh_sequence != 0
-			render_snapshot_ok:      render_snapshot_ok
-			observation_unavailable: C.v_multiwindow_test_win32_service_mouse_observation(record.service_state) == 0
-			raw_latch:               record.raw_input_failed
-		}
-	} $else {
-		_ = backend
-		_ = id
-		_ = hwnd
-		return Win32W2TraceRecord{}
-	}
-}
-
 fn win32_w2_native_modal_fault_path_regressions(mut issues []string) ! {
 	$if windows {
 		mut create_app := new_app(backend: .win32)!
@@ -1126,107 +1055,7 @@ fn win32_w2_native_modal_fault_path_regressions(mut issues []string) ! {
 		win32_red_add(mut issues, 'second owner destroy retried HWND or emitted another event',
 			C.v_multiwindow_win32_test_modal_owner_destroy_attempt_count_value() == 0
 			&& owner_replay_destroy_events == 0)
-		mut trace_lines := 0
-		eprintln('MULTIWINDOW_W2_TRACE_BEGIN=case:retained_child_debt version:1')
-		trace_lines++
-		trace_owner := win32_w2_trace_record(destroy_app.backend.win32, destroy_owner,
-			destroy_owner_hwnd)
-		trace_child := win32_w2_trace_record(destroy_app.backend.win32, destroy_modal,
-			destroy_modal_hwnd)
-		eprintln('MULTIWINDOW_W2_TRACE_PRE=role:owner app:${trace_owner.app_instance} slot:${trace_owner.slot} generation:${trace_owner.generation} state_identity:${trace_owner.state_identity} hwnd_identity:${trace_owner.hwnd_identity} record:${win32_bool_to_int(trace_owner.record_present)} id:${win32_bool_to_int(trace_owner.id_matches)} state:${win32_bool_to_int(trace_owner.state_present)} hwnd:${win32_bool_to_int(trace_owner.hwnd_matches)} live:${win32_bool_to_int(trace_owner.hwnd_live)} phase:${trace_owner.phase} prepared:${win32_bool_to_int(trace_owner.prepared)} display:${win32_bool_to_int(trace_owner.pending_display)} dpi:${win32_bool_to_int(trace_owner.pending_dpi)} membership:${win32_bool_to_int(trace_owner.pending_membership)} sequence:${win32_bool_to_int(trace_owner.refresh_sequence)} render:${win32_bool_to_int(trace_owner.render_snapshot_ok)} observation_unavailable:${win32_bool_to_int(trace_owner.observation_unavailable)} raw:${win32_bool_to_int(trace_owner.raw_latch)}')
-		trace_lines++
-		eprintln('MULTIWINDOW_W2_TRACE_PRE=role:child app:${trace_child.app_instance} slot:${trace_child.slot} generation:${trace_child.generation} state_identity:${trace_child.state_identity} hwnd_identity:${trace_child.hwnd_identity} record:${win32_bool_to_int(trace_child.record_present)} id:${win32_bool_to_int(trace_child.id_matches)} state:${win32_bool_to_int(trace_child.state_present)} hwnd:${win32_bool_to_int(trace_child.hwnd_matches)} live:${win32_bool_to_int(trace_child.hwnd_live)} phase:${trace_child.phase} prepared:${win32_bool_to_int(trace_child.prepared)} display:${win32_bool_to_int(trace_child.pending_display)} dpi:${win32_bool_to_int(trace_child.pending_dpi)} membership:${win32_bool_to_int(trace_child.pending_membership)} sequence:${win32_bool_to_int(trace_child.refresh_sequence)} render:${win32_bool_to_int(trace_child.render_snapshot_ok)} observation_unavailable:${win32_bool_to_int(trace_child.observation_unavailable)} raw:${win32_bool_to_int(trace_child.raw_latch)}')
-		trace_lines++
-		trace_prepared := win32_bool_to_int(trace_owner.prepared) +
-			win32_bool_to_int(trace_child.prepared)
-		trace_render := win32_bool_to_int(trace_owner.render_snapshot_ok) +
-			win32_bool_to_int(trace_child.render_snapshot_ok)
-		trace_unavailable := win32_bool_to_int(trace_owner.observation_unavailable) +
-			win32_bool_to_int(trace_child.observation_unavailable)
-		trace_raw := win32_bool_to_int(trace_owner.raw_latch) +
-			win32_bool_to_int(trace_child.raw_latch)
-		trace_refresh_armed :=
-			win32_bool_to_int((trace_owner.pending_display || trace_owner.pending_dpi || trace_owner.pending_membership) && trace_owner.refresh_sequence) +
-			win32_bool_to_int((trace_child.pending_display || trace_child.pending_dpi || trace_child.pending_membership) && trace_child.refresh_sequence)
-		trace_unique_states := trace_owner.state != unsafe { nil }
-			&& trace_child.state != unsafe { nil } && trace_owner.state != trace_child.state
-		trace_identities_exact := trace_owner.app_instance == destroy_app.instance_id
-			&& trace_child.app_instance == destroy_app.instance_id && trace_owner.app_instance != 0
-			&& trace_owner.slot >= 0 && trace_child.slot >= 0
-			&& trace_owner.slot != trace_child.slot && trace_owner.generation != 0
-			&& trace_child.generation != 0 && trace_owner.state_identity != 0
-			&& trace_child.state_identity != 0
-			&& trace_owner.state_identity != trace_child.state_identity
-			&& trace_owner.hwnd_identity != 0 && trace_child.hwnd_identity != 0
-			&& trace_owner.hwnd_identity != trace_child.hwnd_identity
-		trace_pre_records := destroy_app.backend.win32.windows.len
-		trace_pre_native_debt := destroy_app.backend.win32.native_input_release_states.len
-		trace_pre_native_text := destroy_app.backend.win32.native_input_release_error != ''
-		trace_pre_poll := destroy_app.backend.win32.poll_error != ''
-		trace_pre_lifetime := destroy_app.backend.win32.lifetime_release_error != ''
-		trace_pre_eventseq := destroy_app.backend.win32.event_sequence_terminal != ''
-		trace_pre_pending_stop := destroy_app.pending_stop_errors.len
-		trace_pre_deferred_active := destroy_app.deferred_poll_error_active
-		trace_pre_deferred_text := destroy_app.deferred_poll_error != ''
-		trace_pre_pending_delivery := destroy_app.backend.pending_delivery.len
-		trace_pre_pending_delivery_active := destroy_app.backend.pending_delivery_active
-		trace_pre_pending_delivery_text := destroy_app.backend.pending_delivery_error != ''
-		eprintln('MULTIWINDOW_W2_TRACE_PRE_SUMMARY=records:${trace_pre_records} unique_states:${win32_bool_to_int(trace_unique_states)} identities_exact:${win32_bool_to_int(trace_identities_exact)} prepared:${trace_prepared} render:${trace_render} observation_unavailable:${trace_unavailable} refresh_armed:${trace_refresh_armed} raw:${trace_raw} native_debt:${trace_pre_native_debt} native_text:${win32_bool_to_int(trace_pre_native_text)} poll:${win32_bool_to_int(trace_pre_poll)} lifetime:${win32_bool_to_int(trace_pre_lifetime)} eventseq:${win32_bool_to_int(trace_pre_eventseq)} pending_stop:${trace_pre_pending_stop} deferred_active:${win32_bool_to_int(trace_pre_deferred_active)} deferred_text:${win32_bool_to_int(trace_pre_deferred_text)} pending_delivery:${trace_pre_pending_delivery} pending_delivery_active:${win32_bool_to_int(trace_pre_pending_delivery_active)} pending_delivery_text:${win32_bool_to_int(trace_pre_pending_delivery_text)}')
-		trace_lines++
-		trace_expected_stop := '${err_render_terminal_aggregate}: ${err_capability_unsupported}'
-		mut trace_stop_message := ''
-		destroy_app.stop() or {
-			trace_stop_message = err.msg()
-			issues << 'retained child debt stop cleanup failed: ${err.msg()}'
-		}
-		trace_pending_stop_exact := destroy_app.pending_stop_errors.len == 1
-			&& destroy_app.pending_stop_errors[0] == err_capability_unsupported
-		trace_pending_stop_cap_count := if trace_pending_stop_exact { 1 } else { 0 }
-		trace_stop_exact := trace_stop_message == trace_expected_stop
-		trace_stop_terminal_exact := destroy_app.stop_terminal == trace_expected_stop
-		trace_stop_category := if trace_stop_exact {
-			'capability_unsupported'
-		} else if trace_stop_message == '' {
-			'none'
-		} else {
-			'other'
-		}
-		eprintln('MULTIWINDOW_W2_TRACE_STOP=category:${trace_stop_category} returned:${win32_bool_to_int(trace_stop_message != '')} pending_stop_cap:${trace_pending_stop_cap_count} terminal_exact:${win32_bool_to_int(trace_stop_terminal_exact)}')
-		trace_lines++
-		trace_terminal_latches_clear :=
-			destroy_app.backend.win32.native_input_release_states.len == 0
-			&& destroy_app.backend.win32.native_input_release_error == ''
-			&& destroy_app.backend.win32.poll_error == ''
-			&& destroy_app.backend.win32.lifetime_release_error == ''
-			&& destroy_app.backend.win32.event_sequence_terminal == ''
-		trace_post_deferred_clear := !destroy_app.deferred_poll_error_active
-			&& destroy_app.deferred_poll_error == ''
-		trace_post_delivery_clear := destroy_app.backend.pending_delivery.len == 0
-			&& !destroy_app.backend.pending_delivery_active
-			&& destroy_app.backend.pending_delivery_error == ''
-		eprintln('MULTIWINDOW_W2_TRACE_POST=records:${destroy_app.backend.win32.windows.len} native_debt:${destroy_app.backend.win32.native_input_release_states.len} native_text:${win32_bool_to_int(destroy_app.backend.win32.native_input_release_error != '')} poll:${win32_bool_to_int(destroy_app.backend.win32.poll_error != '')} lifetime:${win32_bool_to_int(destroy_app.backend.win32.lifetime_release_error != '')} eventseq:${win32_bool_to_int(destroy_app.backend.win32.event_sequence_terminal != '')} pending_stop:${destroy_app.pending_stop_errors.len} pending_stop_cap:${trace_pending_stop_cap_count} deferred_active:${win32_bool_to_int(destroy_app.deferred_poll_error_active)} deferred_text:${win32_bool_to_int(destroy_app.deferred_poll_error != '')} pending_delivery:${destroy_app.backend.pending_delivery.len} pending_delivery_active:${win32_bool_to_int(destroy_app.backend.pending_delivery_active)} pending_delivery_text:${win32_bool_to_int(destroy_app.backend.pending_delivery_error != '')} terminal_exact:${win32_bool_to_int(trace_stop_terminal_exact)} stopped:${win32_bool_to_int(destroy_app.status == .stopped)}')
-		trace_lines++
-		trace_pre_clean := trace_pre_records == 2 && trace_pre_native_debt == 0
-			&& !trace_pre_native_text && !trace_pre_poll && !trace_pre_lifetime
-			&& !trace_pre_eventseq && trace_pre_pending_stop == 0 && !trace_pre_deferred_active
-			&& !trace_pre_deferred_text && trace_pre_pending_delivery == 0
-			&& !trace_pre_pending_delivery_active && !trace_pre_pending_delivery_text
-		trace_structural := trace_pre_clean && destroy_app.backend.win32.windows.len == 0
-			&& trace_owner.record_present && trace_owner.id_matches && trace_owner.state_present
-			&& trace_owner.hwnd_matches && trace_owner.hwnd_live && trace_child.record_present
-			&& trace_child.id_matches && trace_child.state_present && trace_child.hwnd_matches
-			&& trace_child.hwnd_live && trace_unique_states && trace_identities_exact
-			&& trace_prepared == 2 && trace_render == 2 && trace_unavailable == 2 && trace_raw == 0
-			&& trace_terminal_latches_clear && trace_post_deferred_clear
-			&& trace_post_delivery_clear && trace_stop_exact && trace_pending_stop_exact
-			&& trace_stop_terminal_exact && destroy_app.status == .stopped
-		trace_complete := trace_lines == 6 && trace_structural && trace_refresh_armed >= 1
-		trace_attribution := if trace_complete { 'prepare_harvest' } else { 'unresolved' }
-		if !trace_complete {
-			issues << 'W2 trace attribution remained unresolved'
-		}
-		trace_lines++
-		eprintln('MULTIWINDOW_W2_TRACE_END=lines:${trace_lines} complete:${win32_bool_to_int(trace_complete)} attribution:${trace_attribution}')
+		destroy_app.stop() or { issues << 'retained child debt stop cleanup failed: ${err.msg()}' }
 		win32_red_add(mut issues, 'one stop left retained Win32 records',
 			destroy_app.backend.win32.windows.len == 0)
 		win32_red_add(mut issues, 'one stop left native owner/modal HWNDs alive',

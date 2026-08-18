@@ -346,26 +346,6 @@ static inline int v_multiwindow_test_win32_service_wrong_thread_rejected(
 	return rejected;
 }
 
-static inline int v_multiwindow_test_win32_service_mouse_lock_phase(
-	void *service_state) {
-	VMultiwindowWin32ServiceState *state =
-		(VMultiwindowWin32ServiceState *)service_state;
-	return state ? state->mouse_lock_state : -1;
-}
-
-static inline int v_multiwindow_test_win32_service_mouse_prepared_exact(
-	void *service_state) {
-	return v_multiwindow_win32_mouse_prepared_exact(
-		(VMultiwindowWin32ServiceState *)service_state);
-}
-
-static inline int v_multiwindow_test_win32_service_mouse_observation(
-	void *service_state) {
-	int locked = 0;
-	return v_multiwindow_win32_service_mouse_observation(
-		(VMultiwindowWin32ServiceState *)service_state, &locked);
-}
-
 static inline UINT v_multiwindow_test_win32_dpi(void *hwnd) {
 	HMODULE user32 = GetModuleHandleW(L"user32.dll");
 	VMultiwindowTestGetDpiForWindow get_dpi = user32 ?
