@@ -97,6 +97,7 @@ mut:
 	poll_error                       string
 	lifetime_release_error           string
 	native_input_release_error       string
+	native_input_release_states      []voidptr
 	event_sequence_terminal          string
 	windows                          []&Win32WindowRecord
 	service_monitors                 []Win32ServiceMonitorRecord
@@ -193,19 +194,57 @@ fn (mut backend Win32Backend) finish_renderer_shutdown_health() {
 	backend.render_health = .abandoned
 }
 
-fn (mut backend Win32Backend) record_native_input_release_error(message string) {
-	if message != '' && backend.native_input_release_error == '' {
-		backend.native_input_release_error = message
+fn (mut backend Win32Backend) record_native_input_release_error(state voidptr, message string) {
+	if state == unsafe { nil } {
+		return
+	}
+	for failed_state in backend.native_input_release_states {
+		if failed_state == state {
+			return
+		}
+	}
+	backend.native_input_release_states << state
+	if backend.native_input_release_error == '' {
+		backend.native_input_release_error = if message != '' {
+			message
+		} else {
+			err_capability_unsupported
+		}
 	}
 }
 
+fn (mut backend Win32Backend) resolve_native_input_release_error(state voidptr) {
+	if state == unsafe { nil } {
+		return
+	}
+	for i, failed_state in backend.native_input_release_states {
+		if failed_state == state {
+			backend.native_input_release_states.delete(i)
+			break
+		}
+	}
+	if backend.native_input_release_states.len == 0 {
+		backend.native_input_release_error = ''
+	}
+}
+
+fn (backend &Win32Backend) native_input_release_terminal() string {
+	if backend.native_input_release_error != '' {
+		return backend.native_input_release_error
+	}
+	if backend.native_input_release_states.len > 0 {
+		return err_capability_unsupported
+	}
+	return ''
+}
+
 fn (mut backend Win32Backend) retained_stop_error(operation_error string) string {
-	return merge_backend_errors(operation_error, merge_backend_errors(backend.native_input_release_error, merge_backend_errors(backend.lifetime_release_error,
+	return merge_backend_errors(operation_error, merge_backend_errors(backend.native_input_release_terminal(), merge_backend_errors(backend.lifetime_release_error,
 		backend.event_sequence_terminal_error())))
 }
 
 fn (backend &Win32Backend) renderer_probe_error(operation_error string) string {
-	return merge_backend_errors(operation_error, merge_backend_errors(backend.native_input_release_error,
+	return merge_backend_errors(operation_error, merge_backend_errors(backend.native_input_release_terminal(),
 		backend.lifetime_release_error))
 }
 
@@ -822,7 +861,7 @@ fn (mut backend Win32Backend) close_start_attempt() string {
 
 fn (mut backend Win32Backend) probe_renderer_capabilities() !Capabilities {
 	$if windows {
-		if backend.native_input_release_error != '' {
+		if backend.native_input_release_terminal() != '' {
 			return error(backend.renderer_probe_error(''))
 		}
 		if !backend.start_attempt_closed() {
@@ -1034,7 +1073,7 @@ fn (mut backend Win32Backend) finish_window_teardown(id WindowId) ! {
 			record.mouse_pos_valid = false
 			win32_service_prepare_window_teardown(record.service_state) or {
 				prepare_error := err.msg()
-				backend.record_native_input_release_error(prepare_error)
+				backend.record_native_input_release_error(record.service_state, prepare_error)
 				return error(prepare_error)
 			}
 		}
@@ -1058,7 +1097,9 @@ fn (mut backend Win32Backend) finish_window_teardown(id WindowId) ! {
 			record.hwnd = unsafe { nil }
 		}
 		if record.service_state != unsafe { nil } {
-			win32_service_result(C.v_multiwindow_win32_service_release(record.service_state))!
+			released_state := record.service_state
+			win32_service_result(C.v_multiwindow_win32_service_release(released_state))!
+			backend.resolve_native_input_release_error(released_state)
 			record.service_state = unsafe { nil }
 		}
 		backend.windows.delete(index)
@@ -1221,7 +1262,7 @@ fn (mut backend Win32Backend) stop() ! {
 				record.mouse_dy = 0
 				record.mouse_pos_valid = false
 				win32_service_prepare_window_teardown(record.service_state) or {
-					backend.record_native_input_release_error(err.msg())
+					backend.record_native_input_release_error(record.service_state, err.msg())
 					return error(backend.retained_stop_error(''))
 				}
 			}
@@ -1242,10 +1283,12 @@ fn (mut backend Win32Backend) stop() ! {
 				record.hwnd = unsafe { nil }
 			}
 			if record.service_state != unsafe { nil } {
-				service_result := C.v_multiwindow_win32_service_release(record.service_state)
+				released_state := record.service_state
+				service_result := C.v_multiwindow_win32_service_release(released_state)
 				win32_service_result(service_result) or {
 					return error(backend.retained_stop_error(err.msg()))
 				}
+				backend.resolve_native_input_release_error(released_state)
 				record.service_state = unsafe { nil }
 			}
 			backend.windows.delete(index)
