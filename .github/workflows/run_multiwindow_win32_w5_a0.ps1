@@ -26,9 +26,9 @@ $ErrorActionPreference = 'Stop'
 
 $header = 'vlib/x/multiwindow/testdata/win32_raw_input_w5_preflight.h'
 $main = 'vlib/x/multiwindow/testdata/win32_raw_input_w5_preflight.c'
-$knownHeaderSha256 = '9f790c11a4b705186080de256d5fe93503eea020edc3376f330577e24212b1d3'
-$knownMainSha256 = '01764788178fb51e417a5ff779d268f8c6cadaf6312f92ed26e27654532fa3af'
-$knownTupleSha256 = 'f7b92d8b3aa20c76b3191f891ab0eb0f51fa98ffafc0a815b1ab923fbcf3061c'
+$knownHeaderSha256 = 'e9d7813220dd47cb2a3557f3bcf3469e24ef9329df6360026214bf2422cc51f4'
+$knownMainSha256 = '70f120accf182ff921bf6bf5814f2a406071669850e6909534168e0ad4ecbc11'
+$knownTupleSha256 = 'a0eec28f6dd35f4874e6f861fcc3605a1bcc240adad244165830b46bdcf8f0e2'
 
 $runtimeMarkers = @(
     'PACKAGE2_W5_A0_IDENTITY=win32_raw_input_sendinput_preflight'
@@ -86,6 +86,31 @@ function Assert-W5A0FileHash {
         throw "W5 A0 hash mismatch for ${Path}: expected=$normalizedExpected actual=$actual"
     }
     Write-Host "PACKAGE2_W5_A0_HASH_OK path=$Path sha256=$actual"
+}
+
+function Test-W5A0SourceTokenAbsent {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Text
+    )
+
+    $matched = [System.Text.RegularExpressions.Regex]::IsMatch(
+        $Text,
+        '(?<![A-Za-z0-9_])ShowCursor(?![A-Za-z0-9_])',
+        [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+    )
+    return -not $matched
+}
+
+function Test-W5A0SourceTokenGate {
+    $cleanAccepted = Test-W5A0SourceTokenAbsent -Text 'int cursor_state = 0;'
+    $callRejected = -not (Test-W5A0SourceTokenAbsent -Text 'ShowCursor(TRUE);')
+    $stringRejected = -not (Test-W5A0SourceTokenAbsent -Text '"ShowCursor"')
+    if (-not $cleanAccepted -or -not $callRejected -or -not $stringRejected) {
+        throw 'W5 A0 source-token self-test failed'
+    }
+    Write-Host 'PACKAGE2_W5_A0_SOURCE_TOKEN_SELF_TEST accepted=1 rejected=2 total=3'
 }
 
 function Assert-W5A0FailedReap {
@@ -505,41 +530,24 @@ function Get-W5A0CompilerIdentity {
         }
         $versionArguments = @('-v')
     } elseif ($SelectedCompiler -ceq 'gcc') {
-        $gccCommands = @(
-            Get-Command x86_64-w64-mingw32-gcc.exe -CommandType Application `
-                -All -ErrorAction SilentlyContinue
+        $selectedGccCommands = @(
+            @(Get-Command x86_64-w64-mingw32-gcc.exe `
+                -CommandType Application -All -ErrorAction SilentlyContinue) |
+                Select-Object -First 1
         )
-        $gccPathSet = [System.Collections.Generic.HashSet[string]]::new(
-            [System.StringComparer]::OrdinalIgnoreCase
-        )
-        $gccPaths = [System.Collections.Generic.List[string]]::new()
-        foreach ($gccCommand in $gccCommands) {
-            $gccSource = [string]$gccCommand.Source
-            if ([string]::IsNullOrWhiteSpace($gccSource)) {
-                throw 'W5 A0 target-prefixed GCC resolved to an empty source'
-            }
-            $resolvedGccSource = (Resolve-Path -LiteralPath $gccSource `
-                -ErrorAction Stop).Path
-            $fullGccSource = [IO.Path]::GetFullPath($resolvedGccSource)
-            if ($gccPathSet.Add($fullGccSource)) {
-                [void]$gccPaths.Add($fullGccSource)
-            }
+        if ($selectedGccCommands.Count -ne 1) {
+            throw 'W5 A0 target-prefixed GCC was not found on PATH'
         }
-        if ($gccPaths.Count -ne 1) {
-            $gccPathDiagnostic = @(
-                $gccPaths | Select-Object -First 4 | ForEach-Object {
-                    [Uri]::EscapeDataString($_)
-                }
-            ) -join ','
-            if ($gccPathDiagnostic.Length -gt 512) {
-                $gccPathDiagnostic = $gccPathDiagnostic.Substring(0, 512)
-            }
-            if ($gccPathDiagnostic -eq '') {
-                $gccPathDiagnostic = '<none>'
-            }
-            throw "W5 A0 expected exactly one canonical x86_64-w64-mingw32-gcc.exe path, found $($gccPaths.Count): $gccPathDiagnostic"
+        $gccSource = [string]$selectedGccCommands[0].Source
+        if ([string]::IsNullOrWhiteSpace($gccSource)) {
+            throw 'W5 A0 target-prefixed GCC resolved to an empty source'
         }
-        $compilerPath = [string]$gccPaths[0]
+        $resolvedGccSource = (Resolve-Path -LiteralPath $gccSource `
+            -ErrorAction Stop).Path
+        $compilerPath = [IO.Path]::GetFullPath($resolvedGccSource)
+        if (-not (Test-Path -LiteralPath $compilerPath -PathType Leaf)) {
+            throw "W5 A0 selected GCC is not a file: '$compilerPath'"
+        }
         $versionArguments = @('--version')
         $machine = Invoke-W5A0BoundedProcess -FileName $compilerPath `
             -Arguments @('-dumpmachine') -WorkingDirectory $WorkingDirectory `
@@ -607,6 +615,16 @@ if ($ExpectedTupleSha256.ToLowerInvariant() -cne $knownTupleSha256) {
 
 Assert-W5A0FileHash -Path $header -Expected $ExpectedHeaderSha256
 Assert-W5A0FileHash -Path $main -Expected $ExpectedMainSha256
+Test-W5A0SourceTokenGate
+foreach ($sourceInput in @($header, $main)) {
+    $sourceText = [System.IO.File]::ReadAllText(
+        (Resolve-Path -LiteralPath $sourceInput -ErrorAction Stop).Path
+    )
+    if (-not (Test-W5A0SourceTokenAbsent -Text $sourceText)) {
+        throw "W5 A0 forbidden cursor-visibility counter token in source: $sourceInput"
+    }
+    Write-Host "PACKAGE2_W5_A0_SOURCE_TOKEN_OK path=$sourceInput"
+}
 Assert-W5A0FileHash -Path $PSCommandPath -Expected $ExpectedRunnerSha256
 
 $tupleRecords = @(

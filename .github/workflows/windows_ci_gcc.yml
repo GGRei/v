@@ -76,10 +76,10 @@ jobs:
         shell: pwsh
         run: |
           .\.github\workflows\run_multiwindow_win32_w5_a0.ps1 -Compiler gcc `
-            -ExpectedHeaderSha256 '9f790c11a4b705186080de256d5fe93503eea020edc3376f330577e24212b1d3' `
-            -ExpectedMainSha256 '01764788178fb51e417a5ff779d268f8c6cadaf6312f92ed26e27654532fa3af' `
-            -ExpectedTupleSha256 'f7b92d8b3aa20c76b3191f891ab0eb0f51fa98ffafc0a815b1ab923fbcf3061c' `
-            -ExpectedRunnerSha256 'dac51d3dd802ce601db06927bbc27566d0890f96696870e4d0df23b7371a0f90'
+            -ExpectedHeaderSha256 'e9d7813220dd47cb2a3557f3bcf3469e24ef9329df6360026214bf2422cc51f4' `
+            -ExpectedMainSha256 '70f120accf182ff921bf6bf5814f2a406071669850e6909534168e0ad4ecbc11' `
+            -ExpectedTupleSha256 'a0eec28f6dd35f4874e6f861fcc3605a1bcc240adad244165830b46bdcf8f0e2' `
+            -ExpectedRunnerSha256 '997a20eb72d286c6a6fcd01efb4d5e09b34f5e88d072984b51b296ddc4da97b7'
       - name: Setup MinGW-w64 D3D11 headers for GCC and Clang
         uses: msys2/setup-msys2@v2
         with:

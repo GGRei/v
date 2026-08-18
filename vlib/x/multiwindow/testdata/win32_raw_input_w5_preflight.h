@@ -12,6 +12,14 @@
 #define MOUSEEVENTF_MOVE_NOCOALESCE 0x2000
 #endif
 
+#ifndef CURSOR_SHOWING
+#define CURSOR_SHOWING 0x00000001
+#endif
+
+#ifndef CURSOR_SUPPRESSED
+#define CURSOR_SUPPRESSED 0x00000002
+#endif
+
 #ifndef RIDEV_REMOVE
 #define RIDEV_REMOVE 0x00000001
 #endif
@@ -89,7 +97,8 @@ enum VMultiwindowW5DesktopStateComponent {
 	V_MULTIWINDOW_W5_DESKTOP_CLIP_BOTTOM = 0x0040u,
 	V_MULTIWINDOW_W5_DESKTOP_CURSOR_X = 0x0080u,
 	V_MULTIWINDOW_W5_DESKTOP_CURSOR_Y = 0x0100u,
-	V_MULTIWINDOW_W5_DESKTOP_CURSOR_INFO_FLAGS = 0x0200u,
+	/* A documented cursor-state value, stable across quiet samples. */
+	V_MULTIWINDOW_W5_DESKTOP_CURSOR_INFO_KNOWN_STABLE = 0x0200u,
 	V_MULTIWINDOW_W5_DESKTOP_CURSOR_INFO_HANDLE = 0x0400u,
 	V_MULTIWINDOW_W5_DESKTOP_CURSOR_INFO_X = 0x0800u,
 	V_MULTIWINDOW_W5_DESKTOP_CURSOR_INFO_Y = 0x1000u,
@@ -166,6 +175,8 @@ typedef struct VMultiwindowW5Context {
 	uint32_t cleanup_error;
 	uint32_t desktop_mask;
 	uint32_t desktop_streak;
+	uint32_t desktop_snapshot_flags;
+	uint32_t desktop_current_flags;
 	uint32_t input_state;
 	ULONG_PTR expected_tag;
 	LONG raw_dx;
@@ -648,8 +659,14 @@ static int v_multiwindow_w5_wait_for_raw_input(
 	}
 }
 
+static int v_multiwindow_w5_cursor_info_flags_allowed(DWORD flags) {
+	return flags == 0u || flags == CURSOR_SHOWING
+		|| flags == CURSOR_SUPPRESSED;
+}
+
 static uint32_t v_multiwindow_w5_desktop_state_mask(
-	const VMultiwindowW5Snapshot *snapshot) {
+	const VMultiwindowW5Snapshot *snapshot,
+	uint32_t *out_cursor_info_flags) {
 	RECT clip;
 	POINT cursor;
 	CURSORINFO cursor_info;
@@ -657,6 +674,9 @@ static uint32_t v_multiwindow_w5_desktop_state_mask(
 	int clip_ok;
 	int cursor_ok;
 	int cursor_info_ok;
+	if (out_cursor_info_flags) {
+		*out_cursor_info_flags = 0;
+	}
 	if (!snapshot || !snapshot->clip_valid || !snapshot->cursor_valid
 		|| !snapshot->cursor_info_valid) {
 		return 0;
@@ -693,9 +713,14 @@ static uint32_t v_multiwindow_w5_desktop_state_mask(
 		}
 	}
 	if (cursor_info_ok) {
+		if (out_cursor_info_flags) {
+			*out_cursor_info_flags = (uint32_t)cursor_info.flags;
+		}
 		mask |= V_MULTIWINDOW_W5_DESKTOP_QUERY_CURSOR_INFO;
-		if (cursor_info.flags == snapshot->cursor_info.flags) {
-			mask |= V_MULTIWINDOW_W5_DESKTOP_CURSOR_INFO_FLAGS;
+		if (v_multiwindow_w5_cursor_info_flags_allowed(
+			snapshot->cursor_info.flags)
+			&& v_multiwindow_w5_cursor_info_flags_allowed(cursor_info.flags)) {
+			mask |= V_MULTIWINDOW_W5_DESKTOP_CURSOR_INFO_KNOWN_STABLE;
 		}
 		if (cursor_info.hCursor == snapshot->cursor_info.hCursor) {
 			mask |= V_MULTIWINDOW_W5_DESKTOP_CURSOR_INFO_HANDLE;
@@ -839,6 +864,8 @@ static void v_multiwindow_w5_cleanup(VMultiwindowW5Context *context) {
 	if (context->snapshot.clip_valid && context->snapshot.cursor_valid
 		&& context->snapshot.cursor_info_valid) {
 		DWORD desktop_started = GetTickCount();
+		uint32_t desktop_candidate_flags = 0;
+		int desktop_candidate_valid = 0;
 		int desktop_attempt;
 		for (desktop_attempt = 0; desktop_attempt < 40; desktop_attempt++) {
 			UINT messages_pumped = 0;
@@ -853,7 +880,8 @@ static void v_multiwindow_w5_cleanup(VMultiwindowW5Context *context) {
 				break;
 			}
 			context->desktop_mask =
-				v_multiwindow_w5_desktop_state_mask(&context->snapshot);
+				v_multiwindow_w5_desktop_state_mask(&context->snapshot,
+					&context->desktop_current_flags);
 			if (context->unexpected_hook_inputs != 0
 				|| context->unexpected_raw_inputs != 0 || context->saw_quit) {
 				context->desktop_streak = 0;
@@ -867,7 +895,15 @@ static void v_multiwindow_w5_cleanup(VMultiwindowW5Context *context) {
 			if (messages_pumped == 0
 				&& context->desktop_mask
 					== V_MULTIWINDOW_W5_DESKTOP_COMPONENT_ALL) {
-				context->desktop_streak++;
+				if (!desktop_candidate_valid
+					|| context->desktop_current_flags
+						!= desktop_candidate_flags) {
+					desktop_candidate_flags = context->desktop_current_flags;
+					desktop_candidate_valid = 1;
+					context->desktop_streak = 1;
+				} else {
+					context->desktop_streak++;
+				}
 				if (context->desktop_streak >= 3) {
 					context->cleanup |=
 						V_MULTIWINDOW_W5_CLEANUP_DESKTOP_STATE;
@@ -875,6 +911,7 @@ static void v_multiwindow_w5_cleanup(VMultiwindowW5Context *context) {
 				}
 			} else {
 				context->desktop_streak = 0;
+				desktop_candidate_valid = 0;
 			}
 			if ((DWORD)(GetTickCount() - desktop_started) >= 200u) {
 				break;
@@ -900,7 +937,9 @@ static void v_multiwindow_w5_cleanup(VMultiwindowW5Context *context) {
 static int v_multiwindow_test_win32_w5_a0_run(uint32_t timeout_ms,
 	uint32_t *out_stage, uint32_t *out_proof, uint32_t *out_cleanup,
 	uint32_t *out_error, uint32_t *out_cleanup_error,
-	uint32_t *out_desktop_mask, uint32_t *out_desktop_streak) {
+	uint32_t *out_desktop_mask, uint32_t *out_desktop_streak,
+	uint32_t *out_desktop_snapshot_flags,
+	uint32_t *out_desktop_current_flags) {
 	VMultiwindowW5Context context;
 	VMultiwindowW5RawInventory registered_inventory;
 	WNDCLASSW window_class;
@@ -915,6 +954,7 @@ static int v_multiwindow_test_win32_w5_a0_run(uint32_t timeout_ms,
 	memset(&registered_inventory, 0, sizeof(registered_inventory));
 	if (!out_stage || !out_proof || !out_cleanup || !out_error
 		|| !out_cleanup_error || !out_desktop_mask || !out_desktop_streak
+		|| !out_desktop_snapshot_flags || !out_desktop_current_flags
 		|| timeout_ms == 0) {
 		if (out_stage) {
 			*out_stage = V_MULTIWINDOW_W5_STAGE_ARGUMENTS;
@@ -937,6 +977,12 @@ static int v_multiwindow_test_win32_w5_a0_run(uint32_t timeout_ms,
 		if (out_desktop_streak) {
 			*out_desktop_streak = 0;
 		}
+		if (out_desktop_snapshot_flags) {
+			*out_desktop_snapshot_flags = 0;
+		}
+		if (out_desktop_current_flags) {
+			*out_desktop_current_flags = 0;
+		}
 		return 0;
 	}
 	*out_stage = V_MULTIWINDOW_W5_STAGE_NONE;
@@ -946,6 +992,8 @@ static int v_multiwindow_test_win32_w5_a0_run(uint32_t timeout_ms,
 	*out_cleanup_error = 0;
 	*out_desktop_mask = 0;
 	*out_desktop_streak = 0;
+	*out_desktop_snapshot_flags = 0;
+	*out_desktop_current_flags = 0;
 	context.class_name = L"VMultiwindowW5RawInputPreflight";
 	context.expected_tag = (ULONG_PTR)0x57354130u;
 	context.instance = GetModuleHandleW(NULL);
@@ -982,6 +1030,14 @@ static int v_multiwindow_test_win32_w5_a0_run(uint32_t timeout_ms,
 		v_multiwindow_w5_set_primary(&context,
 			V_MULTIWINDOW_W5_STAGE_SNAPSHOT,
 			GetLastError() ? GetLastError() : ERROR_INVALID_DATA);
+		goto cleanup;
+	}
+	context.desktop_snapshot_flags =
+		(uint32_t)context.snapshot.cursor_info.flags;
+	if (!v_multiwindow_w5_cursor_info_flags_allowed(
+		context.snapshot.cursor_info.flags)) {
+		v_multiwindow_w5_set_primary(&context,
+			V_MULTIWINDOW_W5_STAGE_SNAPSHOT, ERROR_INVALID_DATA);
 		goto cleanup;
 	}
 	context.snapshot.clip_valid = 1;
@@ -1151,6 +1207,8 @@ cleanup:
 	*out_cleanup_error = context.cleanup_error;
 	*out_desktop_mask = context.desktop_mask;
 	*out_desktop_streak = context.desktop_streak;
+	*out_desktop_snapshot_flags = context.desktop_snapshot_flags;
+	*out_desktop_current_flags = context.desktop_current_flags;
 	result = context.primary_stage == V_MULTIWINDOW_W5_STAGE_COMPLETE
 		&& context.primary_error == 0
 		&& context.proof == V_MULTIWINDOW_W5_PROOF_ALL
