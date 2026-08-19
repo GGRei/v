@@ -3017,7 +3017,8 @@ fn (mut backend AppKitBackend) prepare_window_native_destroy(mut record &AppKitW
 	}
 }
 
-fn (mut backend AppKitBackend) release_window_resources(mut record &AppKitWindowRecord, seed NativeOperationSeed) bool {
+fn (mut backend AppKitBackend) release_window_resources(mut incoming &AppKitWindowRecord, seed NativeOperationSeed) bool {
+	mut record := *incoming
 	$if darwin {
 		if !backend.release_window_services(mut record) {
 			return false
