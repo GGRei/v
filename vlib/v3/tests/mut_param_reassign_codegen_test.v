@@ -27,6 +27,19 @@ fn mut_param_reassign_run_good(v3_bin string, name string, source string) string
 	return run.output.trim_space()
 }
 
+fn mut_param_reassign_run_good_with_c(v3_bin string, name string, source string) (string, string) {
+	src := os.join_path(os.temp_dir(), 'v3_${name}_${os.getpid()}.v')
+	os.write_file(src, source) or { panic(err) }
+	bin := os.join_path(os.temp_dir(), 'v3_${name}_${os.getpid()}')
+	compile := os.execute('${v3_bin} ${src} -b c -keepc -o ${bin}')
+	assert compile.exit_code == 0, compile.output
+	assert !compile.output.contains('C compilation failed'), compile.output
+	run := os.execute(bin)
+	assert run.exit_code == 0, run.output
+	c_source := os.read_file('${bin}.c') or { panic(err) }
+	return run.output.trim_space(), c_source
+}
+
 fn mut_param_reassign_run_bad(v3_bin string, name string, source string, expected string) {
 	src := os.join_path(os.temp_dir(), 'v3_${name}_${os.getpid()}.v')
 	os.write_file(src, source) or { panic(err) }
@@ -61,13 +74,19 @@ fn main() {
 
 fn test_mut_string_param_concat_reads_as_string() {
 	v3_bin := mut_param_reassign_build_v3()
-	out := mut_param_reassign_run_good(v3_bin, 'mut_string_param_concat', "fn add(mut s string) string {
-	return s + '!'
+	out := mut_param_reassign_run_good(v3_bin, 'mut_string_param_concat', "struct Text {
+	value string
+}
+
+fn add(mut text Text) string {
+	return text.value + '!'
 }
 
 fn main() {
-	mut s := 'hi'
-	println(add(mut s))
+	mut text := Text{
+		value: 'hi'
+	}
+	println(add(mut text))
 }
 ")
 	assert out == 'hi!'
@@ -193,15 +212,22 @@ fn main() {
 
 fn test_mut_param_compound_assign_and_postfix_store_through_pointer() {
 	v3_bin := mut_param_reassign_build_v3()
-	out := mut_param_reassign_run_good(v3_bin, 'mut_param_compound_assign', 'fn inc(mut n int) {
-	n += 1
-	n++
+	out := mut_param_reassign_run_good(v3_bin, 'mut_param_compound_assign', 'struct Counter {
+mut:
+	value int
+}
+
+fn inc(mut counter Counter) {
+	counter.value += 1
+	counter.value++
 }
 
 fn main() {
-	mut x := 1
-	inc(mut x)
-	assert x == 3
+	mut counter := Counter{
+		value: 1
+	}
+	inc(mut counter)
+	assert counter.value == 3
 	println("ok")
 }
 ')
@@ -210,14 +236,21 @@ fn main() {
 
 fn test_mut_param_unsigned_right_shift_assign_stores_through_pointer() {
 	v3_bin := mut_param_reassign_build_v3()
-	out := mut_param_reassign_run_good(v3_bin, 'mut_param_unsigned_right_shift_assign', 'fn shift(mut n int) {
-	n >>>= 1
+	out := mut_param_reassign_run_good(v3_bin, 'mut_param_unsigned_right_shift_assign', 'struct Counter {
+mut:
+	value int
+}
+
+fn shift(mut counter Counter) {
+	counter.value >>>= 1
 }
 
 fn main() {
-	mut x := 8
-	shift(mut x)
-	assert x == 4
+	mut counter := Counter{
+		value: 8
+	}
+	shift(mut counter)
+	assert counter.value == 4
 	println("ok")
 }
 ')
@@ -235,7 +268,7 @@ fn replace(mut current &Item, replacement &Item) {
 }
 
 fn main() {
-	first := Item{
+	mut first := Item{
 		value: 1
 	}
 	second := Item{
@@ -243,6 +276,8 @@ fn main() {
 	}
 	mut current := &first
 	replace(mut current, &second)
+	assert current == &second
+	assert first.value == 1
 	println(int_str(current.value))
 }
 ')
@@ -256,7 +291,7 @@ fn replace[T](mut current &T, replacement &T) {
 }
 
 fn main() {
-	first := Item{
+	mut first := Item{
 		value: 2
 	}
 	second := Item{
@@ -282,7 +317,7 @@ fn replace(mut current &Item, replacement &Item) {
 }
 
 fn main() {
-	first := Item{
+	mut first := Item{
 		value: 1
 	}
 	second := Item{
@@ -303,20 +338,29 @@ fn main() {
 ')
 	assert out_lvalues == '9\n7'
 	out_forwarded := mut_param_reassign_run_good(v3_bin, 'mut_pointer_param_forward_and_index', 'fn write_byte(mut bytes &u8, value u8) {
-	bytes[0] = value
+	unsafe {
+		bytes[0] = value
+	}
+}
+
+fn read_byte(mut bytes &u8) u8 {
+	return *bytes
 }
 
 fn terminate(mut bytes &u8) {
 	write_byte(mut bytes, `Z`)
-	bytes[1] = 0
+	unsafe {
+		bytes[1] = 0
+	}
 }
 
 fn main() {
 	mut storage := [2]u8{}
-	mut bytes := &storage[0]
+	mut bytes := unsafe { &storage[0] }
 	terminate(mut bytes)
 	assert storage[0] == `Z`
 	assert storage[1] == 0
+	assert read_byte(mut bytes) == `Z`
 	println("ok")
 }
 ')
@@ -342,19 +386,110 @@ fn main() {
 		'expected `&&Item`')
 }
 
-fn test_mut_param_reassign_keeps_invalid_assignments_rejected() {
+fn test_mut_pointer_param_signature_and_expression_conversions() {
 	v3_bin := mut_param_reassign_build_v3()
-	mut_param_reassign_run_bad(v3_bin, 'bad_same_scope_mut_string_param_redeclare', "fn shadow_read(mut s string) string {
-	mut s := 'local'
-	return s + '!'
+	out, c_source := mut_param_reassign_run_good_with_c(v3_bin,
+		'mut_pointer_param_signature_and_expression_conversions', 'interface Reader {
+	read() int
+}
+
+struct Item {
+	value int
+}
+
+fn (item &Item) read() int {
+	return item.value
+}
+
+fn consume_reader(reader Reader) int {
+	return reader.read()
+}
+
+fn consume_pointer(item &Item) int {
+	return item.value
+}
+
+fn consume_optional(item ?&Item) int {
+	if value := item {
+		return value.value
+	}
+	return 0
+}
+
+fn read_field(mut item &Item) int {
+	return item.value
+}
+
+fn read_deref(mut item &Item) int {
+	return (*item).value
+}
+
+fn copy_deref(mut item &Item) Item {
+	return *item
+}
+
+fn assign_deref(mut item &Item) Item {
+	mut copied_value := Item{}
+	copied_value = *item
+	return copied_value
+}
+
+fn increment_deref(mut value &int) int {
+	(*value)++
+	return *value
+}
+
+fn read_method(mut item &Item) int {
+	return item.read()
+}
+
+fn forward(mut item &Item) int {
+	copied := copy_deref(mut item)
+	assigned := assign_deref(mut item)
+	mut number_value := 5
+	mut number := &number_value
+	incremented := increment_deref(mut number)
+	return read_field(mut item) + read_deref(mut item) + read_method(mut item) + consume_reader(item) + consume_pointer(item) + consume_optional(item) + copied.value + assigned.value + incremented
 }
 
 fn main() {
-	mut s := 'param'
-	_ = shadow_read(mut s)
+	mut value := Item{
+		value: 7
+	}
+	mut item := &value
+	println(int_str(forward(mut item)))
+}
+')
+	assert out == '62'
+	assert c_source.contains('int read_field(Item** item) {'), 'missing Item** signature'
+	assert !c_source.contains('int read_field(Item*** item) {'), 'found over-indirected Item*** signature'
+	assert c_source.contains('return ((*item))->value;'), 'missing single slot dereference'
+	assert c_source.contains('return (*(*item));'), 'missing source dereference after slot dereference'
+	assert c_source.contains('copied_value = (*(*item));'), 'missing standalone assignment dereference'
+	assert c_source.contains('((*(*value)))++;'), 'missing standalone postfix dereference'
+}
+
+fn test_mut_param_reassign_keeps_invalid_assignments_rejected() {
+	v3_bin := mut_param_reassign_build_v3()
+	mut_param_reassign_run_bad(v3_bin, 'bad_same_scope_mut_string_param_redeclare', "struct Text {
+	value string
+}
+
+fn shadow_read(mut text Text) string {
+	mut text := Text{
+		value: 'local'
+	}
+	return text.value + '!'
+}
+
+fn main() {
+	mut text := Text{
+		value: 'param'
+	}
+	_ = shadow_read(mut text)
 }
 ",
-		'redefinition of s')
+		'redefinition of text')
 	mut_param_reassign_run_bad(v3_bin, 'bad_mut_array_param_reassign_elem', "fn bad(mut xs []int) {
 	mut ys := []string{}
 	ys << 'bad'
@@ -366,7 +501,7 @@ fn main() {
 	bad(mut xs)
 }
 ",
-		'cannot assign `[]string` to `[]int`')
+		'expected `[]int`, not `[]string`')
 	mut_param_reassign_run_bad(v3_bin, 'bad_mut_array_param_reassign_scalar', 'fn bad(mut xs []int) {
 	xs = 1
 }
@@ -376,7 +511,7 @@ fn main() {
 	bad(mut xs)
 }
 ',
-		'cannot assign `int` to `[]int`')
+		'expected `[]int`, not `int literal`')
 	mut_param_reassign_run_bad(v3_bin, 'bad_pointer_local_reassign_value', 'fn main() {
 	mut xs := []int{}
 	mut p := &xs
@@ -384,7 +519,7 @@ fn main() {
 	p = tmp
 }
 ',
-		'cannot assign `[]int` to `&[]int`')
+		'expected `&[]int`, not `[]int`')
 	mut_param_reassign_run_bad(v3_bin, 'bad_shadowed_mut_param_multi_return', 'fn pair() ([]int, int) {
 	mut xs := []int{}
 	return xs, 7

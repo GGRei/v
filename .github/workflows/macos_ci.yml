@@ -1,18 +1,37 @@
-name: Package 2 macOS multiwindow smoke
+name: CI macOS
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - smoke/x-multiwindow-windows-20260717
+      - master
+    paths-ignore:
+      - 'vlib/v3/**'
+      - '**.md'
+      - '**.yml'
+      - '!**/macos_ci.yml'
+      - 'cmd/tools/**'
+      - '!cmd/tools/builders/**.v'
+  pull_request:
+    paths-ignore:
+      - 'vlib/v3/**'
+      - '**.md'
+      - '**.yml'
+      - '!**/macos_ci.yml'
+      - 'cmd/tools/**'
+      - '!cmd/tools/builders/**.v'
 
 concurrency:
-  group: package2-macos-${{ github.workflow }}-${{ github.ref }}
+  group: macos-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  package2-macos:
-    runs-on: macos-14
+  clang-macos:
+    strategy:
+      matrix:
+        os: [macos-14]
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 151
     env:
       VFLAGS: -cc clang
@@ -21,8 +40,26 @@ jobs:
       VTEST_SHOW_LONGEST_BY_TOTALTIME: 3
     steps:
       - uses: actions/checkout@v7
+      - name: Cache Homebrew downloads
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: brew-${{ matrix.os }}-${{ hashFiles('.github/workflows/macos_ci.yml', 'ci/macos_ci.vsh') }}
+          restore-keys: |
+            brew-${{ matrix.os }}-
       - name: Build V
         run: make -j4 && ./v symlink
+      - name: Pkg-config regressions (Clang, no static executable)
+        run: |
+          set -euo pipefail
+          for test in \
+            vlib/v/pkgconfig/pkgconfig_static_test.v \
+            vlib/v/checker/pkgconfig_static_mode_test.v \
+            vlib/v/checker/pkgconfig_cross_compile_test.v \
+            vlib/v/builder/pkgconfig_link_segment_test.v
+          do
+            ./v -cc clang -no-retry-compilation test "$test"
+          done
       - name: Legacy gg import multiwindow isolation
         run: ./v test vlib/gg/legacy_import_multiwindow_isolation_test.v
       - name: Prepare multiwindow process-tree watchdog
@@ -96,8 +133,7 @@ jobs:
               }
           }
           EOF
-          ./v -cc clang -o "$RUNNER_TEMP/multiwindow_ci_watchdog" \
-            "$RUNNER_TEMP/multiwindow_ci_watchdog.v"
+          ./v -cc clang -o "$RUNNER_TEMP/multiwindow_ci_watchdog" "$RUNNER_TEMP/multiwindow_ci_watchdog.v"
       - name: Multiwindow Metal regressions and runtime probes
         env:
           VGG_MULTIWINDOW_RUNTIME_PROBES: '1'
@@ -110,8 +146,7 @@ jobs:
           ./v -cc clang -d gg_multiwindow -d sokol_metal \
             -o /tmp/gg_multiwindow_metal examples/gg/multiwindow.v
           ./v -cc clang -d gg_multiwindow -d sokol_metal \
-            -o /tmp/gg_multiwindow_render_runtime_metal \
-            examples/gg/multiwindow_render_runtime.v
+            -o /tmp/gg_multiwindow_render_runtime_metal examples/gg/multiwindow_render_runtime.v
 
           tests=(
             vlib/x/multiwindow/event_sequence_exhaustion_test.v
@@ -150,3 +185,47 @@ jobs:
             /tmp/gg_multiwindow_metal
       - name: Test AppKit GLCore rejection guard
         run: ./v -d gg_multiwindow -d darwin_sokol_glcore33 test vlib/x/multiwindow/multiwindow_test.v
+      - name: Test symlink
+        run: v run ci/macos_ci.vsh test_symlink
+      - name: v doctor
+        run: v run ci/macos_ci.vsh v_doctor
+      - name: Build v with -prealloc
+        run: v run ci/macos_ci.vsh build_v_with_prealloc
+      - name: Test cross compilation to Linux
+        run: v run ci/macos_ci.vsh test_cross_compilation
+      - name: Test inline assembly on macos
+        run: v run ci/macos_ci.vsh test_inline_assembly
+      - name: Build V with -cstrict
+        run: v run ci/macos_ci.vsh build_with_cstrict
+      - name: All code is formatted
+        run: v run ci/macos_ci.vsh all_code_is_formatted
+      - name: Run sanitizers
+        run: v run ci/macos_ci.vsh run_sanitizers
+      - name: Build V using V
+        run: v run ci/macos_ci.vsh build_using_v
+      - name: Verify `v test` works
+        run: v run ci/macos_ci.vsh verify_v_test_works
+      - name: Install iconv for encoding.iconv
+        run: v run ci/macos_ci.vsh install_iconv
+      - name: Test pure V math module
+        run: v run ci/macos_ci.vsh test_pure_v_math_module
+      - name: Self tests
+        run: v run ci/macos_ci.vsh self_tests
+      - name: Build examples
+        run: v run ci/macos_ci.vsh build_examples
+      - name: Build tetris with -autofree
+        run: v run ci/macos_ci.vsh build_tetris_autofree
+      - name: Build blog tutorial with -autofree
+        run: v run ci/macos_ci.vsh build_blog_autofree
+      - name: Build examples with -prod
+        run: v run ci/macos_ci.vsh build_examples_prod
+      - name: Build examples with V build with tcc
+        run: v run ci/macos_ci.vsh build_examples_v_compiled_with_tcc
+      ##      - name: V self compilation with -usecache
+      ##        run: v run ci/macos_ci.vsh v_self_compilation_usecache
+      - name: V self compilation with -parallel-cc
+        run: v run ci/macos_ci.vsh v_self_compilation_parallel_cc
+      - name: Test password input
+        run: v run ci/macos_ci.vsh test_password_input
+      - name: Test readline
+        run: v run ci/macos_ci.vsh test_readline

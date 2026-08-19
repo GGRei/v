@@ -168,24 +168,24 @@ $publicSurface = @(
     [pscustomobject]@{ Path = 'vlib/gg/multiwindow_notd_gg_multiwindow.v'; Known = '99e37df1fba39e72d9c74490dc6de216dbf984d0586aedcaf5d5d62edc0c0ed2'; Passed = $ExpectedGgNoFlagSha256 }
     [pscustomobject]@{ Path = 'vlib/gg/multiwindow_service_types.v'; Known = 'ec55d5540f456e2f2090b382bc0c16778794913ab95654526832e60f0f8e5849'; Passed = $ExpectedGgServiceTypesSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/app.v'; Known = 'af268df808e190318e77c44256de6f98038b5d094a7c308d79f34921ea25b6bd'; Passed = $ExpectedAppSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/types.v'; Known = 'c91215f627c9c7818f6239b5aa8b6f34f14ef79140c67d797be1646557b08053'; Passed = $ExpectedTypesSha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/types.v'; Known = '640b1590b25acc56eae75bd8af7f7521c10bf8cd2406b7fa7ba4844680dc03a9'; Passed = $ExpectedTypesSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/backend.v'; Known = '46802367bde90168a71131b49015329d8c1c80fad0f0d47e988c2f6e240e30c7'; Passed = $ExpectedBackendSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_api.v'; Known = '0d13b992ca9edd0bc2f10bc4cdd0e01eaf865cd8a4c543f3ee4ea482cdd5a897'; Passed = $ExpectedServiceApiSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_types.v'; Known = 'b14d0527430a4b718c90b02132994e35ba4d6340956546406a2d49a61dfdd34f'; Passed = $ExpectedServiceTypesSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_registry.v'; Known = '73a65c6444884e80feb5b3a10104002de0c1fc94a0f0bbffab8c46a1b4c7e7c1'; Passed = $ExpectedServiceRegistrySha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/event_delivery.v'; Known = '7209202474ce1c20baadb6565ac3ac73673e653aaf072cdde2c95f5b9cd98221'; Passed = $ExpectedEventDeliverySha256 }
 )
-$knownPublicRoutingSurfaceSha256 = '7104f779d02f2e22d302c4483e2474675093acf33248addd3de70ac91e21dc25'
+$knownPublicRoutingSurfaceSha256 = 'db360ac3e18c239e8c2c794d11afc4fa2fbff205adb9f612537de42d8d6582c1'
 
 $greenProductionSurface = @(
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_backend.v'; Known = '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d'; Passed = $ExpectedServiceBackendSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/event_dispatch_d_gg_multiwindow.v'; Known = '7ef6c7cbd34511d6c19c1a3a269b46876db791b9412bb88e3a8d4dcd543bfd4e'; Passed = $ExpectedEventDispatchSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend.c.v'; Known = '3c19ecb2815e7d49b71c19affad89a8a14d8795b8b96c11f4e7e465063d4a29c'; Passed = $ExpectedWin32BackendSha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend.c.v'; Known = '4b854e9dd019bb8193057c08aaa0a8185096f165afff99d7ed519c5442e0e52e'; Passed = $ExpectedWin32BackendSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend_helpers.h'; Known = 'eef8fc485a4774fd380b9b2c7deebbf6b349b432430d0182bad7325a6e684329'; Passed = $ExpectedWin32BackendHelpersSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_backend.c.v'; Known = '02076f74e9537323f688e256d3613f87534cd304ca1bc99b7433f406ffd6ebad'; Passed = $ExpectedWin32ServiceBackendSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_native.h'; Known = '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73'; Passed = $ExpectedWin32ServiceNativeSha256 }
 )
-$knownGreenProductionSurfaceSha256 = 'dc79eb68a7b83f56f3e6afdfb4e8b90dea7d7ab69f8930516d2e80263d54c363'
+$knownGreenProductionSurfaceSha256 = 'dcb863245235cb778312e4a08c0d81eb5d4685c162fb71da228f02e608becd47'
 
 $fatalPattern = '(?i)(fatal error|unhandled exception|access violation|STATUS_ACCESS_VIOLATION|0xC0000005|segmentation fault|stack overflow|illegal instruction|abort trap|process crashed|application crashed|V panic:)'
 $compilerDiagnosticPattern = '(?im)(C compilation error|builder error|failed to compile|cannot compile|fatal error|error C[0-9]{4}|warning C[0-9]{4}|warning:|error:|undefined reference|unresolved external symbol|LNK[0-9]{4})'

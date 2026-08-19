@@ -25,6 +25,180 @@ fn stmt_test_prefix(mut a flat.FlatAst, op flat.Op, child flat.NodeId) flat.Node
 	})
 }
 
+fn test_primitive_fixed_array_zero_initializer_is_compact() {
+	mut a := flat.FlatAst.new()
+	mut tc := types.TypeChecker.new(&a)
+	mut g := FlatGen.new()
+	g.a = &a
+	g.tc = &tc
+
+	large := types.ArrayFixed{
+		elem_type: types.Type(types.u8_)
+		len:       65536
+	}
+	assert g.empty_fixed_array_initializer_string(large) == '{0}'
+
+	nested := types.ArrayFixed{
+		elem_type: types.Type(types.ArrayFixed{
+			elem_type: types.Type(types.i32_)
+			len:       32
+		})
+		len:       32
+	}
+	assert g.empty_fixed_array_initializer_string(nested) == '{0}'
+
+	dynamic_arrays := types.ArrayFixed{
+		elem_type: types.Type(types.Array{
+			elem_type: types.Type(types.int_)
+		})
+		len:       2
+	}
+	dynamic_init := g.empty_fixed_array_initializer_string(dynamic_arrays)
+	assert dynamic_init.count('array_new(') == 2
+}
+
+fn test_fixed_array_optional_abi_conversions_use_memcpy() {
+	fixed := types.Type(types.ArrayFixed{
+		elem_type: types.Type(types.int_)
+		len:       2
+	})
+	mut forward_gen := FlatGen.new()
+	forward := forward_gen.optional_forward_return_abi_wrap_expr('Optional_source',
+		'Optional_destination', fixed, 'source()')
+	assert forward.contains('if (_t1.ok) { memcpy(_t2.value, _t1.value, sizeof(_t2.value)); }'), forward
+	assert !forward.contains('.value = _t1.value'), forward
+
+	mut interface_gen := FlatGen.new()
+	interface_gen.gen_interface_dispatch_optional_abi_value_return('Optional_destination',
+		'_iface_result', fixed)
+	interface_output := interface_gen.sb.str()
+	assert interface_output.contains('if (_iface_result.ok) {'), interface_output
+	copy_statement := 'memcpy(_iface_abi_result_out_0.value, _iface_result.value, sizeof(_iface_abi_result_out_0.value));'
+	assert interface_output.contains(copy_statement), interface_output
+	assert !interface_output.contains('.value = _iface_result.value'), interface_output
+}
+
+fn test_ownership_recursive_drop_helpers_deduplicate_emitted_c_symbol() {
+	mut a := flat.FlatAst.new()
+	mut tc := types.TypeChecker.new(&a)
+	mut g := FlatGen.new()
+	g.a = &a
+	g.tc = &tc
+	// Distinct logical ownership keys can refer to the same runtime struct after
+	// lifetime erasure. Only one C helper definition may be emitted for it.
+	g.recursive_drop_helpers['struct:pkg.Sink[^p,^s,Writer]'] = 'pkg.Sink[Writer]'
+	g.recursive_drop_helpers['struct:pkg.Sink[^s,^s,Writer]'] = 'pkg.Sink[Writer]'
+	g.gen_ownership_recursive_drop_helpers()
+	assert g.sb.str().count('static void __v3_ownership_drop_pkg__Sink_Writer(') == 1
+}
+
+fn test_usable_resolved_sum_type_requires_exact_qualified_name() {
+	mut a := flat.FlatAst.new()
+	mut tc := types.TypeChecker.new(&a)
+	tc.sum_types['bar.Result'] = ['bar.Failed', 'bar.Ok']
+	tc.sum_types['foo.Choice'] = ['foo.Left', 'foo.Right']
+	mut g := FlatGen.new()
+	g.tc = &tc
+	g.precompute_sum_name_lookup()
+
+	preserved := g.usable_resolved_sum_type(types.Type(types.Struct{
+		name: 'foo.Result'
+	}))
+	assert preserved is types.Struct
+	if preserved is types.Struct {
+		assert preserved.name == 'foo.Result'
+	}
+
+	exact := g.usable_resolved_sum_type(types.Type(types.Struct{
+		name: 'foo.Choice'
+	}))
+	assert exact is types.SumType
+	if exact is types.SumType {
+		assert exact.name == 'foo.Choice'
+	}
+}
+
+fn test_fixed_array_address_to_byte_pointer_decl_uses_data_pointer() {
+	mut a := flat.FlatAst.new()
+	mut tc := types.TypeChecker.new(&a)
+	mut g := FlatGen.new()
+	g.a = &a
+	g.tc = &tc
+	fixed_type := types.Type(types.ArrayFixed{
+		elem_type: types.Type(types.u8_)
+		len:       2
+	})
+	byte_pointer := types.Type(types.Pointer{
+		base_type: types.Type(types.u8_)
+	})
+	tc.push_scope()
+	tc.cur_scope.insert('buf', fixed_type)
+	buf_id := stmt_test_node(mut a, .ident, 'buf', [])
+	rhs_id := stmt_test_prefix(mut a, .amp, buf_id)
+	g.gen_decl_init_expr(rhs_id, a.nodes[int(rhs_id)], byte_pointer, 'u8*', true)
+	assert g.sb.str() == '((u8*)(buf))'
+	fixed_pointer := types.Type(types.Pointer{
+		base_type: fixed_type
+	})
+	mut assign_gen := FlatGen.new()
+	assign_gen.a = &a
+	assign_gen.tc = &tc
+	p_id := stmt_test_node(mut a, .ident, 'p', [])
+	assert assign_gen.gen_fixed_array_address_to_byte_pointer_assign(p_id, rhs_id, byte_pointer,
+		fixed_pointer)
+	assert assign_gen.sb.str() == 'p = ((u8*)(buf));\n'
+	int_fixed_type := types.Type(types.ArrayFixed{
+		elem_type: types.Type(types.i32_)
+		len:       2
+	})
+	tc.cur_scope.insert('int_buf', int_fixed_type)
+	int_buf_id := stmt_test_node(mut a, .ident, 'int_buf', [])
+	int_rhs_id := stmt_test_prefix(mut a, .amp, int_buf_id)
+	int_fixed_pointer := types.Type(types.Pointer{
+		base_type: int_fixed_type
+	})
+	mut rejected_gen := FlatGen.new()
+	rejected_gen.a = &a
+	rejected_gen.tc = &tc
+	assert !rejected_gen.gen_fixed_array_address_to_byte_pointer_assign(p_id, int_rhs_id,
+		byte_pointer, int_fixed_pointer)
+	assert rejected_gen.sb.str() == ''
+	tc.pop_scope()
+}
+
+fn test_mut_parameter_power_assign_uses_scalar_result_type() {
+	mut a := flat.FlatAst.new()
+	mut tc := types.TypeChecker.new(&a)
+	mut g := FlatGen.new()
+	g.a = &a
+	g.tc = &tc
+	int_type := types.Type(types.int_)
+	ptr_type := types.Type(types.Pointer{
+		base_type: int_type
+	})
+
+	tc.push_scope()
+	arg_owner := tc.cur_scope.insert_with_owner('arg', ptr_type)
+	g.cur_param_types['arg'] = ptr_type
+	g.cur_mut_params['arg'] = true
+	g.cur_mut_param_owners['arg'] = arg_owner
+	arg_id := stmt_test_node(mut a, .ident, 'arg', [])
+	exponent_id := stmt_test_node(mut a, .int_literal, '2', [])
+	children_start := a.children.len
+	a.children << arg_id
+	a.children << exponent_id
+	g.gen_assign(flat.Node{
+		kind:           .assign
+		op:             .power_assign
+		children_start: i32(children_start)
+		children_count: 2
+	})
+	compact := g.sb.str().replace('\t', '').replace(' ', '').replace('\n', '')
+	assert compact.contains('*arg=((int)__v_pow_i64('), compact
+	assert !compact.contains('(int*)__v_pow_i64('), compact
+	tc.pop_scope()
+}
+
 fn test_local_pointer_alias_clear_preserves_outer_branch_markers() {
 	mut a := flat.FlatAst.new()
 	mut tc := types.TypeChecker.new(&a)

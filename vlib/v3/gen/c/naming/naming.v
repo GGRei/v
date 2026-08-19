@@ -76,10 +76,13 @@ const libc_collisions = {
 	'fmod':     true
 	'fork':     true
 	'getenv':   true
+	'index':    true
 	'j0':       true
 	'j1':       true
 	'jn':       true
 	'ldexp':    true
+	'listen':   true
+	'log':      true
 	'memcmp':   true
 	'memcpy':   true
 	'memmove':  true
@@ -87,10 +90,13 @@ const libc_collisions = {
 	'open':     true
 	'pipe':     true
 	'pow':      true
+	'printf':   true
 	'read':     true
 	'realpath': true
 	'rint':     true
+	'round':    true
 	'scalb':    true
+	'send':     true
 	'setenv':   true
 	'signal':   true
 	'snprintf': true
@@ -101,6 +107,7 @@ const libc_collisions = {
 	'strncpy':  true
 	'strrchr':  true
 	'strstr':   true
+	'wait':     true
 	'y0':       true
 	'y1':       true
 	'yn':       true
@@ -109,6 +116,9 @@ const libc_collisions = {
 // c_name returns the C identifier used for a V symbol or type name.
 pub fn c_name(name string) string {
 	if name.starts_with('C.') {
+		if name[2..].contains('.') {
+			return sanitize(name)
+		}
 		return name[2..]
 	}
 	if name == 'malloc' {
@@ -123,12 +133,6 @@ pub fn c_name(name string) string {
 	// `C.exit` itself is handled by the `C.` strip above, so it stays `exit`.
 	if name == 'exit' {
 		return 'v_exit'
-	}
-	if is_plain_identifier(name) {
-		if name in reserved_words || name in libc_collisions || is_string_literal_symbol(name) {
-			return 'v_${name}'
-		}
-		return name
 	}
 	n := sanitize(name)
 	if n in reserved_words || n in libc_collisions || is_string_literal_symbol(n) {
@@ -155,6 +159,37 @@ fn is_string_literal_symbol(name string) bool {
 // sanitize converts a V symbol or type spelling into a C identifier spelling
 // without applying reserved-word or libc collision prefixes.
 pub fn sanitize(name string) string {
+	mut dot_count := 0
+	for i in 0 .. name.len {
+		c := name[i]
+		if (c >= `a` && c <= `z`) || (c >= `A` && c <= `Z`) || (c >= `0` && c <= `9`) || c == `_` {
+			continue
+		}
+		if c != `.` {
+			return sanitize_complex(name)
+		}
+		dot_count++
+	}
+	if dot_count == 0 {
+		return name
+	}
+	mut out := []u8{len: name.len + dot_count}
+	mut dst := 0
+	for i in 0 .. name.len {
+		c := name[i]
+		if c == `.` {
+			out[dst] = `_`
+			out[dst + 1] = `_`
+			dst += 2
+		} else {
+			out[dst] = c
+			dst++
+		}
+	}
+	return out.bytestr()
+}
+
+fn sanitize_complex(name string) string {
 	mut b := strings.new_builder(name.len + 8)
 	mut i := 0
 	for i < name.len {

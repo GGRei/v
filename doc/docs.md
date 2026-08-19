@@ -53,6 +53,7 @@ section in the README.md.
 If V is already installed on a machine, it can be upgraded to its latest version
 by using the V's built-in self-updater.
 To do so, run the command `v up`.
+This also refreshes the bundled TCC binaries used for fast C compilation.
 
 ## Project-local compiler versions with `.vvmrc`
 
@@ -85,6 +86,12 @@ by using any of the following commands in a terminal:
 * `v new --web abcd` → creates a new project in the new folder `abcd`, using the veb template.
 
 The `v new --web` template uses `veb`, V's web framework.
+
+When run in a terminal, `v new` and `v init` interactively prompt for the project's
+description, version and license. When stdin is *not* a terminal (for example when the
+input is piped or redirected, as in CI), the prompts are skipped and the defaults are
+used instead of blocking on input; in that case the project name must be passed as an
+argument, e.g. `v new abc`.
 
 ## Table of Contents
 
@@ -540,7 +547,7 @@ fn foo() (int, int) {
 
 fn main() {
 	c, _ := foo()
-	print(c)
+	println(c)
 	// no warning about unused variable returned by foo.
 }
 ```
@@ -3600,6 +3607,23 @@ red := Color{
 println(red)
 ```
 
+**Note:** Calling `.str()` on an unchanged receiver, or an unchanged alias of it,
+inside a custom `str()` method is not allowed because it causes infinite recursion.
+Use string interpolation of the individual fields instead, or for type aliases,
+cast to the underlying type first:
+
+```v failcompile
+struct Color {
+	r int
+	g int
+	b int
+}
+
+fn (c Color) str() string {
+	return c.str() // error: cannot call `str()` method recursively
+}
+```
+
 ### Dumping expressions at runtime
 
 You can dump/trace the value of any V expression using `dump(expr)`.
@@ -6142,10 +6166,22 @@ before using the shader in your code.
 
 ### Profiling
 
-V has good support for profiling your programs: `v -profile profile.txt run file.v`
-That will produce a profile.txt file, which you can then analyze.
+V has good support for profiling your programs: `v -profile profile.txt run file.v`.
+That will produce a `profile.txt` file when the program exits, which you can then
+analyze. If the output file is omitted, as in `v -profile run file.v`, the report
+is written to standard output. `-prof` is an alias for `-profile`.
 
-The generated profile.txt file will have lines with 4 columns:
+The V3 compiler supports profiling with its C backend. Other V3 backends reject
+`-profile`. V3 also supports these V1-compatible selection options:
+
+- `-profile-fns name1,name2` profiles only the named functions and functions
+  called from them. Use the function names shown in profile output, such as
+  `main__work`.
+- `-profile-no-inline` omits functions marked `@[inline]` from the report.
+- `-d no_profile_startup` excludes calls made during module initialization.
+
+Use the selection options together with `-profile`. The generated profile file
+has lines with 5 columns:
 
 1. How many times a function was called.
 2. How much time in total a function took (in ms).
@@ -6154,8 +6190,8 @@ The generated profile.txt file will have lines with 4 columns:
 4. How much time on average, a call to a function took (in ns).
 5. The name of the v function.
 
-You can sort on column 3 (average time per function) using:
-`sort -n -k3 profile.txt|tail`
+You can sort on column 3 (exclusive time per function) using:
+`sort -n -k3 profile.txt | tail`
 
 You can also use stopwatches to measure just portions of your code explicitly:
 
@@ -6305,6 +6341,9 @@ Package are up to date.
    Initialising ...
    Complete!
    ```
+
+   The prompts above appear only when running in a terminal; with a non-terminal
+   stdin the defaults are used instead (see [Getting started](#getting-started)).
 
    Example `v.mod`:
    ```v ignore
@@ -6700,7 +6739,8 @@ that are substituted at compile time:
 - `@DIR` => replaced with the absolute path of the *folder*, where the V source file is.
 - `@LINE` => replaced with the V line number where it appears (as a string).
 - `@FILE_LINE` => like `@FILE:@LINE`, but the file part is a relative path.
-- `@LOCATION` => file, line and name of the current type + method; suitable for logging.
+- `@LOCATION` => file, line and name of the current module + function or method;
+  suitable for logging.
 - `@COLUMN` => replaced with the column where it appears (as a string).
 - `@VEXE` => replaced with the path to the V compiler.
 - `@VEXEROOT`  => will be substituted with the *folder*,
@@ -7132,6 +7172,9 @@ V can bring in values at compile time from environment variables.
 V can bring in values at compile time from `-d ident=value` flag defines, passed on
 the command line to the compiler. You can also pass `-d ident`, which will have the
 same meaning as passing `-d ident=true`.
+
+The `-ownership` compiler mode supplies `ownership` as a target-visible custom option.
+This enables `$if ownership ? {}` branches and includes `*_d_ownership.v` files.
 
 To get the value in your code, use: `$d('ident', default)`, where `default`
 can be `false` for booleans, `0` or `123` for i64 numbers, `0.0` or `113.0`

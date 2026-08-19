@@ -39,6 +39,263 @@ jobs:
       VTEST_SHOW_LONGEST_BY_TOTALTIME: 3
     steps:
       - uses: actions/checkout@v7
+      - name: Show tool versions
+        run: |
+          gcc --version
+          pkg-config --version
+          openssl version
+          echo "Flags for openssl:"
+          pkg-config openssl --cflags
+          echo "Flags for openssl libs:"
+          pkg-config openssl --libs
+          .github/workflows/find_openssl.bat
+          echo "OpenSSL files:"
+          where.exe /R "C:\Program Files\OpenSSL" *.*
+          echo "Include files for openssl:"
+          dir "c:/Program Files/OpenSSL/include"
+          echo "Lib Include files for openssl:"
+          dir "c:/Program Files/OpenSSL/lib/VC/x64/"
+      - name: Build
+        run: |
+          .\makev.bat -gcc
+          .\v.exe symlink
+          .\v.exe -stats vlib/crypto/ecdsa/ecdsa_test.v
+      - name: Pkg-config regressions (GCC)
+        run: |
+          $tests = @(
+            'vlib\v\pkgconfig\pkgconfig_define_prefix_test.v'
+            'vlib\v\pkgconfig\pkgconfig_define_prefix_compile_test.v'
+            'vlib\v\pkgconfig\pkgconfig_static_test.v'
+            'vlib\v\checker\pkgconfig_static_mode_test.v'
+            'vlib\v\checker\pkgconfig_cross_compile_test.v'
+            'vlib\v\builder\pkgconfig_link_segment_test.v'
+          )
+          foreach ($test in $tests) {
+            .\v.exe -cc gcc -no-retry-compilation test $test
+            if ($LASTEXITCODE -ne 0) {
+              throw "pkg-config regression failed for $test with exit code $LASTEXITCODE"
+            }
+          }
+      - name: Legacy gg import multiwindow isolation
+        run: v -cc gcc test vlib/gg/legacy_import_multiwindow_isolation_test.v
+      - name: Test v binaries
+        run: v build-vbinaries
+      - name: All code is formatted
+        run: v -silent test-cleancode
+      - name: Test new v.c
+        run: |
+          v -o v.c cmd/v
+          $direct_c_flags = @(
+            '-Ithirdparty/zip'
+            '-Ithirdparty/cJSON'
+            '-Ithirdparty/mbedtls/library'
+            '-Ithirdparty/mbedtls/include'
+            '-Ithirdparty/mbedtls/3rdparty/everest/include'
+            '-Ithirdparty/mbedtls/3rdparty/everest/include/everest'
+            '-Ithirdparty/mbedtls/3rdparty/everest/include/everest/kremlib'
+            '-Ithirdparty/vschannel'
+          )
+          gcc -Werror -municode -w @direct_c_flags v.c -lws2_32 -std=c99
+      - name: Install dependencies
+        run: |
+          v retry -- v setup-freetype
+          .\.github\workflows\windows-install-sqlite.bat
+      - name: v doctor
+        run: |
+          v doctor
+      - name: Verify `v test` works
+        run: |
+          echo $VFLAGS
+          v cmd/tools/test_if_v_test_system_works.v
+          ./cmd/tools/test_if_v_test_system_works
+      - name: Test pure V math module
+        run: v -silent -exclude @vlib/math/*.c.v test vlib/math/
+      - name: Self tests
+        run: v -silent test-self vlib
+      - name: Build option_test.c.v with -autofree
+        run: v -autofree vlib/v/tests/options/option_test.c.v
+      - name: Test v->js
+        run: v -o hi.js examples/js_hello_world.v && node hi.js
+      - name: Build examples
+        run: v build-examples
+      - name: Compile and run the veb example (fasthttp) and check its HTML
+        run: v run .github/workflows/veb_example_windows_smoke.v
+      - name: v2 self compilation
+        run: v -o v2.exe cmd/v && .\v2.exe -o v3.exe cmd/v
+      - name: compile vdoctor.v with -prod
+        run: v -showcc -prod cmd/tools/vdoctor.v
+      - name: compile vup.v with -prod
+        run: v -showcc -prod cmd/tools/vup.v
+      - name: Setup MinGW-w64 D3D11 headers for GCC
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: minimal
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+      - name: Verify MinGW-w64 D3D11 headers and import libraries
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          which gcc
+          gcc --version
+          d3d11_header=""
+          dxgi_header=""
+          for include_dir in /ucrt64/include /ucrt64/x86_64-w64-mingw32/include; do
+            if [ -f "$include_dir/d3d11.h" ] && [ -z "$d3d11_header" ]; then
+              d3d11_header="$include_dir/d3d11.h"
+            fi
+            if [ -f "$include_dir/dxgi.h" ] && [ -z "$dxgi_header" ]; then
+              dxgi_header="$include_dir/dxgi.h"
+            fi
+          done
+          if [ -z "$d3d11_header" ]; then
+            echo "d3d11.h not found in /ucrt64/include or /ucrt64/x86_64-w64-mingw32/include" >&2
+            exit 1
+          fi
+          if [ -z "$dxgi_header" ]; then
+            echo "dxgi.h not found in /ucrt64/include or /ucrt64/x86_64-w64-mingw32/include" >&2
+            exit 1
+          fi
+          test -f /ucrt64/lib/libd3d11.a
+          test -f /ucrt64/lib/libdxgi.a
+          echo "Found $d3d11_header"
+          echo "Found $dxgi_header"
+          echo "Found /ucrt64/lib/libd3d11.a"
+          echo "Found /ucrt64/lib/libdxgi.a"
+          printf '#include <d3d11.h>\n#include <dxgi.h>\nint main(void) { return 0; }\n' > /tmp/d3d11_probe.c
+          gcc /tmp/d3d11_probe.c -ld3d11 -ldxgi -o /tmp/d3d11_probe.exe
+      - name: Multiwindow D3D11 WARP regressions and runtime probes with GCC
+        shell: msys2 {0}
+        env:
+          VFLAGS: -cc gcc -d gg_multiwindow_d3d11_warp
+          VGG_MULTIWINDOW_RUNTIME_PROBES: '1'
+          VGG_MULTIWINDOW_RUNTIME_BACKEND: win32
+          VGG_MULTIWINDOW_EXAMPLE_UNATTENDED: win32
+          V_MULTIWINDOW_PROBE_BACKEND: win32
+        run: |
+          set -euo pipefail
+
+          runner_source=multiwindow_ci_watchdog_tmp.v
+          runner=multiwindow_ci_watchdog_tmp.exe
+          trap 'rm -f "$runner_source" "$runner" gg_multiwindow_gcc.exe gg_multiwindow_render_runtime_gcc.exe' EXIT
+          cat > "$runner_source" <<'EOF'
+          module main
+
+          import gg.testdata.multiwindow_probe_watchdog
+          import os
+          import time
+
+          fn main() {
+              run_ci_watchdog() or {
+                  eprintln(err.msg())
+                  exit(1)
+              }
+          }
+
+          fn run_ci_watchdog() ! {
+              if os.args.len < 4 {
+                  return error('usage: multiwindow_ci_watchdog timeout-seconds expected-final-line executable [args...]')
+              }
+              timeout_seconds := os.args[1].int()
+              if timeout_seconds <= 0 {
+                  return error('multiwindow CI watchdog timeout must be positive')
+              }
+              expected_final_line := os.args[2]
+              gate_path := os.join_path(os.temp_dir(), 'multiwindow_ci_gate_${os.getpid()}_${time.now().unix_nano()}')
+              defer {
+                  os.rm(gate_path) or {}
+              }
+              result := multiwindow_probe_watchdog.run(
+                  executable: os.args[3]
+                  args:       os.args[4..]
+                  timeout:    timeout_seconds * time.second
+                  start_file: gate_path
+              )!
+              if result.stdout != '' {
+                  print(result.stdout)
+              }
+              if result.stderr != '' {
+                  eprint(result.stderr)
+              }
+              if result.timed_out {
+                  return error('multiwindow CI child timed out after ${timeout_seconds} seconds')
+              }
+              if !result.reaped {
+                  return error('multiwindow CI child leader was not reaped')
+              }
+              if !result.confinement_empty {
+                  return error('multiwindow CI child process confinement is not empty')
+              }
+              if result.forced_cleanup {
+                  return error('multiwindow CI child required forced cleanup')
+              }
+              if result.exit_code != 0 {
+                  return error('multiwindow CI child exited with ${result.exit_code}')
+              }
+              if expected_final_line == '-' {
+                  return
+              }
+              mut actual_final_line := ''
+              for line in result.stdout.split_into_lines() {
+                  if line.trim_space() != '' {
+                      actual_final_line = line.trim_space()
+                  }
+              }
+              if actual_final_line != expected_final_line {
+                  return error('multiwindow CI final record mismatch: expected `${expected_final_line}`, got `${actual_final_line}`')
+              }
+          }
+          EOF
+
+          ./v.exe -cc gcc -o "$runner" "$runner_source"
+          ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp \
+            -subsystem console -o gg_multiwindow_gcc.exe examples/gg/multiwindow.v
+          ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp \
+            -subsystem console -o gg_multiwindow_render_runtime_gcc.exe examples/gg/multiwindow_render_runtime.v
+
+          tests=(
+            vlib/x/multiwindow/event_sequence_exhaustion_test.v
+            vlib/x/multiwindow/event_terminal_delivery_test.v
+            vlib/x/multiwindow/internal_fault_matrix_test.v
+            vlib/x/multiwindow/multiwindow_test.v
+            vlib/x/multiwindow/native_operation_proof_test.v
+            vlib/x/multiwindow/render_scheduler_test.v
+            vlib/x/multiwindow/render_target_lease_test.v
+            vlib/x/multiwindow/teardown_contract_test.v
+            vlib/x/multiwindow/win32_render_metrics_test.v
+            vlib/gg/multiwindow_api_d_gg_multiwindow_test.v
+            vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v
+            vlib/gg/multiwindow_render_fault_matrix_d_gg_multiwindow_test.v
+            vlib/gg/multiwindow_render_runtime_contract_test.v
+            vlib/gg/frame_pacing_test.v
+            vlib/gg/draw_fns_api_test.v
+            vlib/gg/draw_rect_empty_test.v
+          )
+          for test in "${tests[@]}"; do
+            ./"$runner" 300 - ./v.exe -cc gcc -d gg_multiwindow -d sokol_d3d11 \
+              -d gg_multiwindow_d3d11_warp test "$test"
+          done
+
+          ./"$runner" 120 \
+            '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' \
+            ./gg_multiwindow_render_runtime_gcc.exe
+
+          ./"$runner" 120 \
+            '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
+            ./gg_multiwindow_gcc.exe
+
+  gcc-multiwindow:
+    runs-on: windows-2025
+    timeout-minutes: 150
+    env:
+      VFLAGS: -cc gcc
+      VTEST_SHOW_LONGEST_BY_RUNTIME: 3
+      VTEST_SHOW_LONGEST_BY_COMPTIME: 3
+      VTEST_SHOW_LONGEST_BY_TOTALTIME: 3
+    steps:
+      - uses: actions/checkout@v7
       - name: Build
         run: |
           .\makev.bat -gcc
@@ -66,12 +323,12 @@ jobs:
             -ExpectedPublicTestSha256 'd08eafb919ae97b185fc480c22f6d990973396152e9a0b3a01035c3e9a30275c' `
             -ExpectedNoOptProbeSha256 '288f148ca15b6694481f117c03be5f80c4045baf76d3b0e90db61b5e0596741c' `
             -ExpectedServiceBackendSha256 '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d' `
-            -ExpectedWin32BackendSha256 '3c19ecb2815e7d49b71c19affad89a8a14d8795b8b96c11f4e7e465063d4a29c' `
+            -ExpectedWin32BackendSha256 '4b854e9dd019bb8193057c08aaa0a8185096f165afff99d7ed519c5442e0e52e' `
             -ExpectedWin32ServiceBackendSha256 '02076f74e9537323f688e256d3613f87534cd304ca1bc99b7433f406ffd6ebad' `
             -ExpectedWin32ServiceNativeSha256 '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73' `
             -ExpectedRedSurfaceSha256 '04b271a1ece4844a60a338358ec292d1e59448b962f6be7fb9c5765206678a7e' `
-            -ExpectedGreenSurfaceSha256 '9b4a6793afa1638b0a04d47af54ce0633b7c929967eb7d37ce591eb9d5a846d6' `
-            -ExpectedRunnerSha256 '953a756847b7aec8be462eb9d50560d0878096b167023ed3959548ee27d86511'
+            -ExpectedGreenSurfaceSha256 'b4a4fb9eb5d6fbd679c983f9f0fbcac63585bd52390569223b122d7f8dbc0d0c' `
+            -ExpectedRunnerSha256 'bffdf2463a424602cb5b3684eda9ce7701b416a44e0664576a5531c8747dcd10'
       - name: Win32 W5 raw-input A0 preflight
         shell: pwsh
         run: |
@@ -98,21 +355,21 @@ jobs:
             -ExpectedGgNoFlagSha256 '99e37df1fba39e72d9c74490dc6de216dbf984d0586aedcaf5d5d62edc0c0ed2' `
             -ExpectedGgServiceTypesSha256 'ec55d5540f456e2f2090b382bc0c16778794913ab95654526832e60f0f8e5849' `
             -ExpectedAppSha256 'af268df808e190318e77c44256de6f98038b5d094a7c308d79f34921ea25b6bd' `
-            -ExpectedTypesSha256 'c91215f627c9c7818f6239b5aa8b6f34f14ef79140c67d797be1646557b08053' `
+            -ExpectedTypesSha256 '640b1590b25acc56eae75bd8af7f7521c10bf8cd2406b7fa7ba4844680dc03a9' `
             -ExpectedBackendSha256 '46802367bde90168a71131b49015329d8c1c80fad0f0d47e988c2f6e240e30c7' `
             -ExpectedServiceApiSha256 '0d13b992ca9edd0bc2f10bc4cdd0e01eaf865cd8a4c543f3ee4ea482cdd5a897' `
             -ExpectedServiceTypesSha256 'b14d0527430a4b718c90b02132994e35ba4d6340956546406a2d49a61dfdd34f' `
             -ExpectedServiceRegistrySha256 '73a65c6444884e80feb5b3a10104002de0c1fc94a0f0bbffab8c46a1b4c7e7c1' `
             -ExpectedEventDeliverySha256 '7209202474ce1c20baadb6565ac3ac73673e653aaf072cdde2c95f5b9cd98221' `
-            -ExpectedPublicRoutingSurfaceSha256 '7104f779d02f2e22d302c4483e2474675093acf33248addd3de70ac91e21dc25' `
+            -ExpectedPublicRoutingSurfaceSha256 'db360ac3e18c239e8c2c794d11afc4fa2fbff205adb9f612537de42d8d6582c1' `
             -ExpectedServiceBackendSha256 '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d' `
             -ExpectedEventDispatchSha256 '7ef6c7cbd34511d6c19c1a3a269b46876db791b9412bb88e3a8d4dcd543bfd4e' `
-            -ExpectedWin32BackendSha256 '3c19ecb2815e7d49b71c19affad89a8a14d8795b8b96c11f4e7e465063d4a29c' `
+            -ExpectedWin32BackendSha256 '4b854e9dd019bb8193057c08aaa0a8185096f165afff99d7ed519c5442e0e52e' `
             -ExpectedWin32BackendHelpersSha256 'eef8fc485a4774fd380b9b2c7deebbf6b349b432430d0182bad7325a6e684329' `
             -ExpectedWin32ServiceBackendSha256 '02076f74e9537323f688e256d3613f87534cd304ca1bc99b7433f406ffd6ebad' `
             -ExpectedWin32ServiceNativeSha256 '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73' `
-            -ExpectedGreenProductionSurfaceSha256 'dc79eb68a7b83f56f3e6afdfb4e8b90dea7d7ab69f8930516d2e80263d54c363' `
-            -ExpectedRunnerSha256 'a7af8695ad92a3ebb2182b8b7e7611687a7a31efe4fb516c69e3aebd80cc03a1'
+            -ExpectedGreenProductionSurfaceSha256 'dcb863245235cb778312e4a08c0d81eb5d4685c162fb71da228f02e608becd47' `
+            -ExpectedRunnerSha256 'cdd1f87d51ac6bed12702279bb072d676aeb74cf871bffdd218d95e9ff34ad7f'
       - name: Setup MinGW-w64 D3D11 headers for GCC and Clang
         uses: msys2/setup-msys2@v2
         with:

@@ -44,6 +44,7 @@ struct EnumFromStringInfo {
 	fields       []string
 	arg_id       flat.NodeId
 	accept_empty bool
+	is_result    bool
 }
 
 fn (t &Transformer) enum_from_string_members(info EnumFromStringInfo) []EnumValueMeta {
@@ -682,6 +683,7 @@ fn (mut t Transformer) enum_from_string_info(expr_id flat.NodeId) ?EnumFromStrin
 		fields:       fields.clone()
 		arg_id:       arg_id
 		accept_empty: fn_node.value == 'from' && t.is_flag_enum_type(enum_type)
+		is_result:    fn_node.value == 'from'
 	}
 }
 
@@ -857,7 +859,7 @@ fn (mut t Transformer) try_lower_enum_from_string_call(call_id flat.NodeId, _nod
 	str_name := t.new_temp('enum_str')
 	val_name := t.new_temp('enum_val')
 	ok_name := t.new_temp('enum_ok')
-	optional_type := '?${info.enum_type}'
+	optional_type := if info.is_result { '!${info.enum_type}' } else { '?${info.enum_type}' }
 	outer_pending := t.pending_stmts.clone()
 	t.pending_stmts.clear()
 	arg_expr := t.transform_expr(info.arg_id)
@@ -949,7 +951,7 @@ fn (mut t Transformer) or_expr_types(expr_id flat.NodeId, fallback_type string) 
 				callee := t.a.child_node(&expr_node, 0)
 				if callee.kind == .ident && t.generic_callee_is_specialization(callee.value)
 					&& t.is_optional_type_name(expr_node.typ) {
-					return t.canonical_or_expr_types(expr_node.typ)
+					return specialized_or_expr_types(expr_node.typ)
 				}
 			}
 			if current_ret := t.current_generic_receiver_call_return_type(expr_node) {
@@ -957,12 +959,18 @@ fn (mut t Transformer) or_expr_types(expr_id flat.NodeId, fallback_type string) 
 					return t.canonical_or_expr_types(current_ret)
 				}
 			}
+			concrete_ret := t.concrete_generic_call_return_type(expr_id, expr_node)
+			if t.is_optional_type_name(concrete_ret) && !t.generic_arg_is_unresolved(concrete_ret) {
+				return specialized_or_expr_types(concrete_ret)
+			}
 			if decode_ret := t.json_decode_or_expr_type(expr_id, expr_node) {
 				return t.canonical_or_expr_types(decode_ret)
 			}
-			concrete_ret := t.concrete_generic_call_return_type(expr_id, expr_node)
-			if t.is_optional_type_name(concrete_ret) && !t.generic_arg_is_unresolved(concrete_ret) {
-				return t.canonical_or_expr_types(concrete_ret)
+			if declared_ret := t.call_declared_return_type_text(expr_id) {
+				if t.is_optional_type_name(declared_ret)
+					&& !t.generic_arg_is_unresolved(declared_ret) {
+					return t.canonical_or_expr_types(declared_ret)
+				}
 			}
 			if typ := t.tc.expr_type(expr_id) {
 				mut prefix := ''
@@ -1048,6 +1056,25 @@ fn (mut t Transformer) or_expr_types(expr_id flat.NodeId, fallback_type string) 
 	return expr_type, value_type
 }
 
+fn specialized_or_expr_types(expr_type string) (string, string) {
+	clean := expr_type.trim_space()
+	if clean in ['!', '?'] {
+		return '${clean}void', 'void'
+	}
+	if clean.len < 2 || (clean[0] != `!` && clean[0] != `?`) {
+		return clean, clean
+	}
+	base := clean[1..]
+	if base.len == 0 || base in ['void', 'Optional'] {
+		return '${clean[..1]}void', 'void'
+	}
+	// The specialized signature is the ABI authority. In particular, resolving
+	// `StructKeyDecodeResult[sapp.Event]` again here would unalias the argument to
+	// `C.sapp_event`, while the specialized callee still returns the former C
+	// generic struct type.
+	return clean, base
+}
+
 fn (mut t Transformer) thread_wait_or_expr_type(call flat.Node) ?string {
 	if call.children_count == 0 {
 		return none
@@ -1101,7 +1128,10 @@ fn (t &Transformer) canonical_or_expr_types(expr_type string) (string, string) {
 	}
 	prefix := clean_expr_type[..1]
 	mut base := t.optional_base_type(clean_expr_type)
-	if base.len == 0 || base == 'void' || base == 'Optional' {
+	// A bare `!`/`?` (a void Result/Option, e.g. `fn f() !`) has no payload. Its
+	// `optional_base_type` returns the marker unchanged (`base == clean_expr_type`);
+	// treat it as void so it is not re-parsed into `!void` and re-wrapped to `!!void`.
+	if base.len == 0 || base == 'void' || base == 'Optional' || base == clean_expr_type {
 		return '${prefix}void', 'void'
 	}
 	// Monomorphized collection arguments can reach an or-expression in their
@@ -1112,6 +1142,10 @@ fn (t &Transformer) canonical_or_expr_types(expr_type string) (string, string) {
 		if decoded != base {
 			base = decoded
 		}
+	}
+	shared_storage := t.shared_alias_storage_type(base)
+	if shared_storage != base {
+		return '${prefix}${shared_storage}', shared_storage
 	}
 	base = t.normalize_or_expr_value_type(base)
 	// Resolve import aliases and nested generic arguments in the payload. The
@@ -1126,13 +1160,59 @@ fn (t &Transformer) canonical_or_expr_types(expr_type string) (string, string) {
 	return '${prefix}${base}', base
 }
 
+fn (t &Transformer) call_declared_return_type_text(id flat.NodeId) ?string {
+	if isnil(t.tc) {
+		return none
+	}
+	name := t.tc.resolved_call_name(id) or { return none }
+	if ret := t.tc.fn_ret_type_texts[name] {
+		resolved := t.tc.fn_signature_type(name, ret)
+		if resolved !is types.Unknown && resolved !is types.Void {
+			return resolved.name()
+		}
+		return ret
+	}
+	short_name := name.all_after_last('.')
+	if ret := t.tc.fn_ret_type_texts[short_name] {
+		return ret
+	}
+	if t.cur_module.len > 0 && t.cur_module !in ['main', 'builtin'] {
+		if ret := t.tc.fn_ret_type_texts['${t.cur_module}.${short_name}'] {
+			return ret
+		}
+	}
+	return none
+}
+
 fn (t &Transformer) normalize_or_expr_value_type(typ string) string {
+	// Container types must be decomposed before `generic_app_parts`, which mistakes
+	// a `map[K]V` for a `map[K]` generic application and drops the value type (V).
+	if typ.starts_with('&') {
+		return '&' + t.normalize_or_expr_value_type(typ[1..])
+	}
+	if typ.starts_with('[]') {
+		return '[]' + t.normalize_or_expr_value_type(typ[2..])
+	}
+	if typ.starts_with('map[') {
+		bracket_end := generic_matching_bracket(typ, 3)
+		if bracket_end > 3 && bracket_end < typ.len {
+			key := typ[4..bracket_end]
+			val := typ[bracket_end + 1..]
+			return 'map[${t.normalize_or_expr_value_type(key)}]${t.normalize_or_expr_value_type(val)}'
+		}
+	}
 	if typ.starts_with('(') && typ.ends_with(')') {
 		mut normalized_items := []string{}
 		for item in split_generic_args(typ[1..typ.len - 1]) {
 			normalized_items << t.normalize_or_expr_value_type(item)
 		}
 		return '(${normalized_items.join(', ')})'
+	}
+	if typ.starts_with('map[') {
+		key_type, value_type := t.map_type_parts(typ)
+		if key_type.len > 0 && value_type.len > 0 {
+			return 'map[${t.normalize_or_expr_value_type(key_type)}]${t.normalize_or_expr_value_type(value_type)}'
+		}
 	}
 	base, args, is_generic := generic_app_parts(typ)
 	if !is_generic {
@@ -1149,9 +1229,31 @@ fn (t &Transformer) json_decode_or_expr_type(expr_id flat.NodeId, expr_node flat
 	if isnil(t.tc) || expr_node.kind != .call {
 		return none
 	}
-	name := t.tc.resolved_call_name(expr_id) or { return none }
-	if name !in ['json.decode', 'json2.decode', 'x.json2.decode'] {
+	mut is_decode := t.call_name_for_node(expr_id, expr_node) in ['json.decode', 'json2.decode',
+		'x.json2.decode']
+	if name := t.tc.resolved_call_name(expr_id) {
+		is_decode = ['json.decode', 'json2.decode', 'x.json2.decode'].any(name == it
+			|| name.starts_with('${it}[') || name.starts_with('${it}__'))
+	}
+	if !is_decode && expr_node.children_count > 0 {
+		callee := t.a.child_node(&expr_node, 0)
+		if callee.kind == .selector && callee.value == 'decode' && callee.children_count > 0 {
+			base := t.a.child_node(callee, 0)
+			is_decode = (base.kind == .ident && base.value in ['json', 'json2'])
+				|| (base.kind == .selector && base.value == 'json2')
+		}
+	}
+	if !is_decode {
 		return none
+	}
+	// The established `json.decode(Type, text)` form keeps its type argument as
+	// the first call argument. Its synthetic generic metadata is erased to
+	// `voidptr`, so prefer the source type node before inspecting that metadata.
+	if expr_node.children_count >= 3 {
+		type_arg := t.generic_call_type_arg_name(t.a.child(&expr_node, 1))
+		if type_arg.len > 0 {
+			return '!${type_arg}'
+		}
 	}
 	if args := t.explicit_generic_call_args(expr_node, t.cur_module) {
 		if args.len == 1 && args[0].len > 0 {
@@ -2124,6 +2226,13 @@ fn (mut t Transformer) lower_or_body_to_stmts_with_err_expr(body_id flat.NodeId,
 		if body.kind == .none_expr && t.is_optional_type_name(t.cur_fn_ret_type) {
 			return arr1(t.make_none_return_stmt())
 		}
+		if body.kind == .call && t.is_noreturn_call(body_id) {
+			value := t.transform_expr(body_id)
+			mut result := []flat.NodeId{}
+			t.drain_pending(mut result)
+			result << t.make_expr_stmt(value)
+			return result
+		}
 		if target_name.len == 0 {
 			value := t.transform_expr(body_id)
 			mut result := []flat.NodeId{}
@@ -2245,8 +2354,15 @@ fn (t &Transformer) is_noreturn_call(id flat.NodeId) bool {
 	if node.kind != .call || node.children_count == 0 {
 		return false
 	}
-	if t.tc.resolved_call_name(id) != none {
-		return t.tc.resolved_call_never_returns(id)
+	if resolved := t.tc.resolved_call_name(id) {
+		if t.tc.resolved_call_never_returns(id) || resolved in t.a.noreturn_fns {
+			return true
+		}
+		for candidate, _ in t.a.noreturn_fns {
+			if candidate.ends_with('.${resolved}') || resolved.ends_with('.${candidate}') {
+				return true
+			}
+		}
 	}
 	callee := t.a.child_node(&node, 0)
 	if callee.kind == .ident && callee.value in ['panic', 'exit', 'v_panic'] {
@@ -2254,4 +2370,5 @@ fn (t &Transformer) is_noreturn_call(id flat.NodeId) bool {
 	}
 	name := t.resolve_call_name(node)
 	return name in ['panic', 'exit', 'os.exit', 'C.exit', 'builtin.panic']
+		|| name in t.a.noreturn_fns
 }

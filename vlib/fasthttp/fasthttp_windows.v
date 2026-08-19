@@ -59,9 +59,10 @@ mut:
 pub struct Server {
 pub:
 	family                  net.AddrFamily = .ip6
-	port                    int            = 3000
-	max_request_buffer_size int            = 8192
-	timeout_in_seconds      int            = 30
+	host                    string
+	port                    int = 3000
+	max_request_buffer_size int = 8192
+	timeout_in_seconds      int = 30
 	user_data               voidptr
 mut:
 	listen_fd       C.SOCKET = iocp_invalid_socket
@@ -92,6 +93,7 @@ pub fn new_server(config ServerConfig) !&Server {
 	}
 	mut server := &Server{
 		family:                  config.family
+		host:                    config.host
 		port:                    config.port
 		max_request_buffer_size: config.max_request_buffer_size
 		timeout_in_seconds:      config.timeout_in_seconds
@@ -146,33 +148,32 @@ fn wsa_error_message(label string) string {
 }
 
 fn create_server_socket(server &Server) !C.SOCKET {
-	server_fd := C.WSASocketW(i32(server.family), i32(net.SocketType.tcp), 0, unsafe { nil }, 0,
+	// Resolve the bind address first: the socket family must match the address
+	// family, and a configured host may resolve to a different family than
+	// server.family (e.g. an IPv4 host with the default family: .ip6).
+	addr := resolve_bind_addr(server.host, server.family, server.port)!
+	server_fd := C.WSASocketW(i32(addr.family()), i32(net.SocketType.tcp), 0, unsafe { nil }, 0,
 		u32(C.WSA_FLAG_OVERLAPPED))
 	if server_fd == iocp_invalid_socket {
 		return error(wsa_error_message('WSASocketW'))
 	}
 
 	opt := 1
-	if C.setsockopt(server_fd, C.SOL_SOCKET, C.SO_REUSEADDR, voidptr(&opt), sizeof(opt)) < 0 {
+	if C.v_fasthttp_setsockopt(server_fd, C.SOL_SOCKET, C.SO_REUSEADDR, voidptr(&opt), sizeof(opt)) < 0 {
 		close_socket(server_fd)
 		return error(wsa_error_message('setsockopt SO_REUSEADDR'))
 	}
-	if server.family == .ip6 {
+	if addr.family() == .ip6 {
 		ipv6_only := 0
-		C.setsockopt(server_fd, C.IPPROTO_IPV6, C.IPV6_V6ONLY, voidptr(&ipv6_only),
+		C.v_fasthttp_setsockopt(server_fd, C.IPPROTO_IPV6, C.IPV6_V6ONLY, voidptr(&ipv6_only),
 			sizeof(ipv6_only))
 	}
 
-	addr := if server.family == .ip6 {
-		net.new_ip6(u16(server.port), [u8(0), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]!)
-	} else {
-		net.new_ip(u16(server.port), [u8(0), 0, 0, 0]!)
-	}
-	if C.bind(server_fd, voidptr(&addr), int(addr.len())) < 0 {
+	if C.v_fasthttp_bind(server_fd, voidptr(&addr), int(addr.len())) < 0 {
 		close_socket(server_fd)
 		return error(wsa_error_message('bind'))
 	}
-	if C.listen(server_fd, max_connection_size) < 0 {
+	if C.v_fasthttp_listen(server_fd, max_connection_size) < 0 {
 		close_socket(server_fd)
 		return error(wsa_error_message('listen'))
 	}
@@ -214,7 +215,7 @@ fn (mut conn IocpConn) take_op(overlapped &C.OVERLAPPED) bool {
 }
 
 fn close_conn_socket(fd C.SOCKET) {
-	C.shutdown(fd, C.SD_BOTH)
+	C.v_fasthttp_shutdown(fd, C.SD_BOTH)
 	close_socket(fd)
 }
 
@@ -271,7 +272,7 @@ fn (mut registry IocpConnRegistry) sweep_timed_out_io(timeout_ns i64) {
 		}
 		if !conn.request_active && conn.read_start > 0 && now - conn.read_start >= timeout_ns
 			&& conn.mark_closing() {
-			C.send(conn.fd, status_408_response.data, status_408_response.len, 0)
+			C.v_fasthttp_send(conn.fd, status_408_response.data, status_408_response.len, 0)
 			close_conn_socket(conn.fd)
 		}
 		if conn.write_start > 0 && now - conn.write_start >= timeout_ns && conn.mark_closing() {
@@ -771,7 +772,7 @@ fn accept_loop(server &Server) {
 			continue
 		}
 		opt := 1
-		C.setsockopt(client_fd, C.IPPROTO_TCP, C.TCP_NODELAY, voidptr(&opt), sizeof(opt))
+		C.v_fasthttp_setsockopt(client_fd, C.IPPROTO_TCP, C.TCP_NODELAY, voidptr(&opt), sizeof(opt))
 		mut conn := &IocpConn{
 			server:      server
 			fd:          client_fd
@@ -794,7 +795,7 @@ fn accept_loop(server &Server) {
 
 fn (mut server Server) stop_accepting() {
 	if server.listen_fd != iocp_invalid_socket {
-		C.shutdown(server.listen_fd, C.SD_BOTH)
+		C.v_fasthttp_shutdown(server.listen_fd, C.SD_BOTH)
 		close_socket(server.listen_fd)
 		server.listen_fd = iocp_invalid_socket
 	}
@@ -822,7 +823,7 @@ pub fn (mut server Server) run() ! {
 	server.threads[max_thread_pool_size] = spawn accept_loop(server)
 
 	server.mark_running()
-	println('listening on http://0.0.0.0:${server.port}/')
+	println('listening on http://${listen_host_display(server.host, server.family)}:${server.port}/')
 
 	for i in 0 .. max_thread_pool_size + 1 {
 		server.threads[i].wait()

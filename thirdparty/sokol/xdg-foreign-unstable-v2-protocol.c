@@ -101,4 +101,3 @@ WL_PRIVATE const struct wl_interface zxdg_imported_v2_interface = {
 	2, zxdg_imported_v2_requests,
 	1, zxdg_imported_v2_events,
 };
-

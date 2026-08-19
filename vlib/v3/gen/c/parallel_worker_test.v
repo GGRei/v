@@ -54,6 +54,56 @@ fn test_scoped_parallel_worker_reuses_preselected_functions_and_c_extern_refs() 
 	assert w.c_extern_refs_ready
 }
 
+fn test_windows_filelock_method_preseeds_parallel_compat_helpers() {
+	mut g, _ := parallel_worker_test_gen(true)
+	mut used := {
+		'filelock.FileLock.lock_handle': true
+	}
+	g.used_fns = &used
+	// Isolate used-function reachability from the later function-body reference scan.
+	g.c_extern_refs_ready = true
+	g.preseed_libc_compat_fns()
+	assert g.libc_compat_fns['filelock']
+
+	g.libc_compat_fns.delete('filelock')
+	g.filelock_compat_decls()
+	c_code := g.sb.str()
+	assert c_code.contains('static inline int v_filelock_lock(HANDLE handle'), c_code
+	assert c_code.contains('static inline int v_filelock_unlock(HANDLE handle'), c_code
+}
+
+fn test_parallel_tail_worker_preserves_runtime_init_module_order() {
+	mut g, _ := parallel_worker_test_gen(true)
+	g.const_runtime_inits = ['\tmoda__runtime_const = moda__make_const();']
+	g.const_runtime_init_modules = ['moda']
+	g.runtime_inits = ['\tmoda__runtime_global = moda__make_global();']
+	g.runtime_init_modules = ['moda']
+	g.module_init_fns = ['moda__init']
+	g.module_init_fn_modules['moda__init'] = 'moda'
+
+	mut tail := g.new_parallel_tail_worker(max_flat_cgen_jobs + 1)
+	tail.gen_vinit()
+	output := tail.sb.str()
+	const_pos := output.index('moda__runtime_const = moda__make_const();') or { -1 }
+	global_pos := output.index('moda__runtime_global = moda__make_global();') or { -1 }
+	init_pos := output.index('moda__init();') or { -1 }
+	assert const_pos >= 0
+	assert global_pos > const_pos
+	assert init_pos > global_pos
+}
+
+fn test_parallel_tail_worker_preserves_shared_cleanup_mode() {
+	mut g, _ := parallel_worker_test_gen(true)
+	g.is_shared = true
+	assert g.module_cleanup_fns.len == 0
+
+	mut tail := g.new_parallel_tail_worker(max_flat_cgen_jobs + 1)
+	tail.gen_vcleanup()
+	output := tail.sb.str()
+	assert tail.is_shared
+	assert output.contains('void _vcleanup(void) {')
+}
+
 fn test_parallel_checker_clone_preserves_sparse_transform_caches() {
 	g, mut tc := parallel_worker_test_gen(false)
 	tc.a.nodes = [flat.Node{
@@ -84,9 +134,11 @@ fn test_parallel_checker_clone_preserves_sparse_transform_caches() {
 fn test_parallel_checker_clone_keeps_checked_file_scope_identity() {
 	g, mut tc := parallel_worker_test_gen(true)
 	tc.file_scope.insert('file_value', types.Type(types.int_))
+	tc.resolution_type_mode = true
 	w := g.clone_parallel_type_checker()
 	assert w.file_scope == tc.file_scope
 	assert w.cur_scope != w.file_scope
+	assert w.resolution_type_mode
 	owner := w.cur_scope.lookup_owner('file_value') or { panic('missing file binding') }
 	assert owner.belongs_to_scope(w.file_scope)
 }
@@ -176,10 +228,136 @@ fn test_scoped_pre_dispatch_preserves_direct_array_access_flag() {
 			c_name:              'main__unchecked_index'
 			cost:                1
 			direct_array_access: true
+			ignore_overflow:     true
 		},
 	]
 	g.prepare_pre_dispatch_master()
 	assert g.fn_gen_items.len == 1
 	assert g.fn_gen_items[0].direct_array_access
+	assert g.fn_gen_items[0].ignore_overflow
 	g.release_scoped_fn_items()
+}
+
+fn test_parallel_generic_app_cache_uses_frozen_base_and_private_overlays() {
+	mut g, _ := parallel_worker_test_gen(true)
+	base, args, ok := g.shared_generic_app_parts('Frozen[int]')
+	assert ok
+	assert base == 'Frozen'
+	assert args == ['int']
+	frozen := g.generic_app_cache
+
+	g.freeze_parallel_lookup_caches()
+	assert voidptr(g.generic_app_cache) != voidptr(frozen)
+	assert voidptr(g.generic_app_cache.base) == voidptr(frozen)
+
+	mut dispatcher := g.new_parallel_dispatch_worker(1)
+	assert voidptr(dispatcher.generic_app_cache) != voidptr(g.generic_app_cache)
+	assert voidptr(dispatcher.generic_app_cache.base) == voidptr(frozen)
+	mut batch := dispatcher.new_parallel_worker(0)
+	assert voidptr(batch.generic_app_cache) != voidptr(dispatcher.generic_app_cache)
+	assert voidptr(batch.generic_app_cache.base) == voidptr(frozen)
+
+	g.shared_generic_app_parts('Shared[string]')
+	dispatcher.shared_generic_app_parts('Shared[string]')
+	batch.shared_generic_app_parts('Shared[string]')
+	assert 'Shared[string]' in g.generic_app_cache.entries
+	assert 'Shared[string]' in dispatcher.generic_app_cache.entries
+	assert 'Shared[string]' in batch.generic_app_cache.entries
+	assert 'Shared[string]' !in frozen.entries
+}
+
+fn test_parallel_type_declarations_include_body_discovered_fn_ptr_types() {
+	mut g, _ := parallel_worker_test_gen(true)
+	g.parallel_type_decls = '/* precomputed type declarations */\n'.clone()
+	encoded := 'fn_ptr:int|int'
+	name := g.resolve_fn_ptr_type(encoded)
+
+	g.write_type_declaration_block()
+	source := g.sb.str()
+	precomputed_idx := source.index('/* precomputed type declarations */') or { -1 }
+	typedef_idx := source.index('typedef int (*${name})(int);') or { -1 }
+	assert precomputed_idx >= 0
+	assert typedef_idx > precomputed_idx
+	assert g.emitted_fn_ptr_typedefs[encoded]
+}
+
+fn test_dynamic_parallel_merge_preserves_chunk_order() {
+	mut g, _ := parallel_worker_test_gen(true)
+	mut first := g.new_parallel_dispatch_worker(1)
+	first.fn_segs = ['chunk-2;', 'chunk-0;']
+	first.fn_seg_chunk_indexes = [2, 0]
+	mut second := g.new_parallel_dispatch_worker(2)
+	second.fn_segs = ['chunk-3;', 'chunk-1;']
+	second.fn_seg_chunk_indexes = [3, 1]
+	mut ordered := []string{len: 4}
+	mut ordered_wrapper_defs := []ParallelChunkWrapperDefs{len: 4}
+
+	g.merge_parallel_worker_ordered(first, mut ordered, mut ordered_wrapper_defs)
+	g.merge_parallel_worker_ordered(second, mut ordered, mut ordered_wrapper_defs)
+	assert ordered == ['chunk-0;', 'chunk-1;', 'chunk-2;', 'chunk-3;']
+}
+
+fn test_dynamic_parallel_merge_replays_wrapper_defs_in_chunk_order() {
+	mut g, _ := parallel_worker_test_gen(true)
+	mut high := g.new_parallel_dispatch_worker(1)
+	high.fn_segs = ['chunk-3;', 'chunk-2;']
+	high.fn_seg_chunk_indexes = [3, 2]
+	high.parallel_chunk_wrapper_defs = [
+		ParallelChunkWrapperDefs{
+			chunk_idx: 3
+			spawn:     ['spawn-3-typedef;', 'spawn-3-trampoline;', 'spawn-shared;']
+			callback:  ['callback-3;']
+		},
+		ParallelChunkWrapperDefs{
+			chunk_idx: 2
+			spawn:     ['spawn-2-typedef;', 'spawn-2-trampoline;']
+			callback:  ['callback-2;']
+		},
+	]
+
+	mut low := g.new_parallel_dispatch_worker(2)
+	low.fn_segs = ['chunk-1;', 'chunk-0;']
+	low.fn_seg_chunk_indexes = [1, 0]
+	low.parallel_chunk_wrapper_defs = [
+		ParallelChunkWrapperDefs{
+			chunk_idx: 1
+			spawn:     ['spawn-1-typedef;', 'spawn-1-trampoline;']
+			callback:  ['callback-1;']
+		},
+		ParallelChunkWrapperDefs{
+			chunk_idx: 0
+			spawn:     ['spawn-0-typedef;', 'spawn-0-trampoline;', 'spawn-shared;']
+			callback:  ['callback-0;']
+		},
+	]
+
+	mut ordered := []string{len: 4}
+	mut ordered_wrapper_defs := []ParallelChunkWrapperDefs{len: 4}
+	g.merge_parallel_worker_ordered(high, mut ordered, mut ordered_wrapper_defs)
+	g.merge_parallel_worker_ordered(low, mut ordered, mut ordered_wrapper_defs)
+	g.replay_ordered_parallel_wrapper_defs(ordered_wrapper_defs)
+
+	assert ordered == ['chunk-0;', 'chunk-1;', 'chunk-2;', 'chunk-3;']
+	assert g.spawn_wrapper_defs == ['spawn-0-typedef;', 'spawn-0-trampoline;', 'spawn-shared;',
+		'spawn-1-typedef;', 'spawn-1-trampoline;', 'spawn-2-typedef;', 'spawn-2-trampoline;',
+		'spawn-3-typedef;', 'spawn-3-trampoline;']
+	assert g.callback_wrapper_defs == ['callback-0;', 'callback-1;', 'callback-2;', 'callback-3;']
+}
+
+fn test_dynamic_parallel_chunk_capture_keeps_deduplicated_wrapper_attempts() {
+	mut g, _ := parallel_worker_test_gen(true)
+	g.parallel_chunk_wrapper_defs << ParallelChunkWrapperDefs{
+		chunk_idx: 2
+	}
+	g.parallel_chunk_wrapper_capture = 0
+	g.add_spawn_wrapper_def('spawn-shared;')
+	g.add_spawn_wrapper_def('spawn-shared;')
+	g.add_callback_wrapper_def('callback-shared;')
+	g.add_callback_wrapper_def('callback-shared;')
+	g.parallel_chunk_wrapper_capture = -1
+
+	assert g.spawn_wrapper_defs == ['spawn-shared;']
+	assert g.callback_wrapper_defs == ['callback-shared;']
+	assert g.parallel_chunk_wrapper_defs[0].spawn == ['spawn-shared;', 'spawn-shared;']
+	assert g.parallel_chunk_wrapper_defs[0].callback == ['callback-shared;', 'callback-shared;']
 }

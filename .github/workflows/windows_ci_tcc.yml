@@ -4,7 +4,25 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - smoke/x-multiwindow-windows-20260717
+      - master
+    paths-ignore:
+      - 'vlib/v3/**'
+      - '**.md'
+      - '**.yml'
+      - '!**.bat'
+      - '!**/windows_ci_tcc.yml'
+      - 'cmd/tools/**'
+      - '!cmd/tools/builders/**.v'
+  pull_request:
+    paths-ignore:
+      - 'vlib/v3/**'
+      - '**.md'
+      - '**.yml'
+      - '!**.bat'
+      - '!**/windows_ci_tcc.yml'
+      - '!**/windows-install-sqlite.bat'
+      - 'cmd/tools/**'
+      - '!cmd/tools/builders/**.v'
 
 concurrency:
   group: windows-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
@@ -12,6 +30,161 @@ concurrency:
 
 jobs:
   tcc-windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      VFLAGS: -cc tcc -no-retry-compilation
+      VTEST_SHOW_LONGEST_BY_RUNTIME: 3
+      VTEST_SHOW_LONGEST_BY_COMPTIME: 3
+      VTEST_SHOW_LONGEST_BY_TOTALTIME: 3
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install OpenSSL
+        run: |
+          choco install openssl -y --no-progress
+          # choco's openssl package (Win64OpenSSL installer under the hood)
+          # deploys to `C:\Program Files\OpenSSL\`, matching
+          # ecdsa.c.v/rsa_pss.c.v's SECOND `#flag windows` fallback path --
+          # NOT the first one (`...OpenSSL-Win64\...`), confirmed by an
+          # actual CI run after guessing wrong the first time.
+          $opensslBin = 'C:\Program Files\OpenSSL\bin'
+          if (-not (Test-Path $opensslBin)) {
+            throw "OpenSSL bin directory not found at $opensslBin after choco install"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $opensslBin
+          Write-Host "OpenSSL install:"
+          Get-ChildItem 'C:\Program Files\OpenSSL\lib\VC\x64\MD'
+
+          Write-Host "OpenSSL bin DLLs:"
+          Get-ChildItem $opensslBin -Filter *.dll
+
+          # TCC resolves `-lcrypto`/`-lssl` by searching the -L dir for
+          # `lib<name>.def` FIRST (confirmed against tinycc's own source,
+          # tcc_add_library's PE search-pattern array: "%s/%s.def",
+          # "%s/lib%s.def", "%s/%s.dll", "%s/lib%s.dll"), and when a .def
+          # file is found, tccpe.c's pe_load_def reads the file's own
+          # `LIBRARY <name>` directive via get_token() to get the DLL
+          # filename to embed in the import table. Confirmed against
+          # tinycc's own source that get_token() does NOT strip surrounding
+          # double quotes, and the extracted name is used AS-IS with no
+          # `.dll` extension appended. This OpenSSL 4.0.1 package's
+          # libcrypto.def/libssl.def declare `LIBRARY "libcrypto-4-x64"` /
+          # `LIBRARY "libssl-4-x64"` -- quoted, no extension -- so TCC
+          # embeds the LITERAL string `"libcrypto-4-x64"` (quote characters
+          # included, no `.dll`) as the runtime DLL name. `"` is illegal in
+          # a Windows filename, so NO real file can ever match that name --
+          # guaranteeing STATUS_DLL_NOT_FOUND (exit -1073741515, empty
+          # output) for every TCC-linked test touching
+          # crypto.ecdsa/crypto.rsa_pss/net.quic, confirmed via an actual CI
+          # failure, regardless of what DLLs actually exist in bin\ (MSVC
+          # is unaffected: it reads the DLL name from the .lib's own
+          # build-time metadata, which is already a valid, unquoted,
+          # extensioned filename). A file-aliasing workaround (mirroring
+          # msvc-windows' crypto.lib/libcrypto.lib alias) CANNOT fix this --
+          # you cannot create a file whose name contains a literal `"` on
+          # Windows. Fix at the source instead: rewrite each .def's LIBRARY
+          # line in place, stripping the quotes and appending `.dll` if
+          # missing, before TCC ever reads it. The rewritten name
+          # (`libcrypto-4-x64.dll`) already exists as a real file in bin\
+          # (this package ships both v3 and v4 runtime DLLs side by side),
+          # so no aliasing is needed once the .def itself is correct.
+          $libDir = 'C:\Program Files\OpenSSL\lib\VC\x64\MD'
+          foreach ($name in @('libcrypto', 'libssl')) {
+            $defPath = Join-Path $libDir "$name.def"
+            if (-not (Test-Path $defPath)) {
+              Write-Host "$name.def not found at $defPath, skipping LIBRARY-line fix"
+              continue
+            }
+            $lines = Get-Content $defPath
+            $fixedAny = $false
+            $newLines = $lines | ForEach-Object {
+              if ($_ -match '^(\s*LIBRARY\s+)"?([^"\s]+)"?\s*$') {
+                $dllName = $Matches[2]
+                if ($dllName -notmatch '\.dll$') {
+                  $dllName = "$dllName.dll"
+                }
+                Write-Host "${name}: rewriting LIBRARY line '$_' -> 'LIBRARY $dllName'"
+                $fixedAny = $true
+                "LIBRARY $dllName"
+              } else {
+                $_
+              }
+            }
+            if ($fixedAny) {
+              Set-Content -Path $defPath -Value $newLines
+            } else {
+              Write-Host "${name}: no LIBRARY line found to rewrite in $defPath"
+            }
+          }
+      - name: Build with makev.bat -tcc
+        run: |
+          .\makev.bat -tcc
+          .\v.exe symlink
+      - name: Pkg-config regression (TCC dynamic isolation)
+        run: |
+          .\v.exe -cc tcc -no-retry-compilation test vlib\v\checker\pkgconfig_static_mode_test.v
+          if ($LASTEXITCODE -ne 0) {
+            throw "pkg-config TCC isolation regression failed with exit code $LASTEXITCODE"
+          }
+      - name: All code is formatted
+        run: v -silent test-cleancode
+      - name: Test new v.c
+        run: |
+          v -o v.c cmd/v
+          $direct_c_flags = @(
+            '-Ithirdparty/zip'
+            '-Ithirdparty/cJSON'
+            '-Ithirdparty/mbedtls/library'
+            '-Ithirdparty/mbedtls/include'
+            '-Ithirdparty/mbedtls/3rdparty/everest/include'
+            '-Ithirdparty/mbedtls/3rdparty/everest/include/everest'
+            '-Ithirdparty/mbedtls/3rdparty/everest/include/everest/kremlib'
+            '-Ithirdparty/vschannel'
+          )
+          # Match makev.bat's Windows stack reserve; the direct TCC-built
+          # compiler can otherwise crash while compiling net.http-heavy scripts.
+          .\thirdparty\tcc\tcc.exe -Werror -w @direct_c_flags -ladvapi32 -lws2_32 -bt10 '-Wl,-stack=33554432' v.c
+      - name: Install dependencies
+        run: |
+          v retry -- v setup-freetype
+          .\.github\workflows\windows-install-sqlite.bat
+      - name: v -g self
+        run: v -g self
+      - name: v doctor
+        run: |
+          v doctor
+      - name: Verify `v test` works
+        run: |
+          v cmd/tools/test_if_v_test_system_works.v
+          .\cmd\tools\test_if_v_test_system_works.exe
+      - name: Legacy gg import multiwindow isolation
+        run: v test vlib/gg/legacy_import_multiwindow_isolation_test.v
+      - name: Verify `v vlib/v/gen/c/coutput_test.v` works
+        run: v vlib/v/gen/c/coutput_test.v
+      - name: Make sure running TCC64 instead of TCC32
+        run: v test .github\workflows\make_sure_ci_run_with_64bit_compiler_test.v
+      - name: Test ./v doc -v clipboard *BEFORE building tools*
+        run: v doc -v clipboard
+      - name: Test v build-tools
+        run: v -silent -W build-tools
+      - name: Test pure V math module
+        run: v -silent -exclude @vlib/math/*.c.v test vlib/math/
+      - name: Multiwindow render runtime contract
+        run: .\v.exe -silent vlib\gg\multiwindow_render_runtime_contract_test.v
+      - name: Self tests
+        run: v -silent test-self vlib
+      - name: Test v->js
+        run: v -o hi.js examples/js_hello_world.v && node hi.js
+      - name: Test v binaries
+        run: v build-vbinaries
+      - name: Build examples
+        run: v build-examples
+      - name: Compile and run the veb example (fasthttp) and check its HTML
+        run: v run .github/workflows/veb_example_windows_smoke.v
+      - name: v2 self compilation
+        run: v -o v2.exe cmd/v && .\v2.exe -o v3.exe cmd/v && .\v3.exe -o v4.exe cmd/v
+
+  tcc-multiwindow:
     runs-on: windows-2022
     timeout-minutes: 60
     env:
@@ -207,12 +380,12 @@ jobs:
             -ExpectedPublicTestSha256 'd08eafb919ae97b185fc480c22f6d990973396152e9a0b3a01035c3e9a30275c' `
             -ExpectedNoOptProbeSha256 '288f148ca15b6694481f117c03be5f80c4045baf76d3b0e90db61b5e0596741c' `
             -ExpectedServiceBackendSha256 '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d' `
-            -ExpectedWin32BackendSha256 '3c19ecb2815e7d49b71c19affad89a8a14d8795b8b96c11f4e7e465063d4a29c' `
+            -ExpectedWin32BackendSha256 '4b854e9dd019bb8193057c08aaa0a8185096f165afff99d7ed519c5442e0e52e' `
             -ExpectedWin32ServiceBackendSha256 '02076f74e9537323f688e256d3613f87534cd304ca1bc99b7433f406ffd6ebad' `
             -ExpectedWin32ServiceNativeSha256 '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73' `
             -ExpectedRedSurfaceSha256 '04b271a1ece4844a60a338358ec292d1e59448b962f6be7fb9c5765206678a7e' `
-            -ExpectedGreenSurfaceSha256 '9b4a6793afa1638b0a04d47af54ce0633b7c929967eb7d37ce591eb9d5a846d6' `
-            -ExpectedRunnerSha256 '953a756847b7aec8be462eb9d50560d0878096b167023ed3959548ee27d86511'
+            -ExpectedGreenSurfaceSha256 'b4a4fb9eb5d6fbd679c983f9f0fbcac63585bd52390569223b122d7f8dbc0d0c' `
+            -ExpectedRunnerSha256 'bffdf2463a424602cb5b3684eda9ce7701b416a44e0664576a5531c8747dcd10'
       - name: Win32 W5 raw-input A0 preflight
         shell: pwsh
         run: |
@@ -239,21 +412,21 @@ jobs:
             -ExpectedGgNoFlagSha256 '99e37df1fba39e72d9c74490dc6de216dbf984d0586aedcaf5d5d62edc0c0ed2' `
             -ExpectedGgServiceTypesSha256 'ec55d5540f456e2f2090b382bc0c16778794913ab95654526832e60f0f8e5849' `
             -ExpectedAppSha256 'af268df808e190318e77c44256de6f98038b5d094a7c308d79f34921ea25b6bd' `
-            -ExpectedTypesSha256 'c91215f627c9c7818f6239b5aa8b6f34f14ef79140c67d797be1646557b08053' `
+            -ExpectedTypesSha256 '640b1590b25acc56eae75bd8af7f7521c10bf8cd2406b7fa7ba4844680dc03a9' `
             -ExpectedBackendSha256 '46802367bde90168a71131b49015329d8c1c80fad0f0d47e988c2f6e240e30c7' `
             -ExpectedServiceApiSha256 '0d13b992ca9edd0bc2f10bc4cdd0e01eaf865cd8a4c543f3ee4ea482cdd5a897' `
             -ExpectedServiceTypesSha256 'b14d0527430a4b718c90b02132994e35ba4d6340956546406a2d49a61dfdd34f' `
             -ExpectedServiceRegistrySha256 '73a65c6444884e80feb5b3a10104002de0c1fc94a0f0bbffab8c46a1b4c7e7c1' `
             -ExpectedEventDeliverySha256 '7209202474ce1c20baadb6565ac3ac73673e653aaf072cdde2c95f5b9cd98221' `
-            -ExpectedPublicRoutingSurfaceSha256 '7104f779d02f2e22d302c4483e2474675093acf33248addd3de70ac91e21dc25' `
+            -ExpectedPublicRoutingSurfaceSha256 'db360ac3e18c239e8c2c794d11afc4fa2fbff205adb9f612537de42d8d6582c1' `
             -ExpectedServiceBackendSha256 '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d' `
             -ExpectedEventDispatchSha256 '7ef6c7cbd34511d6c19c1a3a269b46876db791b9412bb88e3a8d4dcd543bfd4e' `
-            -ExpectedWin32BackendSha256 '3c19ecb2815e7d49b71c19affad89a8a14d8795b8b96c11f4e7e465063d4a29c' `
+            -ExpectedWin32BackendSha256 '4b854e9dd019bb8193057c08aaa0a8185096f165afff99d7ed519c5442e0e52e' `
             -ExpectedWin32BackendHelpersSha256 'eef8fc485a4774fd380b9b2c7deebbf6b349b432430d0182bad7325a6e684329' `
             -ExpectedWin32ServiceBackendSha256 '02076f74e9537323f688e256d3613f87534cd304ca1bc99b7433f406ffd6ebad' `
             -ExpectedWin32ServiceNativeSha256 '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73' `
-            -ExpectedGreenProductionSurfaceSha256 'dc79eb68a7b83f56f3e6afdfb4e8b90dea7d7ab69f8930516d2e80263d54c363' `
-            -ExpectedRunnerSha256 'a7af8695ad92a3ebb2182b8b7e7611687a7a31efe4fb516c69e3aebd80cc03a1'
+            -ExpectedGreenProductionSurfaceSha256 'dcb863245235cb778312e4a08c0d81eb5d4685c162fb71da228f02e608becd47' `
+            -ExpectedRunnerSha256 'cdd1f87d51ac6bed12702279bb072d676aeb74cf871bffdd218d95e9ff34ad7f'
       - name: Public gg Win32 controls/state native diagnostic
         if: ${{ always() }}
         shell: pwsh

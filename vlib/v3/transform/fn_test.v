@@ -24,6 +24,25 @@ fn test_normalize_function_type_preserves_mut_parameter() {
 	assert t.normalize_type_in_module('fn (mut item Item) bool', 'main') == 'fn (&Item) bool'
 }
 
+fn test_normalize_type_in_module_cache_tracks_current_file() {
+	mut a := flat.FlatAst.new()
+	mut tc := types.TypeChecker.new(&a)
+	tc.file_imports[file_import_key('first.v', 'dep')] = 'alpha'
+	tc.file_imports[file_import_key('second.v', 'dep')] = 'beta'
+	tc.structs['alpha.Type'] = []
+	tc.structs['beta.Type'] = []
+	mut t := Transformer{
+		tc:                &tc
+		cur_module:        'shared'
+		module_type_cache: &AliasCache{}
+	}
+
+	t.cur_file = 'first.v'
+	assert t.normalize_type_in_module('dep.Type', 'shared') == 'alpha.Type'
+	t.cur_file = 'second.v'
+	assert t.normalize_type_in_module('dep.Type', 'shared') == 'beta.Type'
+}
+
 fn test_flattened_generic_receiver_short_variants() {
 	assert flattened_generic_receiver_short_variants('foo__Bar_baz__Qux') == [
 		'Bar_Qux',
@@ -37,6 +56,30 @@ fn test_flattened_generic_receiver_short_variants() {
 fn test_receiver_method_guard_accepts_short_name_for_qualified_type() {
 	t := Transformer{}
 	assert t.receiver_method_matches_type_name('Thing.str', 'pkg.Thing')
+}
+
+fn test_auto_str_helper_call_uses_type_owner_module() {
+	mut a := flat.FlatAst.new()
+	mut tc := types.TypeChecker.new(&a)
+	tc.struct_modules['v.token.Pos'] = 'token'
+	mut t := Transformer{
+		a:          &a
+		tc:         &tc
+		cur_module: 'token'
+		cur_file:   'token.v'
+	}
+	value := t.make_ident('pos')
+	call := t.request_auto_str_helper(value, 'v.token.Pos')
+	callee := a.child_node(a.node(call), 0)
+
+	assert callee.value == '__v3_autostr_v__token__Pos'
+	assert t.auto_str_types['v.token.Pos'].helper_module == 'token'
+}
+
+fn test_if_type_merge_ignores_unresolved_branch_fallbacks() {
+	t := Transformer{}
+	assert t.merge_if_expr_types('unknown', 'int') == 'int'
+	assert t.merge_if_expr_types('int', 'unknown') == 'int'
 }
 
 fn test_generic_inference_uses_seeded_mut_param_value_type_while_cloning() {
@@ -149,8 +192,10 @@ fn test_parallel_worker_reuses_prebuilt_call_param_decl_index() {
 	mut tc := types.TypeChecker.new(a)
 	mut t := new_transformer(mut a, &tc, map[string]bool{})
 	t.prepare_parallel_call_param_types()
+	assert t.call_param_types_prepared
 	mut worker := t.fork_worker(t.a, t.tc)
 	assert worker.call_param_types_index_ready
+	assert worker.call_param_types_prepared
 	assert worker.call_param_types_decl_index.len == t.call_param_types_decl_index.len
 	assert worker.call_param_types_decl_cache.len == t.call_param_types_decl_cache.len
 	params := worker.call_param_types_from_decl('takes_string') or {
@@ -159,6 +204,9 @@ fn test_parallel_worker_reuses_prebuilt_call_param_decl_index() {
 	}
 	assert params.len == 1
 	assert params[0] is types.String
+	t.add_call_param_types_decl_key('main.takes_string', a.nodes.len - 1, 'signature_index_test.v',
+		'main')
+	assert !t.call_param_types_prepared
 }
 
 fn test_pending_generic_specialization_keys_are_private_initialized_maps() {
@@ -179,14 +227,25 @@ fn test_absorb_scoped_batch_replays_overlay_into_master_checker() {
 	mut tc := types.TypeChecker.new(&a)
 	tc.begin_sparse_transform_node_caches(0)
 	mut master := new_transformer(mut a, &tc, map[string]bool{})
-	batch_tc := tc.fork_for_parallel_transform(&a)
+	mut batch_tc := tc.fork_for_parallel_transform(&a)
+	batch_tc.fork_overlay.resolved_call_names[10] = 'main.resolved_call'
+	batch_tc.fork_overlay.resolved_fn_values[11] = 'main.resolved_fn_value'
+	batch_tc.ensure_private_transform_signatures()
+	batch_tc.fn_ret_types['main.generated'] = types.Type(types.bool_)
+	batch_tc.fn_param_types['main.generated'] = [types.Type(types.int_)]
+	batch_tc.fn_variadic['main.generated'] = false
 	mut batch := master.fork_scoped_batch_worker(&a, batch_tc)
-	batch.tc.fork_overlay.resolved_call_names[10] = 'main.resolved_call'
-	batch.tc.fork_overlay.resolved_fn_values[11] = 'main.resolved_fn_value'
+	batch.set_fn_ret_type('main.generated', 'bool')
+	assert 'main.generated' !in master.fn_ret_types
+	assert 'main.generated' !in tc.fn_ret_types
 
-	master.absorb_scoped_batch(batch, unsafe { nil })
+	master.absorb_scoped_batch(batch, unsafe { nil }, batch.a.nodes.len)
 	assert tc.sparse_resolved_call_names[10] == 'main.resolved_call'
 	assert tc.sparse_resolved_fn_values[11] == 'main.resolved_fn_value'
+	assert master.fn_ret_types['main.generated'] == 'bool'
+	generated_ret := tc.fn_ret_types['main.generated'] or { types.Type(types.void_) }
+	assert generated_ret == types.Type(types.bool_)
+	assert tc.fn_param_types['main.generated'][0] == types.Type(types.int_)
 }
 
 fn test_frozen_interface_boxed_types_are_read_only_in_skip_generics_workers() {

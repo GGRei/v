@@ -10,11 +10,23 @@ fn review_v3_bin_path() string {
 	return os.join_path(os.temp_dir(), 'v3_review_transform_regressions_test')
 }
 
+fn review_v3_ownership_bin_path() string {
+	return os.join_path(os.temp_dir(), 'v3_review_transform_ownership_regressions_test')
+}
+
 fn testsuite_begin() {
 	v3_bin := review_v3_bin_path()
 	if os.exists(v3_bin) {
 		os.rm(v3_bin) or {}
 	}
+	ownership_bin := review_v3_ownership_bin_path()
+	if os.exists(ownership_bin) {
+		os.rm(ownership_bin) or {}
+	}
+	// The test runner executes test functions in parallel. Build both shared
+	// compiler fixtures here so workers never race while replacing the same bin.
+	_ = build_v3_review_transform()
+	_ = build_v3_review_transform_ownership()
 }
 
 fn build_v3_review_transform() string {
@@ -28,14 +40,35 @@ fn build_v3_review_transform() string {
 	return v3_bin
 }
 
+fn build_v3_review_transform_ownership() string {
+	v3_bin := review_v3_ownership_bin_path()
+	if os.exists(v3_bin) {
+		return v3_bin
+	}
+	build :=
+		os.execute('${vexe} -prealloc -d ownership -path "${vlib_dir}|@vlib|@vmodules" -o ${v3_bin} ${v3_src}')
+	assert build.exit_code == 0, build.output
+	return v3_bin
+}
+
 fn run_bad(v3_bin string, name string, src string, expected string) {
 	bad_src := os.join_path(os.temp_dir(), 'v3_${name}.v')
 	os.write_file(bad_src, src) or { panic(err) }
 	bad_bin := os.join_path(os.temp_dir(), 'v3_${name}')
-	result := os.execute('${v3_bin} ${bad_src} -b c -o ${bad_bin}')
+	result := os.execute('${v3_bin} -nocache ${bad_src} -b c -o ${bad_bin}')
 	assert result.exit_code != 0, '${name}: expected failure, got success\n${result.output}'
 	assert result.output.contains(expected), '${name}: expected `${expected}` in\n${result.output}'
 	assert !result.output.contains('C compilation failed'), '${name}: reached C compilation\n${result.output}'
+}
+
+fn run_bad_backend(v3_bin string, name string, backend string, src string, expected string) {
+	bad_src := os.join_path(os.temp_dir(), 'v3_${name}.v')
+	os.write_file(bad_src, src) or { panic(err) }
+	bad_bin := os.join_path(os.temp_dir(), 'v3_${name}')
+	result := os.execute('${v3_bin} -nocache -b ${backend} ${bad_src} -o ${bad_bin}')
+	assert result.exit_code != 0, '${name}: expected failure, got success\n${result.output}'
+	assert result.output.contains(expected), '${name}: expected `${expected}` in\n${result.output}'
+	assert !result.output.contains('build_expr: unsupported expr kind'), '${name}: reached SSA lowering\n${result.output}'
 }
 
 fn run_good(v3_bin string, name string, src string) string {
@@ -46,7 +79,7 @@ fn run_good_with_flags(v3_bin string, name string, flags string, src string) str
 	good_src := os.join_path(os.temp_dir(), 'v3_${name}.v')
 	os.write_file(good_src, src) or { panic(err) }
 	good_bin := os.join_path(os.temp_dir(), 'v3_${name}')
-	compile := os.execute('${v3_bin} ${flags} ${good_src} -b c -o ${good_bin}')
+	compile := os.execute('${v3_bin} -nocache ${flags} ${good_src} -b c -o ${good_bin}')
 	assert compile.exit_code == 0, '${name}: compile failed\n${compile.output}'
 	assert !compile.output.contains('C compilation failed'), '${name}: C compilation failed\n${compile.output}'
 	run := os.execute(good_bin)
@@ -58,7 +91,7 @@ fn run_good_with_env(v3_bin string, name string, env string, src string) string 
 	good_src := os.join_path(os.temp_dir(), 'v3_${name}.v')
 	os.write_file(good_src, src) or { panic(err) }
 	good_bin := os.join_path(os.temp_dir(), 'v3_${name}')
-	compile := os.execute('${env} ${v3_bin} ${good_src} -b c -o ${good_bin}')
+	compile := os.execute('${env} ${v3_bin} -nocache ${good_src} -b c -o ${good_bin}')
 	assert compile.exit_code == 0, '${name}: compile failed\n${compile.output}'
 	assert !compile.output.contains('C compilation failed'), '${name}: C compilation failed\n${compile.output}'
 	run := os.execute(good_bin)
@@ -77,6 +110,33 @@ struct Box {
 fn main() {
 	left := Value(Box{})
 	right := Value(Box{})
+	println(left == right)
+}
+')
+	assert out == 'true'
+}
+
+fn test_sum_equality_uses_canonical_struct_field_types() {
+	v3_bin := build_v3_review_transform()
+	out := run_good_with_flags(v3_bin, 'sum_equality_canonical_struct_field_types', '-building-v', 'import v.token
+
+struct Box {
+	pos token.Pos
+}
+
+type Value = Box | int
+
+fn main() {
+	left := Value(Box{
+		pos: token.Pos{
+			line_nr: 1
+		}
+	})
+	right := Value(Box{
+		pos: token.Pos{
+			line_nr: 1
+		}
+	})
 	println(left == right)
 }
 ')
@@ -193,14 +253,16 @@ fn test_generic_shared_parameter_value_copy_uses_inner_type() {
 }
 
 fn destroy(shared state State) {
-	drop_owned(state)
+	rlock state {
+		drop_owned(state)
+	}
 }
 
 fn main() {
 	shared state := State{
 		label: "ok"
 	}
-	destroy(state)
+	destroy(shared state)
 	println("done")
 }
 ')
@@ -231,6 +293,32 @@ fn test_system_libc_mode_preserves_ptrace_header() {
 fn main() {}
 ')
 	assert generated.contains('#include <sys/ptrace.h>'), generated
+}
+
+fn test_for_in_binding_shadows_module_const_during_method_lowering() {
+	v3_bin := build_v3_review_transform()
+	out := run_good_project(v3_bin, 'for_in_binding_shadows_module_const', {
+		'main.v':        "import loops
+
+const v = 'global'
+
+fn main() {
+	println(loops.values())
+}
+"
+		'loops/loops.v': 'module loops
+
+pub fn values() string {
+	values := [u16(15), 16]!
+	mut parts := []string{}
+	for v in values {
+		parts << v.hex()
+	}
+	return parts.join(",")
+}
+'
+	}, 'main.v')
+	assert out == 'f,10'
 }
 
 fn gen_c_from_source(v3_bin string, name string, src string) string {
@@ -269,6 +357,10 @@ fn write_project_file(root string, rel string, src string) {
 }
 
 fn run_good_project(v3_bin string, name string, files map[string]string, input string) string {
+	return run_good_project_with_flags(v3_bin, name, '', files, input)
+}
+
+fn run_good_project_with_flags(v3_bin string, name string, flags string, files map[string]string, input string) string {
 	root := os.join_path(os.temp_dir(), 'v3_${name}_project')
 	if os.exists(root) {
 		os.rmdir_all(root) or { panic(err) }
@@ -279,7 +371,7 @@ fn run_good_project(v3_bin string, name string, files map[string]string, input s
 	}
 	input_path := if input.len == 0 { root } else { os.join_path(root, input) }
 	good_bin := os.join_path(os.temp_dir(), 'v3_${name}')
-	compile := os.execute('${v3_bin} ${input_path} -b c -o ${good_bin}')
+	compile := os.execute('${v3_bin} ${flags} ${input_path} -b c -o ${good_bin}')
 	assert compile.exit_code == 0, '${name}: compile failed\n${compile.output}'
 	assert !compile.output.contains('C compilation failed'), '${name}: C compilation failed\n${compile.output}'
 	run := os.execute(good_bin)
@@ -307,8 +399,125 @@ fn gen_c_from_project(v3_bin string, name string, files map[string]string, input
 fn test_lifted_fn_literal_mut_param_interpolation_derefs_value() {
 	v3_bin := build_v3_review_transform()
 	out := run_good(v3_bin, 'lifted_literal_mut_param_interpolation',
-		'fn main() {\n\tmut n := 7\n\tf := fn (mut x int) {\n\t\tprintln("\${x}")\n\t}\n\tf(mut n)\n}\n')
+		'struct Counter {\n\tvalue int\n}\n\nfn main() {\n\tmut counter := Counter{\n\t\tvalue: 7\n\t}\n\tf := fn (mut value Counter) {\n\t\tprintln("\${value.value}")\n\t}\n\tf(mut counter)\n}\n')
 	assert out == '7'
+}
+
+fn test_auto_str_preserves_distinct_structs_beyond_inline_depth() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'auto_str_distinct_struct_depth', 'struct D {
+	value int
+}
+
+struct C {
+	d D
+}
+
+struct B {
+	c C
+}
+
+struct A {
+	b B
+}
+
+fn main() {
+	value := A{
+		b: B{
+			c: C{
+				d: D{
+					value: 42
+				}
+			}
+		}
+	}
+	println(value)
+}
+')
+	assert out == 'A{
+    b: B{
+        c: C{
+            d: D{
+                value: 42
+            }
+        }
+    }
+}'
+}
+
+fn test_recursive_interface_auto_str_uses_helper() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'recursive_interface_auto_str', "interface Entry {
+	name() string
+}
+
+struct Leaf {
+	value int
+}
+
+fn (Leaf) name() string {
+	return 'leaf'
+}
+
+struct Branch {
+	child Entry
+}
+
+fn (Branch) name() string {
+	return 'branch'
+}
+
+fn main() {
+	value := Entry(Branch{
+		child: Entry(Leaf{
+			value: 42
+		})
+	})
+	println(value)
+}
+")
+	assert out.contains('child: Entry(Leaf{'), out
+	assert out.contains('value: 42'), out
+}
+
+fn test_auto_str_preserves_distinct_sum_beyond_inline_depth() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'auto_str_distinct_sum_depth', 'struct Leaf {
+	answer int
+}
+
+struct Other {
+	text string
+}
+
+type Value = Leaf | Other
+
+struct C {
+	value Value
+}
+
+struct B {
+	c C
+}
+
+struct A {
+	b B
+}
+
+fn main() {
+	println(A{
+		b: B{
+			c: C{
+				value: Value(Leaf{
+					answer: 42
+				})
+			}
+		}
+	})
+}
+')
+	assert out.contains('answer: 42'), out
+	assert !out.contains('Value(...)'), out
 }
 
 fn test_interface_fn_field_argument_keeps_parameter_offset_zero() {
@@ -345,6 +554,41 @@ fn main() {
 	assert out == '7'
 }
 
+fn test_interface_method_mut_arguments_use_pointer_storage() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'interface_method_mut_arguments', 'interface Writer {
+	write(mut counter Counter, mut bytes []u8)
+}
+
+struct IncrementWriter {}
+
+struct Counter {
+mut:
+	value int
+}
+
+fn (_ IncrementWriter) write(mut counter Counter, mut bytes []u8) {
+	counter.value++
+	bytes << u8(counter.value)
+}
+
+fn apply(writer Writer, mut counter Counter, mut bytes []u8) {
+	writer.write(mut counter, mut bytes)
+}
+
+fn main() {
+	mut counter := Counter{
+		value: 6
+	}
+	mut bytes := []u8{}
+	apply(IncrementWriter{}, mut counter, mut bytes)
+	println(int_str(counter.value))
+	println(int_str(bytes[0]))
+}
+')
+	assert out == '7\n7'
+}
+
 fn test_folded_string_constant_ifs_keep_branch_scopes() {
 	v3_bin := build_v3_review_transform()
 	out := run_good(v3_bin, 'folded_string_constant_if_branch_scopes',
@@ -361,6 +605,16 @@ fn test_import_aliased_variadic_call_uses_exact_module() {
 		'main.v':        'module main\n\nimport a.http as other_http\nimport b.http as http\n\nfn main() {\n\t_ := other_http.total([1, 2])\n\tprintln(int_str(http.total(3, 4, 5)))\n}\n'
 	}, 'main.v')
 	assert out == '3'
+}
+
+fn test_imported_interface_const_method_uses_interface_dispatch() {
+	v3_bin := build_v3_review_transform()
+	out := run_good_project(v3_bin, 'imported_interface_const_method', {
+		'v.mod':                     "Module { name: 'imported_interface_const_method' }\n"
+		'errorsource/errorsource.v': "module errorsource\n\npub const sentinel = error_with_code('sentinel', 37)\n"
+		'main.v':                    'module main\n\nimport errorsource\n\nfn main() {\n\tprintln(int_str(errorsource.sentinel.code()))\n}\n'
+	}, 'main.v')
+	assert out == '37'
 }
 
 fn test_array_field_stringification_prefers_local_type_over_imported_homonym() {
@@ -501,7 +755,7 @@ fn main() {
 		y: 2
 	})
 	update(mut base)
-	if base is Rich {
+	if mut base is Rich {
 		println(int_str(base.y))
 	}
 }
@@ -559,6 +813,47 @@ fn test_same_generic_specialization_name_in_different_modules_keeps_both_bodies(
 		'main.v': 'module main\n\nimport a\nimport b\n\nfn main() {\n\tprintln(int_str(a.id[int](1)))\n\tprintln(int_str(b.id[int](2)))\n}\n'
 	}, 'main.v')
 	assert out == '1\n12'
+}
+
+fn test_imported_module_generic_function_value_prefers_local_declaration() {
+	v3_bin := build_v3_review_transform()
+	out := run_good_project(v3_bin, 'generic_function_value_module_collision', {
+		'v.mod':  "Module { name: 'generic_function_value_module_collision' }\n"
+		'a/a.v':  'module a\n\nfn pick[T](value T) T {\n\treturn value + 1\n}\n\npub fn make_picker() fn (int) int {\n\treturn pick[int]\n}\n'
+		'main.v': 'module main\n\nimport a\n\nfn pick[T](value T) T {\n\treturn value + 100\n}\n\nfn main() {\n\timported := a.make_picker()\n\tlocal := pick[int]\n\tprintln(int_str(imported(1)))\n\tprintln(int_str(local(1)))\n}\n'
+	}, 'main.v')
+	assert out == '2\n101'
+}
+
+fn test_building_v_function_values_keep_plain_and_module_helpers() {
+	v3_bin := build_v3_review_transform()
+	out := run_good_project_with_flags(v3_bin, 'building_v_function_value_reachability',
+		'-building-v', {
+		'v.mod':           "Module { name: 'building_v_function_value_reachability' }\n"
+		'worker/worker.v': 'module worker\n\nfn local_helper() int {\n\treturn 19\n}\n\nfn apply(callback fn () int) int {\n\treturn callback()\n}\n\npub fn local_value() int {\n\treturn apply(local_helper)\n}\n\npub fn selected_helper() int {\n\treturn 23\n}\n'
+		'main.v':          'module main\n\nimport worker\n\nfn apply(callback fn () int) int {\n\treturn callback()\n}\n\nfn main() {\n\tprintln(worker.local_value() + apply(worker.selected_helper))\n}\n'
+	}, 'main.v')
+	assert out == '42'
+}
+
+fn test_imported_selector_generic_function_value_is_specialized() {
+	v3_bin := build_v3_review_transform()
+	out := run_good_project(v3_bin, 'selector_generic_function_value', {
+		'v.mod':           "Module { name: 'selector_generic_function_value' }\n"
+		'worker/worker.v': 'module worker\n\npub fn identity[T](value T) T {\n\treturn value\n}\n'
+		'main.v':          'module main\n\nimport worker\n\nfn identity[T](value T) T {\n\treturn value + 100\n}\n\nfn main() {\n\tcallback := worker.identity[int]\n\tlocal := identity[int]\n\tprintln(int_str(callback(42)))\n\tprintln(int_str(local(1)))\n}\n'
+	}, 'main.v')
+	assert out == '42\n101'
+}
+
+fn test_selectively_imported_generic_function_value_is_specialized() {
+	v3_bin := build_v3_review_transform()
+	out := run_good_project(v3_bin, 'selective_import_generic_function_value', {
+		'v.mod':     "Module { name: 'selective_import_generic_function_value' }\n"
+		'lib/lib.v': 'module lib\n\npub fn id[T](value T) T {\n\treturn value + 1\n}\n'
+		'main.v':    'module main\n\nimport lib { id }\n\nfn main() {\n\tcallback := id[int]\n\tprintln(int_str(callback(41)))\n}\n'
+	}, 'main.v')
+	assert out == '42'
 }
 
 fn test_generic_struct_default_for_pointer_type_uses_heap_storage() {
@@ -642,6 +937,259 @@ fn test_shared_field_without_sync_import_compiles_and_locks() {
 	assert out == '7'
 }
 
+fn test_nested_shared_field_lock_allows_member_access() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'nested_shared_field_lock',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nfn main() {\n\tmut coordinator := Coordinator{}\n\tlock coordinator.state {\n\t\tcoordinator.state.value = 7\n\t}\n\tmut value := 0\n\trlock coordinator.state {\n\t\tvalue = coordinator.state.value\n\t}\n\tprintln(int_str(value))\n}\n')
+	assert out == '7'
+}
+
+fn test_nested_shared_field_lock_rejects_base_reassignment() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_base_reassignment',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut p := &first\n\tlock p.state {\n\t\tp = &second\n\t\tp.state.value = 7\n\t}\n}\n',
+		'cannot reassign `p` while it is used to locate locked shared value `p.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_index_reassignment',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\titems := [&first, &second]\n\tmut i := 0\n\tlock items[i].state {\n\t\ti = 1\n\t\titems[i].state.value = 7\n\t}\n}\n',
+		'cannot reassign `i` while it is used to locate locked shared value `items[i].state`')
+}
+
+fn test_nested_shared_field_lock_rejects_aliased_index_mutation() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_aliased_index_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut items := [&first, &second]\n\ti := 0\n\tlock items[i].state {\n\t\titems[0] = &second\n\t\titems[i].state.value = 7\n\t}\n}\n',
+		'may alias locked shared value `items[i].state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_equivalent_literal_index_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut items := [&first]\n\tlock items[0].state {\n\t\titems[0x0] = &replacement\n\t\titems[0].state.value++\n\t}\n}\n',
+		'may alias locked shared value `items[0].state`')
+	out := run_good(v3_bin, 'nested_shared_field_lock_distinct_literal_index',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut items := [&first, &second]\n\tlock items[0].state {\n\t\titems[1] = &first\n\t\titems[0].state.value = 7\n\t\tprintln(int_str(items[0].state.value))\n\t}\n}\n')
+	assert out == '7'
+}
+
+fn test_nested_shared_field_lock_rejects_promoted_field_alias_mutation() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_promoted_field_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator = unsafe { nil }\n}\n\nstruct Wrapper {\nmut:\n\tHolder\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut wrapper := Wrapper{}\n\twrapper.Holder.current = &first\n\tlock wrapper.current.state {\n\t\twrapper.Holder.current = &replacement\n\t\twrapper.current.state.value++\n\t}\n}\n',
+		'used to locate locked shared value `wrapper.current.state`')
+}
+
+fn test_nested_shared_field_lock_rejects_pointer_alias_mutation() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_cross_assignment_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\talias, unrelated = unrelated, alias\n\tlock holder.current.state {\n\t\tunrelated.current = &replacement\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_pointer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 7\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_address_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := &holder\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 7\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_call_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn passthrough(holder &Holder) &Holder {\n\treturn holder\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := passthrough(holder)\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 7\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_selector_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nstruct Box {\n\tholder &Holder\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tbox := Box{\n\t\tholder: holder\n\t}\n\tmut alias := box.holder\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 7\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_index_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tholders := [holder]\n\tmut alias := holders[0]\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 7\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_selector_base_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nstruct Box {\nmut:\n\tholder &Holder\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut box := Box{\n\t\tholder: holder\n\t}\n\tlock holder.current.state {\n\t\tbox.holder.current = &replacement\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_index_base_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut holders := [holder]\n\tlock holder.current.state {\n\t\tholders[0].current = &replacement\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_parameter_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn mutate(mut holder &Holder, mut other &Holder) {\n\tmut replacement := Coordinator{}\n\tmut alias := other\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value = 7\n\t}\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut other := holder\n\tmutate(mut holder, mut other)\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_if_expr_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn choose() bool {\n\treturn true\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := if choose() { holder } else { unrelated }\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 7\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_match_expr_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn choose() bool {\n\treturn true\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := match choose() {\n\t\ttrue { holder }\n\t\telse { unrelated }\n\t}\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 7\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_defer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\tdefer {\n\t\talias = unrelated\n\t}\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_mut_call_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn replace(mut holder &Holder, replacement &Coordinator) {\n\tholder.current = replacement\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tlock holder.current.state {\n\t\treplace(mut holder, &replacement)\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'used to locate locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_mut_receiver_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn (mut holder Holder) replace(replacement &Coordinator) {\n\tholder.current = replacement\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tlock holder.current.state {\n\t\tholder.replace(&replacement)\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'used to locate locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_mut_pointer_call_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn replace(mut current &Holder, replacement &Holder) {\n\tcurrent = replacement\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := &Holder{\n\t\tcurrent: &first\n\t}\n\treplace(mut holder, alias)\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_or_fallback_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn maybe() ?int {\n\treturn 1\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\tmaybe() or {\n\t\talias = unrelated\n\t\t0\n\t}\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_select_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tch := chan int{cap: 1}\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\tselect {\n\t\tch <- 1 {}\n\t\telse {\n\t\t\talias = unrelated\n\t\t}\n\t}\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_good(v3_bin, 'nested_shared_field_lock_skipped_short_circuit_mut_call',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn maybe_replace(mut current &Holder, replacement &Holder) bool {\n\tcurrent = replacement\n\treturn true\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := &Holder{\n\t\tcurrent: &first\n\t}\n\tif false && maybe_replace(mut alias, holder) {}\n\tskipped := true || maybe_replace(mut alias, holder)\n\tassert skipped\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value++\n\t}\n}\n')
+	run_bad(v3_bin, 'nested_shared_field_lock_conditional_pointer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn choose() bool {\n\treturn false\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\tif choose() {\n\t\talias = unrelated\n\t}\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 7\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_match_pointer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn choose() bool {\n\treturn false\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\tmatch choose() {\n\t\ttrue { alias = unrelated }\n\t\telse {}\n\t}\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 7\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_loop_pointer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn choose() bool {\n\treturn false\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\tfor choose() {\n\t\talias = unrelated\n\t}\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 7\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_for_in_pointer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\tvalues := []int{}\n\tfor _ in values {\n\t\talias = unrelated\n\t}\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 7\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	out := run_good(v3_bin, 'nested_shared_field_lock_rebound_pointer_alias',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\talias = unrelated\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 7\n\t\tprintln(int_str(holder.current.state.value))\n\t}\n}\n')
+	assert out == '7'
+	address_out := run_good(v3_bin, 'nested_shared_field_lock_distinct_address_alias',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := &unrelated\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 11\n\t\tprintln(int_str(holder.current.state.value))\n\t}\n}\n')
+	assert address_out == '11'
+	call_rebound_out := run_good(v3_bin, 'nested_shared_field_lock_rebound_call_alias',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn passthrough(holder &Holder) &Holder {\n\treturn holder\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := passthrough(holder)\n\talias = unrelated\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 12\n\t\tprintln(int_str(holder.current.state.value))\n\t}\n}\n')
+	assert call_rebound_out == '12'
+	param_rebound_out := run_good(v3_bin, 'nested_shared_field_lock_rebound_parameter_alias',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn mutate(mut holder &Holder, mut other &Holder) {\n\tmut replacement := Coordinator{}\n\tmut unrelated := &Holder{\n\t\tcurrent: holder.current\n\t}\n\tmut alias := other\n\talias = unrelated\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value = 13\n\t\tprintln(int_str(holder.current.state.value))\n\t}\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut other := holder\n\tmutate(mut holder, mut other)\n}\n')
+	assert param_rebound_out == '13'
+	defer_out := run_good(v3_bin, 'nested_shared_field_lock_defer_rebinds_after_lock',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := unrelated\n\tdefer {\n\t\talias = holder\n\t}\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value = 14\n\t\tprintln(int_str(holder.current.state.value))\n\t}\n}\n')
+	assert defer_out == '14'
+	conditional_out := run_good(v3_bin, 'nested_shared_field_lock_rebound_pointer_alias_all_paths',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn choose() bool {\n\treturn false\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\tif choose() {\n\t\talias = unrelated\n\t} else {\n\t\talias = unrelated\n\t}\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 8\n\t\tprintln(int_str(holder.current.state.value))\n\t}\n}\n')
+	assert conditional_out == '8'
+	match_out := run_good(v3_bin, 'nested_shared_field_lock_match_rebound_pointer_alias_all_paths',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn choose() bool {\n\treturn false\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\tmatch choose() {\n\t\ttrue { alias = unrelated }\n\t\telse { alias = unrelated }\n\t}\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 9\n\t\tprintln(int_str(holder.current.state.value))\n\t}\n}\n')
+	assert match_out == '9'
+	loop_out := run_good(v3_bin, 'nested_shared_field_lock_loop_rebound_pointer_alias_all_exits',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut second := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\tfor {\n\t\talias = unrelated\n\t\tbreak\n\t}\n\tlock holder.current.state {\n\t\talias.current = &second\n\t\tholder.current.state.value = 10\n\t\tprintln(int_str(holder.current.state.value))\n\t}\n}\n')
+	assert loop_out == '10'
+}
+
+fn test_nested_shared_field_lock_preserves_continue_pointer_aliases() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_continue_pointer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn choose() bool {\n\treturn true\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := unrelated\n\tfor i := 0; i < 1; i++ {\n\t\tif choose() {\n\t\t\talias = holder\n\t\t\tcontinue\n\t\t}\n\t\talias = unrelated\n\t}\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+}
+
+fn test_nested_shared_field_lock_rechecks_pointer_aliases_in_loop_post() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_loop_post_pointer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut candidate := unrelated\n\tmut alias := unrelated\n\tmut i := 0\n\tfor ; i < 1; i, alias = i + 1, candidate {\n\t\tcandidate = holder\n\t}\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+}
+
+fn test_nested_shared_field_lock_tracks_select_receive_pointer_alias() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_select_receive_pointer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tholders := chan &Holder{cap: 1}\n\tholders <- holder\n\tmut alias := unrelated\n\tselect {\n\t\talias = <-holders {}\n\t\telse {}\n\t}\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+}
+
+fn test_nested_shared_field_lock_treats_pointer_iteration_binding_as_alias() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_pointer_iteration_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut holders := [holder]\n\tfor mut alias in holders {\n\t\tlock holder.current.state {\n\t\t\talias.current = &replacement\n\t\t\tholder.current.state.value++\n\t\t}\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+}
+
+fn test_nested_shared_field_lock_treats_lambda_pointer_parameters_as_aliases() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_lambda_parameter_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn apply(callback fn (&Holder, &Holder) int, locked &Holder, other &Holder) {\n\t_ := callback(locked, other)\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\tapply(|mut locked, mut other| if true {\n\t\tmut replacement := Coordinator{}\n\t\tlock locked.current.state {\n\t\t\tother.current = &replacement\n\t\t\tlocked.current.state.value++\n\t\t}\n\t\t0\n\t} else {\n\t\t0\n\t}, holder, alias)\n}\n',
+		'may alias locked shared value `locked.current.state`')
+}
+
+fn test_nested_shared_field_lock_preserves_explicit_capture_pointer_aliases() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_explicit_capture_pointer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\tcallback := fn [mut holder, mut alias, replacement] () {\n\t\tlock holder.current.state {\n\t\t\talias.current = &replacement\n\t\t\tholder.current.state.value++\n\t\t}\n\t}\n\tcallback()\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	out := run_good(v3_bin, 'nested_shared_field_lock_distinct_explicit_capture_pointer',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tcallback := fn [mut holder, mut unrelated, replacement] () {\n\t\tlock holder.current.state {\n\t\t\tunrelated.current = &replacement\n\t\t\tholder.current.state.value = 31\n\t\t\tprintln(int_str(holder.current.state.value))\n\t\t}\n\t}\n\tcallback()\n}\n')
+	assert out == '31'
+}
+
+fn test_nested_shared_field_lock_treats_if_guard_pointer_binding_as_alias() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_if_guard_pointer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn maybe_holder(holder &Holder) ?&Holder {\n\treturn holder\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tif mut alias := maybe_holder(holder) {\n\t\tlock holder.current.state {\n\t\t\talias.current = &replacement\n\t\t\tholder.current.state.value++\n\t\t}\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+}
+
+fn test_nested_shared_field_lock_merges_pointer_aliases_at_goto_target() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_goto_pointer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := holder\n\tunsafe {\n\t\tgoto locked\n\t}\n\talias = unrelated\n\tlocked:\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_backward_goto_pointer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := unrelated\n\tlocked:\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value++\n\t}\n\talias = holder\n\tunsafe {\n\t\tgoto locked\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+}
+
+fn test_nested_shared_field_lock_tracks_indirect_pointer_writes() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_indirect_pointer_write',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut slot := &holder\n\tlock holder.current.state {\n\t\tunsafe {\n\t\t\t*slot = unrelated\n\t\t}\n\t\tholder.current.state.value++\n\t}\n\t_ = replacement\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_prior_indirect_pointer_write',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := unrelated\n\tmut slot := &alias\n\tunsafe {\n\t\t*slot = holder\n\t}\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	out := run_good(v3_bin, 'nested_shared_field_lock_distinct_indirect_pointer_write',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut slot := &unrelated\n\tlock holder.current.state {\n\t\tunsafe {\n\t\t\t*slot = &Holder{\n\t\t\t\tcurrent: &replacement\n\t\t\t}\n\t\t}\n\t\tholder.current.state.value = 23\n\t\tprintln(int_str(holder.current.state.value))\n\t}\n}\n')
+	assert out == '23'
+}
+
+fn test_nested_shared_field_lock_preserves_labelled_loop_exit_pointer_aliases() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_labelled_break_pointer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := unrelated\n\touter: for {\n\t\tfor {\n\t\t\talias = holder\n\t\t\tbreak outer\n\t\t}\n\t\talias = unrelated\n\t}\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+	run_bad(v3_bin, 'nested_shared_field_lock_labelled_continue_pointer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\nfn main() {\n\tmut first := Coordinator{}\n\tmut replacement := Coordinator{}\n\tmut holder := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut unrelated := &Holder{\n\t\tcurrent: &first\n\t}\n\tmut alias := unrelated\n\touter: for i := 0; i < 1; i++ {\n\t\tfor {\n\t\t\talias = holder\n\t\t\tcontinue outer\n\t\t}\n\t\talias = unrelated\n\t}\n\tlock holder.current.state {\n\t\talias.current = &replacement\n\t\tholder.current.state.value++\n\t}\n}\n',
+		'may alias locked shared value `holder.current.state`')
+}
+
+fn test_nested_shared_field_lock_rejects_global_parameter_alias_mutation() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_global_parameter_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\n__global (\n\tglobal_coordinator = Coordinator{}\n\tglobal_holder = &Holder{\n\t\tcurrent: &global_coordinator\n\t}\n)\n\nfn mutate(mut alias &Holder) {\n\tmut replacement := Coordinator{}\n\tlock global_holder.current.state {\n\t\talias.current = &replacement\n\t\tglobal_holder.current.state.value++\n\t}\n}\n\nfn main() {\n\tmutate(mut global_holder)\n}\n',
+		'may alias locked shared value `global_holder.current.state`')
+	out := run_good(v3_bin, 'nested_shared_field_lock_rebound_global_parameter',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\n__global (\n\tglobal_coordinator = Coordinator{}\n\tglobal_holder = &Holder{\n\t\tcurrent: &global_coordinator\n\t}\n)\n\nfn mutate(mut alias &Holder) {\n\tmut replacement := Coordinator{}\n\tmut local_holder := &Holder{\n\t\tcurrent: &replacement\n\t}\n\talias = local_holder\n\tlock global_holder.current.state {\n\t\talias.current = &replacement\n\t\tglobal_holder.current.state.value = 19\n\t\tprintln(int_str(global_holder.current.state.value))\n\t}\n}\n\nfn main() {\n\tmut incoming := global_holder\n\tmutate(mut incoming)\n}\n')
+	assert out == '19'
+}
+
+fn test_nested_shared_field_lock_rejects_global_pointer_alias_mutation() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_global_pointer_alias_mutation',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Holder {\nmut:\n\tcurrent &Coordinator\n}\n\n__global (\n\tglobal_coordinator = Coordinator{}\n\tglobal_holder = &Holder{\n\t\tcurrent: &global_coordinator\n\t}\n\tglobal_alias = &Holder{\n\t\tcurrent: &global_coordinator\n\t}\n)\n\nfn connect_globals() {\n\tglobal_alias = global_holder\n}\n\nfn main() {\n\tconnect_globals()\n\tmut replacement := Coordinator{}\n\tlock global_holder.current.state {\n\t\tglobal_alias.current = &replacement\n\t\tglobal_holder.current.state.value++\n\t}\n}\n',
+		'may alias locked shared value `global_holder.current.state`')
+}
+
+fn test_nested_shared_field_lock_rejects_call_base() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_call_base',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nfn pick() &Coordinator {\n\treturn &Coordinator{}\n}\n\nfn main() {\n\tlock pick().state {\n\t\tpick().state.value = 7\n\t}\n}\n',
+		'selector bases and indices must be stable expressions')
+}
+
+fn test_nested_shared_field_lock_rejects_overloaded_index() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'nested_shared_field_lock_overloaded_index',
+		'struct State {\nmut:\n\tvalue int\n}\n\nstruct Coordinator {\n\tstate shared State\n}\n\nstruct Registry {\n\tentries []&Coordinator\n}\n\nfn (registry Registry) [] (key int) &Coordinator {\n\treturn registry.entries[key]\n}\n\nfn main() {\n\tmut coordinator := Coordinator{}\n\tmut registry := Registry{\n\t\tentries: [&coordinator]\n\t}\n\tkey := 0\n\tlock registry[key].state {\n\t\tregistry[key].state.value = 7\n\t}\n}\n',
+		'selector bases and indices must be stable expressions')
+}
+
+fn test_reassigned_nil_pointer_can_be_dereferenced() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'reassigned_nil_pointer',
+		'fn main() {\n\tmut pointer := &int(unsafe { nil })\n\tmut value := 7\n\tpointer = &value\n\tprintln(int_str(*pointer))\n}\n')
+	assert out == '7'
+}
+
 fn test_imported_shared_field_without_sync_import_compiles_and_locks() {
 	v3_bin := build_v3_review_transform()
 	out := run_good_project(v3_bin, 'imported_shared_field_without_sync_import', {
@@ -679,6 +1227,46 @@ fn test_array_equality_uses_semantic_element_comparison() {
 	out := run_good(v3_bin, 'semantic_array_equality',
 		"struct Child {\n\tlabel string\n}\n\nstruct Item {\n\tname string\n\tparts []string\n\tnested [][]string\n\tchildren []Child\n}\n\nfn join(a string, b string) string {\n\treturn a + b\n}\n\nfn main() {\n\tleft := [Item{\n\t\tname: 'hi'.clone()\n\t\tparts: ['ab'.clone()]\n\t\tnested: [[join('n', 'est')]]\n\t\tchildren: [Child{\n\t\t\tlabel: 'kid'.clone()\n\t\t}]\n\t}]\n\tright := [Item{\n\t\tname: join('h', 'i')\n\t\tparts: [join('a', 'b')]\n\t\tnested: [['nest'.clone()]]\n\t\tchildren: [Child{\n\t\t\tlabel: join('k', 'id')\n\t\t}]\n\t}]\n\tmaps_left := [{\n\t\t'k': 'value'.clone()\n\t}]\n\tmaps_right := [{\n\t\t'k': join('val', 'ue')\n\t}]\n\tnested_left := [[join('y', 'o')]]\n\tnested_right := [['yo'.clone()]]\n\tchild_map_left := {\n\t\t'items': [Child{\n\t\t\tlabel: 'mapkid'.clone()\n\t\t}]\n\t}\n\tchild_map_right := {\n\t\t'items': [Child{\n\t\t\tlabel: join('map', 'kid')\n\t\t}]\n\t}\n\tneedle := Item{\n\t\tname: join('h', 'i')\n\t\tparts: [join('a', 'b')]\n\t\tnested: [['nest'.clone()]]\n\t\tchildren: [Child{\n\t\t\tlabel: join('k', 'id')\n\t\t}]\n\t}\n\tprintln(left == right)\n\tprintln(left.equals(right))\n\tprintln(maps_left == maps_right)\n\tprintln(nested_left == nested_right)\n\tprintln(child_map_left == child_map_right)\n\tprintln(needle in left)\n\tprintln(int_str(left.index(needle)))\n}\n")
 	assert out == 'true\ntrue\ntrue\ntrue\ntrue\ntrue\n0'
+}
+
+fn test_explicitly_dereferenced_array_equality_is_not_double_dereferenced() {
+	v3_bin := build_v3_review_transform()
+	source := 'fn main() {
+	values := [1, 2, 3]
+	p := &values
+	assert *p == values
+	assert values == *p
+	println("ok")
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'explicit_array_deref_equality_c', source)
+	assert !c_source.contains('**p'), c_source
+	out := run_good(v3_bin, 'explicit_array_deref_equality', source)
+	assert out == 'ok'
+}
+
+fn test_mut_array_loop_sort_receiver_is_not_double_dereferenced() {
+	v3_bin := build_v3_review_transform()
+	source := 'struct Item {
+	n int
+}
+
+fn split() [][]Item {
+	mut buckets := [][]Item{len: 2, init: []Item{}}
+	for mut bucket in buckets {
+		bucket.sort(a.n < b.n)
+	}
+	return buckets
+}
+
+fn main() {
+	println(split().len)
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'mut_array_loop_sort_receiver_c', source)
+	assert !c_source.contains('**bucket'), c_source
+	out := run_good(v3_bin, 'mut_array_loop_sort_receiver', source)
+	assert out == '2'
 }
 
 fn test_array_map_fn_value_uses_callback_return_type() {
@@ -742,6 +1330,1868 @@ fn test_mut_pointer_capture_is_not_over_dereferenced() {
 	assert out == '5'
 }
 
+fn test_non_escaping_local_closures_are_reclaimed_in_hot_loop() {
+	v3_bin := build_v3_review_transform()
+	source := 'fn main() {
+	for i in 0 .. 50_000 {
+		value := i
+		callback := fn [value] () int {
+			return value
+		}
+		assert callback() == value
+	}
+	println("ok")
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_closure_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(callback);'), c_source
+	out := run_good(v3_bin, 'local_closure_hot_loop', source)
+	assert out == 'ok'
+}
+
+fn test_branch_selected_local_method_closures_preserve_receiver_and_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn exercise(flag bool) int {
+	mut first := Counter{
+		value: 1
+	}
+	mut second := Counter{
+		value: 10
+	}
+	callback_if := if flag { first.read } else { second.read }
+	callback_match := match flag {
+		true { first.read }
+		else { second.read }
+	}
+	first.value = 2
+	second.value = 20
+	return callback_if() + callback_match()
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		total += exercise(i % 2 == 0)
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'branch_selected_local_method_closures_c', source)
+	assert c_source.contains('closure__closure_try_destroy(callback_if);'), c_source
+	assert c_source.contains('closure__closure_try_destroy(callback_match);'), c_source
+	out := run_good(v3_bin, 'branch_selected_local_method_closures', source)
+	assert out == '1100000'
+}
+
+fn test_discarded_returned_closures_are_reclaimed_in_hot_loop() {
+	v3_bin := build_v3_review_transform()
+	source := 'fn make_counter() fn () int {
+	mut n := 0
+	return fn [mut n] () int {
+		n++
+		return n
+	}
+}
+
+fn identity(callback fn () int) fn () int {
+	return callback
+}
+
+fn main() {
+	kept := make_counter()
+	_ = identity(kept)
+	assert kept() == 1
+	for _ in 0 .. 50_000 {
+		_ = make_counter()
+	}
+	println("ok")
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'discarded_returned_closure_hot_loop_c', source)
+	assert !c_source.contains('closure__closure_generation_snapshot();'), c_source
+	assert c_source.count('closure__closure_try_destroy(__discarded_closure_') == 1, c_source
+
+	out := run_good(v3_bin, 'discarded_returned_closure_hot_loop', source)
+	assert out == 'ok'
+}
+
+fn test_discarded_branch_fresh_closure_returns_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := 'fn make_if(flag bool) fn () int {
+	x := 41
+	return if flag {
+		fn [x] () int {
+			return x + 1
+		}
+	} else {
+		fn [x] () int {
+			return x + 2
+		}
+	}
+}
+
+fn make_match(flag bool) fn () int {
+	x := 40
+	return match flag {
+		true {
+			fn [x] () int {
+				return x + 2
+			}
+		}
+		else {
+			fn [x] () int {
+				return x + 3
+			}
+		}
+	}
+}
+
+fn main() {
+	for i in 0 .. 50_000 {
+		_ = make_if(i % 2 == 0)
+		_ = make_match(i % 2 == 0)
+	}
+	println("ok")
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'discarded_branch_fresh_closure_returns_c', source)
+	assert c_source.count('closure__closure_try_destroy(__discarded_closure_') == 2, c_source
+	out := run_good(v3_bin, 'discarded_branch_fresh_closure_returns', source)
+	assert out == 'ok'
+}
+
+fn test_discarded_returned_closure_with_retained_alias_is_not_destroyed() {
+	v3_bin := build_v3_review_transform()
+	source := 'struct Holder {
+mut:
+	callback fn () int
+}
+
+fn factory(mut holder Holder) fn () int {
+	mut n := 41
+	cb := fn [mut n] () int {
+		n++
+		return n
+	}
+	holder.callback = cb
+	return cb
+}
+
+fn main() {
+	mut holder := Holder{}
+	_ = factory(mut holder)
+	println(int_str(holder.callback()))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'discarded_returned_closure_retained_alias_c', source)
+	assert !c_source.contains('closure__closure_try_destroy(__discarded_closure_'), c_source
+	out := run_good(v3_bin, 'discarded_returned_closure_retained_alias', source)
+	assert out == '42'
+}
+
+fn test_discarded_static_fn_return_does_not_require_closure_runtime() {
+	v3_bin := build_v3_review_transform()
+	source := 'fn answer() int {
+	return 42
+}
+
+fn callback() fn () int {
+	return answer
+}
+
+fn main() {
+	_ = callback()
+	println("ok")
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'discarded_static_fn_return_c', source)
+	assert !c_source.contains('closure__closure_try_destroy(__discarded_closure_'), c_source
+	out := run_good(v3_bin, 'discarded_static_fn_return', source)
+	assert out == 'ok'
+}
+
+fn test_non_escaping_bound_method_closures_are_reclaimed_in_hot_loop() {
+	v3_bin := build_v3_review_transform()
+	source := 'struct Value {
+	n int
+}
+
+fn (value Value) get() int {
+	return value.n
+}
+
+fn main() {
+	for i in 0 .. 50_000 {
+		value := Value{
+			n: i
+		}
+		callback := value.get
+		assert callback() == i
+	}
+	println("ok")
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_bound_method_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(callback);'), c_source
+	out := run_good(v3_bin, 'local_bound_method_hot_loop', source)
+	assert out == 'ok'
+}
+
+fn test_deferred_local_bound_method_closures_remain_scope_owned() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn deferred_read(value int) {
+	mut counter := Counter{
+		value: value
+	}
+	callback := counter.read
+	defer {
+		assert callback() == value + 1
+	}
+	counter.value++
+}
+
+fn main() {
+	for i in 0 .. 50_000 {
+		deferred_read(i)
+	}
+	println("ok")
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'deferred_local_bound_method_c', source)
+	body := c_fn_body(c_source, 'void deferred_read(int value) {')
+	assert body.contains('closure__closure_try_destroy(callback);'), body
+	out := run_good(v3_bin, 'deferred_local_bound_method', source)
+	assert out == 'ok'
+}
+
+fn test_locally_aliased_bound_method_closures_remain_scope_owned_until_the_alias_escapes() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn make_callback(value int) fn () int {
+	mut counter := Counter{
+		value: value
+	}
+	callback := counter.read
+	alias := callback
+	counter.value++
+	return alias
+}
+
+fn main() {
+	escaped := make_callback(77)
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		callback := counter.read
+		alias := callback
+		counter.value++
+		total += alias()
+		assert counter.value == i + 1
+	}
+	assert escaped() == 78
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'locally_aliased_bound_method_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(callback);'), c_source
+	out := run_good(v3_bin, 'locally_aliased_bound_method_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_scope_local_callback_fields_preserve_receiver_identity_and_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn zero() int {
+	return 0
+}
+
+struct Holder {
+mut:
+	callback fn () int
+}
+
+fn make_holder(value int) Holder {
+	mut counter := Counter{
+		value: value
+	}
+	mut holder := Holder{
+		callback: zero
+	}
+	holder.callback = counter.read
+	return holder
+}
+
+fn main() {
+	escaped := make_holder(77)
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		mut holder := Holder{
+			callback: zero
+		}
+		holder.callback = counter.read
+		counter.value++
+		total += holder.callback()
+	}
+	assert escaped.callback() == 77
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_callback_field_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(__field_closure_'), c_source
+	make_body := c_fn_body(c_source, 'main__Holder main__make_holder(')
+	assert !make_body.contains('__field_closure_'), make_body
+	out := run_good(v3_bin, 'local_callback_field_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_scope_local_callback_initializer_fields_preserve_receiver_identity_and_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+struct Holder {
+	callback fn () int
+}
+
+fn make_holder(value int) Holder {
+	mut counter := Counter{
+		value: value
+	}
+	holder := Holder{
+		callback: counter.read
+	}
+	counter.value++
+	return holder
+}
+
+fn main() {
+	escaped := make_holder(77)
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		holder := Holder{
+			callback: counter.read
+		}
+		counter.value++
+		total += holder.callback()
+		assert counter.value == i + 1
+	}
+	assert escaped.callback() == 78
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_callback_initializer_field_hot_loop_c', source)
+	main_body := c_fn_body(c_source, 'int main(int argc, char** argv) {')
+	assert main_body.contains('closure__closure_try_destroy(__field_closure_'), main_body
+	make_body := c_fn_body(c_source, 'main__Holder main__make_holder(')
+	assert !make_body.contains('__field_closure_'), make_body
+	out := run_good(v3_bin, 'local_callback_initializer_field_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_scope_local_callback_whole_aggregate_reassignments_preserve_receiver_identity_and_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn zero() int {
+	return 0
+}
+
+struct Holder {
+	callback fn () int
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		mut holder := Holder{
+			callback: zero
+		}
+		holder = Holder{
+			callback: counter.read
+		}
+		counter.value++
+		total += holder.callback()
+		assert counter.value == i + 1
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_callback_aggregate_reassign_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(__field_closure_'), c_source
+	out := run_good(v3_bin, 'local_callback_aggregate_reassign_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_scope_local_callback_array_initializers_preserve_receiver_identity_and_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn make_callbacks(value int) []fn () int {
+	mut counter := Counter{
+		value: value
+	}
+	callbacks := [counter.read]
+	counter.value++
+	return callbacks
+}
+
+fn main() {
+	escaped := make_callbacks(77)
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		callbacks := [counter.read]
+		counter.value++
+		total += callbacks[0]()
+		assert counter.value == i + 1
+	}
+	assert escaped[0]() == 78
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_callback_array_initializer_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(__array_closure_'), c_source
+	out := run_good(v3_bin, 'local_callback_array_initializer_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_locally_extracted_callback_array_fields_remain_scope_owned() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn make_callback(value int) fn () int {
+	counter := Counter{
+		value: value
+	}
+	callbacks := [counter.read]
+	callback := callbacks[0]
+	return callback
+}
+
+fn main() {
+	escaped := make_callback(77)
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		callbacks := [counter.read]
+		callback := callbacks[0]
+		counter.value++
+		total += callback()
+		assert counter.value == i + 1
+	}
+	assert escaped() == 77
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_callback_array_field_alias_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(__array_closure_'), c_source
+	out := run_good(v3_bin, 'local_callback_array_field_alias_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_scope_local_callback_array_index_assignments_preserve_receiver_identity_and_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn zero() int {
+	return 0
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		mut callbacks := [zero]
+		callbacks[0] = counter.read
+		counter.value++
+		total += callbacks[0]()
+		assert counter.value == i + 1
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_callback_array_index_assign_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(__field_closure_'), c_source
+	out := run_good(v3_bin, 'local_callback_array_index_assign_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_scope_local_dynamic_callback_array_index_assignments_preserve_receiver_and_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn zero() int {
+	return 0
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		mut callbacks := [zero]
+		index := i % callbacks.len
+		callbacks[index] = counter.read
+		counter.value++
+		total += counter.value
+		assert counter.value == i + 1
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_dynamic_callback_array_index_assign_hot_loop_c',
+		source)
+	assert c_source.contains('closure__closure_try_destroy(__field_closure_'), c_source
+	assert c_source.contains('.receiver = &(counter)'), c_source
+	out := run_good(v3_bin, 'local_dynamic_callback_array_index_assign_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_scope_local_callback_array_appends_preserve_receiver_identity_and_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		mut callbacks := []fn () int{}
+		callbacks << counter.read
+		counter.value++
+		total += callbacks[0]()
+		assert counter.value == i + 1
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_callback_array_append_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(__arr_val_'), c_source
+	out := run_good(v3_bin, 'local_callback_array_append_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_scope_local_bulk_callback_array_appends_preserve_receiver_and_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		mut callbacks := []fn () int{}
+		callbacks << [counter.read]
+		counter.value++
+		total += callbacks[0]()
+		assert counter.value == i + 1
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_bulk_callback_array_append_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(__array_closure_'), c_source
+	out := run_good(v3_bin, 'local_bulk_callback_array_append_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_scope_local_callback_fixed_array_initializers_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		callbacks := [counter.read]!
+		counter.value++
+		total += callbacks[0]()
+		assert counter.value == i + 1
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_callback_fixed_array_initializer_hot_loop_c',
+		source)
+	assert c_source.contains('closure__closure_try_destroy(__array_closure_'), c_source
+	out := run_good(v3_bin, 'local_callback_fixed_array_initializer_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_multi_variable_callback_declarations_preserve_receiver_identity_and_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		unused, callback := 0, counter.read
+		counter.value++
+		total += unused + callback()
+		assert counter.value == i + 1
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_multi_callback_decl_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(callback);'), c_source
+	out := run_good(v3_bin, 'local_multi_callback_decl_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_callback_array_prefix_before_spread_preserves_receiver_identity_and_is_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn main() {
+	other_callbacks := []fn () int{}
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		callbacks := [counter.read, ...other_callbacks]
+		counter.value++
+		total += callbacks[0]()
+		assert counter.value == i + 1
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_callback_array_spread_prefix_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(__array_closure_'), c_source
+	out := run_good(v3_bin, 'local_callback_array_spread_prefix_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_scope_local_callback_map_initializers_preserve_receiver_identity_and_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn make_callbacks(value int) map[string]fn () int {
+	mut counter := Counter{
+		value: value
+	}
+	callbacks := {
+		"read": counter.read
+	}
+	counter.value++
+	return callbacks
+}
+
+fn main() {
+	escaped := make_callbacks(77)
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		callbacks := {
+			"read": counter.read
+		}
+		counter.value++
+		total += callbacks["read"]()
+		assert counter.value == i + 1
+	}
+	assert escaped["read"]() == 78
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_callback_map_initializer_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(__map_val_'), c_source
+	out := run_good(v3_bin, 'local_callback_map_initializer_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_scope_local_computed_key_callback_maps_preserve_receiver_and_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		key := "read"
+		callbacks := {
+			key: counter.read
+		}
+		counter.value++
+		total += counter.value
+		assert counter.value == i + 1
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_computed_key_callback_map_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(__map_val_'), c_source
+	assert c_source.contains('.receiver = &(counter)'), c_source
+	out := run_good(v3_bin, 'local_computed_key_callback_map_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_scope_local_dynamic_callback_map_index_assignments_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn zero() int {
+	return 0
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		mut callbacks := {
+			"read": zero
+		}
+		key := "read"
+		callbacks[key] = counter.read
+		counter.value++
+		total += callbacks["read"]()
+		assert counter.value == i + 1
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_dynamic_callback_map_index_assign_hot_loop_c',
+		source)
+	assert c_source.contains('closure__closure_try_destroy(__map_val_'), c_source
+	out := run_good(v3_bin, 'local_dynamic_callback_map_index_assign_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_callback_map_initializer_captures_each_overwritten_entry_for_cleanup() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut first := Counter{
+			value: i
+		}
+		mut second := Counter{
+			value: i
+		}
+		key := "read"
+		callbacks := {
+			"read": first.read
+			key:    second.read
+		}
+		first.value += 10
+		second.value++
+		total += callbacks["read"]()
+		assert first.value == i + 10
+		assert second.value == i + 1
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'overwritten_callback_map_entries_hot_loop_c', source)
+	assert c_source.count('closure__closure_try_destroy(__map_val_') == 2, c_source
+	out := run_good(v3_bin, 'overwritten_callback_map_entries_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_computed_key_map_nested_callbacks_preserve_receiver_and_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+struct Holder {
+	callback fn () int
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		key := "read"
+		callbacks := {
+			key: Holder{
+				callback: counter.read
+			}
+		}
+		counter.value++
+		total += callbacks["read"].callback()
+		assert counter.value == i + 1
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'computed_key_nested_callback_map_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(__field_closure_'), c_source
+	out := run_good(v3_bin, 'computed_key_nested_callback_map_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_reassigned_non_escaping_bound_method_closures_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := 'struct Value {
+	n int
+}
+
+fn (value Value) get() int {
+	return value.n
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		first := Value{
+			n: i
+		}
+		second := Value{
+			n: i + 1
+		}
+		mut callback := first.get
+		callback = second.get
+		total += callback()
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'reassigned_local_bound_method_hot_loop_c', source)
+	assert c_source.count('closure__closure_try_destroy(callback);') >= 2, c_source
+	out := run_good(v3_bin, 'reassigned_local_bound_method_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_conditionally_self_reassigned_bound_method_closures_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := 'struct Value {
+	n int
+}
+
+fn (value Value) get() int {
+	return value.n
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		first := Value{
+			n: i
+		}
+		second := Value{
+			n: i + 1
+		}
+		mut callback := first.get
+		callback = if i % 2 == 0 { callback } else { second.get }
+		total += callback()
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'conditionally_reassigned_bound_method_c', source)
+	assert c_source.count('closure__closure_try_destroy(callback);') >= 2, c_source
+	out := run_good(v3_bin, 'conditionally_reassigned_bound_method', source)
+	assert out == '1250000000'
+}
+
+fn test_match_self_reassigned_bound_method_closures_remain_scope_owned() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut first := Counter{
+			value: i
+		}
+		other := Counter{
+			value: i + 1
+		}
+		keep := i % 2 == 0
+		mut callback := first.read
+		callback = match keep {
+			true { callback }
+			else { other.read }
+		}
+		first.value += 10
+		if keep {
+			assert callback() == i + 10
+		} else {
+			assert callback() == i + 1
+		}
+		total += callback()
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'match_self_reassigned_bound_method_c', source)
+	assert c_source.count('closure__closure_try_destroy(callback);') >= 2, c_source
+	out := run_good(v3_bin, 'match_self_reassigned_bound_method', source)
+	assert out == '1250250000'
+}
+
+fn test_immediately_invoked_bound_method_closures_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := 'struct Value {
+	n int
+}
+
+fn (value Value) get() int {
+	return value.n
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		value := Value{
+			n: i
+		}
+		total += (value.get)()
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'immediate_bound_method_hot_loop_c', source)
+	assert c_source.contains('closure__closure_try_destroy(__immediate_closure_'), c_source
+	out := run_good(v3_bin, 'immediate_bound_method_hot_loop', source)
+	assert out == '1249975000'
+}
+
+fn test_disjoint_same_name_closure_bindings_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Value {
+mut:
+	n int
+}
+
+fn (value &Value) read() int {
+	return value.n
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 10_000 {
+		if i >= 0 {
+			mut first := Value{
+				n: i
+			}
+			callback := first.read
+			first.n += 10
+			total += callback()
+		}
+		if i < 10_000 {
+			mut second := Value{
+				n: i + 1
+			}
+			callback := second.read
+			second.n += 20
+			total += callback()
+		}
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'disjoint_same_name_closure_bindings_c', source)
+	assert c_source.count('closure__closure_try_destroy(callback);') >= 2, c_source
+	out := run_good(v3_bin, 'disjoint_same_name_closure_bindings', source)
+	assert out == '100300000'
+}
+
+fn test_branch_produced_immediate_method_closures_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Value {
+	n int
+}
+
+fn (value &Value) read() int {
+	return value.n
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 20_000 {
+		first := Value{
+			n: i
+		}
+		second := Value{
+			n: i + 100
+		}
+		keep := i % 2 == 0
+		total += (if keep { first.read } else { second.read })()
+		total += (match keep {
+			true { first.read }
+			else { second.read }
+		})()
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'branch_immediate_method_closures_c', source)
+	main_body := c_fn_body(c_source, 'int main(int argc, char** argv) {')
+	assert main_body.count('closure__closure_try_destroy(') >= 2, main_body
+	out := run_good(v3_bin, 'branch_immediate_method_closures', source)
+	assert out == '401980000'
+}
+
+fn test_fixed_array_defer_results_use_semantic_array_storage() {
+	v3_bin := build_v3_review_transform()
+	source := 'fn fixed_array_result() [2]int {
+	defer {
+		assert $res()[0] == 1
+		assert $res()[1] == 2
+	}
+	return [1, 2]!
+}
+
+fn multi_result() ([2]int, int) {
+	defer {
+		assert $res(0)[0] == 3
+		assert $res(0)[1] == 4
+	}
+	return [3, 4]!, 5
+}
+
+fn main() {
+	array := fixed_array_result()
+	values, n := multi_result()
+	assert array == [1, 2]!
+	assert values == [3, 4]!
+	assert n == 5
+	println("ok")
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'fixed_array_defer_result_c', source)
+	assert c_source.contains('(_t1.ret_arr)[0]'), c_source
+	assert c_source.contains('(_t1.arg0)[0]'), c_source
+	out := run_good(v3_bin, 'fixed_array_defer_result', source)
+	assert out == 'ok'
+}
+
+fn test_arm64_backend_rejects_defer_results_before_ssa() {
+	v3_bin := build_v3_review_transform()
+	run_bad_backend(v3_bin, 'arm64_defer_result', 'arm64', 'fn f() int {
+	defer {
+		assert $res() == 42
+	}
+	return 42
+}
+
+fn main() {
+	println(int_str(f()))
+}
+',
+		'`$res()` is not supported by the V3 arm64 backend')
+}
+
+fn test_eval_backend_rejects_active_defer_results() {
+	v3_bin := build_v3_review_transform()
+	run_bad_backend(v3_bin, 'eval_defer_result', 'eval', 'fn f() int {
+	defer {
+		assert $res() == 42
+	}
+	return 42
+}
+
+fn main() {
+	println(int_str(f()))
+}
+',
+		'`$res()` is not supported by the V3 eval backend')
+}
+
+fn test_wasm_backend_rejects_defer_results_before_codegen() {
+	v3_bin := build_v3_review_transform()
+	run_bad_backend(v3_bin, 'wasm_defer_result', 'wasm', 'fn f() int {
+	defer {
+		assert $res() == 42
+	}
+	return 42
+}
+
+fn main() {
+	println(int_str(f()))
+}
+',
+		'`$res()` is not supported by the V3 wasm backend')
+}
+
+fn test_thread_handle_equality_uses_platform_comparison() {
+	v3_bin := build_v3_review_transform()
+	source := 'fn answer() int {
+	return 42
+}
+
+fn main() {
+	worker := spawn answer()
+	copy_handle := worker
+	assert worker == copy_handle
+	assert !(worker != copy_handle)
+	println(int_str(worker.wait()))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'thread_handle_equality_c', source)
+	$if windows {
+		assert c_source.contains('return a.handle == b.handle;'), c_source
+	} $else {
+		assert c_source.contains('pthread_equal(a.handle, b.handle) != 0'), c_source
+	}
+	assert !c_source.contains('memcmp(&__thread_'), c_source
+	out := run_good(v3_bin, 'thread_handle_equality', source)
+	assert out == '42'
+}
+
+fn test_c_flag_d_macro_uses_cli_override() {
+	v3_bin := build_v3_review_transform()
+	out := run_good_with_flags(v3_bin, 'c_flag_d_override', '-d N=42', "module main
+
+#flag -DCNUMBER=$d('N', 1234)
+
+fn main() {
+	println(int_str(int(C.CNUMBER)))
+}
+")
+	assert out == '42'
+}
+
+fn test_synthetic_closure_runtime_import_preserves_user_alias() {
+	v3_bin := build_v3_review_transform()
+	aliased := run_good_project(v3_bin, 'closure_runtime_user_alias', {
+		'main.v':                    'module main
+
+import app.callbacks as closure
+
+fn main() {
+	value := 3
+	callback := fn [value] () int {
+		return value
+	}
+	println(int_str(closure.answer() + callback()))
+}
+'
+		'app/callbacks/callbacks.v': 'module callbacks
+
+pub fn answer() int {
+	return 39
+}
+'
+	}, 'main.v')
+	assert aliased == '42'
+	natural := run_good_project(v3_bin, 'closure_runtime_natural_alias', {
+		'main.v':                'module main
+
+import app.closure
+
+fn main() {
+	println(int_str(closure.answer()))
+}
+'
+		'app/closure/closure.v': 'module closure
+
+pub fn answer() int {
+	return 42
+}
+'
+	}, 'main.v')
+	assert natural == '42'
+	imported_capture := run_good_project(v3_bin, 'closure_runtime_imported_capture', {
+		'main.v':              'module main
+
+import app.worker
+
+fn main() {
+	println(int_str(worker.answer()))
+}
+'
+		'app/worker/worker.v': 'module worker
+
+pub fn answer() int {
+	value := 42
+	callback := fn [value] () int {
+		return value
+	}
+	return callback()
+}
+'
+	}, 'main.v')
+	assert imported_capture == '42'
+}
+
+fn test_escaping_mut_method_value_rejects_stack_receiver() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (mut counter Counter) next() int {
+	counter.value++
+	return counter.value
+}
+'
+	run_bad(v3_bin, 'mut_method_value_stack_receiver_direct', source +
+		'fn make() fn () int {
+	mut counter := Counter{}
+	return counter.next
+}
+
+fn main() {
+	_ = make()
+}
+',
+		'mutable local receiver cannot escape')
+	run_bad(v3_bin, 'mut_method_value_stack_receiver_alias', source +
+		'fn make() fn () int {
+	mut counter := Counter{}
+	callback := counter.next
+	return callback
+}
+
+fn main() {
+	_ = make()
+}
+',
+		'mutable local receiver cannot escape')
+	in_scope := run_good(v3_bin, 'mut_method_value_in_scope_borrows_receiver', source +
+		'fn main() {
+	mut counter := Counter{}
+	callback := counter.next
+	println(int_str(callback()))
+	println(int_str(counter.value))
+}
+')
+	assert in_scope == '1\n1'
+	safe := run_good(v3_bin, 'value_method_value_escape', 'struct ValueCounter {
+	value int
+}
+
+fn (counter ValueCounter) current() int {
+	return counter.value
+}
+
+fn make(value int) fn () int {
+	return ValueCounter{
+		value: value
+	}.current
+}
+
+fn main() {
+	first := make(11)
+	second := make(22)
+	println(int_str(first()))
+	println(int_str(second()))
+}
+')
+	assert safe == '11\n22'
+}
+
+fn test_local_immutable_pointer_receiver_method_value_borrows_receiver() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'local_immutable_pointer_receiver_borrows', 'struct Foo {
+mut:
+	value int
+}
+
+fn (foo &Foo) read() int {
+	return foo.value
+}
+
+fn main() {
+	mut foo := Foo{
+		value: 1
+	}
+	callback := unsafe { foo.read }
+	foo.value = 2
+	println(int_str(callback()))
+}
+')
+	assert out == '2'
+}
+
+fn test_escaping_pointer_receiver_method_value_copies_addressable_local() {
+	v3_bin := build_v3_review_transform()
+	source := 'struct Foo {
+mut:
+	value int
+}
+
+fn (foo &Foo) read() int {
+	return foo.value
+}
+
+fn make(value int) fn () int {
+	foo := Foo{
+		value: value
+	}
+	return unsafe { foo.read }
+}
+
+fn make_via_pointer_alias(value int) fn () int {
+	foo := Foo{
+		value: value
+	}
+	p := &foo
+	cb := unsafe { p.read }
+	return cb
+}
+
+fn make_from_pointer(foo &Foo) fn () int {
+	return unsafe { foo.read }
+}
+
+fn overwrite_stack() {
+	mut values := [512]int{}
+	for i in 0 .. values.len {
+		values[i] = i
+	}
+}
+
+fn main() {
+	first := make(11)
+	second := make(22)
+	aliased := make_via_pointer_alias(55)
+	mut durable := &Foo{
+		value: 33
+	}
+	third := make_from_pointer(durable)
+	durable.value = 44
+	for _ in 0 .. 100 {
+		overwrite_stack()
+	}
+	println(int_str(first()))
+	println(int_str(second()))
+	println(int_str(third()))
+	println(int_str(aliased()))
+}
+'
+	out := run_good(v3_bin, 'escaped_pointer_receiver_addressable_local', source)
+	assert out == '11\n22\n44\n55'
+}
+
+fn test_stored_pointer_receiver_method_value_keeps_local_pointee_alive() {
+	v3_bin := build_v3_review_transform()
+	source := 'struct Foo {
+	value int
+}
+
+fn (foo &Foo) read() int {
+	return foo.value
+}
+
+struct Holder {
+mut:
+	callback fn () int
+}
+
+fn install(mut holder Holder, value int) {
+	local := Foo{
+		value: value
+	}
+	p := &local
+	holder.callback = unsafe { p.read }
+}
+
+fn overwrite_stack() {
+	mut values := [512]int{}
+	for i in 0 .. values.len {
+		values[i] = i
+	}
+}
+
+fn main() {
+	mut holder := Holder{
+		callback: fn () int {
+			return 0
+		}
+	}
+	install(mut holder, 73)
+	for _ in 0 .. 100 {
+		overwrite_stack()
+	}
+	println(int_str(holder.callback()))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'stored_pointer_receiver_local_pointee_c', source)
+	assert !c_source.contains('p = &local;'), c_source
+	out := run_good(v3_bin, 'stored_pointer_receiver_local_pointee', source)
+	assert out == '73'
+}
+
+fn test_callback_argument_method_value_keeps_mutable_local_receiver_alive() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (mut counter Counter) next() int {
+	counter.value++
+	return counter.value
+}
+
+struct Holder {
+mut:
+	callback fn () int
+}
+
+fn install(mut holder Holder, callback fn () int) {
+	holder.callback = callback
+}
+
+fn make_callback(mut holder Holder) {
+	mut counter := Counter{
+		value: 40
+	}
+	install(mut holder, counter.next)
+}
+
+fn overwrite_stack() {
+	mut values := [512]int{}
+	for i in 0 .. values.len {
+		values[i] = i
+	}
+}
+
+fn main() {
+	mut holder := Holder{
+		callback: fn () int {
+			return 0
+		}
+	}
+	make_callback(mut holder)
+	for _ in 0 .. 100 {
+		overwrite_stack()
+	}
+	println(int_str(holder.callback()))
+	println(int_str(holder.callback()))
+}
+'
+	out := run_good(v3_bin, 'callback_argument_mutable_local_receiver', source)
+	assert out == '41\n42'
+}
+
+fn test_callback_argument_method_value_preserves_mutable_receiver_identity() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (mut counter Counter) next() int {
+	counter.value++
+	return counter.value
+}
+
+fn invoke(callback fn () int) int {
+	return callback()
+}
+
+fn main() {
+	mut counter := Counter{}
+	println(int_str(invoke(counter.next)))
+	println(int_str(counter.value))
+}
+'
+	out := run_good(v3_bin, 'callback_argument_mutable_receiver_identity', source)
+	assert out == '1\n1'
+}
+
+fn test_callback_aggregate_argument_preserves_pointer_receiver_identity() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+struct Holder {
+	callback fn () int
+}
+
+fn invoke(holder Holder, mut counter Counter) int {
+	counter.value++
+	return holder.callback()
+}
+
+fn main() {
+	mut counter := Counter{}
+	value := invoke(Holder{
+		callback: counter.read
+	}, mut counter)
+	println(int_str(value))
+	println(int_str(counter.value))
+}
+'
+	out := run_good(v3_bin, 'callback_aggregate_argument_receiver_identity', source)
+	assert out == '1\n1'
+}
+
+fn test_returned_mut_fixed_array_capture_uses_durable_context_storage() {
+	v3_bin := build_v3_review_transform()
+	source := 'fn make_counter() fn () int {
+	mut values := [1, 20]!
+	return fn [mut values] () int {
+		values[0]++
+		return values[0] + values[1]
+	}
+}
+
+fn overwrite_stack() {
+	mut values := [512]int{}
+	for i in 0 .. values.len {
+		values[i] = i
+	}
+}
+
+fn main() {
+	callback := make_counter()
+	for _ in 0 .. 100 {
+		overwrite_stack()
+	}
+	println(int_str(callback()))
+	println(int_str(callback()))
+}
+'
+	out := run_good(v3_bin, 'returned_mut_fixed_array_capture', source)
+	assert out == '22\n23'
+}
+
+fn test_void_installer_mut_fixed_array_capture_uses_durable_storage() {
+	v3_bin := build_v3_review_transform()
+	source := 'struct Holder {
+mut:
+	callback fn () int
+}
+
+fn install(mut holder Holder) {
+	mut values := [1, 20]!
+	holder.callback = fn [mut values] () int {
+		values[0]++
+		return values[0] + values[1]
+	}
+}
+
+fn overwrite_stack() {
+	mut values := [512]int{}
+	for i in 0 .. values.len {
+		values[i] = i
+	}
+}
+
+fn main() {
+	mut holder := Holder{
+		callback: fn () int {
+			return 0
+		}
+	}
+	install(mut holder)
+	for _ in 0 .. 100 {
+		overwrite_stack()
+	}
+	println(int_str(holder.callback()))
+	println(int_str(holder.callback()))
+}
+'
+	out := run_good(v3_bin, 'void_installer_mut_fixed_array_capture', source)
+	assert out == '22\n23'
+}
+
+fn test_local_mut_fixed_array_capture_is_not_heap_promoted() {
+	v3_bin := build_v3_review_transform()
+	source := 'fn exercise() int {
+	for i in 0 .. 50_000 {
+		mut values := [i, 0]!
+		callback := fn [mut values] () int {
+			values[0]++
+			return values[0]
+		}
+		assert callback() == i + 1
+	}
+	return 42
+}
+
+fn main() {
+	println(int_str(exercise()))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'local_mut_fixed_array_capture_c', source)
+	assert c_source.contains('closure__closure_try_destroy(callback);'), c_source
+	assert !c_source.contains('memdup(&__esc'), c_source
+	out := run_good(v3_bin, 'local_mut_fixed_array_capture', source)
+	assert out == '42'
+}
+
+fn test_immediately_invoked_mut_fixed_array_capture_is_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := 'fn exercise() int {
+	for i in 0 .. 50_000 {
+		mut values := [i, 0]!
+		value := fn [mut values] () int {
+			values[0]++
+			return values[0]
+		}()
+		assert value == i + 1
+	}
+	return 42
+}
+
+fn main() {
+	println(int_str(exercise()))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'immediate_mut_fixed_array_capture_c', source)
+	assert c_source.contains('closure__closure_try_destroy(__immediate_closure_'), c_source
+	assert !c_source.contains('memdup(&__esc'), c_source
+	out := run_good(v3_bin, 'immediate_mut_fixed_array_capture', source)
+	assert out == '42'
+}
+
+fn test_mut_fixed_array_capture_shares_durable_outer_storage() {
+	v3_bin := build_v3_review_transform()
+	source := 'fn main() {
+	mut values := [2]int{}
+	update := fn [mut values] () int {
+		values[0]++
+		return values[0]
+	}
+	assert update() == 1
+	assert values[0] == 1
+	values[0] = 41
+	assert update() == 42
+	assert values[0] == 42
+	println("ok")
+}
+'
+	out := run_good(v3_bin, 'mut_fixed_array_capture_shared_storage', source)
+	assert out == 'ok'
+}
+
+fn test_mutable_method_call_rejects_constant_receiver() {
+	v3_bin := build_v3_review_transform()
+	run_bad(v3_bin, 'mut_method_constant_receiver', 'struct Counter {
+mut:
+	value int
+}
+
+fn (mut counter Counter) increment() {
+	counter.value++
+}
+
+const counter = Counter{}
+
+fn main() {
+	counter.increment()
+}
+',
+		'cannot modify constant `counter`')
+}
+
 fn test_mut_value_capture_in_call_under_selector_base() {
 	v3_bin := build_v3_review_transform()
 	// A `[mut s]` value capture used as a call argument nested inside a selector base
@@ -773,6 +3223,49 @@ fn test_heap_escaping_amp_alias_keeps_heap_pointer() {
 	out := run_good(v3_bin, 'heap_escaping_amp_alias',
 		'struct S {\n\tn int\n}\n\nfn leak() &S {\n\tmut s := S{\n\t\tn: 1\n\t}\n\tp := &s\n\ts = S{\n\t\tn: 2\n\t}\n\treturn p\n}\n\nfn main() {\n\tp := leak()\n\tprintln(int_str(p.n))\n}\n')
 	assert out == '2'
+}
+
+fn test_returned_closure_alias_heap_promotes_captured_pointer_source() {
+	v3_bin := build_v3_review_transform()
+	source := 'struct Value {
+mut:
+	n int
+}
+
+fn make(initial int) fn () int {
+	mut value := Value{
+		n: initial
+	}
+	p := &value
+	cb := fn [p] () int {
+		return p.n
+	}
+	value.n++
+	return cb
+}
+
+fn overwrite_stack(seed int) {
+	mut values := [512]int{}
+	for i in 0 .. values.len {
+		values[i] = seed + i
+	}
+}
+
+fn main() {
+	first := make(10)
+	second := make(20)
+	for i in 0 .. 100 {
+		overwrite_stack(i)
+	}
+	println(int_str(first()))
+	println(int_str(second()))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'returned_closure_alias_pointer_capture_c', source)
+	body := c_fn_body(c_source, ' make(int initial) {')
+	assert body.contains('Value* value = (Value*)memdup'), body
+	out := run_good(v3_bin, 'returned_closure_alias_pointer_capture', source)
+	assert out == '11\n21'
 }
 
 fn test_heap_escaping_amp_reassignment_moves_current_source() {
@@ -838,7 +3331,7 @@ fn keep[T](mut current &T) &T {
 }
 
 fn main() {
-	item := Item{
+	mut item := Item{
 		value: 17
 	}
 	mut current := &item
@@ -853,7 +3346,7 @@ fn main() {
 fn test_return_address_of_pointer_backed_field_preserves_identity() {
 	v3_bin := build_v3_review_transform()
 	out := run_good(v3_bin, 'return_pointer_backed_field_address',
-		'struct Node[T] {\nmut:\n\tvalue T\n}\n\nstruct List[T] {\nmut:\n\ttail &Node[T] = unsafe { nil }\n}\n\nfn (list &List[T]) last() &T {\n\treturn &list.tail.value\n}\n\nfn main() {\n\tmut node := &Node[int]{\n\t\tvalue: 1\n\t}\n\tlist := List[int]{\n\t\ttail: node\n\t}\n\tmut last := list.last()\n\t*last = 9\n\tprintln(int_str(node.value))\n}\n')
+		'struct Node[T] {\nmut:\n\tvalue T\n}\n\nstruct List[T] {\nmut:\n\ttail &Node[T] = unsafe { nil }\n}\n\nfn (list &List[T]) last() &T {\n\treturn &list.tail.value\n}\n\nfn main() {\n\tmut node := &Node[int]{\n\t\tvalue: 1\n\t}\n\tlist := List[int]{\n\t\ttail: node\n\t}\n\tmut last := list.last()\n\tunsafe {\n\t\t*last = 9\n\t}\n\tprintln(int_str(node.value))\n}\n')
 	assert out == '9'
 }
 
@@ -885,51 +3378,258 @@ fn test_result_multi_return_match_branch_unwraps_imported_payload_type() {
 }
 
 fn test_string_to_owned_compiles_under_ownership_cgen() {
-	v3_bin := build_v3_review_transform()
+	v3_bin := build_v3_review_transform_ownership()
 	out := run_good_with_flags(v3_bin, 'string_to_owned_ownership_cgen', '-ownership',
 		"fn main() {\n\tname := 'owned'.to_owned()\n\tcopy := name.to_owned()\n\tprintln(copy)\n}\n")
 	assert out == 'owned'
 }
 
+fn test_owned_value_receiver_method_closure_clones_and_drops_context() {
+	v3_bin := build_v3_review_transform_ownership()
+	source := 'struct Holder implements IClone {
+	text   string
+	values []int
+}
+
+fn (holder Holder) read() string {
+	return holder.text + ":" + int_str(holder.values[0])
+}
+
+fn make_holder_reader() fn () string {
+	holder := Holder{
+		text:   "owned".to_owned()
+		values: [7]
+	}
+	return holder.read
+}
+
+fn use_callbacks() {
+	holder_cb := make_holder_reader()
+	println(holder_cb())
+	println(holder_cb())
+}
+
+fn main() {
+	use_callbacks()
+}
+'
+	src_path := os.join_path(os.temp_dir(), 'v3_owned_value_receiver_method_closure.v')
+	c_path := os.join_path(os.temp_dir(), 'v3_owned_value_receiver_method_closure.c')
+	os.write_file(src_path, source) or { panic(err) }
+	gen := os.execute('${v3_bin} -nocache -ownership ${src_path} -b c -o ${c_path}')
+	assert gen.exit_code == 0, gen.output
+	c_source := os.read_file(c_path) or { panic(err) }
+	assert c_source.contains('closure__closure_create_with_data_and_drop'), c_source
+	assert c_source.contains('string__free(&((ctx->receiver).text));'), c_source
+	assert c_source.contains('.receiver = __v3_method_receiver_clone_'), c_source
+	assert c_source.contains('Holder__read(__v3_method_receiver_clone_'), c_source
+	out := run_good_with_flags(v3_bin, 'owned_value_receiver_method_closure', '-ownership', source)
+	assert out == 'owned:7\nowned:7'
+}
+
+fn test_owned_rvalue_method_receiver_is_materialized_before_cloning() {
+	v3_bin := build_v3_review_transform_ownership()
+	source := 'struct Holder implements IClone {
+	text   string
+	values []int
+}
+
+fn (holder Holder) read() string {
+	return holder.text + ":" + int_str(holder.values[0])
+}
+
+fn make_holder() Holder {
+	return Holder{
+		text:   "owned".to_owned()
+		values: [7]
+	}
+}
+
+fn main() {
+	callback := make_holder().read
+	println(callback())
+	println(callback())
+}
+'
+	src_path := os.join_path(os.temp_dir(), 'v3_owned_rvalue_method_receiver.v')
+	c_path := os.join_path(os.temp_dir(), 'v3_owned_rvalue_method_receiver.c')
+	os.write_file(src_path, source) or { panic(err) }
+	gen := os.execute('${v3_bin} -nocache -ownership ${src_path} -b c -o ${c_path}')
+	assert gen.exit_code == 0, gen.output
+	c_source := os.read_file(c_path) or { panic(err) }
+	main_body := c_fn_body(c_source, 'int main(int argc, char** argv) {')
+	assert main_body.contains('((void*)&__method_receiver_'), main_body
+	assert main_body.contains('string__free(&((__method_receiver_'), main_body
+	assert !main_body.contains('&(make_holder())'), main_body
+	out := run_good_with_flags(v3_bin, 'owned_rvalue_method_receiver', '-ownership', source)
+	assert out == 'owned:7\nowned:7'
+}
+
+fn test_owned_fn_literal_capture_context_has_type_aware_drop() {
+	v3_bin := build_v3_review_transform_ownership()
+	source := 'fn exercise() int {
+	mut total := 0
+	for i in 0 .. 10 {
+		text := ("item" + int_str(i)).to_owned()
+		values := [i]
+		callback := fn [text, values] () int {
+			return text.len + values[0]
+		}
+		total += callback()
+	}
+	return total
+}
+
+fn main() {
+	println(int_str(exercise()))
+}
+'
+	src_path := os.join_path(os.temp_dir(), 'v3_owned_fn_literal_capture_context.v')
+	c_path := os.join_path(os.temp_dir(), 'v3_owned_fn_literal_capture_context.c')
+	os.write_file(src_path, source) or { panic(err) }
+	gen := os.execute('${v3_bin} -nocache -ownership -gc none ${src_path} -b c -o ${c_path}')
+	assert gen.exit_code == 0, gen.output
+	c_source := os.read_file(c_path) or { panic(err) }
+	assert c_source.contains('static void _flctxdrop_'), c_source
+	assert c_source.contains('closure__closure_create_with_data_and_drop'), c_source
+	assert c_source.contains('string__free(&((*ctx).text));'), c_source
+	assert c_source.contains('array__free(&((*ctx).values));'), c_source
+	out := run_good_with_flags(v3_bin, 'owned_fn_literal_capture_context', '-ownership -gc none',
+		source)
+	assert out == '95'
+}
+
 fn test_generic_interface_method_body_marks_log_debug_dispatch() {
-	v3_bin := build_v3_review_transform()
+	v3_bin := build_v3_review_transform_ownership()
 	out := run_good_with_flags(v3_bin, 'generic_interface_log_debug_dispatch', '-ownership',
 		"import log\n\ninterface Sink {\n\tbinary_data()\n}\n\nstruct Box[T] {}\n\nfn (mut b Box[T]) binary_data() {\n\t_ = b\n\tlog.debug('hidden')\n}\n\nstruct Runner {}\n\nfn (mut r Runner) run(mut s Sink) {\n\t_ = r\n\ts.binary_data()\n}\n\nstruct Worker {\nmut:\n\trunner Runner\n}\n\nfn main() {\n\tmut worker := Worker{\n\t\trunner: Runner{}\n\t}\n\tmut b := Box[int]{}\n\tworker.runner.run(mut b)\n\tprintln('ok')\n}\n")
 	assert out == 'ok'
 }
 
-fn test_specialized_generic_body_sees_materialized_interface_implementer() {
+fn test_generic_interface_mut_pointer_parameter_uses_erased_dispatch_abi() {
+	v3_bin := build_v3_review_transform_ownership()
+	out := run_good_with_flags(v3_bin, 'generic_interface_mut_pointer_dispatch', '-ownership', 'interface Writer[T] {
+	write(mut value T) !bool
+}
+
+struct Text {
+mut:
+	value string
+}
+
+struct Count {
+	padding [7]u8
+mut:
+	value int
+}
+
+struct TextWriter {}
+struct CountWriter {}
+
+fn (_ TextWriter) write(mut value Text) !bool {
+	value.value = "done"
+	return true
+}
+
+fn (_ CountWriter) write(mut value Count) !bool {
+	value.value = 42
+	return true
+}
+
+fn apply[T](writer &Writer[T], mut value T) !bool {
+	return writer.write(mut value)
+}
+
+fn main() {
+	mut text := Text{
+		value: "before"
+	}
+	mut count := Count{
+		value: 1
+	}
+	assert apply(TextWriter{}, mut text)!
+	assert apply(CountWriter{}, mut count)!
+	println(text.value + ":" + int_str(count.value))
+}
+')
+	assert out == 'done:42'
+}
+
+fn test_generic_interface_implementer_result_uses_dispatch_abi() {
+	v3_bin := build_v3_review_transform_ownership()
+	out := run_good_with_flags(v3_bin, 'generic_interface_implementer_result_dispatch',
+		'-ownership', 'interface Writer {
+mut:
+	write(buf []u8) !int
+}
+
+struct Buffer {}
+
+fn (mut b Buffer) write(buf []u8) !int {
+	_ = b
+	return buf.len
+}
+
+struct CounterWriter[W] {
+mut:
+	inner W
+}
+
+fn (mut w CounterWriter[W]) write(buf []u8) !int {
+	$if W is Writer {
+		return w.inner.write(buf)
+	} $else {
+		return error("not a writer")
+	}
+}
+
+fn write_len(mut writer Writer) !int {
+	return writer.write([u8(1), 2, 3])
+}
+
+fn main() {
+	mut plain := Buffer{}
+	assert write_len(mut plain)! == 3
+	mut counter := CounterWriter[Buffer]{
+		inner: Buffer{}
+	}
+	assert write_len(mut counter)! == 3
+	println("ok")
+}
+')
+	assert out == 'ok'
+}
+
+fn test_materialized_generic_interface_implementer_has_runtime_type_name() {
 	v3_bin := build_v3_review_transform()
-	out := run_good(v3_bin, 'generic_body_materialized_interface_implementer', 'interface Any {}
+	out := run_good(v3_bin, 'generic_body_materialized_interface_implementer', 'interface Any {
+	str() string
+}
 
 struct Box[T] {
 	value T
 }
 
-fn render[T](value T) string {
-	boxed := Any(value)
-	return boxed.type_name() + ":" + boxed.str()
-}
-
 fn main() {
-	println(render[Box[int]](Box[int]{
+	boxed := Any(Box[int]{
 		value: 7
-	}))
+	})
+	println(boxed.type_name() + ":" + boxed.str())
 }
 ')
-	assert out == 'Box[int]:Any(Box[int]{\n    value: 7\n})'
+	assert out == 'Box[int]:Box[int]{\n    value: 7\n}'
 }
 
 fn test_array_literal_separator_handling() {
 	v3_bin := build_v3_review_transform()
-	// Comma-, newline-, and blank-line-separated element lists parse with the
-	// expected length. This parser is permissive (it never hard-errors on
-	// malformed input), so the guarantee here is that a missing separator
-	// (`[9 10]`) or a repeated comma (`[11,,12]`) is *not* merged/collapsed into
-	// extra elements: only the leading element is kept, never `len == 2`.
+	// Comma-, newline-, and blank-line-separated element lists parse with the expected length.
 	out := run_good(v3_bin, 'array_literal_separators',
-		'const nl = [\n\t1\n\t2\n\t3\n]\nconst blank = [\n\t4\n\n\t5\n]\n\nfn main() {\n\tcommas := [6, 7, 8]\n\tmissing := [9 10]\n\tdoubled := [11,,12]\n\tprintln(int_str(nl.len) + ":" + int_str(blank.len) + ":" + int_str(commas.len) + ":" + int_str(missing.len) + ":" + int_str(doubled.len))\n}\n')
-	assert out == '3:2:3:1:1'
+		'const nl = [\n\t1\n\t2\n\t3\n]\nconst blank = [\n\t4\n\n\t5\n]\n\nfn main() {\n\tcommas := [6, 7, 8]\n\tprintln(int_str(nl.len) + ":" + int_str(blank.len) + ":" + int_str(commas.len))\n}\n')
+	assert out == '3:2:3'
+	run_bad(v3_bin, 'array_literal_missing_separator', 'fn main() {\n\t_ := [1 2]\n}\n',
+		'unexpected token `2`, expecting `]`')
+	run_bad(v3_bin, 'array_literal_doubled_comma', 'fn main() {\n\t_ := [1,,2]\n}\n',
+		'unexpected token `,`, expecting `]`')
 }
 
 fn test_container_wrapped_import_alias_type_resolves() {
@@ -1211,7 +3911,7 @@ fn test_map_literal_declaration_evaluates_entries_once() {
 fn test_fn_literal_preserves_mut_param_string_interpolation() {
 	v3_bin := build_v3_review_transform()
 	out := run_good(v3_bin, 'fn_literal_mut_param_interp',
-		"fn show(mut x int) {\n\t_ := fn () {}\n\tprintln('\${x}')\n}\n\nfn main() {\n\tmut n := 42\n\tshow(mut n)\n}\n")
+		"struct Counter {\n\tvalue int\n}\n\nfn show(mut counter Counter) {\n\t_ := fn () {}\n\tprintln('\${counter.value}')\n}\n\nfn main() {\n\tmut counter := Counter{\n\t\tvalue: 42\n\t}\n\tshow(mut counter)\n}\n")
 	assert out == '42'
 }
 
@@ -1266,6 +3966,22 @@ fn test_parallel_monomorphization_grows_uneven_worker_regions() {
 	src := '${declarations.join('\n')}\n\nfn inner[T](value T) int {\n\t_ = value\n\treturn 1\n}\n\nfn outer[T](value T) int {\n\treturn inner(value)\n}\n\nfn main() {\n\tmut total := 0\n${calls.join('\n')}\n\tprintln(total)\n}\n'
 	out :=
 		run_good_with_env(v3_bin, 'parallel_monomorph_grow', 'VJOBS=4 V3_TEST_MONOMORPH_GROW=1', src)
+	assert out == '40'
+}
+
+fn test_parallel_monomorphization_expands_single_seed() {
+	$if windows {
+		return
+	}
+	v3_bin := build_v3_review_transform()
+	mut declarations := []string{cap: 40}
+	mut calls := []string{cap: 40}
+	for i in 0 .. 40 {
+		declarations << 'struct MonoSeed${i} {}'
+		calls << '\ttotal += inner(MonoSeed${i}{})'
+	}
+	src := '${declarations.join('\n')}\n\nfn inner[T](value T) int {\n\t_ = value\n\treturn 1\n}\n\nfn seed[T]() int {\n\t_ = T{}\n\tmut total := 0\n${calls.join('\n')}\n\treturn total\n}\n\nfn main() {\n\tprintln(seed[MonoSeed0]())\n}\n'
+	out := run_good_with_env(v3_bin, 'parallel_monomorph_single_seed', 'VJOBS=4', src)
 	assert out == '40'
 }
 
@@ -1617,6 +4333,97 @@ fn main() {
 	assert out == "Value([1, 2])\nValue(['x'])\ntrue"
 }
 
+fn test_empty_interface_type_idx_maps_raw_containers() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'empty_interface_raw_container_type_idx', 'interface Value {}
+
+fn box[T](value T) Value {
+	return value
+}
+
+fn main() {
+	array_value := box([1, 2])
+	map_value := box({
+		"a": 3
+	})
+	int_value := Value(1)
+	println(array_value.type_idx() != 0)
+	println(map_value.type_idx() != 0)
+	println(array_value.type_idx() != map_value.type_idx())
+	println(array_value.type_idx() != int_value.type_idx())
+}
+')
+	assert out == 'true\ntrue\ntrue\ntrue'
+}
+
+fn test_boxed_container_runtime_type_indexes_resolve_hash_collisions() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'boxed_container_runtime_type_index_hash_collisions', 'interface Value {}
+
+struct Aaxtc {}
+struct Abddb {}
+
+fn main() {
+	left := Value([Aaxtc{}])
+	right := Value([Abddb{}])
+	println(left.type_idx() != right.type_idx())
+}
+')
+	assert out == 'true'
+}
+
+fn test_runtime_type_indexes_resolve_hash_collisions() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'runtime_type_index_hash_collisions', 'interface Value {}
+
+struct ULz {}
+struct AAbA {}
+struct Uc {}
+struct ACRB {}
+
+type Pair = ULz | AAbA
+
+fn main() {
+	left := Pair(ULz{})
+	right := Pair(AAbA{})
+	first := Value(Uc{})
+	second := Value(ACRB{})
+	println(left.type_idx() != right.type_idx())
+	println(first.type_idx() != second.type_idx())
+}
+')
+	assert out == 'true\ntrue'
+}
+
+fn test_late_generic_runtime_type_indexes_resolve_hash_collisions() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'late_generic_runtime_type_index_hash_collisions', 'interface Value {}
+
+struct Dxw {}
+struct Kdd {}
+
+struct Box[T] {
+	value T
+}
+
+fn type_index[T](value T) int {
+	boxed := Value(value)
+	return boxed.type_idx()
+}
+
+fn main() {
+	left := type_index(Box[Dxw]{
+		value: Dxw{}
+	})
+	right := type_index(Box[Kdd]{
+		value: Kdd{}
+	})
+	println(left != right)
+}
+')
+	assert out == 'true'
+}
+
 fn test_optional_string_equality_uses_payload_equality() {
 	v3_bin := build_v3_review_transform()
 	out := run_good(v3_bin, 'optional_string_semantic_equality',
@@ -1725,7 +4532,7 @@ fn test_vmodroot_c_flag_preserves_project_path_with_spaces() {
 	}
 	write_project_file(root, 'v.mod', "Module { name: 'flag_pseudo_path' }\n")
 	write_project_file(root, 'main.v',
-		'module main\n\n#flag -I @VMODROOT/include\n#insert "flag_value.c"\n\nfn C.flag_value() int\n\nfn main() {\n\tprintln(int_str(C.flag_value()))\n}\n')
+		'module main\n\n#flag -I @VMODROOT/include -D FEATURE\n#insert "flag_value.c"\n\nfn C.flag_value() int\n\nfn main() {\n\tprintln(int_str(C.flag_value()))\n}\n')
 	write_project_file(root, 'include/flag_value.c',
 		'#include <flag_value.h>\n\nstatic inline int flag_value(void) {\n\treturn flag_value_inner();\n}\n')
 	write_project_file(root, 'include/flag_value.h',
@@ -1789,6 +4596,58 @@ fn test_statement_array_append_consumes_rhs_expression() {
 	assert out == '35'
 }
 
+fn test_user_defined_scalar_map_method_append_pushes_one() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'user_defined_scalar_map_append', 'type Bar = int
+
+fn (b Bar) map() int {
+	return b + 1
+}
+
+fn main() {
+	mut values := []int{}
+	values << Bar(0).map()
+	println(int_str(values.len))
+	println(int_str(values[0]))
+}
+')
+	assert out == '1\n1'
+}
+
+fn test_builtin_map_nested_array_append_pushes_one() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'builtin_map_nested_array_append', 'fn main() {
+	mut values := [][]int{}
+	values << [1, 2].map(it)
+	println(int_str(values.len))
+	println(int_str(values[0][1]))
+}
+')
+	assert out == '1\n2'
+}
+
+fn test_array_valued_sum_variant_append_pushes_one() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'array_valued_sum_variant_append', 'type Value = int | []u8 | [2]u8
+
+fn main() {
+	mut values := []Value{}
+	bytes := [u8(1), 2]
+	values << bytes
+	fixed := [u8(3), 4]!
+	values << fixed
+	println(int_str(values.len))
+	inner := values[0] as []u8
+	println(int_str(inner.len))
+	println(int_str(int(inner[1])))
+	inner_fixed := values[1] as [2]u8
+	println(int_str(int(inner_fixed[0])))
+	println(int_str(int(inner_fixed[1])))
+}
+')
+	assert out == '2\n2\n2\n3\n4'
+}
+
 fn test_optional_append_to_map_value_copies_back_absent_entry() {
 	v3_bin := build_v3_review_transform()
 	out := run_good(v3_bin, 'optional_append_to_map_value_copyback', 'fn next_value() ?int {
@@ -1812,7 +4671,7 @@ fn main() {
 fn test_optional_map_append_evaluates_key_before_rhs() {
 	v3_bin := build_v3_review_transform()
 	out := run_good(v3_bin, 'optional_map_append_evaluation_order',
-		'fn select_key(key string, mut trace string) string {\n\ttrace += "key"\n\treturn key\n}\n\nfn next_value(mut key string, mut trace string) ?int {\n\ttrace += "rhs"\n\tkey = "changed"\n\treturn 7\n}\n\nfn main() {\n\tmut trace := ""\n\tmut key := "original"\n\tmut values := map[string][]int{}\n\tvalues[select_key(key, mut trace)] << next_value(mut key, mut trace) or { return }\n\tprintln(trace)\n\tprintln(int_str(values["original"][0]))\n\tprintln("changed" in values)\n}\n')
+		'struct State {\nmut:\n\tkey   string\n\ttrace string\n}\n\nfn select_key(key string, mut state State) string {\n\tstate.trace += "key"\n\treturn key\n}\n\nfn next_value(mut state State) ?int {\n\tstate.trace += "rhs"\n\tstate.key = "changed"\n\treturn 7\n}\n\nfn main() {\n\tmut state := State{\n\t\tkey: "original"\n\t}\n\tmut values := map[string][]int{}\n\tvalues[select_key(state.key, mut state)] << next_value(mut state) or { return }\n\tprintln(state.trace)\n\tprintln(int_str(values["original"][0]))\n\tprintln("changed" in values)\n}\n')
 	assert out == 'keyrhs\n7\nfalse'
 }
 
@@ -1839,16 +4698,21 @@ fn main() {
 
 fn test_failed_optional_append_probe_does_not_evaluate_rhs_twice() {
 	v3_bin := build_v3_review_transform()
-	out := run_good(v3_bin, 'optional_shift_rhs_evaluated_once', 'fn next_value(mut calls int) ?int {
-	calls++
+	out := run_good(v3_bin, 'optional_shift_rhs_evaluated_once', 'struct Counter {
+mut:
+	value int
+}
+
+fn next_value(mut calls Counter) ?int {
+	calls.value++
 	return 1
 }
 
 fn main() {
-	mut calls := 0
+	mut calls := Counter{}
 	flags := 2
 	flags << next_value(mut calls) or { return }
-	println(int_str(calls))
+	println(int_str(calls.value))
 }
 ')
 	assert out == '1'
@@ -2054,6 +4918,17 @@ fn test_parallel_json2_specializations_emit_registered_bodies() {
 	assert out == '42'
 }
 
+fn test_parallel_json2_exact_callee_does_not_rebind_main_type_to_imported_homonym() {
+	v3_bin := build_v3_review_transform()
+	c_source := gen_c_from_project(v3_bin, 'parallel_json2_exact_callee_homonym', {
+		'v.mod':             "Module { name: 'parallel_json2_exact_callee_homonym' }\n"
+		'discord/discord.v': 'module discord\n\npub struct Discord {\npub:\n\tname string\n}\n'
+		'main.v':            'module main\n\nimport discord\nimport x.json2\n\nstruct Discord {\n\tvalue int\n}\n\nfn main() {\n\t_ = json2.encode(discord.Discord{})\n\tvalue := json2.decode[Discord](r\'{"value":42}\')!\n\tprintln(value.value)\n}\n'
+	}, 'main.v')
+	assert c_source.contains('decode_struct_key_T_Discord(')
+	assert !c_source.contains('decode_struct_key_T_discord__Discord(')
+}
+
 fn test_module_local_const_array_struct_types_do_not_use_previous_module() {
 	v3_bin := build_v3_review_transform()
 	out := run_good(v3_bin, 'module_local_const_array_struct_types', 'import encoding.utf8
@@ -2076,4 +4951,960 @@ fn test_moved_module_alias_uses_target_module_identity() {
 		'main.v':                     'module main\n\nimport legacy\n\nfn main() {\n\tprintln(int_str(legacy.answer()))\n}\n'
 	}, 'main.v')
 	assert out == '42'
+}
+
+fn test_array_filter_and_map_reuse_capturing_callback_state() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'array_filter_map_capturing_callback_state', 'fn main() {
+	mut filter_calls := 0
+	filtered := [1, 2, 3].filter(fn [mut filter_calls] (value int) bool {
+		filter_calls++
+		return filter_calls > 1
+	})
+	mut map_calls := 0
+	mapped := [10, 20, 30].map(fn [mut map_calls] (value int) int {
+		map_calls++
+		return value + map_calls
+	})
+	println(filtered)
+	println(mapped)
+}
+')
+	assert out == '[2, 3]\n[11, 22, 33]'
+}
+
+fn test_capturing_callback_variable_keeps_declared_parameters() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'capturing_callback_variable_parameters', 'fn report(callback fn (int, string)) {
+	callback(42, "ready")
+}
+
+fn main() {
+	prefix := "progress"
+	callback := fn [prefix] (percent int, stage string) {
+		println("\${prefix}:\${percent}:\${stage}")
+	}
+	report(callback)
+}
+')
+	assert out == 'progress:42:ready'
+}
+
+fn test_array_filter_and_map_hoist_bound_method_callbacks() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Rule {
+	min    int
+	offset int
+mut:
+	calls int
+}
+
+fn (mut rule Rule) accept(value int) bool {
+	rule.calls++
+	return value >= rule.min
+}
+
+fn (mut rule Rule) shift(value int) int {
+	rule.calls++
+	return value + rule.offset
+}
+
+fn main() {
+	mut total := 0
+	for _ in 0 .. 20_000 {
+		rule := Rule{
+			min: 3
+			offset: 10
+		}
+		filtered := [1, 2, 3, 4].filter(rule.accept)
+		mapped := [1, 2, 3].map(rule.shift)
+		assert filtered.len == 2
+		assert filtered[0] == 3
+		assert filtered[1] == 4
+		assert mapped[0] == 11
+		assert mapped[1] == 12
+		assert mapped[2] == 13
+		assert rule.calls == 7
+		total += filtered[0] + filtered[1] + mapped[0] + mapped[1] + mapped[2]
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'array_bound_method_callbacks_c', source)
+	main_body := c_fn_body(c_source, 'int main(int argc, char** argv) {')
+	assert main_body.count('closure__closure_create_with_data(') == 2, main_body
+	assert main_body.contains('closure__closure_try_destroy(__filter_callback_'), main_body
+	assert main_body.contains('closure__closure_try_destroy(__map_callback_'), main_body
+	out := run_good(v3_bin, 'array_bound_method_callbacks', source)
+	assert out == '860000'
+}
+
+fn test_array_filter_and_map_invoke_branch_selected_function_values() {
+	v3_bin := build_v3_review_transform()
+	source := 'fn is_even(value int) bool {
+	return value % 2 == 0
+}
+
+fn is_odd(value int) bool {
+	return value % 2 != 0
+}
+
+fn double(value int) int {
+	return value * 2
+}
+
+fn increment(value int) int {
+	return value + 1
+}
+
+fn main() {
+	use_even := true
+	filtered := [1, 2, 3, 4].filter(if use_even { is_even } else { is_odd })
+	mode := 1
+	mapped := [1, 2, 3].map(match mode {
+		1 { double }
+		else { increment }
+	})
+	assert filtered == [2, 4]
+	assert mapped == [2, 4, 6]
+	println(int_str(filtered.len + mapped[2]))
+}
+'
+	out := run_good(v3_bin, 'array_branch_selected_function_values', source)
+	assert out == '8'
+}
+
+fn test_array_filter_and_map_reclaim_branch_selected_bound_methods() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Rule {
+	min    int
+	offset int
+mut:
+	calls int
+}
+
+fn (mut rule Rule) accept(value int) bool {
+	rule.calls++
+	return value >= rule.min
+}
+
+fn (mut rule Rule) shift(value int) int {
+	rule.calls++
+	return value + rule.offset
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 20_000 {
+		first := Rule{
+			min: 3
+			offset: 10
+		}
+		second := Rule{
+			min: 2
+			offset: 20
+		}
+		use_first := i % 2 == 0
+		filtered := [1, 2, 3, 4].filter(if use_first { first.accept } else { second.accept })
+		mapped := [1, 2, 3].map(match use_first {
+			true { first.shift }
+			else { second.shift }
+		})
+		assert first.calls + second.calls == 7
+		total += filtered.len + mapped[0]
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'array_branch_bound_method_callbacks_c', source)
+	main_body := c_fn_body(c_source, 'int main(int argc, char** argv) {')
+	assert main_body.count('closure__closure_try_destroy(') >= 2, main_body
+	out := run_good(v3_bin, 'array_branch_bound_method_callbacks', source)
+	assert out == '370000'
+}
+
+fn test_nested_callback_array_fields_preserve_receiver_identity_and_are_reclaimed() {
+	v3_bin := build_v3_review_transform()
+	source := '@[heap]
+struct Counter {
+mut:
+	value int
+}
+
+fn (counter &Counter) read() int {
+	return counter.value
+}
+
+struct Holder {
+	callbacks []fn () int
+}
+
+fn main() {
+	mut total := 0
+	for i in 0 .. 50_000 {
+		mut counter := Counter{
+			value: i
+		}
+		holder := Holder{
+			callbacks: [counter.read]
+		}
+		counter.value++
+		total += holder.callbacks[0]()
+	}
+	println(int_str(total))
+}
+'
+	c_source := gen_c_from_source(v3_bin, 'nested_callback_array_field_hot_loop_c', source)
+	main_body := c_fn_body(c_source, 'int main(int argc, char** argv) {')
+	assert main_body.contains('closure__closure_try_destroy(__array_closure_'), main_body
+	out := run_good(v3_bin, 'nested_callback_array_field_hot_loop', source)
+	assert out == '1250025000'
+}
+
+fn test_none_forwarded_to_specialized_generic_method_stays_none() {
+	v3_bin := build_v3_review_transform()
+	source := 'struct Item {
+	value string
+}
+
+struct Mapper {}
+
+fn (mapper Mapper) is_none[T](value ?T) bool {
+	return value == none
+}
+
+fn forward_none[T]() bool {
+	mapper := Mapper{}
+	return mapper.is_none[T](none)
+}
+
+fn main() {
+	println(forward_none[Item]())
+}
+'
+	out := run_good(v3_bin, 'generic_method_none_argument', source)
+	assert out == 'true'
+}
+
+fn test_generic_mut_parameter_typeof_keeps_pointer_shape() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'generic_mut_parameter_typeof', 'struct Item {}
+
+fn type_name[T](mut value T) string {
+	_ = value
+	return typeof(value).name
+}
+
+fn main() {
+	mut item := Item{}
+	println(type_name(mut item))
+}
+')
+	assert out == '&Item'
+}
+
+fn test_specialized_generic_or_uses_alias_struct_storage() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'specialized_generic_or_alias_storage', 'type Label = string
+
+struct Box[T] {
+	value T
+}
+
+fn make_box[T](value T) !Box[T] {
+	return Box[T]{
+		value: value
+	}
+}
+
+fn main() {
+	box := make_box[Label](Label("ok")) or { Box[Label]{} }
+	println(box.value)
+}
+')
+	assert out == 'ok'
+}
+
+fn test_result_unwrapped_sum_collections_compare_semantically() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'result_unwrapped_sum_collection_equality', 'type Value = bool | string
+
+fn values() ![]Value {
+	return [Value("ok")]
+}
+
+fn value_map() !map[string]Value {
+	return {
+		"key": Value("ok")
+	}
+}
+
+fn main() {
+	println(values()! == [Value("ok")])
+	println(value_map()! == {
+		"key": Value("ok")
+	})
+}
+')
+	assert out == 'true\ntrue'
+}
+
+fn test_recursive_sum_cast_does_not_select_container_variant() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'recursive_sum_same_type_cast', 'type Tree = int | []Tree
+
+fn leaf(value int) Tree {
+	return Tree(value)
+}
+
+fn main() {
+	tree := Tree([leaf(1), leaf(2)])
+	assert tree == Tree([Tree(1), Tree(2)])
+	println("ok")
+}
+')
+	assert out == 'ok'
+}
+
+fn test_explicit_nested_array_generic_argument_keeps_all_dimensions() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'explicit_nested_array_generic_argument', 'fn make[T]() T {
+	return T{}
+}
+
+fn main() {
+	value := make[[][]int]()
+	println(typeof(value).name)
+}
+')
+	assert out == '[][]int'
+}
+
+fn test_flag_enum_struct_field_defaults_to_zero() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'flag_enum_struct_field_default', '@[flag]
+enum Mode {
+	read
+	write
+}
+
+struct Config {
+	mode Mode
+}
+
+fn main() {
+	config := Config{}
+	println(int(config.mode))
+}
+')
+	assert out == '0'
+}
+
+fn test_array_map_in_sum_smartcast_uses_collection_lowering() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'array_map_in_sum_smartcast', 'type Value = int | []int
+
+fn normalize(value Value) Value {
+	return match value {
+		[]int { Value(value.map(it + 1)) }
+		else { value }
+	}
+}
+
+fn main() {
+	result := normalize(Value([1, 2]))
+	if result is []int {
+		println(result)
+	}
+}
+')
+	assert out == '[2, 3]'
+}
+
+fn test_for_in_sum_array_smartcast_indexes_variant_payload() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'for_in_sum_array_smartcast', 'type Size = []f64 | f64
+
+fn values(size Size) []f32 {
+	mut result := []f32{}
+	match size {
+		[]f64 {
+			for _, value in size {
+				result << f32(value)
+			}
+		}
+		f64 {
+			result << f32(size)
+		}
+	}
+	return result
+}
+
+fn main() {
+	println(values(Size([1.5, 2.5])))
+}
+')
+	assert out == '[1.5, 2.5]'
+}
+
+fn test_autofree_array_map_preserves_v1_sum_value_copy_compatibility() {
+	v3_bin := build_v3_review_transform_ownership()
+	out := run_good_with_flags(v3_bin, 'autofree_collection_copy_compatibility', '-autofree', 'struct Box {
+	value string
+}
+
+type Node = Box | int
+
+struct Pos {
+	index int
+}
+
+fn (mut _ Pos) free() {}
+
+struct Comment {
+	text string
+	pos  Pos
+}
+
+struct RecursiveField {
+	name string
+	decl RecursiveDecl
+}
+
+struct RecursiveDecl {
+	fields []RecursiveField
+}
+
+fn values() []int {
+	return [1, 2]
+}
+
+fn has_two() bool {
+	if true && values().any(it == 2) {
+		return true
+	}
+	return false
+}
+
+fn main() {
+	values := [Box{
+		value: "ok"
+	}]
+	nodes := values.map(Node(it))
+	println(nodes.len)
+	println((nodes[0] as Box).value)
+	println(has_two())
+	comments := [Comment{
+		text: "kept"
+	}]
+	println(comments.filter(it.text == "kept").len)
+	fields := [RecursiveField{
+		name: "field"
+	}]
+	println(fields.filter(it.name == "field").len)
+}
+')
+	assert out == '1\nok\ntrue\n1\n1'
+}
+
+fn test_smartcast_sum_value_in_direct_array_literal_is_reboxed() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'smartcast_sum_direct_array_literal', 'type Value = int | string
+
+fn first(values []Value) Value {
+	return values[0]
+}
+
+fn roundtrip(value Value) Value {
+	return match value {
+		int { first([value]) }
+		string { first([value]) }
+	}
+}
+
+fn main() {
+	println(roundtrip(Value(42)))
+	println(roundtrip(Value("ok")))
+}
+')
+	assert out == "Value(42)\nValue('ok')"
+}
+
+fn test_sum_variant_field_does_not_become_same_named_method_value() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'sum_variant_field_method_name_collision', 'type Value = int | i32
+
+fn (value Value) i32() i32 {
+	return 0
+}
+
+fn extract[T](value T) i32 {
+	$for variant in T.variants {
+		if value is variant {
+			$if variant.typ is i32 {
+				variant_value := value
+				return variant_value
+			}
+		}
+	}
+	return -1
+}
+
+fn main() {
+	println(extract[Value](Value(i32(42))))
+}
+')
+	assert out == '42'
+}
+
+fn test_interface_extension_method_uses_match_smartcast_receiver() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'interface_extension_match_smartcast_receiver', 'interface Named {
+	number() int
+}
+
+struct Alpha {}
+
+fn (_ &Alpha) number() int {
+	return 1
+}
+
+fn (_ &Alpha) str() string {
+	return "alpha"
+}
+
+fn (value &Named) str() string {
+	match value {
+		Alpha { return value.str() }
+		else { return "unknown" }
+	}
+}
+
+fn main() {
+	value := Named(&Alpha{})
+	println(value.str())
+}
+')
+	assert out == 'alpha'
+}
+
+fn test_struct_literal_implicit_reference_and_option_or_mut_receiver() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'struct_literal_ref_and_option_or_mut_receiver', 'import net
+
+struct Reader {
+mut:
+	value int
+}
+
+struct Client {
+	reader ?Reader
+}
+
+fn (mut reader Reader) next() int {
+	reader.value++
+	return reader.value
+}
+
+fn borrow(reader &Reader) int {
+	return reader.value
+}
+
+fn main() {
+	mut client := Client{
+		reader: Reader{
+			value: 4
+		}
+	}
+	println(borrow(Reader{
+		value: 7
+	}))
+	println(client.reader or { return }.next())
+	protocols := [net.Protocol.icmp, net.Protocol.icmpv6, net.Protocol.raw]
+	println(protocols.len)
+	unsafe {
+		null_char := &char(0)
+		println(isnil(null_char))
+	}
+}
+')
+	assert out == '7\n5\n3\ntrue'
+}
+
+fn test_implicit_voidptr_argument_promotes_local_to_heap() {
+	v3_bin := build_v3_review_transform()
+	generated := gen_c_from_source(v3_bin, 'implicit_voidptr_argument_heap_escape', 'struct State {
+mut:
+	value int
+}
+
+fn retain(_ voidptr) {}
+
+fn register() {
+	mut state := State{}
+	retain(state)
+	state.value = 7
+}
+
+fn main() {
+	register()
+}
+')
+	body := c_fn_body(generated, 'void main__register')
+	assert body.contains('main__State* state'), body
+	assert body.contains('memdup'), body
+}
+
+fn test_interface_pointer_arg_prefers_current_module_global_over_homonymous_const() {
+	v3_bin := build_v3_review_transform()
+	out := run_good_project(v3_bin, 'interface_pointer_global_const_collision', {
+		'v.mod':               "Module { name: 'interface_pointer_global_const_collision' }\n"
+		'api/api.v':           'module api
+
+@[has_globals]
+
+pub interface Logger {
+	value() int
+}
+
+pub struct Impl {
+pub:
+	n int
+}
+
+pub fn (logger &Impl) value() int {
+	return logger.n
+}
+
+__global default_logger &Logger
+
+fn init() {
+	default_logger = &Impl{
+		n: 7
+	}
+}
+
+fn read(logger &Logger) int {
+	return logger.value()
+}
+
+pub fn current() int {
+	return read(default_logger)
+}
+'
+		'consumer/consumer.v': 'module consumer
+
+import api
+
+pub const default_logger = &api.Impl{
+	n: 99
+}
+
+pub fn current() int {
+	return default_logger.value()
+}
+'
+		'main.v':              'module main
+
+import api
+import consumer
+
+fn main() {
+	println(api.current())
+	println(consumer.current())
+}
+'
+	}, 'main.v')
+	assert out == '7\n99'
+}
+
+fn test_array_accessors_are_addressable_append_targets() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'array_accessor_append_target', 'fn main() {
+	mut nested := [][]int{}
+	nested << []int{}
+	nested.last() << [1, 2, 3]
+	nested.first() << [4, 5, 6]
+	println(nested)
+}
+')
+	assert out == '[[1, 2, 3, 4, 5, 6]]'
+}
+
+fn test_selected_comptime_block_preserves_outer_value_tail() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'selected_comptime_block_value_tail', "fn main() {
+	value := if true {
+		\$if msvc { 'msvc' } \$else { 'other' }
+	} else {
+		''
+	}
+	println(value)
+}
+")
+	assert out == 'other'
+}
+
+fn test_none_literal_str_method() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'none_literal_str', 'fn main() {
+	println(none.str())
+}
+')
+	assert out == '<none>'
+}
+
+fn test_smartcast_sum_value_keeps_sum_method_receiver() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'smartcast_sum_method_receiver', 'struct Square {}
+
+struct Circle {}
+
+type Shape = Circle | Square
+
+fn (shape Shape) shape_name() string {
+	return match shape {
+		Circle { "circle" }
+		Square { "square" }
+	}
+}
+
+fn print_name(shape Shape) {
+	if shape is Square {
+		println(shape.shape_name())
+	}
+}
+
+fn main() {
+	print_name(Square{})
+}
+')
+	assert out == 'square'
+}
+
+fn test_smartcast_nested_sum_uses_nested_sum_method_receiver() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'smartcast_nested_sum_method_receiver', 'struct Integer {}
+
+struct Text {}
+
+struct Empty {}
+
+type Expr = Integer | Text
+type Node = Empty | Expr
+
+fn (expr Expr) expr_name() string {
+	return match expr {
+		Integer { "integer" }
+		Text { "text" }
+	}
+}
+
+fn print_name(node Node) {
+	if node is Expr {
+		println(node.expr_name())
+	}
+}
+
+fn main() {
+	print_name(Expr(Integer{}))
+}
+')
+	assert out == 'integer'
+}
+
+fn test_nested_match_smartcast_declaration_uses_nearest_variant() {
+	v3_bin := build_v3_review_transform()
+	out := run_good_with_flags(v3_bin, 'nested_match_smartcast_nearest_variant', '-building-v', 'struct Assoc {
+	exprs []Expr
+}
+
+struct Empty {}
+struct Other {}
+
+type Expr = Assoc | Empty
+type Node = Expr | Other
+
+fn child_count(node Node) int {
+	if node is Expr {
+		match node {
+			Assoc {
+				assoc := node
+				return assoc.exprs.len
+			}
+			Empty {
+				return 0
+			}
+		}
+	}
+	return 0
+}
+
+fn main() {
+	println(child_count(Expr(Assoc{
+		exprs: [Expr(Empty{})]
+	})))
+}
+')
+	assert out == '1'
+}
+
+fn test_building_v_keeps_valid_match_and_filtered_array_expression_types() {
+	v3_bin := build_v3_review_transform()
+	out := run_good_with_flags(v3_bin, 'building_v_valid_expression_types',
+		'-building-v -d valid_exprs', 'struct NumberInfo {
+	values []int
+}
+
+struct NameInfo {
+	names []string
+}
+
+type Info = NameInfo | NumberInfo
+
+fn item_count(info Info) int {
+	return match info {
+		NumberInfo { info.values.len }
+		NameInfo { info.names.len }
+	}
+}
+
+fn filtered_path_count() int {
+	$if valid_exprs ? {
+		first := "one"
+		second := ""
+		if first.len > 0 {
+			paths := [first, second].filter(it.len != 0)
+			return paths.len
+		}
+	}
+	return 0
+}
+
+fn main() {
+	println(item_count(Info(NumberInfo{
+		values: [1, 2]
+	})))
+	println(filtered_path_count())
+}
+')
+	assert out == '2\n1'
+}
+
+fn test_last_lvalue_stabilizes_side_effecting_receiver() {
+	v3_bin := build_v3_review_transform()
+	out := run_good(v3_bin, 'last_lvalue_side_effecting_receiver', '__global calls int
+
+fn next() int {
+	index := calls
+	calls++
+	return index
+}
+
+fn main() {
+	mut arrays := [[[1, 2]], [[3, 4]]]
+	arrays[next()].last() << 9
+	println(int_str(calls))
+	println(arrays[0])
+	println(arrays[1])
+}
+')
+	assert out == '1\n[[1, 2, 9]]\n[[3, 4]]'
+}
+
+fn test_shadowed_allocation_helper_fn_values_preserve_address_escapes() {
+	v3_bin := build_v3_review_transform()
+	c_source := gen_c_from_source(v3_bin, 'shadowed_allocation_helper_fn_value_escape', 'fn pass(p &int) &int {
+	return p
+}
+
+fn make_memdup() &int {
+	local := 41
+	memdup := pass
+	return memdup(&local)
+}
+
+fn make_memdup_noscan() &int {
+	local := 42
+	memdup_noscan := pass
+	return memdup_noscan(&local)
+}
+
+fn make_aligned_memdup() &int {
+	local := 43
+	v3_aligned_memdup := pass
+	return v3_aligned_memdup(&local)
+}
+
+fn make_builtin_memdup() &int {
+	local := 44
+	return unsafe { &int(memdup(&local, sizeof(int))) }
+}
+
+fn main() {
+	println(unsafe { *make_memdup() })
+	println(unsafe { *make_memdup_noscan() })
+	println(unsafe { *make_aligned_memdup() })
+	println(unsafe { *make_builtin_memdup() })
+}
+')
+	for fn_name in ['make_memdup', 'make_memdup_noscan', 'make_aligned_memdup'] {
+		body := c_fn_body(c_source, 'int* ${fn_name}(void) {')
+		assert body.contains('int* local ='), body
+	}
+	builtin_body := c_fn_body(c_source, 'int* make_builtin_memdup(void) {')
+	assert builtin_body.contains('int local = 44;'), builtin_body
+	assert builtin_body.contains('memdup(&local, sizeof(int))'), builtin_body
+}
+
+fn test_parallel_monomorph_workers_use_disjoint_lifted_literal_names() {
+	v3_bin := build_v3_review_transform()
+	out := run_good_with_env(v3_bin, 'parallel_monomorph_literal_names', 'VJOBS=4', 'fn apply[T](value T, callback fn (T) int) int {
+	return callback(value)
+}
+
+fn alpha[T](value T, offset int) int {
+	return apply(value, fn [offset] (_ T) int {
+		return offset
+	})
+}
+
+fn beta[T](value T, label string) int {
+	return apply(value, fn [label] (_ T) int {
+		return label.len
+	})
+}
+
+fn gamma[T](value T, enabled bool) int {
+	return apply(value, fn [enabled] (_ T) int {
+		return if enabled { 1 } else { 0 }
+	})
+}
+
+fn main() {
+	println(alpha(1, 7))
+	println(beta("x", "four"))
+	println(gamma(u64(3), true))
+}
+')
+	assert out == '7\n4\n1'
+}
+
+fn test_parallel_transform_merges_generic_call_metadata() {
+	v3_bin := build_v3_review_transform()
+	mut source := 'fn identity[T](value T) T {\n\treturn value\n}\n\n'
+	mut expected := 0
+	for i in 0 .. 300 {
+		source += 'fn value_${i}() int {\n\treturn identity(${i})\n}\n\n'
+		expected += i
+	}
+	source += 'fn main() {\n\tmut total := 0\n'
+	for i in 0 .. 300 {
+		source += '\ttotal += value_${i}()\n'
+	}
+	source += '\tprintln(total)\n}\n'
+	out := run_good_with_env(v3_bin, 'parallel_transform_generic_calls', 'VJOBS=4', source)
+	assert out == expected.str()
 }

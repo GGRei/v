@@ -13,6 +13,18 @@ fn test_comptime_field_function_type_keeps_declaring_module() {
 	assert t.comptime_field_type_id_key('Container[T]', 'eventbus') == 'eventbus.Container[T]'
 }
 
+fn test_comptime_field_type_id_keeps_custom_types_above_builtin_range() {
+	mut a := flat.FlatAst.new()
+	t := Transformer{
+		a: &a
+	}
+	assert comptime_type_id_hash('T207') & ~(0xff << 16) < 65536
+	type_id := t.comptime_field_type_id('T207', '')
+	assert type_id > 65535
+	assert type_id != comptime_builtin_type_idx('isize')
+	assert type_id & (0xff << 16) == 0
+}
+
 fn test_comptime_for_base_type_unwraps_storage_indirections() {
 	mut a := flat.FlatAst.new()
 	t := Transformer{
@@ -20,6 +32,25 @@ fn test_comptime_for_base_type_unwraps_storage_indirections() {
 	}
 	assert t.comptime_for_base_type('&websocket.Server') == 'websocket.Server'
 	assert t.comptime_for_base_type('shared websocket.ClientState') == 'websocket.ClientState'
+}
+
+fn test_comptime_method_receiver_name_normalizes_main_qualification() {
+	assert comptime_method_receiver_name('main.App', 'veb') == 'App'
+	assert comptime_method_receiver_matches('App', 'main.App', 'main.App', 'main', 'veb')
+}
+
+fn test_comptime_sum_variants_normalize_main_specialization_lock() {
+	mut a := flat.FlatAst.new()
+	t := Transformer{
+		a:         &a
+		sum_types: {
+			'Sum': ['int', 'string']
+		}
+	}
+	variants := t.comptime_sum_variants('main.Sum')
+	assert variants.len == 2
+	assert variants[0].typ == 'int'
+	assert variants[1].typ == 'string'
 }
 
 fn test_comptime_condition_distinguishes_pointer_depth_from_logical_and() {

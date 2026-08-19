@@ -46,6 +46,26 @@ fn (mut i TypeInterner) intern_locked(t Type) (TypeId, Type) {
 	return id, i.types[int(id)]
 }
 
+// probe returns the canonical copy when t is already interned, WITHOUT
+// mutating the interner or taking its lock. Callers must guarantee no
+// concurrent inserts (the parallel check-merge clone pass runs while the
+// master is joined and workers only use private interners).
+fn (i &TypeInterner) probe(t Type) ?Type {
+	mut key := semantic_type_hash(t)
+	for {
+		id := i.buckets[key] or { return none }
+		if int(id) < 0 || int(id) >= i.types.len {
+			return none
+		}
+		candidate := i.types[int(id)]
+		if semantic_types_equal(candidate, t) {
+			return candidate
+		}
+		key = type_hash_tag(key, 0x5bd1e995)
+	}
+	return none
+}
+
 fn (mut i TypeInterner) name(id TypeId) string {
 	i.lock.lock()
 	defer {
@@ -175,7 +195,8 @@ fn semantic_type_hash(t Type) u64 {
 		FnType {
 			hash = type_hash_tag(hash, 16)
 			hash = type_hash_tag(hash, t.params.len)
-			for param in t.params {
+			for idx, param in t.params {
+				hash = type_hash_tag(hash, int(fn_type_param_is_mut(t, idx)))
 				hash = type_hash_child(hash, param)
 			}
 			return type_hash_child(hash, t.return_type)
@@ -304,7 +325,7 @@ fn semantic_types_equal(a Type, b Type) bool {
 				return false
 			}
 			bb := b as Channel
-			return semantic_types_equal(a.elem_type, bb.elem_type)
+			return a.is_mut == bb.is_mut && semantic_types_equal(a.elem_type, bb.elem_type)
 		}
 		Map {
 			if b !is Map {
@@ -330,7 +351,8 @@ fn semantic_types_equal(a Type, b Type) bool {
 				return false
 			}
 			for idx, param in a.params {
-				if !semantic_types_equal(param, bb.params[idx]) {
+				if fn_type_param_is_mut(a, idx) != fn_type_param_is_mut(bb, idx)
+					|| !semantic_types_equal(param, bb.params[idx]) {
 					return false
 				}
 			}

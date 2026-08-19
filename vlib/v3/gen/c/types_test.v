@@ -1,9 +1,115 @@
 module c
 
 import os
+import v3.flat
 import v3.parser
 import v3.pref
 import v3.types
+
+fn test_optional_typedef_collection_ignores_incomplete_call_type_text() {
+	mut ast := &flat.FlatAst{}
+	ast.nodes = [flat.Node{
+		kind: .call
+		typ:  '?([]'
+	}, flat.Node{
+		kind: .call
+		typ:  '?string'
+	}]
+	mut tc := types.TypeChecker.new(ast)
+	mut g := FlatGen.new()
+	g.a = ast
+	g.tc = &tc
+	g.collect_optional_typedefs()
+	assert 'Optional_string' in g.needed_optional_types
+	assert g.needed_optional_types.len == 1
+}
+
+fn test_optional_payload_qualifies_concrete_generic_struct() {
+	mut ast := &flat.FlatAst{}
+	mut tc := types.TypeChecker.new(ast)
+	tc.structs['json2.StructKeyDecodeResult_TestEchoArgs'] = []types.StructField{}
+	tc.structs['async.Task_mcp__Response'] = []types.StructField{}
+	tc.structs['types.Array'] = []types.StructField{}
+	mut g := FlatGen.new()
+	g.a = ast
+	g.tc = &tc
+
+	value_type := types.Type(types.Struct{
+		name: 'StructKeyDecodeResult_TestEchoArgs'
+	})
+	pointer_type := types.Type(types.Pointer{
+		base_type: types.Type(types.Struct{
+			name: 'Task_mcp__Response'
+		})
+	})
+	assert g.optional_payload_c_type(value_type) == 'json2__StructKeyDecodeResult_TestEchoArgs'
+	assert g.optional_payload_c_type(pointer_type) == 'async__Task_mcp__Response*'
+	assert g.optional_payload_c_type(types.Type(types.Array{
+		elem_type: types.Type(types.int_)
+	})) == 'Array'
+}
+
+fn test_declaration_signature_scan_ignores_unscoped_regular_fn_nodes() {
+	mut ast := flat.FlatAst.new()
+	ast.add_node(flat.Node{
+		kind:  .fn_decl
+		value: 'load'
+		typ:   '!Image'
+	})
+	mut tc := types.TypeChecker.new(&ast)
+	tc.cur_module = 'json2'
+	mut g := FlatGen.new()
+	g.a = &ast
+	g.tc = &tc
+
+	g.collect_declaration_signature_types()
+	assert 'Optional_json2__Image' !in g.needed_optional_types
+}
+
+fn test_declaration_signature_scan_collects_specialized_fn_nodes() {
+	mut ast := flat.FlatAst.new()
+	fn_id := ast.add_node(flat.Node{
+		kind:  .fn_decl
+		value: 'decode_T_Data'
+		typ:   '!Data'
+	})
+	ast.specialized_fn_nodes[int(fn_id)] = true
+	mut tc := types.TypeChecker.new(&ast)
+	mut g := FlatGen.new()
+	g.a = &ast
+	g.tc = &tc
+
+	g.collect_declaration_signature_types()
+	assert 'Optional_Data' in g.needed_optional_types
+}
+
+fn test_optional_value_info_preserves_pointer_payload_abi() {
+	mut ast := &flat.FlatAst{}
+	mut tc := types.TypeChecker.new(ast)
+	mut g := FlatGen.new()
+	g.a = ast
+	g.tc = &tc
+
+	option_type := types.Type(types.OptionType{
+		base_type: types.Type(types.Struct{
+			name: 'Data'
+		})
+	})
+	payload_ct, payload_type := g.optional_value_info(option_type, 'Optional_Dataptr')
+	assert payload_ct == 'Data*'
+	assert payload_type is types.Pointer
+	assert (payload_type as types.Pointer).base_type.name() == 'Data'
+}
+
+fn test_array_equality_depth_follows_the_resolved_element_type() {
+	mut elem_type := types.Type(types.int_)
+	for _ in 0 .. 8 {
+		elem_type = types.Type(types.Array{
+			elem_type: elem_type
+		})
+	}
+	assert array_equality_depth_from_elem_type(elem_type) == 9
+}
 
 fn test_enum_decls_resets_checker_module_at_file_boundary() {
 	test_dir := os.join_path(os.vtmp_dir(), 'v3_enum_decls_module_reset_${os.getpid()}')
@@ -14,11 +120,13 @@ fn test_enum_decls_resets_checker_module_at_file_boundary() {
 	}
 	main_path := os.join_path(test_dir, 'main.v')
 	shadow_path := os.join_path(test_dir, 'shadow.v')
-	os.write_file(main_path, 'type Storage = u64
+	os.write_file(main_path, 'module main
+
+type Storage = u64
 
 const base = 300
 
-enum E as Storage {
+enum Example as Storage {
 	a = base + 2
 	b
 }
@@ -49,7 +157,7 @@ const base = 4
 	g.tc = &tc
 	g.enum_decls()
 	c_source := g.sb.str()
-	assert c_source.contains('typedef u64 E;'), c_source
-	assert c_source.contains('#define E__a ((E)(302))'), c_source
+	assert c_source.contains('typedef u64 Example;'), c_source
+	assert c_source.contains('#define Example__a ((Example)(302))'), c_source
 	assert tc.cur_module == 'shadow'
 }
