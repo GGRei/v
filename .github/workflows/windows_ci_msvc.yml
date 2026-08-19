@@ -358,12 +358,12 @@ jobs:
             -ExpectedGgServiceTypesSha256 'ec55d5540f456e2f2090b382bc0c16778794913ab95654526832e60f0f8e5849' `
             -ExpectedAppSha256 'af268df808e190318e77c44256de6f98038b5d094a7c308d79f34921ea25b6bd' `
             -ExpectedTypesSha256 '640b1590b25acc56eae75bd8af7f7521c10bf8cd2406b7fa7ba4844680dc03a9' `
-            -ExpectedBackendSha256 '46802367bde90168a71131b49015329d8c1c80fad0f0d47e988c2f6e240e30c7' `
+            -ExpectedBackendSha256 'dcd0f088c235ae030f8bbc9ab63082c38d93f6f1194373e74d8dcb454d100a3f' `
             -ExpectedServiceApiSha256 '0d13b992ca9edd0bc2f10bc4cdd0e01eaf865cd8a4c543f3ee4ea482cdd5a897' `
             -ExpectedServiceTypesSha256 'b14d0527430a4b718c90b02132994e35ba4d6340956546406a2d49a61dfdd34f' `
             -ExpectedServiceRegistrySha256 '73a65c6444884e80feb5b3a10104002de0c1fc94a0f0bbffab8c46a1b4c7e7c1' `
             -ExpectedEventDeliverySha256 '7209202474ce1c20baadb6565ac3ac73673e653aaf072cdde2c95f5b9cd98221' `
-            -ExpectedPublicRoutingSurfaceSha256 'db360ac3e18c239e8c2c794d11afc4fa2fbff205adb9f612537de42d8d6582c1' `
+            -ExpectedPublicRoutingSurfaceSha256 '20402c4033c7abbdec8c27d0639baa355ad4256a61a3563dad53123b7b488566' `
             -ExpectedServiceBackendSha256 '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d' `
             -ExpectedEventDispatchSha256 '7ef6c7cbd34511d6c19c1a3a269b46876db791b9412bb88e3a8d4dcd543bfd4e' `
             -ExpectedWin32BackendSha256 '4b854e9dd019bb8193057c08aaa0a8185096f165afff99d7ed519c5442e0e52e' `
@@ -371,7 +371,7 @@ jobs:
             -ExpectedWin32ServiceBackendSha256 '02076f74e9537323f688e256d3613f87534cd304ca1bc99b7433f406ffd6ebad' `
             -ExpectedWin32ServiceNativeSha256 '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73' `
             -ExpectedGreenProductionSurfaceSha256 'dcb863245235cb778312e4a08c0d81eb5d4685c162fb71da228f02e608becd47' `
-            -ExpectedRunnerSha256 'cdd1f87d51ac6bed12702279bb072d676aeb74cf871bffdd218d95e9ff34ad7f'
+            -ExpectedRunnerSha256 '5d3c74cfb4c57792a0e6cec9ceb4eaadace9672b9e531f2a9644db4a9f1137ae'
       - name: Prepare multiwindow Job Object watchdog
         shell: pwsh
         run: |

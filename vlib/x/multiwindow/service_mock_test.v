@@ -206,9 +206,19 @@ fn test_mock_readback_is_canonical_owned_rgba8() {
 fn test_owner_modal_registry_and_child_first_cascade() {
 	mut app := new_app()!
 	owner := app.create_window(title: 'owner')!
-	child := app.create_window(title: 'child', owner: owner, modal: true)!
-	grandchild := app.create_window(title: 'grandchild', owner: child)!
-	sibling := app.create_window(title: 'sibling', owner: owner)!
+	child := app.create_window(WindowConfig{
+		title: 'child'
+		owner: owner
+		modal: true
+	})!
+	grandchild := app.create_window(WindowConfig{
+		title: 'grandchild'
+		owner: child
+	})!
+	sibling := app.create_window(WindowConfig{
+		title: 'sibling'
+		owner: owner
+	})!
 	order := app.window_destroy_order(owner)!
 	assert order == [grandchild, child, sibling, owner]
 	child_index := app.services.window_index(child)!
@@ -216,7 +226,9 @@ fn test_owner_modal_registry_and_child_first_cascade() {
 
 	mut foreign := new_app()!
 	foreign_owner := foreign.create_window()!
-	app.create_window(owner: foreign_owner) or {
+	app.create_window(WindowConfig{
+		owner: foreign_owner
+	}) or {
 		assert err.msg() == err_app_identity_mismatch
 		app.stop()!
 		foreign.stop()!

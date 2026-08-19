@@ -3056,7 +3056,8 @@ fn (mut backend AppKitBackend) release_window_services(mut record &AppKitWindowR
 		return true
 	}
 	if record.state == unsafe { nil } {
-		return appkit_complete_window_service_release(mut *record)
+		record.services_released = true
+		return true
 	}
 	$if darwin {
 		if backend.native_operations == unsafe { nil }
@@ -3068,7 +3069,8 @@ fn (mut backend AppKitBackend) release_window_services(mut record &AppKitWindowR
 			if record.owner != none || record.modal {
 				return false
 			}
-			return appkit_complete_window_service_release(mut *record)
+			record.services_released = true
+			return true
 		}
 		if C.v_multiwindow_appkit_service_cancel_all_readbacks(record.state) < 0
 			|| C.v_multiwindow_appkit_service_set_mouse_lock(record.state, 0) <= 0
@@ -3077,7 +3079,8 @@ fn (mut backend AppKitBackend) release_window_services(mut record &AppKitWindowR
 			|| C.v_multiwindow_appkit_service_release_window_services(record.state) <= 0 {
 			return false
 		}
-		return appkit_complete_window_service_release(mut *record)
+		record.services_released = true
+		return true
 	} $else {
 		return false
 	}

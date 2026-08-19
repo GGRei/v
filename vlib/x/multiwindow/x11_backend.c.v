@@ -1251,8 +1251,8 @@ fn (mut backend X11Backend) service_restore_window(id WindowId) !ServiceWindowSt
 }
 
 fn (mut backend X11Backend) service_set_fullscreen(id WindowId, enabled bool) !ServiceWindowState {
-	return backend.service_change_net_state(id, if enabled { 1 } else { 0 },
-		c'_NET_WM_STATE_FULLSCREEN', unsafe { nil })!
+	action := if enabled { 1 } else { 0 }
+	return backend.service_change_net_state(id, action, c'_NET_WM_STATE_FULLSCREEN', unsafe { nil })!
 }
 
 fn (mut backend X11Backend) service_change_net_state(id WindowId, action int, first &char, second &char) !ServiceWindowState {

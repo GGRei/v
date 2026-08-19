@@ -136,6 +136,7 @@ jobs:
           ./v -cc clang -o "$RUNNER_TEMP/multiwindow_ci_watchdog" "$RUNNER_TEMP/multiwindow_ci_watchdog.v"
       - name: Multiwindow Metal regressions and runtime probes
         env:
+          V_MACOS_V3_NO_FALLBACK: '1'
           VGG_MULTIWINDOW_RUNTIME_PROBES: '1'
           VGG_MULTIWINDOW_RUNTIME_BACKEND: appkit
           VGG_MULTIWINDOW_EXAMPLE_UNATTENDED: appkit
@@ -156,6 +157,7 @@ jobs:
             vlib/x/multiwindow/native_operation_proof_test.v
             vlib/x/multiwindow/render_scheduler_test.v
             vlib/x/multiwindow/render_target_lease_test.v
+            vlib/x/multiwindow/service_mock_test.v
             vlib/x/multiwindow/service_native_appkit_contract_red_test.v
             vlib/x/multiwindow/service_native_appkit_final_nonreadback_red_test.v
             vlib/x/multiwindow/service_native_appkit_nonreadback_test.v
@@ -175,6 +177,9 @@ jobs:
             "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
               ./v -cc clang -d gg_multiwindow -d sokol_metal test "$test"
           done
+
+          "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
+            ./v -cc clang test vlib/gg/multiwindow_services_contract_test.v
 
           "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 \
             '{"example":"multiwindow_render_runtime","status":"PASS","cleanup":"complete"}' \

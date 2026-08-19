@@ -169,13 +169,13 @@ $publicSurface = @(
     [pscustomobject]@{ Path = 'vlib/gg/multiwindow_service_types.v'; Known = 'ec55d5540f456e2f2090b382bc0c16778794913ab95654526832e60f0f8e5849'; Passed = $ExpectedGgServiceTypesSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/app.v'; Known = 'af268df808e190318e77c44256de6f98038b5d094a7c308d79f34921ea25b6bd'; Passed = $ExpectedAppSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/types.v'; Known = '640b1590b25acc56eae75bd8af7f7521c10bf8cd2406b7fa7ba4844680dc03a9'; Passed = $ExpectedTypesSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/backend.v'; Known = '46802367bde90168a71131b49015329d8c1c80fad0f0d47e988c2f6e240e30c7'; Passed = $ExpectedBackendSha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/backend.v'; Known = 'dcd0f088c235ae030f8bbc9ab63082c38d93f6f1194373e74d8dcb454d100a3f'; Passed = $ExpectedBackendSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_api.v'; Known = '0d13b992ca9edd0bc2f10bc4cdd0e01eaf865cd8a4c543f3ee4ea482cdd5a897'; Passed = $ExpectedServiceApiSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_types.v'; Known = 'b14d0527430a4b718c90b02132994e35ba4d6340956546406a2d49a61dfdd34f'; Passed = $ExpectedServiceTypesSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_registry.v'; Known = '73a65c6444884e80feb5b3a10104002de0c1fc94a0f0bbffab8c46a1b4c7e7c1'; Passed = $ExpectedServiceRegistrySha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/event_delivery.v'; Known = '7209202474ce1c20baadb6565ac3ac73673e653aaf072cdde2c95f5b9cd98221'; Passed = $ExpectedEventDeliverySha256 }
 )
-$knownPublicRoutingSurfaceSha256 = 'db360ac3e18c239e8c2c794d11afc4fa2fbff205adb9f612537de42d8d6582c1'
+$knownPublicRoutingSurfaceSha256 = '20402c4033c7abbdec8c27d0639baa355ad4256a61a3563dad53123b7b488566'
 
 $greenProductionSurface = @(
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_backend.v'; Known = '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d'; Passed = $ExpectedServiceBackendSha256 }

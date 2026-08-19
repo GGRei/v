@@ -459,7 +459,8 @@ fn (mut backend Backend) poll_queued_events() ![]QueuedEvent {
 		}
 		return backend.pending_delivery.clone()
 	}
-	mut events := match backend.kind {
+	mut events := []QueuedEvent{}
+	events = match backend.kind {
 		.auto {
 			return error(err_backend_unsupported)
 		}
