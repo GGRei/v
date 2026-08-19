@@ -102,7 +102,7 @@ jobs:
           EOF
           ./v -cc clang -o "$RUNNER_TEMP/multiwindow_ci_watchdog" "$RUNNER_TEMP/multiwindow_ci_watchdog.v"
 
-      - name: Measure strict V3 native operation proof memory
+      - name: Build strict V3 native operation proof with memory diagnostics
         env:
           V_MACOS_V3_NO_FALLBACK: '1'
           VGG_MULTIWINDOW_RUNTIME_PROBES: '1'
@@ -113,9 +113,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          expected_parent='71d8665b29ede21e7684381f9084fa076af68326'
+          expected_parent='6bec0cd4e927f25dc3adfb72d92dd8ab2242b15c'
           expected_source='429cbaf1ce2c2cda26c4b9a421f62997e85bc57e210e49062daded89a2a95667'
           source_path='vlib/x/multiwindow/native_operation_proof_test.v'
+          binary_path="$RUNNER_TEMP/native_operation_proof"
+          vtmp_path="$RUNNER_TEMP/native_operation_vtmp"
           actual_parent="$(git rev-parse HEAD^)"
           actual_source="$(shasum -a 256 "$source_path" | awk '{print $1}')"
           if [[ "$actual_parent" != "$expected_parent" ]]; then
@@ -126,22 +128,62 @@ jobs:
             echo "native operation memory diagnostic source mismatch" >&2
             exit 1
           fi
-
-          log_path="$RUNNER_TEMP/native_operation_memory.log"
-          trap 'rm -f "$log_path"' EXIT
-          set +e
-          "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
-            /usr/bin/time -l ./v -no-memory-limit -cc clang \
-            -d gg_multiwindow -d sokol_metal test "$source_path" \
-            2>&1 | tee "$log_path"
-          pipeline_status=("${PIPESTATUS[@]}")
-          set -e
-          if [[ "${#pipeline_status[@]}" -ne 2 ]]; then
-            echo "native operation memory diagnostic pipeline shape mismatch" >&2
+          if [[ -n "${VTEST_ONLY_FN:-}" ]]; then
+            echo "native operation memory diagnostic VTEST_ONLY_FN must be unset or empty" >&2
+            exit 1
+          fi
+          if [[ -n "${VTEST_SHOW_ASSERTS:-}" ]]; then
+            echo "native operation memory diagnostic VTEST_SHOW_ASSERTS must be unset or empty" >&2
+            exit 1
+          fi
+          source_test_count="$(grep -Ec '^fn test_' "$source_path")"
+          if [[ "$source_test_count" != '53' ]]; then
+            echo "native operation memory diagnostic source test count mismatch" >&2
             exit 1
           fi
 
-          python3 - "$log_path" "${pipeline_status[0]}" "${pipeline_status[1]}" <<'PY'
+          if [[ -e "$vtmp_path" ]]; then
+            echo "native operation memory diagnostic VTMP is not fresh" >&2
+            exit 1
+          fi
+          mkdir "$vtmp_path"
+          export VTMP="$vtmp_path"
+
+          memory_snapshot() {
+            local label="$1"
+            local hw_memsize
+            hw_memsize="$(/usr/sbin/sysctl -n hw.memsize)"
+            if [[ ! "$hw_memsize" =~ ^[1-9][0-9]*$ ]]; then
+              echo "native operation memory diagnostic invalid hw.memsize" >&2
+              return 1
+            fi
+            echo "MULTIWINDOW_APPKIT_V3_MEMORY_SNAPSHOT label=$label hw_memsize=$hw_memsize"
+            echo "MULTIWINDOW_APPKIT_V3_VM_STAT_BEGIN label=$label"
+            /usr/bin/vm_stat | /usr/bin/sed -n '1,32p'
+            echo "MULTIWINDOW_APPKIT_V3_VM_STAT_END label=$label"
+          }
+
+          memory_snapshot before_build
+          log_path="$RUNNER_TEMP/native_operation_build.log"
+          set +e
+          "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - \
+            /usr/bin/time -l ./v -no-memory-limit -keepc -showcc \
+            -cc clang -d gg_multiwindow -d sokol_metal -skip-running \
+            -o "$binary_path" "$source_path" \
+            2>&1 | tee "$log_path"
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          memory_snapshot after_build
+          if [[ "${#pipeline_status[@]}" -ne 2 ]]; then
+            echo "native operation build diagnostic pipeline shape mismatch" >&2
+            exit 1
+          fi
+
+          python3 - "$log_path" "${pipeline_status[0]}" "${pipeline_status[1]}" \
+            "$vtmp_path" "$binary_path" "$source_path" <<'PY'
+          import collections
+          import hashlib
+          import os
           import pathlib
           import re
           import sys
@@ -149,6 +191,9 @@ jobs:
           log_path = pathlib.Path(sys.argv[1])
           watchdog_rc = int(sys.argv[2])
           tee_rc = int(sys.argv[3])
+          vtmp_path = pathlib.Path(sys.argv[4])
+          binary_path = pathlib.Path(sys.argv[5])
+          source_path = pathlib.Path(sys.argv[6])
           raw = log_path.read_bytes()
           failures = []
           if watchdog_rc != 0:
@@ -168,31 +213,258 @@ jobs:
           text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
           lines = text.splitlines()
 
-          summary_prefix = 'Summary for all V _test.v files:'
-          summary_lines = [line for line in lines if line.startswith(summary_prefix)]
-          summary_pattern = re.compile(
-              r'^Summary for all V _test\.v files: 1 passed, 1 total\. Elapsed time: .+$'
-          )
-          if len(summary_lines) != 1 or summary_pattern.fullmatch(summary_lines[0]) is None:
-              failures.append(f'summary_count={len(summary_lines)}')
-
-          forbidden_pattern = re.compile(
-              r'fallback|memory[- ]limit|memory usage reached', re.IGNORECASE
-          )
-          forbidden_lines = [line for line in lines if forbidden_pattern.search(line)]
-          if forbidden_lines:
-              failures.append(f'fallback_or_memory_limit_lines={len(forbidden_lines)}')
+          exact_error_patterns = [
+              re.compile(r'^V3 compatibility fallback disabled; requested reason: '
+                         r'(?:inline_asm|compiler_error|c_compilation_error)$'),
+              re.compile(r'^V3 C compilation failed; retrying with `-old-compiler`\.$'),
+              re.compile(r'^V3 compilation failed; retrying with `-old-compiler`\.$'),
+              re.compile(r'^V3 requested the compatibility compiler for inline assembly$'),
+              re.compile(r'^cannot register the V3 compatibility fallback:'),
+              re.compile(r'^V3 requested a C-error fallback,'),
+              re.compile(r'^failed to launch the compatibility compiler '),
+              re.compile(r'^error: v3 compiler memory usage reached [0-9]+ MiB .+ '
+                         r'\(limit: .+\); use `-no-memory-limit` to disable this limit$'),
+          ]
+          exact_error_lines = [
+              line for line in lines
+              if any(pattern.search(line.strip()) for pattern in exact_error_patterns)
+          ]
+          if exact_error_lines:
+              failures.append(f'fallback_or_memory_limit_errors={len(exact_error_lines)}')
 
           rss_pattern = re.compile(r'^\s*([0-9]+)\s+maximum resident set size\s*$')
           rss_values = [int(match.group(1)) for line in lines if (match := rss_pattern.fullmatch(line))]
           if len(rss_values) != 1 or rss_values[0] <= 0:
               failures.append(f'rss_count={len(rss_values)}')
+          time_pattern = re.compile(
+              r'^\s*([0-9.]+) real\s+([0-9.]+) user\s+([0-9.]+) sys\s*$'
+          )
+          time_values = [match.groups() for line in lines if (match := time_pattern.fullmatch(line))]
+          if len(time_values) != 1:
+              failures.append(f'time_record_count={len(time_values)}')
+
+          child_exit_pattern = re.compile(r'^multiwindow CI child exited with (-?[0-9]+)$')
+          child_exit_values = [
+              int(match.group(1)) for line in lines
+              if (match := child_exit_pattern.fullmatch(line.strip()))
+          ]
+          timed_command_rc = '0' if watchdog_rc == 0 else (
+              str(child_exit_values[0]) if len(child_exit_values) == 1 else 'unavailable'
+          )
+          if watchdog_rc == 0 and child_exit_values:
+              failures.append(f'unexpected_child_exit_records={len(child_exit_values)}')
+
+          showcc_lines = []
+          for line in lines:
+              if not line.startswith('  > '):
+                  continue
+              fields = line[4:].split()
+              if fields and pathlib.Path(fields[0].strip("'\"")).name in ['clang', 'clang++']:
+                  showcc_lines.append(line)
+          v1_showcc_count = sum('> C compiler cmd:' in line for line in lines)
+          if len(showcc_lines) != 1:
+              failures.append(f'clang_showcc_count={len(showcc_lines)}')
+          if v1_showcc_count != 0:
+              failures.append(f'v1_showcc_count={v1_showcc_count}')
+
+          def sha256(path):
+              digest = hashlib.sha256()
+              with path.open('rb') as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          c_files = sorted(path for path in vtmp_path.rglob('*.c') if path.is_file())
+          target_c_files = [
+              path for path in c_files
+              if path.name.startswith('native_operation_proof') and path.name.endswith('.tmp.c')
+          ]
+          print(f'MULTIWINDOW_APPKIT_V3_C_INVENTORY count={len(c_files)} '
+                f'target_count={len(target_c_files)} emitted={min(len(c_files), 16)} '
+                f'omitted={max(0, len(c_files) - 16)}')
+          for path in c_files[:16]:
+              print(f'MULTIWINDOW_APPKIT_V3_C_FILE path={path} size={path.stat().st_size} '
+                    f'sha256={sha256(path)}')
+          if len(target_c_files) == 1:
+              target_c_path = target_c_files[0]
+              print(f'MULTIWINDOW_APPKIT_V3_TARGET_C path={target_c_path} '
+                    f'size={target_c_path.stat().st_size} sha256={sha256(target_c_path)}')
+
+          source_text = source_path.read_text(encoding='utf-8')
+          test_names = re.findall(
+              r'^fn (test_[A-Za-z0-9_]+)\(\) \{$', source_text, flags=re.MULTILINE
+          )
+          if len(test_names) != 53 or len(set(test_names)) != 53:
+              failures.append(
+                  f'source_test_names={len(test_names)} unique={len(set(test_names))}'
+              )
+
+          generated_test_calls = []
+          invalid_test_call_lines = 0
+          failure_declaration_indices = []
+          return_anchor_count = 0
+          forbidden_harness_string_count = 0
+          if len(target_c_files) == 1 and target_c_files[0].stat().st_size > 0:
+              try:
+                  c_source = target_c_files[0].read_text(encoding='utf-8')
+              except UnicodeDecodeError:
+                  failures.append('target_c_utf8=0')
+                  c_source = ''
+              call_pattern = re.compile(r'multiwindow__(test_[A-Za-z0-9_]+)\(\);')
+              declaration_pattern = re.compile(
+                  r'^int __v3_test_failures_before_([0-9]+) ='
+              )
+              for line in c_source.splitlines():
+                  stripped = line.strip()
+                  call_matches = call_pattern.findall(stripped)
+                  if call_matches:
+                      if (len(call_matches) != 1
+                              or stripped != f'multiwindow__{call_matches[0]}();'):
+                          invalid_test_call_lines += 1
+                      generated_test_calls.extend(call_matches)
+                  if stripped.startswith('int __v3_test_failures_before_'):
+                      declaration_match = declaration_pattern.match(stripped)
+                      if declaration_match is None:
+                          failure_declaration_indices.append('invalid')
+                      else:
+                          failure_declaration_indices.append(declaration_match.group(1))
+                  if stripped == 'return __v3_test_failures > 0;':
+                      return_anchor_count += 1
+              forbidden_harness_string_count = sum(
+                  c_source.count(fragment)
+                  for fragment in ['Summary for ', 'running V tests']
+              )
+
+          if invalid_test_call_lines != 0:
+              failures.append(f'invalid_test_call_lines={invalid_test_call_lines}')
+          if collections.Counter(generated_test_calls) != collections.Counter(test_names):
+              failures.append(f'generated_test_calls={len(generated_test_calls)}')
+          expected_declaration_indices = [str(index) for index in range(53)]
+          if failure_declaration_indices != expected_declaration_indices:
+              failures.append(
+                  f'failure_declaration_indices={len(failure_declaration_indices)}'
+              )
+          if return_anchor_count != 1:
+              failures.append(f'return_anchor_count={return_anchor_count}')
+          if forbidden_harness_string_count != 0:
+              failures.append(
+                  f'forbidden_harness_string_count={forbidden_harness_string_count}'
+              )
+          print('MULTIWINDOW_APPKIT_V3_TEST_HARNESS '
+                f'source_tests={len(test_names)} generated_calls={len(generated_test_calls)} '
+                f'failure_declarations={len(failure_declaration_indices)} '
+                f'return_anchors={return_anchor_count} '
+                f'forbidden_strings={forbidden_harness_string_count}')
+
+          binary_exists = binary_path.is_file()
+          binary_size = binary_path.stat().st_size if binary_exists else 0
+          binary_executable = binary_exists and os.access(binary_path, os.X_OK)
+          binary_sha = sha256(binary_path) if binary_exists else 'absent'
+          print(f'MULTIWINDOW_APPKIT_V3_BINARY path={binary_path} exists={int(binary_exists)} '
+                f'executable={int(binary_executable)} size={binary_size} sha256={binary_sha}')
+          if len(c_files) != 1:
+              failures.append(f'c_file_count={len(c_files)}')
+          if len(target_c_files) != 1:
+              failures.append(f'target_c_count={len(target_c_files)}')
+          elif target_c_files[0].stat().st_size <= 0:
+              failures.append('target_c_nonempty=0')
+          if not binary_exists or binary_size <= 0 or not binary_executable:
+              failures.append('binary_valid=0')
 
           if failures:
-              print('MULTIWINDOW_APPKIT_V3_MEMORY_DIAG status=FAIL ' + ' '.join(failures), file=sys.stderr)
+              print('MULTIWINDOW_APPKIT_V3_BUILD_DIAG status=FAIL '
+                    + ' '.join(failures)
+                    + f' timed_command_rc={timed_command_rc}'
+                    + f' clang_showcc_count={len(showcc_lines)} '
+                    + f'v1_showcc_count={v1_showcc_count}', file=sys.stderr)
+              raise SystemExit(1)
+          real_seconds, user_seconds, sys_seconds = time_values[0]
+          print(
+              'MULTIWINDOW_APPKIT_V3_BUILD_DIAG '
+              f'status=PASS watchdog_rc=0 tee_rc=0 timed_command_rc=0 '
+              f'real_seconds={real_seconds} user_seconds={user_seconds} '
+              f'sys_seconds={sys_seconds} rss_bytes={rss_values[0]} '
+              f'clang_showcc_count={len(showcc_lines)} v1_showcc_count={v1_showcc_count}'
+          )
+          PY
+
+          shasum -a 256 "$binary_path" | awk '{print $1}' \
+            > "$RUNNER_TEMP/native_operation_proof.sha256"
+
+      - name: Run strict V3 native operation proof binary
+        env:
+          V_MACOS_V3_NO_FALLBACK: '1'
+          VGG_MULTIWINDOW_RUNTIME_PROBES: '1'
+          VGG_MULTIWINDOW_RUNTIME_BACKEND: appkit
+          VGG_MULTIWINDOW_EXAMPLE_UNATTENDED: appkit
+          V_MULTIWINDOW_PROBE_BACKEND: appkit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${V_MULTIWINDOW_NATIVE_PROOF_EGL_BAD_DISPLAY_CHILD:-}" ]]; then
+            echo "native operation run diagnostic EGL child selector must be unset or empty" >&2
+            exit 1
+          fi
+          if [[ -n "${V_MULTIWINDOW_NATIVE_PROOF_APPKIT_ORDINAL_EXHAUSTION_CHILD:-}" ]]; then
+            echo "native operation run diagnostic AppKit ordinal child selector must be unset or empty" >&2
+            exit 1
+          fi
+
+          binary_path="$RUNNER_TEMP/native_operation_proof"
+          if [[ ! -f "$binary_path" || ! -s "$binary_path" || ! -x "$binary_path" \
+            || ! -s "$RUNNER_TEMP/native_operation_proof.sha256" ]]; then
+            echo "native operation run diagnostic missing build boundary" >&2
+            exit 1
+          fi
+          read -r expected_binary_sha < "$RUNNER_TEMP/native_operation_proof.sha256"
+          actual_binary_sha="$(shasum -a 256 "$binary_path" | awk '{print $1}')"
+          if [[ ! "$expected_binary_sha" =~ ^[0-9a-f]{64}$ \
+            || "$actual_binary_sha" != "$expected_binary_sha" ]]; then
+            echo "native operation run diagnostic binary identity mismatch" >&2
+            exit 1
+          fi
+
+          log_path="$RUNNER_TEMP/native_operation_run.log"
+          set +e
+          "$RUNNER_TEMP/multiwindow_ci_watchdog" 300 - "$binary_path" \
+            2>&1 | tee "$log_path"
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          if [[ "${#pipeline_status[@]}" -ne 2 ]]; then
+            echo "native operation run diagnostic pipeline shape mismatch" >&2
+            exit 1
+          fi
+
+          python3 - "$log_path" "${pipeline_status[0]}" "${pipeline_status[1]}" \
+            "$actual_binary_sha" <<'PY'
+          import pathlib
+          import sys
+
+          log_path = pathlib.Path(sys.argv[1])
+          watchdog_rc = int(sys.argv[2])
+          tee_rc = int(sys.argv[3])
+          binary_sha = sys.argv[4]
+          raw = log_path.read_bytes()
+          failures = []
+          if watchdog_rc != 0:
+              failures.append(f'watchdog_rc={watchdog_rc}')
+          if tee_rc != 0:
+              failures.append(f'tee_rc={tee_rc}')
+          child_exit_count = raw.count(b'multiwindow CI child exited with ')
+          if child_exit_count != 0:
+              failures.append(f'child_exit_count={child_exit_count}')
+          if raw != b'':
+              failures.append(f'raw_log_bytes={len(raw)}')
+
+          if failures:
+              print('MULTIWINDOW_APPKIT_V3_RUN_DIAG status=FAIL '
+                    + ' '.join(failures), file=sys.stderr)
               raise SystemExit(1)
           print(
-              'MULTIWINDOW_APPKIT_V3_MEMORY_DIAG '
-              f'status=PASS watchdog_rc=0 tee_rc=0 summary_count=1 rss_bytes={rss_values[0]}'
+              'MULTIWINDOW_APPKIT_V3_RUN_DIAG '
+              f'status=PASS watchdog_rc=0 tee_rc=0 binary_rc=0 '
+              f'executed_test_calls=53 '
+              f'binary_sha256={binary_sha}'
           )
           PY
