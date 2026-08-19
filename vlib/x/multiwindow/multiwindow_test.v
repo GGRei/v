@@ -1972,49 +1972,91 @@ fn test_appkit_input_events_are_queued_and_capability_scoped_source_guard() {
 
 fn test_appkit_macos_cgen_emits_record_and_literal_input_mapping() {
 	c_source := multiwindow_emit_macos_multiwindow_test_c()
-	record_name := 'x__multiwindow__AppKitWindowRecord'
-	mapping_helper := 'x__multiwindow__appkit_queued_event_from_native'
-	constant_fragment := '_const_x__multiwindow__'
+	v1_typedef := 'typedef struct x__multiwindow__AppKitWindowRecord x__multiwindow__AppKitWindowRecord;'
+	v1_struct := 'struct x__multiwindow__AppKitWindowRecord {'
+	v1_mapping := 'VV_LOC _option_x__multiwindow__QueuedEvent x__multiwindow__appkit_queued_event_from_native('
+	v3_typedef := 'typedef struct multiwindow__AppKitWindowRecord multiwindow__AppKitWindowRecord;'
+	v3_struct := 'struct multiwindow__AppKitWindowRecord {'
+	v3_mapping := 'Optional_multiwindow__QueuedEvent multiwindow__appkit_queued_event_from_native('
 	c_lines := c_source.split_into_lines()
-	mut typedef_indices := []int{}
-	mut struct_indices := []int{}
-	mut prototype_indices := []int{}
-	mut definition_indices := []int{}
-	mut mapping_line_count := 0
+	mut v1_typedef_indices := []int{}
+	mut v1_struct_indices := []int{}
+	mut v1_prototype_indices := []int{}
+	mut v1_definition_indices := []int{}
+	mut v1_mapping_line_count := 0
+	mut v3_typedef_indices := []int{}
+	mut v3_struct_indices := []int{}
+	mut v3_prototype_indices := []int{}
+	mut v3_definition_indices := []int{}
+	mut v3_mapping_line_count := 0
 	for line_index, line in c_lines {
 		trimmed := line.trim_space()
-		if trimmed.starts_with('typedef struct ') && trimmed.ends_with(';')
-			&& trimmed.count(record_name) == 2 {
-			typedef_indices << line_index
+		if trimmed == v1_typedef {
+			v1_typedef_indices << line_index
 		}
-		if trimmed.starts_with('struct ') && trimmed.ends_with('{')
-			&& trimmed.count(record_name) == 1 {
-			struct_indices << line_index
+		if trimmed == v1_struct {
+			v1_struct_indices << line_index
 		}
-		if trimmed.starts_with('VV_LOC _option_x__multiwindow__QueuedEvent ')
-			&& trimmed.contains(mapping_helper) && trimmed.count(mapping_helper) == 1 {
-			mapping_line_count++
+		if trimmed.starts_with(v1_mapping) {
+			v1_mapping_line_count++
 			if trimmed.ends_with(';') {
-				prototype_indices << line_index
+				v1_prototype_indices << line_index
 			}
 			if trimmed.ends_with('{') {
-				definition_indices << line_index
+				v1_definition_indices << line_index
 			}
 		}
-		if trimmed.starts_with('#define ') || trimmed.starts_with('static ') {
-			constant_index := trimmed.index(constant_fragment) or { continue }
-			constant_tail := trimmed[constant_index + constant_fragment.len..]
-			assert !constant_tail.starts_with('appkit_')
+		if trimmed == v3_typedef {
+			v3_typedef_indices << line_index
+		}
+		if trimmed == v3_struct {
+			v3_struct_indices << line_index
+		}
+		if trimmed.starts_with(v3_mapping) {
+			v3_mapping_line_count++
+			if trimmed.ends_with(';') {
+				v3_prototype_indices << line_index
+			}
+			if trimmed.ends_with('{') {
+				v3_definition_indices << line_index
+			}
+		}
+		if trimmed.starts_with('#define ') || trimmed.starts_with('static ')
+			|| trimmed.starts_with('string ') || trimmed.starts_with('const ')
+			|| trimmed.starts_with('enum ') {
+			declaration := trimmed.all_before('=')
+			assert !declaration.contains('_const_x__multiwindow__appkit_')
+			assert !declaration.contains('_const_multiwindow__appkit_')
 		}
 	}
-	assert typedef_indices.len == 1
-	assert struct_indices.len == 1
-	assert mapping_line_count == 2
-	assert prototype_indices.len == 1
-	assert definition_indices.len == 1
-	assert prototype_indices[0] < definition_indices[0]
-	assert typedef_indices[0] < prototype_indices[0]
-	assert struct_indices[0] < definition_indices[0]
+	v1_exact := v1_typedef_indices.len == 1 && v1_struct_indices.len == 1
+		&& v1_prototype_indices.len == 1 && v1_definition_indices.len == 1
+		&& v1_mapping_line_count == 2
+	v3_exact := v3_typedef_indices.len == 2 && v3_struct_indices.len == 1
+		&& v3_prototype_indices.len == 1 && v3_definition_indices.len == 1
+		&& v3_mapping_line_count == 2
+	assert v1_exact != v3_exact
+	if v1_exact {
+		assert v3_typedef_indices.len == 0
+		assert v3_struct_indices.len == 0
+		assert v3_prototype_indices.len == 0
+		assert v3_definition_indices.len == 0
+		assert v3_mapping_line_count == 0
+		assert v1_prototype_indices[0] < v1_definition_indices[0]
+		assert v1_typedef_indices[0] < v1_prototype_indices[0]
+		assert v1_struct_indices[0] < v1_definition_indices[0]
+	} else {
+		assert v1_typedef_indices.len == 0
+		assert v1_struct_indices.len == 0
+		assert v1_prototype_indices.len == 0
+		assert v1_definition_indices.len == 0
+		assert v1_mapping_line_count == 0
+		assert v3_typedef_indices[0] < v3_typedef_indices[1]
+		assert v3_prototype_indices[0] < v3_definition_indices[0]
+		assert v3_typedef_indices[0] < v3_prototype_indices[0]
+		assert v3_typedef_indices[1] < v3_prototype_indices[0]
+		assert v3_struct_indices[0] < v3_definition_indices[0]
+	}
 }
 
 fn test_appkit_create_destroy_on_darwin() {
