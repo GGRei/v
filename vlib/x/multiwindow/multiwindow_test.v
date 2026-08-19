@@ -1972,11 +1972,35 @@ fn test_appkit_input_events_are_queued_and_capability_scoped_source_guard() {
 
 fn test_appkit_macos_cgen_emits_record_and_literal_input_mapping() {
 	c_source := multiwindow_emit_macos_multiwindow_test_c()
-	assert_source_order(c_source,
-		'typedef struct x__multiwindow__AppKitWindowRecord x__multiwindow__AppKitWindowRecord;',
-		'VV_LOC _option_x__multiwindow__QueuedEvent x__multiwindow__appkit_queued_event_from_native(')
-	assert_source_order(c_source, 'struct x__multiwindow__AppKitWindowRecord {',
-		'VV_LOC _option_x__multiwindow__QueuedEvent x__multiwindow__appkit_queued_event_from_native(')
+	typedef_marker := 'typedef struct x__multiwindow__AppKitWindow' +
+		'Record x__multiwindow__AppKitWindowRecord;'
+	struct_marker := 'struct x__multiwindow__AppKitWindow' + 'Record {'
+	mapping_marker := 'VV_LOC _option_x__multiwindow__QueuedEvent x__multiwindow__' +
+		'appkit_queued_event_from_native('
+	assert c_source.count(mapping_marker) == 2
+	first_mapping_index := c_source.index(mapping_marker) or {
+		assert false, 'generated C does not contain the AppKit input mapping declaration'
+		return
+	}
+	second_mapping_index := c_source.index_after(mapping_marker, first_mapping_index +
+		mapping_marker.len) or {
+		assert false, 'generated C does not contain the AppKit input mapping definition'
+		return
+	}
+	first_mapping_line := c_source[first_mapping_index..].all_before('\n')
+	second_mapping_line := c_source[second_mapping_index..].all_before('\n')
+	assert first_mapping_line.trim_space().ends_with(';')
+	assert second_mapping_line.trim_space().ends_with('{')
+	typedef_index := c_source.index(typedef_marker) or {
+		assert false, 'generated C does not contain the AppKit record typedef'
+		return
+	}
+	struct_index := c_source.index(struct_marker) or {
+		assert false, 'generated C does not contain the AppKit record definition'
+		return
+	}
+	assert typedef_index < first_mapping_index
+	assert struct_index < second_mapping_index
 	forbidden_const_prefix := '_const_x__multiwindow__' + 'appkit_'
 	assert !c_source.contains(forbidden_const_prefix)
 }
