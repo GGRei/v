@@ -128,7 +128,7 @@ jobs:
             $fixture = (Resolve-Path 'vlib\v\gen\c\testdata\fontstash_boehm_prealloc_copy.vv').Path
             $testFile = (Resolve-Path 'vlib\v\gen\c\coutput_test.v').Path
             $failures = [System.Collections.Generic.List[string]]::new()
-            $generation = Invoke-CapturedProcess -FileName $vexe -Arguments @('-o', '-', '-d', 'prealloc', '-d', 'gcboehm', $fixture) -StdoutPath $stdoutPath -StderrPath $stderrPath -TimeoutMilliseconds 300000
+            $generation = Invoke-CapturedProcess -FileName $vexe -Arguments @('-o', '-', '-d', 'prealloc', '-gc', 'boehm', $fixture) -StdoutPath $stdoutPath -StderrPath $stderrPath -TimeoutMilliseconds 300000
             if ($generation.TimedOut) {
               $failures.Add('generation_timeout')
             }
