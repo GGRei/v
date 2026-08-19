@@ -1972,39 +1972,49 @@ fn test_appkit_input_events_are_queued_and_capability_scoped_source_guard() {
 
 fn test_appkit_macos_cgen_emits_record_and_literal_input_mapping() {
 	c_source := multiwindow_emit_macos_multiwindow_test_c()
-	dynamic_empty := c_source[..0]
-	typedef_marker := 'typedef struct x__multiwindow__AppKitWindow' + dynamic_empty +
-		'Record x__multiwindow__AppKitWindowRecord;'
-	struct_marker := 'struct x__multiwindow__AppKitWindow' + dynamic_empty + 'Record {'
-	mapping_marker := 'VV_LOC _option_x__multiwindow__QueuedEvent x__multiwindow__' +
-		dynamic_empty + 'appkit_queued_event_from_native('
+	record_name := 'x__multiwindow__AppKitWindowRecord'
+	mapping_helper := 'x__multiwindow__appkit_queued_event_from_native'
+	constant_fragment := '_const_x__multiwindow__'
 	c_lines := c_source.split_into_lines()
 	mut typedef_indices := []int{}
 	mut struct_indices := []int{}
-	mut mapping_indices := []int{}
+	mut prototype_indices := []int{}
+	mut definition_indices := []int{}
+	mut mapping_line_count := 0
 	for line_index, line in c_lines {
 		trimmed := line.trim_space()
-		if trimmed == typedef_marker {
+		if trimmed.starts_with('typedef struct ') && trimmed.ends_with(';')
+			&& trimmed.count(record_name) == 2 {
 			typedef_indices << line_index
 		}
-		if trimmed == struct_marker {
+		if trimmed.starts_with('struct ') && trimmed.ends_with('{')
+			&& trimmed.count(record_name) == 1 {
 			struct_indices << line_index
 		}
-		if trimmed.starts_with(mapping_marker) {
-			mapping_indices << line_index
+		if trimmed.starts_with('VV_LOC _option_x__multiwindow__QueuedEvent ')
+			&& trimmed.contains(mapping_helper) && trimmed.count(mapping_helper) == 1 {
+			mapping_line_count++
+			if trimmed.ends_with(';') {
+				prototype_indices << line_index
+			}
+			if trimmed.ends_with('{') {
+				definition_indices << line_index
+			}
+		}
+		if trimmed.starts_with('#define ') || trimmed.starts_with('static ') {
+			constant_index := trimmed.index(constant_fragment) or { continue }
+			constant_tail := trimmed[constant_index + constant_fragment.len..]
+			assert !constant_tail.starts_with('appkit_')
 		}
 	}
 	assert typedef_indices.len == 1
 	assert struct_indices.len == 1
-	assert mapping_indices.len == 2
-	prototype_index := mapping_indices[0]
-	definition_index := mapping_indices[1]
-	assert c_lines[prototype_index].trim_space().ends_with(';')
-	assert c_lines[definition_index].trim_space().ends_with('{')
-	assert typedef_indices[0] < prototype_index
-	assert struct_indices[0] < definition_index
-	forbidden_const_prefix := '_const_x__multiwindow__' + dynamic_empty + 'appkit_'
-	assert !c_source.contains(forbidden_const_prefix)
+	assert mapping_line_count == 2
+	assert prototype_indices.len == 1
+	assert definition_indices.len == 1
+	assert prototype_indices[0] < definition_indices[0]
+	assert typedef_indices[0] < prototype_indices[0]
+	assert struct_indices[0] < definition_indices[0]
 }
 
 fn test_appkit_create_destroy_on_darwin() {
