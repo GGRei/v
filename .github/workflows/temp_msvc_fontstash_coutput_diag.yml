@@ -157,6 +157,7 @@ jobs:
             $allThreeCount = 0
             $currentOracleCount = 0
             $allocatorIndices = [System.Collections.Generic.List[int]]::new()
+            $ownedDataIndices = [System.Collections.Generic.List[int]]::new()
             for ($index = 0; $index -lt $scanLineCount; $index++) {
               $line = $lines[$index].TrimEnd("`r")
               $trimmed = $line.Trim()
@@ -169,6 +170,7 @@ jobs:
                 $allocatorIndices.Add($index)
               }
               if ($hasDataLen) { $dataLenCount++ }
+              if ($hasOwned -or $hasDataLen) { $ownedDataIndices.Add($index) }
               if ($hasOwned -and $hasAllocator -and $hasDataLen) { $allThreeCount++ }
               $oracleAllocator = 'GC_MALLOC_ATOMIC('
               $oracleAllocatorIndex = $trimmed.IndexOf($oracleAllocator, [StringComparison]::Ordinal)
@@ -201,10 +203,20 @@ jobs:
               $truncated = if ($line.Length -gt 512) { 1 } else { 0 }
               Write-Host ("TEMP_MSVC_FONTSTASH_CONTEXT index={0} truncated={1} base64={2}" -f ($contextIndex + 1), $truncated, $encoded)
             }
+            $ownedDataLimit = [Math]::Min($ownedDataIndices.Count, 64)
+            for ($ownedDataCandidate = 0; $ownedDataCandidate -lt $ownedDataLimit; $ownedDataCandidate++) {
+              $ownedDataIndex = $ownedDataIndices[$ownedDataCandidate]
+              $line = $lines[$ownedDataIndex].TrimEnd("`r")
+              $boundedLine = $line.Substring(0, [Math]::Min($line.Length, 512))
+              $encoded = [Convert]::ToBase64String($utf8.GetBytes($boundedLine))
+              $truncated = if ($line.Length -gt 512) { 1 } else { 0 }
+              Write-Host ("TEMP_MSVC_FONTSTASH_OWNED_DATA index={0} truncated={1} base64={2}" -f ($ownedDataIndex + 1), $truncated, $encoded)
+            }
             $stdoutSha256 = (Get-FileHash -Algorithm SHA256 -Path $stdoutPath).Hash.ToLowerInvariant()
             $allocatorCandidatesOmitted = $allocatorIndices.Count - $allocatorCandidateLimit
             $contextOmitted = [Math]::Max(0, $contextIndices.Count - $orderedContext.Count)
-            Write-Host ("TEMP_MSVC_FONTSTASH_STATS rc={0} stdout_bytes={1} stderr_bytes={2} lines_total={3} lines_scanned={4} owned_lines={5} allocator_lines={6} data_len_lines={7} all_three_lines={8} current_oracle_count={9} allocator_candidates_scanned={10} allocator_candidates_omitted={11} context_lines={12} context_omitted={13} vv_loc={14} stdout_sha256={15}" -f $generation.ExitCode, $generation.StdoutBytes.Length, $generation.StderrBytes.Length, $totalLineCount, $scanLineCount, $ownedCount, $allocatorCount, $dataLenCount, $allThreeCount, $currentOracleCount, $allocatorCandidateLimit, $allocatorCandidatesOmitted, $orderedContext.Count, $contextOmitted, [int]$vvLocPresent, $stdoutSha256)
+            $ownedDataOmitted = $ownedDataIndices.Count - $ownedDataLimit
+            Write-Host ("TEMP_MSVC_FONTSTASH_STATS rc={0} stdout_bytes={1} stderr_bytes={2} lines_total={3} lines_scanned={4} owned_lines={5} allocator_lines={6} data_len_lines={7} all_three_lines={8} current_oracle_count={9} allocator_candidates_scanned={10} allocator_candidates_omitted={11} context_lines={12} context_omitted={13} owned_data_union_lines={14} owned_data_union_logged={15} owned_data_union_omitted={16} vv_loc={17} stdout_sha256={18}" -f $generation.ExitCode, $generation.StdoutBytes.Length, $generation.StderrBytes.Length, $totalLineCount, $scanLineCount, $ownedCount, $allocatorCount, $dataLenCount, $allThreeCount, $currentOracleCount, $allocatorCandidateLimit, $allocatorCandidatesOmitted, $orderedContext.Count, $contextOmitted, $ownedDataIndices.Count, $ownedDataLimit, $ownedDataOmitted, [int]$vvLocPresent, $stdoutSha256)
 
             $testResult = Invoke-CapturedProcess -FileName $vexe -Arguments @('-run-only', 'test_fontstash_boehm_prealloc_copy_uses_atomic_allocator', 'test', $testFile) -StdoutPath $testStdoutPath -StderrPath $testStderrPath -TimeoutMilliseconds 600000
             Write-Host ("TEMP_MSVC_FONTSTASH_TEST rc={0} stdout_bytes={1} stderr_bytes={2} timed_out={3}" -f $testResult.ExitCode, $testResult.StdoutBytes.Length, $testResult.StderrBytes.Length, [int]$testResult.TimedOut)
