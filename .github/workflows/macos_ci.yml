@@ -149,6 +149,64 @@ jobs:
           ./v -cc clang -d gg_multiwindow -d sokol_metal \
             -o /tmp/gg_multiwindow_render_runtime_metal examples/gg/multiwindow_render_runtime.v
 
+          event_sequence_test='vlib/x/multiwindow/event_sequence_exhaustion_test.v'
+          event_sequence_scenarios=(
+            __full__
+            test_native_sequence_terminal_state_replays_for_every_backend_kind
+            test_zero_sequence_never_enters_win32_or_wayland_record_queues
+            test_appkit_native_sequence_exhaustion_is_sticky_and_drops_wrapped_event
+          )
+          for scenario in "${event_sequence_scenarios[@]}"; do
+            binary="$RUNNER_TEMP/event_sequence_${scenario}"
+            keep_c_dir="$RUNNER_TEMP/event_sequence_${scenario}_keepc"
+            mkdir -p "$keep_c_dir"
+            if [ "$scenario" = '__full__' ]; then
+              VTMP="$keep_c_dir" ./v -cc clang -d gg_multiwindow -d sokol_metal \
+                -cflags '-g' -keepc -skip-running \
+                -o "$binary" "$event_sequence_test"
+            else
+              VTMP="$keep_c_dir" ./v -cc clang -d gg_multiwindow -d sokol_metal \
+                -cflags '-g' -keepc -skip-running -run-only "$scenario" \
+                -o "$binary" "$event_sequence_test"
+            fi
+            test -x "$binary"
+          done
+
+          xcrun --find lldb
+
+          event_sequence_diagnostic_failed=0
+          set +e
+          for scenario in "${event_sequence_scenarios[@]}"; do
+            binary="$RUNNER_TEMP/event_sequence_${scenario}"
+            log="$RUNNER_TEMP/event_sequence_${scenario}.lldb.log"
+
+            "$RUNNER_TEMP/multiwindow_ci_watchdog" 120 - \
+              xcrun lldb --batch --no-lldbinit \
+                -o run \
+                -o 'process status' \
+                -k 'process status' \
+                -k 'thread backtrace all' \
+                -- "$binary" 2>&1 | tee "$log"
+            pipeline_status=("${PIPESTATUS[@]}")
+            watchdog_rc="${pipeline_status[0]}"
+            tee_rc="${pipeline_status[1]}"
+            success_signatures="$(grep -Ec 'Process [0-9]+ exited with status = 0([[:space:]]|$|\()' "$log")"
+            failure_signatures="$(grep -Ec 'Process [0-9]+ exited with status = -?[1-9][0-9]*|Process [0-9]+ stopped|stop reason =|EXC_[A-Z_]+|signal SIG[A-Z0-9]+' "$log")"
+            scenario_rc=0
+            if [ "$watchdog_rc" -ne 0 ] || [ "$tee_rc" -ne 0 ] || \
+              [ "$success_signatures" -lt 1 ] || [ "$failure_signatures" -ne 0 ]; then
+              scenario_rc=1
+              event_sequence_diagnostic_failed=1
+            fi
+            printf 'MULTIWINDOW_EVENT_SEQUENCE_DIAG scenario=%s watchdog_rc=%s tee_rc=%s success_signatures=%s failure_signatures=%s scenario_rc=%s\n' \
+              "$scenario" "$watchdog_rc" "$tee_rc" "$success_signatures" "$failure_signatures" "$scenario_rc"
+          done
+          set -e
+
+          if [ "$event_sequence_diagnostic_failed" -ne 0 ]; then
+            exit 1
+          fi
+
           tests=(
             vlib/x/multiwindow/event_sequence_exhaustion_test.v
             vlib/x/multiwindow/event_terminal_delivery_test.v
