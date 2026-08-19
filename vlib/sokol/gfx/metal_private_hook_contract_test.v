@@ -1,3 +1,4 @@
+// vtest build: !windows
 module gfx
 
 import os
