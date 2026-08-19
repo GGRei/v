@@ -1,0 +1,226 @@
+# Temporary diagnostic workflow. Never merge this file into the consolidated branch.
+name: TEMP MSVC fontstash C output diagnostic
+
+on:
+  push:
+    branches:
+      - diag/msvc-fontstash-coutput-20260819
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temp-msvc-fontstash-coutput-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fontstash-coutput:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      VFLAGS: -cc msvc
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build V with MSVC
+        shell: pwsh
+        run: |
+          .\makev.bat -msvc
+          if ($LASTEXITCODE -ne 0) {
+            throw "makev.bat failed with exit code $LASTEXITCODE"
+          }
+      - name: Inspect bounded fontstash C output metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stdoutPath = Join-Path $env:RUNNER_TEMP 'fontstash_coutput.stdout.c'
+          $stderrPath = Join-Path $env:RUNNER_TEMP 'fontstash_coutput.stderr.txt'
+          $testStdoutPath = Join-Path $env:RUNNER_TEMP 'fontstash_test.stdout.txt'
+          $testStderrPath = Join-Path $env:RUNNER_TEMP 'fontstash_test.stderr.txt'
+
+          function Invoke-CapturedProcess {
+            param(
+              [Parameter(Mandatory = $true)][string]$FileName,
+              [Parameter(Mandatory = $true)][string[]]$Arguments,
+              [Parameter(Mandatory = $true)][string]$StdoutPath,
+              [Parameter(Mandatory = $true)][string]$StderrPath,
+              [Parameter(Mandatory = $true)][int]$TimeoutMilliseconds
+            )
+            $process = [System.Diagnostics.Process]::new()
+            try {
+              $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+              $startInfo.FileName = $FileName
+              $startInfo.UseShellExecute = $false
+              $startInfo.CreateNoWindow = $true
+              $startInfo.RedirectStandardOutput = $true
+              $startInfo.RedirectStandardError = $true
+              foreach ($argument in $Arguments) {
+                [void]$startInfo.ArgumentList.Add($argument)
+              }
+              $process.StartInfo = $startInfo
+              if (-not $process.Start()) {
+                throw 'failed to start a captured process'
+              }
+              $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+              $stderrTask = $process.StandardError.ReadToEndAsync()
+              $timedOut = -not $process.WaitForExit($TimeoutMilliseconds)
+              if ($timedOut) {
+                $process.Kill($true)
+                [void]$process.WaitForExit(10000)
+              }
+              $process.WaitForExit()
+              $stdout = $stdoutTask.GetAwaiter().GetResult()
+              $stderr = $stderrTask.GetAwaiter().GetResult()
+              $utf8 = [System.Text.UTF8Encoding]::new($false)
+              [System.IO.File]::WriteAllText($StdoutPath, $stdout, $utf8)
+              [System.IO.File]::WriteAllText($StderrPath, $stderr, $utf8)
+              return [PSCustomObject]@{
+                ExitCode = $(if ($timedOut) { -1 } else { $process.ExitCode })
+                TimedOut = $timedOut
+                Stdout = $stdout
+                Stderr = $stderr
+                StdoutBytes = $utf8.GetBytes($stdout)
+                StderrBytes = $utf8.GetBytes($stderr)
+              }
+            }
+            finally {
+              $process.Dispose()
+            }
+          }
+
+          function Write-BoundedBase64Excerpt {
+            param(
+              [Parameter(Mandatory = $true)][string]$Prefix,
+              [AllowEmptyString()][string]$Text,
+              [Parameter(Mandatory = $true)][int]$MaxCharacters
+            )
+            $length = [Math]::Min($Text.Length, $MaxCharacters)
+            $bounded = $Text.Substring(0, $length)
+            $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($bounded))
+            $truncated = if ($Text.Length -gt $MaxCharacters) { 1 } else { 0 }
+            Write-Host ("{0} chars={1} truncated={2} base64={3}" -f $Prefix, $Text.Length, $truncated, $encoded)
+          }
+
+          try {
+            $utf8 = [System.Text.UTF8Encoding]::new($false)
+            $head = (& git rev-parse HEAD).Trim()
+            if ($LASTEXITCODE -ne 0 -or $head -ne $env:GITHUB_SHA) {
+              throw "checked-out HEAD mismatch: head=$head expected=$($env:GITHUB_SHA)"
+            }
+            if ($env:VFLAGS -ne '-cc msvc') {
+              throw "unexpected VFLAGS value: $($env:VFLAGS)"
+            }
+            Write-Host "TEMP_MSVC_FONTSTASH_IDENTITY head=$head vflags=-cc_msvc"
+
+            $sourcePaths = @(
+              'vlib\v\gen\c\coutput_test.v',
+              'vlib\v\gen\c\testdata\fontstash_boehm_prealloc_copy.vv',
+              'vlib\fontstash\fontstash.c.v'
+            )
+            foreach ($sourcePath in $sourcePaths) {
+              $sourceSha256 = (Get-FileHash -Algorithm SHA256 -Path $sourcePath).Hash.ToLowerInvariant()
+              Write-Host "TEMP_MSVC_FONTSTASH_SOURCE path=$sourcePath sha256=$sourceSha256"
+            }
+
+            $vexe = (Resolve-Path '.\v.exe').Path
+            $fixture = (Resolve-Path 'vlib\v\gen\c\testdata\fontstash_boehm_prealloc_copy.vv').Path
+            $testFile = (Resolve-Path 'vlib\v\gen\c\coutput_test.v').Path
+            $failures = [System.Collections.Generic.List[string]]::new()
+            $generation = Invoke-CapturedProcess -FileName $vexe -Arguments @('-o', '-', '-d', 'prealloc', '-d', 'gcboehm', $fixture) -StdoutPath $stdoutPath -StderrPath $stderrPath -TimeoutMilliseconds 300000
+            if ($generation.TimedOut) {
+              $failures.Add('generation_timeout')
+            }
+            if ($generation.ExitCode -ne 0) {
+              Write-BoundedBase64Excerpt -Prefix 'TEMP_MSVC_FONTSTASH_GENERATION_STDERR' -Text $generation.Stderr -MaxCharacters 4096
+              $failures.Add("generation_rc_$($generation.ExitCode)")
+            }
+            if ($generation.StdoutBytes.Length -gt 33554432) {
+              $failures.Add("generation_over_32mib_$($generation.StdoutBytes.Length)")
+            }
+            $vvLocPresent = $generation.Stdout.Contains('#define VV_LOC')
+            if (-not $vvLocPresent) {
+              $failures.Add('vv_loc_missing')
+            }
+            $scanOutput = $generation.Stdout.Substring(0, [Math]::Min($generation.Stdout.Length, 33554432))
+            $lines = @($scanOutput -split "`n")
+            $totalLineCount = $lines.Count
+            $scanLineCount = [Math]::Min($totalLineCount, 250000)
+            if ($totalLineCount -gt $scanLineCount) {
+              $failures.Add("generation_over_250000_lines_$totalLineCount")
+            }
+
+            $ownedCount = 0
+            $allocatorCount = 0
+            $dataLenCount = 0
+            $allThreeCount = 0
+            $currentOracleCount = 0
+            $allocatorIndices = [System.Collections.Generic.List[int]]::new()
+            for ($index = 0; $index -lt $scanLineCount; $index++) {
+              $line = $lines[$index].TrimEnd("`r")
+              $trimmed = $line.Trim()
+              $hasOwned = $line.Contains('owned')
+              $hasAllocator = $line.Contains('GC_MALLOC_ATOMIC') -or $line.Contains('GC_malloc_atomic')
+              $hasDataLen = $line.Contains('data_len')
+              if ($hasOwned) { $ownedCount++ }
+              if ($hasAllocator) {
+                $allocatorCount++
+                $allocatorIndices.Add($index)
+              }
+              if ($hasDataLen) { $dataLenCount++ }
+              if ($hasOwned -and $hasAllocator -and $hasDataLen) { $allThreeCount++ }
+              $oracleAllocator = 'GC_MALLOC_ATOMIC('
+              $oracleAllocatorIndex = $trimmed.IndexOf($oracleAllocator, [StringComparison]::Ordinal)
+              if ($trimmed.StartsWith('owned =', [StringComparison]::Ordinal) -and $oracleAllocatorIndex -ge 0) {
+                $oracleTail = $trimmed.Substring($oracleAllocatorIndex + $oracleAllocator.Length)
+                if ($oracleTail.Contains('data_len')) {
+                  $currentOracleCount++
+                }
+              }
+            }
+            if ($allocatorCount -eq 0) { $failures.Add('allocator_candidate_missing') }
+            if ($ownedCount -eq 0) { $failures.Add('owned_line_missing') }
+            if ($dataLenCount -eq 0) { $failures.Add('data_len_line_missing') }
+
+            $contextIndices = [System.Collections.Generic.HashSet[int]]::new()
+            $allocatorCandidateLimit = [Math]::Min($allocatorIndices.Count, 32)
+            for ($candidate = 0; $candidate -lt $allocatorCandidateLimit; $candidate++) {
+              $allocatorIndex = $allocatorIndices[$candidate]
+              $contextStart = [Math]::Max(0, $allocatorIndex - 3)
+              $contextEnd = [Math]::Min($scanLineCount - 1, $allocatorIndex + 3)
+              for ($contextIndex = $contextStart; $contextIndex -le $contextEnd; $contextIndex++) {
+                [void]$contextIndices.Add($contextIndex)
+              }
+            }
+            $orderedContext = @($contextIndices | Sort-Object | Select-Object -First 192)
+            foreach ($contextIndex in $orderedContext) {
+              $line = $lines[$contextIndex].TrimEnd("`r")
+              $boundedLine = $line.Substring(0, [Math]::Min($line.Length, 512))
+              $encoded = [Convert]::ToBase64String($utf8.GetBytes($boundedLine))
+              $truncated = if ($line.Length -gt 512) { 1 } else { 0 }
+              Write-Host ("TEMP_MSVC_FONTSTASH_CONTEXT index={0} truncated={1} base64={2}" -f ($contextIndex + 1), $truncated, $encoded)
+            }
+            $stdoutSha256 = (Get-FileHash -Algorithm SHA256 -Path $stdoutPath).Hash.ToLowerInvariant()
+            $allocatorCandidatesOmitted = $allocatorIndices.Count - $allocatorCandidateLimit
+            $contextOmitted = [Math]::Max(0, $contextIndices.Count - $orderedContext.Count)
+            Write-Host ("TEMP_MSVC_FONTSTASH_STATS rc={0} stdout_bytes={1} stderr_bytes={2} lines_total={3} lines_scanned={4} owned_lines={5} allocator_lines={6} data_len_lines={7} all_three_lines={8} current_oracle_count={9} allocator_candidates_scanned={10} allocator_candidates_omitted={11} context_lines={12} context_omitted={13} vv_loc={14} stdout_sha256={15}" -f $generation.ExitCode, $generation.StdoutBytes.Length, $generation.StderrBytes.Length, $totalLineCount, $scanLineCount, $ownedCount, $allocatorCount, $dataLenCount, $allThreeCount, $currentOracleCount, $allocatorCandidateLimit, $allocatorCandidatesOmitted, $orderedContext.Count, $contextOmitted, [int]$vvLocPresent, $stdoutSha256)
+
+            $testResult = Invoke-CapturedProcess -FileName $vexe -Arguments @('-run-only', 'test_fontstash_boehm_prealloc_copy_uses_atomic_allocator', 'test', $testFile) -StdoutPath $testStdoutPath -StderrPath $testStderrPath -TimeoutMilliseconds 600000
+            Write-Host ("TEMP_MSVC_FONTSTASH_TEST rc={0} stdout_bytes={1} stderr_bytes={2} timed_out={3}" -f $testResult.ExitCode, $testResult.StdoutBytes.Length, $testResult.StderrBytes.Length, [int]$testResult.TimedOut)
+            if ($testResult.ExitCode -ne 0) {
+              Write-BoundedBase64Excerpt -Prefix 'TEMP_MSVC_FONTSTASH_TEST_STDOUT' -Text $testResult.Stdout -MaxCharacters 4096
+              Write-BoundedBase64Excerpt -Prefix 'TEMP_MSVC_FONTSTASH_TEST_STDERR' -Text $testResult.Stderr -MaxCharacters 4096
+              $failures.Add("targeted_test_rc_$($testResult.ExitCode)")
+            }
+
+            if ($failures.Count -gt 0) {
+              throw "fontstash diagnostic failed closed: $($failures -join ',')"
+            }
+          }
+          finally {
+            Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $testStdoutPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $testStderrPath -Force -ErrorAction SilentlyContinue
+          }
