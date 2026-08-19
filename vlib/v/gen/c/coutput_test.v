@@ -214,6 +214,37 @@ fn test_c_must_have_files() {
 	assert total_errors == 0
 }
 
+fn test_fontstash_boehm_prealloc_copy_uses_atomic_allocator() {
+	old_wd := os.getwd()
+	os.chdir(vroot) or { panic(err) }
+	defer {
+		os.chdir(old_wd) or { panic(err) }
+	}
+	path := os.join_path(testdata_folder, 'fontstash_boehm_prealloc_copy.vv')
+	file_options := get_file_options(path)
+	alloptions := '-o - ${file_options.vflags}'
+	cmd := '${os.quoted_path(vexe)} ${alloptions} ${os.quoted_path(path)}'
+	compilation := os.execute(cmd)
+	ensure_compilation_succeeded(compilation, cmd)
+	assert !generated_c_uses_v3_codegen(compilation.output)
+	allocator_call := 'GC_MALLOC_ATOMIC('
+	mut matching_lines := []string{}
+	for raw_line in compilation.output.split_into_lines() {
+		line := raw_line.trim_space()
+		if line.starts_with('owned =') && line.contains(allocator_call)
+			&& line.all_after(allocator_call).contains('data_len') {
+			matching_lines << line
+		}
+	}
+	assert matching_lines.len == 1, 'expected 1 fontstash atomic ownership line, got ${matching_lines.len}'
+	matching_line := matching_lines[0]
+	allocator_count := matching_line.count(allocator_call)
+	data_len_count := matching_line.count('data_len')
+	assert allocator_count == 1, 'expected 1 allocator call, got ${allocator_count}'
+	assert data_len_count == 1, 'expected 1 data_len argument, got ${data_len_count}'
+	assert matching_line.ends_with(';'), 'fontstash atomic ownership line must end with semicolon'
+}
+
 fn generated_c_uses_v3_codegen(generated_c string) bool {
 	return !generated_c.contains('#define VV_LOC')
 }
