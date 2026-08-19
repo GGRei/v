@@ -1,4 +1,5 @@
 // vtest retry: 0
+// vtest build: windows && gg_multiwindow?
 module gg
 
 $if windows {
