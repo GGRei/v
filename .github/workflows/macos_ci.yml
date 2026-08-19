@@ -58,7 +58,7 @@ jobs:
             vlib/v/checker/pkgconfig_cross_compile_test.v \
             vlib/v/builder/pkgconfig_link_segment_test.v
           do
-            ./v -cc clang -no-retry-compilation test "$test"
+            ./v -old-compiler -cc clang -no-retry-compilation test "$test"
           done
       - name: Legacy gg import multiwindow isolation
         run: ./v test vlib/gg/legacy_import_multiwindow_isolation_test.v
