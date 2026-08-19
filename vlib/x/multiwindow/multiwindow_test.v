@@ -1972,36 +1972,38 @@ fn test_appkit_input_events_are_queued_and_capability_scoped_source_guard() {
 
 fn test_appkit_macos_cgen_emits_record_and_literal_input_mapping() {
 	c_source := multiwindow_emit_macos_multiwindow_test_c()
-	typedef_marker := 'typedef struct x__multiwindow__AppKitWindow' +
+	dynamic_empty := c_source[..0]
+	typedef_marker := 'typedef struct x__multiwindow__AppKitWindow' + dynamic_empty +
 		'Record x__multiwindow__AppKitWindowRecord;'
-	struct_marker := 'struct x__multiwindow__AppKitWindow' + 'Record {'
+	struct_marker := 'struct x__multiwindow__AppKitWindow' + dynamic_empty + 'Record {'
 	mapping_marker := 'VV_LOC _option_x__multiwindow__QueuedEvent x__multiwindow__' +
-		'appkit_queued_event_from_native('
-	assert c_source.count(mapping_marker) == 2
-	first_mapping_index := c_source.index(mapping_marker) or {
-		assert false, 'generated C does not contain the AppKit input mapping declaration'
-		return
+		dynamic_empty + 'appkit_queued_event_from_native('
+	c_lines := c_source.split_into_lines()
+	mut typedef_indices := []int{}
+	mut struct_indices := []int{}
+	mut mapping_indices := []int{}
+	for line_index, line in c_lines {
+		trimmed := line.trim_space()
+		if trimmed == typedef_marker {
+			typedef_indices << line_index
+		}
+		if trimmed == struct_marker {
+			struct_indices << line_index
+		}
+		if trimmed.starts_with(mapping_marker) {
+			mapping_indices << line_index
+		}
 	}
-	second_mapping_index := c_source.index_after(mapping_marker, first_mapping_index +
-		mapping_marker.len) or {
-		assert false, 'generated C does not contain the AppKit input mapping definition'
-		return
-	}
-	first_mapping_line := c_source[first_mapping_index..].all_before('\n')
-	second_mapping_line := c_source[second_mapping_index..].all_before('\n')
-	assert first_mapping_line.trim_space().ends_with(';')
-	assert second_mapping_line.trim_space().ends_with('{')
-	typedef_index := c_source.index(typedef_marker) or {
-		assert false, 'generated C does not contain the AppKit record typedef'
-		return
-	}
-	struct_index := c_source.index(struct_marker) or {
-		assert false, 'generated C does not contain the AppKit record definition'
-		return
-	}
-	assert typedef_index < first_mapping_index
-	assert struct_index < second_mapping_index
-	forbidden_const_prefix := '_const_x__multiwindow__' + 'appkit_'
+	assert typedef_indices.len == 1
+	assert struct_indices.len == 1
+	assert mapping_indices.len == 2
+	prototype_index := mapping_indices[0]
+	definition_index := mapping_indices[1]
+	assert c_lines[prototype_index].trim_space().ends_with(';')
+	assert c_lines[definition_index].trim_space().ends_with('{')
+	assert typedef_indices[0] < prototype_index
+	assert struct_indices[0] < definition_index
+	forbidden_const_prefix := '_const_x__multiwindow__' + dynamic_empty + 'appkit_'
 	assert !c_source.contains(forbidden_const_prefix)
 }
 
