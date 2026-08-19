@@ -1,0 +1,78 @@
+name: Temporary macOS AppKit V3 CGen lines
+
+on:
+  push:
+    branches:
+      - diag/appkit-v3-cgen-lines-20260819
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appkit-v3-cgen-lines-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  appkit-v3-cgen-lines:
+    runs-on: macos-14
+    timeout-minutes: 20
+    env:
+      VFLAGS: -cc clang
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build V
+        run: make
+      - name: Generate and inspect AppKit V3 C lines
+        env:
+          V_MACOS_V3_NO_FALLBACK: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cgen_path="$RUNNER_TEMP/appkit_v3_cgen_lines.c"
+          trap 'rm -f "$cgen_path"' EXIT
+          set +e
+          ./v -os macos -d gg_multiwindow -d sokol_metal \
+            -path "$PWD/vlib|@vlib|@vmodules" \
+            -o "$cgen_path" \
+            vlib/x/multiwindow/multiwindow_test.v
+          cgen_rc=$?
+          set -e
+          python3 - "$cgen_rc" "$cgen_path" <<'PY'
+          import base64
+          import hashlib
+          import pathlib
+          import sys
+
+          rc = int(sys.argv[1])
+          path = pathlib.Path(sys.argv[2])
+          data = path.read_bytes() if path.is_file() else b''
+          digest = hashlib.sha256(data).hexdigest() if data else 'absent'
+          record_needle = b'AppKitWindowRecord'
+          helper_needle = b'appkit_queued_event_from_native'
+          matches = []
+          record_count = 0
+          helper_count = 0
+          for number, raw in enumerate(data.splitlines(), 1):
+              record_count += raw.count(record_needle)
+              helper_count += raw.count(helper_needle)
+              if record_needle in raw or helper_needle in raw:
+                  matches.append((number, raw))
+          emitted = min(len(matches), 80)
+          print(f'MULTIWINDOW_APPKIT_V3_CGEN_META rc={rc} size={len(data)} sha256={digest}')
+          for index, (number, raw) in enumerate(matches[:emitted], 1):
+              payload = raw[:1024]
+              encoded = base64.b64encode(payload).decode('ascii')
+              truncated = int(len(raw) > len(payload))
+              print(
+                  'MULTIWINDOW_APPKIT_V3_CGEN_LINE '
+                  f'index={index} line={number} len={len(raw)} '
+                  f'truncated={truncated} base64={encoded}'
+              )
+          print(
+              'MULTIWINDOW_APPKIT_V3_CGEN_SUMMARY '
+              f'count={len(matches)} record_count={record_count} helper_count={helper_count} '
+              f'emitted={emitted} omitted={len(matches) - emitted}'
+          )
+          if rc != 0 or not data or record_count == 0 or helper_count == 0:
+              raise SystemExit(rc if rc != 0 else 1)
+          PY
