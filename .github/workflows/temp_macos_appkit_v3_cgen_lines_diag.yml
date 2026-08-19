@@ -49,30 +49,34 @@ jobs:
           digest = hashlib.sha256(data).hexdigest() if data else 'absent'
           record_needle = b'AppKitWindowRecord'
           helper_needle = b'appkit_queued_event_from_native'
-          matches = []
-          record_count = 0
-          helper_count = 0
+          record_matches = []
+          helper_matches = []
           for number, raw in enumerate(data.splitlines(), 1):
-              record_count += raw.count(record_needle)
-              helper_count += raw.count(helper_needle)
-              if record_needle in raw or helper_needle in raw:
-                  matches.append((number, raw))
-          emitted = min(len(matches), 80)
+              if record_needle in raw:
+                  record_matches.append((number, raw))
+              if helper_needle in raw:
+                  helper_matches.append((number, raw))
           print(f'MULTIWINDOW_APPKIT_V3_CGEN_META rc={rc} size={len(data)} sha256={digest}')
-          for index, (number, raw) in enumerate(matches[:emitted], 1):
-              payload = raw[:1024]
-              encoded = base64.b64encode(payload).decode('ascii')
-              truncated = int(len(raw) > len(payload))
+
+          def emit_matches(category, matches):
+              emitted = min(len(matches), 40)
+              for index, (number, raw) in enumerate(matches[:emitted], 1):
+                  payload = raw[:1024]
+                  encoded = base64.b64encode(payload).decode('ascii')
+                  truncated = int(len(raw) > len(payload))
+                  print(
+                      'MULTIWINDOW_APPKIT_V3_CGEN_LINE '
+                      f'category={category} index={index} line={number} len={len(raw)} '
+                      f'truncated={truncated} base64={encoded}'
+                  )
               print(
-                  'MULTIWINDOW_APPKIT_V3_CGEN_LINE '
-                  f'index={index} line={number} len={len(raw)} '
-                  f'truncated={truncated} base64={encoded}'
+                  'MULTIWINDOW_APPKIT_V3_CGEN_SUMMARY '
+                  f'category={category} lines={len(matches)} emitted={emitted} '
+                  f'omitted={len(matches) - emitted}'
               )
-          print(
-              'MULTIWINDOW_APPKIT_V3_CGEN_SUMMARY '
-              f'count={len(matches)} record_count={record_count} helper_count={helper_count} '
-              f'emitted={emitted} omitted={len(matches) - emitted}'
-          )
-          if rc != 0 or not data or record_count == 0 or helper_count == 0:
+
+          emit_matches('record', record_matches)
+          emit_matches('helper', helper_matches)
+          if rc != 0 or not data or not record_matches or not helper_matches:
               raise SystemExit(rc if rc != 0 else 1)
           PY
