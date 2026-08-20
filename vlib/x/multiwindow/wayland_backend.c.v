@@ -7307,7 +7307,11 @@ fn (backend &WaylandBackend) service_operation_capability(operation ServiceOpera
 		}
 		.minimize, .maximize, .fullscreen {
 			ServiceOperationCapability{
-				support:          .available
+				support:          if backend.started && backend.transport_can_marshal() {
+					.available
+				} else {
+					.unsupported
+				}
 				asynchronous:     true
 				state_observable: operation != .minimize
 			}
@@ -7316,7 +7320,11 @@ fn (backend &WaylandBackend) service_operation_capability(operation ServiceOpera
 			// xdg-shell can leave maximized/fullscreen state, but has no explicit
 			// request that restores a compositor-minimized toplevel.
 			ServiceOperationCapability{
-				support:          .conditional
+				support:          if backend.started && backend.transport_can_marshal() {
+					.conditional
+				} else {
+					.unsupported
+				}
 				asynchronous:     true
 				state_observable: true
 			}

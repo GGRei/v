@@ -873,6 +873,25 @@ fn test_wayland_state_operations_are_deferred_by_capability_until_observation() 
 			assert backend.service_operation_capability(operation).asynchronous
 		}
 		assert !backend.service_operation_capability(.hide).asynchronous
+		state_operations := [ServiceOperation.minimize, .maximize, .fullscreen, .restore]
+		expected_live_support := [ServiceSupportLevel.available, .available, .available, .conditional]
+		expected_dead_support := [ServiceSupportLevel.unsupported, .unsupported, .unsupported,
+			.unsupported]
+		assert state_operations.map(backend.service_operation_capability(it).support) == expected_live_support
+
+		backend.started = false
+		assert state_operations.map(backend.service_operation_capability(it).support) == expected_dead_support
+		backend.started = true
+		backend.display = unsafe { nil }
+		assert state_operations.map(backend.service_operation_capability(it).support) == expected_dead_support
+		backend.display = voidptr(usize(1))
+		backend.wayland_display_unavailable = true
+		assert state_operations.map(backend.service_operation_capability(it).support) == expected_dead_support
+		backend.wayland_display_unavailable = false
+		backend.wayland_display_error = 1
+		assert state_operations.map(backend.service_operation_capability(it).support) == expected_dead_support
+		backend.wayland_display_error = 0
+		assert state_operations.map(backend.service_operation_capability(it).support) == expected_live_support
 
 		mut app := new_app()!
 		window := app.create_window(title: 'wayland-deferred-publication')!
