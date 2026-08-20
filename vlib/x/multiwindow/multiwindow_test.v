@@ -613,6 +613,38 @@ fn test_invalid_app_and_window_config_are_rejected() {
 	assert false, 'create_window accepted zero width'
 }
 
+fn assert_ownerless_modal_rejected_without_side_effects(mut app App, visible bool) {
+	windows_len := app.windows.len
+	native_windows_len := app.backend.mock.windows.len
+	service_windows_len := app.services.windows.len
+	render_windows_len := app.render_runtime.windows.len
+	events_len := app.events.len
+	next_delivery_token := app.next_event_delivery_token
+
+	app.create_window(
+		title:   'ownerless modal'
+		modal:   true
+		visible: visible
+	) or {
+		assert err.msg() == err_owner_relation_invalid
+		assert app.windows.len == windows_len
+		assert app.backend.mock.windows.len == native_windows_len
+		assert app.services.windows.len == service_windows_len
+		assert app.render_runtime.windows.len == render_windows_len
+		assert app.events.len == events_len
+		assert app.next_event_delivery_token == next_delivery_token
+		return
+	}
+	assert false, 'create_window accepted an ownerless modal window'
+}
+
+fn test_ownerless_modal_config_is_rejected_before_visible_or_hidden_allocation() {
+	mut app := new_app()!
+	assert_ownerless_modal_rejected_without_side_effects(mut app, true)
+	assert_ownerless_modal_rejected_without_side_effects(mut app, false)
+	app.stop()!
+}
+
 fn test_unknown_and_stale_window_ids_are_rejected() {
 	mut app := new_app()!
 	unknown := WindowId{
@@ -814,6 +846,7 @@ fn test_capabilities_for_backend_uses_backend_seam_without_app() {
 	assert caps.focus_events
 	assert caps.drop_events
 	assert caps.touch_events
+	assert caps.readback
 }
 
 fn test_mock_opaque_renderer_start_reports_renderer_unsupported() {
@@ -984,6 +1017,7 @@ fn test_capabilities_for_config_render_required_prefers_x11_over_wayland() {
 					assert caps.native
 					assert caps.explicit_swapchain
 					assert caps.metal
+					assert caps.readback
 					assert_appkit_input_capabilities(caps)
 				}
 			} $else {
@@ -1640,6 +1674,7 @@ fn test_appkit_capabilities_for_backend_are_platform_scoped() {
 		assert caps.owner_queue
 		assert !caps.explicit_swapchain
 		assert caps.metal == false
+		assert !caps.readback
 		assert_appkit_input_capabilities(caps)
 	} $else {
 		capabilities_for_backend(.appkit) or {
@@ -1648,6 +1683,16 @@ fn test_appkit_capabilities_for_backend_are_platform_scoped() {
 		}
 		assert false, 'appkit capabilities succeeded on an unsupported OS'
 	}
+}
+
+fn test_appkit_readback_capability_requires_ready_metal_renderer() {
+	backend := AppKitBackend{}
+	rendererless := backend.capabilities_for_renderer(false)
+	assert !rendererless.readback
+	assert !rendererless.metal
+	ready := backend.capabilities_for_renderer(true)
+	assert ready.readback == appkit_metal_supported()
+	assert ready.readback == ready.metal
 }
 
 fn test_appkit_sharedlive_source_excludes_objc_implementation() {
@@ -3858,4 +3903,421 @@ fn set_graphical_env(display string, wayland_display string) {
 	} else {
 		os.setenv('WAYLAND_DISPLAY', wayland_display, true)
 	}
+}
+
+fn monitor_registry_test_info(app_instance u64, key ServiceMonitorNativeKey, slot int, generation u32, available bool, name string) ServiceMonitorInfo {
+	return ServiceMonitorInfo{
+		native_key: key
+		id:         ServiceMonitorId{
+			app_instance: app_instance
+			slot:         slot
+			generation:   generation
+		}
+		name:       name
+		available:  available
+	}
+}
+
+fn assert_monitor_reconcile_rejected_without_mutation(mut registry ServiceRegistry, snapshot []ServiceMonitorInfo, sequence u64) {
+	before := registry.monitors.clone()
+	registry.reconcile_monitor_snapshot(snapshot, sequence) or {
+		assert registry.monitors == before
+		return
+	}
+	assert false, 'invalid monitor snapshot was accepted'
+}
+
+fn test_service_monitor_registry_accepts_sparse_backend_ids_and_replug() {
+	instance := u64(610)
+	key := ServiceMonitorNativeKey{
+		kind:    .appkit_display
+		numeric: 501
+	}
+	initial := monitor_registry_test_info(instance, key, 5, 4, true, 'sparse')
+	mut registry := new_service_registry(instance, .appkit)
+	registry.replace_monitors([initial])
+	assert registry.monitors.len == 1
+	assert registry.monitor_index(initial.id)! == 0
+
+	registry.reconcile_monitor_snapshot([], 2) or { panic('valid sparse removal was rejected') }
+	assert registry.monitors.len == 1
+	assert !registry.monitors[0].available
+	replugged := monitor_registry_test_info(instance, key, 5, 5, true, 'sparse-replugged')
+	available := registry.reconcile_monitor_snapshot([replugged], 3) or {
+		panic('valid sparse replug was rejected')
+	}
+	assert available.len == 1
+	assert available[0].id == replugged.id
+	assert registry.monitor_index(replugged.id)! == 0
+	mut stale_rejected := false
+	_ = registry.monitor_index(initial.id) or {
+		stale_rejected = err.msg() == err_service_request_stale
+		-1
+	}
+	assert stale_rejected
+}
+
+fn test_service_monitor_registry_rejects_identity_and_transition_errors_atomically() {
+	instance := u64(611)
+	key := ServiceMonitorNativeKey{
+		kind:    .wayland_global
+		numeric: 701
+	}
+	initial := monitor_registry_test_info(instance, key, 5, 3, true, 'valid')
+	mut registry := new_service_registry(instance, .wayland)
+	registry.replace_monitors([initial])
+
+	wrong_app := monitor_registry_test_info(instance + 1, key, 5, 3, true, 'wrong-app')
+	assert_monitor_reconcile_rejected_without_mutation(mut registry, [wrong_app], 2)
+	wrong_kind := monitor_registry_test_info(instance, ServiceMonitorNativeKey{
+		kind:    .x11_atom
+		numeric: 701
+	}, 5, 3, true, 'wrong-kind')
+	assert_monitor_reconcile_rejected_without_mutation(mut registry, [wrong_kind], 3)
+	invalid_key := monitor_registry_test_info(instance, ServiceMonitorNativeKey{
+		kind: .wayland_global
+	}, 5, 3, true, 'invalid-key')
+	assert_monitor_reconcile_rejected_without_mutation(mut registry, [invalid_key], 4)
+	duplicate_key := monitor_registry_test_info(instance, key, 6, 1, true, 'duplicate-key')
+	assert_monitor_reconcile_rejected_without_mutation(mut registry, [initial, duplicate_key], 5)
+	duplicate_id := monitor_registry_test_info(instance, ServiceMonitorNativeKey{
+		kind:    .wayland_global
+		numeric: 702
+	}, 5, 3, true, 'duplicate-id')
+	assert_monitor_reconcile_rejected_without_mutation(mut registry, [initial, duplicate_id], 6)
+	wrong_active_generation := monitor_registry_test_info(instance, key, 5, 4, true,
+		'wrong-active-generation')
+	assert_monitor_reconcile_rejected_without_mutation(mut registry, [
+		wrong_active_generation,
+	], 7)
+
+	registry.reconcile_monitor_snapshot([], 8) or { panic('valid removal was rejected') }
+	wrong_replug_generation := monitor_registry_test_info(instance, key, 5, 5, true,
+		'wrong-replug-generation')
+	assert_monitor_reconcile_rejected_without_mutation(mut registry, [
+		wrong_replug_generation,
+	], 9)
+
+	before_replace := registry.monitors.clone()
+	registry.replace_monitors([wrong_kind])
+	assert registry.monitors == before_replace
+}
+
+fn test_service_monitor_registry_validates_backend_plan_for_reorder_and_exhaustion() {
+	instance := u64(612)
+	key_a := ServiceMonitorNativeKey{
+		kind:    .wayland_global
+		numeric: 801
+	}
+	key_b := ServiceMonitorNativeKey{
+		kind:    .wayland_global
+		numeric: 802
+	}
+	key_c := ServiceMonitorNativeKey{
+		kind:    .wayland_global
+		numeric: 803
+	}
+	mut registry := new_service_registry(instance, .wayland)
+	registry.replace_monitors([
+		monitor_registry_test_info(instance, key_a, 0, max_u32, false, 'A'),
+		monitor_registry_test_info(instance, key_b, 1, 9, false, 'B'),
+	])
+	stale_b := registry.monitors[1].id
+	available := registry.reconcile_monitor_snapshot([
+		monitor_registry_test_info(instance, key_a, 1, 10, true, 'A-reappeared'),
+		monitor_registry_test_info(instance, key_c, 2, 1, true, 'C'),
+	], 2) or { panic('valid max-generation backend plan was rejected') }
+	assert available.len == 2
+	assert registry.monitors[0].id.generation == max_u32
+	assert !registry.monitors[0].available
+	assert registry.monitor_index(ServiceMonitorId{
+		app_instance: instance
+		slot:         1
+		generation:   10
+	})! == 1
+	assert registry.monitor_index(ServiceMonitorId{
+		app_instance: instance
+		slot:         2
+		generation:   1
+	})! == 2
+	mut stale_rejected := false
+	_ = registry.monitor_index(stale_b) or {
+		stale_rejected = err.msg() == err_service_request_stale
+		-1
+	}
+	assert stale_rejected
+
+	appkit_instance := u64(613)
+	appkit_a := ServiceMonitorNativeKey{
+		kind:    .appkit_display
+		numeric: 901
+	}
+	appkit_b := ServiceMonitorNativeKey{
+		kind:    .appkit_display
+		numeric: 902
+	}
+	appkit_c := ServiceMonitorNativeKey{
+		kind:    .appkit_display
+		numeric: 903
+	}
+	mut appkit_registry := new_service_registry(appkit_instance, .appkit)
+	appkit_registry.replace_monitors([
+		monitor_registry_test_info(appkit_instance, appkit_a, 0, 4, false, 'duplicate-name'),
+		monitor_registry_test_info(appkit_instance, appkit_b, 1, 9, false, 'duplicate-name'),
+	])
+	appkit_registry.reconcile_monitor_snapshot([
+		monitor_registry_test_info(appkit_instance, appkit_c, 1, 10, true, 'duplicate-name'),
+		monitor_registry_test_info(appkit_instance, appkit_a, 0, 5, true, 'duplicate-name'),
+	], 2) or { panic('valid [C,A] backend plan was rejected') }
+	assert appkit_registry.monitors[0].native_key == appkit_a
+	assert appkit_registry.monitors[0].id.generation == 5
+	assert appkit_registry.monitors[1].native_key == appkit_c
+	assert appkit_registry.monitors[1].id.generation == 10
+
+	mut exhausted_registry := new_service_registry(u64(618), .wayland)
+	exhausted_key := ServiceMonitorNativeKey{
+		kind:    .wayland_global
+		numeric: 904
+	}
+	exhausted_registry.replace_monitors([
+		monitor_registry_test_info(618, exhausted_key, 0, max_u32, false, 'exhausted'),
+	])
+	assert_monitor_reconcile_rejected_without_mutation(mut exhausted_registry, [
+		monitor_registry_test_info(618, exhausted_key, 7, 99, true, 'invalid-generation'),
+	], 2)
+	mut appkit_empty_registry := new_service_registry(u64(619), .appkit)
+	assert_monitor_reconcile_rejected_without_mutation(mut appkit_empty_registry, [
+		monitor_registry_test_info(619, ServiceMonitorNativeKey{
+			kind:    .appkit_display
+			numeric: 905
+		}, 8, 99, true, 'invalid-new-appkit-generation'),
+	], 3)
+	appended := exhausted_registry.reconcile_monitor_snapshot([
+		monitor_registry_test_info(618, exhausted_key, 7, 1, true, 'fresh-generation'),
+	], 4) or { panic('known exhausted key with fresh generation was rejected') }
+	assert appended.len == 1
+	assert appended[0].id == ServiceMonitorId{
+		app_instance: 618
+		slot:         7
+		generation:   1
+	}
+}
+
+fn test_service_monitor_backend_plans_are_validated_before_commit() {
+	appkit_records := [
+		AppKitServiceMonitorRecord{
+			native_id:  11
+			slot:       0
+			generation: 4
+			available:  false
+		},
+		AppKitServiceMonitorRecord{
+			native_id:  22
+			slot:       1
+			generation: 9
+			available:  false
+		},
+	]
+	appkit_plan := appkit_plan_service_monitors(appkit_records, [
+		AppKitServiceRawMonitor{
+			native_id: 33
+			name:      'duplicate-name'
+		},
+		AppKitServiceRawMonitor{
+			native_id: 11
+			name:      'duplicate-name'
+		},
+	], 614)!
+	assert appkit_records[0].native_id == 11
+	assert !appkit_records[0].available
+	assert appkit_plan.monitors[0].id == ServiceMonitorId{
+		app_instance: 614
+		slot:         1
+		generation:   10
+	}
+	assert appkit_plan.monitors[1].id == ServiceMonitorId{
+		app_instance: 614
+		slot:         0
+		generation:   5
+	}
+	mut appkit_invalid_rejected := false
+	_ := appkit_plan_service_monitors(appkit_records, [
+		AppKitServiceRawMonitor{
+			native_id: 44
+		},
+		AppKitServiceRawMonitor{
+			native_id: 44
+		},
+	], 614) or {
+		appkit_invalid_rejected = true
+		assert appkit_records[0].native_id == 11
+		assert !appkit_records[0].available
+		AppKitServiceMonitorPlan{}
+	}
+	assert appkit_invalid_rejected, 'invalid AppKit duplicate native-key plan was accepted'
+
+	win32_records := [
+		Win32ServiceMonitorRecord{
+			native_id:  51
+			name:       'A'
+			slot:       0
+			generation: max_u32
+			available:  false
+		},
+		Win32ServiceMonitorRecord{
+			native_id:  52
+			name:       'B'
+			slot:       1
+			generation: 9
+			available:  false
+		},
+	]
+	win32_plan := win32_plan_service_monitors(win32_records, [
+		Win32ServiceRawMonitor{
+			native_id: 61
+			name:      'A'
+		},
+		Win32ServiceRawMonitor{
+			native_id: 62
+			name:      'C'
+		},
+	], 615)!
+	assert win32_records[0].generation == max_u32
+	assert !win32_records[0].available
+	assert win32_plan.monitors[0].id == ServiceMonitorId{
+		app_instance: 615
+		slot:         1
+		generation:   10
+	}
+	assert win32_plan.monitors[1].id == ServiceMonitorId{
+		app_instance: 615
+		slot:         2
+		generation:   1
+	}
+	mut win32_invalid_rejected := false
+	_ := win32_plan_service_monitors(win32_records, [
+		Win32ServiceRawMonitor{
+			native_id: 63
+			name:      'duplicate-device'
+		},
+		Win32ServiceRawMonitor{
+			native_id: 64
+			name:      'duplicate-device'
+		},
+	], 615) or {
+		win32_invalid_rejected = true
+		assert win32_records[0].generation == max_u32
+		assert !win32_records[0].available
+		Win32ServiceMonitorPlan{}
+	}
+	assert win32_invalid_rejected, 'invalid Win32 duplicate native-key plan was accepted'
+}
+
+fn test_wayland_monitor_snapshot_rejects_duplicate_native_identity() {
+	mut backend := WaylandBackend{
+		started: true
+		outputs: [
+			&WaylandOutputRecord{
+				slot:        0
+				global_name: 71
+			},
+			&WaylandOutputRecord{
+				slot:        1
+				global_name: 71
+			},
+		]
+	}
+	backend.service_monitor_snapshot(616) or {
+		assert backend.outputs[0].global_name == 71
+		assert backend.outputs[1].global_name == 71
+		return
+	}
+	assert false, 'invalid Wayland duplicate native-key snapshot was accepted'
+}
+
+fn test_wayland_cold_sparse_snapshot_accepts_backend_generation_for_unseen_slot() {
+	instance := u64(617)
+	mut outputs := []&WaylandOutputRecord{}
+	for slot in 0 .. 5 {
+		outputs << &WaylandOutputRecord{
+			slot:        slot
+			global_name: u32(100 + slot)
+			generation:  1
+			available:   false
+		}
+	}
+	outputs << &WaylandOutputRecord{
+		slot:        5
+		global_name: 105
+		generation:  1
+		available:   true
+	}
+	mut backend := WaylandBackend{
+		started: true
+		outputs: outputs
+	}
+	cold := backend.service_monitor_snapshot(instance)!
+	assert cold.len == 1
+	assert cold[0].id.slot == 5
+	key_b := cold[0].native_key
+	assert key_b == ServiceMonitorNativeKey{
+		kind:    .wayland_global
+		numeric: 105
+	}
+	mut registry := new_service_registry(instance, .wayland)
+	registry.replace_monitors(cold)
+	assert registry.monitor_index(cold[0].id)! == 0
+
+	backend.outputs[0].global_name = 200
+	backend.outputs[0].generation = 2
+	backend.outputs[0].available = true
+	updated := backend.service_monitor_snapshot(instance)!
+	assert updated.len == 2
+	assert updated[0].id == ServiceMonitorId{
+		app_instance: instance
+		slot:         0
+		generation:   2
+	}
+	key_c := updated[0].native_key
+	assert key_c == ServiceMonitorNativeKey{
+		kind:    .wayland_global
+		numeric: 200
+	}
+	assert key_c != key_b
+	assert updated[1].native_key == key_b
+	assert updated[1].id == cold[0].id
+	rejected := [updated[0],
+		monitor_registry_test_info(instance, key_b, 5, 2, true, 'wrong-active-generation')]
+	assert_monitor_reconcile_rejected_without_mutation(mut registry, rejected, 2)
+	available := registry.reconcile_monitor_snapshot(updated, 3) or {
+		panic('valid cold-sparse Wayland backend plan was rejected')
+	}
+	assert available.len == 2
+	assert registry.monitor_index(updated[0].id)! == 1
+	assert registry.monitor_index(cold[0].id)! == 0
+	assert registry.monitors[0].native_key == key_b
+	assert registry.monitors[1].native_key == key_c
+}
+
+fn test_invalid_monitor_service_event_does_not_mutate_registry_or_queue() {
+	mut app := new_app()!
+	defer {
+		app.stop() or {}
+	}
+	before_monitors := app.services.monitors.clone()
+	before_events := app.events.clone()
+	invalid := monitor_registry_test_info(app.instance_id, ServiceMonitorNativeKey{
+		kind:    .appkit_display
+		numeric: 1001
+	}, 0, 1, true, 'wrong-backend')
+	app.state_mutex.lock()
+	accepted := app.accept_backend_service_event_locked(ServiceEvent{
+		kind:     .monitor
+		monitor:  invalid
+		monitors: [invalid]
+	}, 1)
+	app.state_mutex.unlock()
+	assert !accepted
+	assert app.services.monitors == before_monitors
+	assert app.events == before_events
 }

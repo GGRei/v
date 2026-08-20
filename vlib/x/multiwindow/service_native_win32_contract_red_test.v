@@ -151,29 +151,38 @@ fn win32_w3_raw_monitor(native_id u64, name string) Win32ServiceRawMonitor {
 	}
 }
 
-fn win32_w3_monitor_candidate(name string) ServiceMonitorInfo {
+fn win32_w3_monitor_candidate(app_instance u64, name string, slot int, generation u32) ServiceMonitorInfo {
 	return ServiceMonitorInfo{
-		name:      name
-		geometry:  ServiceKnownRect{
+		native_key: ServiceMonitorNativeKey{
+			kind: .win32_device
+			text: name
+		}
+		id:         ServiceMonitorId{
+			app_instance: app_instance
+			slot:         slot
+			generation:   generation
+		}
+		name:       name
+		geometry:   ServiceKnownRect{
 			known: true
 			value: ServiceRect{
 				width:  100
 				height: 100
 			}
 		}
-		work_area: ServiceKnownRect{
+		work_area:  ServiceKnownRect{
 			known: true
 			value: ServiceRect{
 				width:  100
 				height: 100
 			}
 		}
-		scale:     ServiceKnownScale{
+		scale:      ServiceKnownScale{
 			known: true
 			value: 1
 		}
-		primary:   .off
-		available: true
+		primary:    .off
+		available:  true
 	}
 }
 
@@ -398,17 +407,20 @@ fn test_win32_w3_late_exact_name_reserves_unavailable_slot_and_stales_old_ids_re
 	instance := u64(72)
 	mut registry := ServiceRegistry{
 		app_instance: instance
+		backend:      .win32
 		monitors:     [
-			service_monitor_info_for_slot(win32_w3_monitor_candidate('A'), instance, 0, 4, false, 1),
-			service_monitor_info_for_slot(win32_w3_monitor_candidate('B'), instance, 1, 9, false, 1),
+			service_monitor_info_for_slot(win32_w3_monitor_candidate(instance, 'A', 0, 4),
+				instance, 0, 4, false, 1),
+			service_monitor_info_for_slot(win32_w3_monitor_candidate(instance, 'B', 1, 9),
+				instance, 1, 9, false, 1),
 		]
 	}
 	stale_a := registry.monitors[0].id
 	stale_b := registry.monitors[1].id
 	public := registry.reconcile_monitor_snapshot([
-		win32_w3_monitor_candidate('C'),
-		win32_w3_monitor_candidate('A'),
-	], 2)
+		win32_w3_monitor_candidate(instance, 'C', 1, 10),
+		win32_w3_monitor_candidate(instance, 'A', 0, 5),
+	], 2) or { panic('valid Win32 monitor snapshot was rejected') }
 	assert public.len == 2
 	public_c := public.filter(it.name == 'C')[0]
 	public_a := public.filter(it.name == 'A')[0]

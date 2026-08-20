@@ -26,6 +26,499 @@ fn test_multiwindow_service_complete_cursor_conversion_matches_core() {
 	assert window_cursor_shape_to_core(.resize_all) == multiwindow.CursorShape.resize_all
 }
 
+struct PortalReadyAfterTeardownProof {
+mut:
+	callback_hits  int
+	stale_hits     int
+	destroyed_hits int
+}
+
+fn test_mock_portal_ready_destroy_before_drain_acks_stale_lease_once() {
+	mut app := new_app(backend: .mock)!
+	window := app.create_window(title: 'portal ready before teardown')!
+	assert app.drain_window_queued_events()!.len == 1
+	request := app.request_portal_parent(window)!
+	app.destroy_window(window)!
+	mut proof := &PortalReadyAfterTeardownProof{}
+	app.run(
+		event_fn:          fn [mut proof] (event WindowEvent, mut app App) ! {
+			if event.kind == .window_destroyed {
+				proof.destroyed_hits++
+				app.stop()!
+			}
+		}
+		window_service_fn: fn [request, mut proof] (event WindowServiceEvent, mut app App) ! {
+			if event.kind != .portal_parent || event.portal_parent.id != request {
+				return
+			}
+			proof.callback_hits++
+			assert event.portal_parent.status == .ready
+			assert event.portal_parent.identifier.starts_with('mock:')
+			app.release_portal_parent(event.portal_parent.lease) or {
+				assert err.msg().contains('service request is stale')
+				proof.stale_hits++
+			}
+		}
+	)!
+	assert proof.callback_hits == 1
+	assert proof.stale_hits == 1
+	assert proof.destroyed_hits == 1
+	assert app.core.drain_queued_events()!.len == 0
+	app.stop()!
+	assert proof.callback_hits == 1
+	assert app.core.drain_queued_events()!.len == 0
+}
+
+struct ManagedOwnerTree {
+	owner      WindowId
+	child      WindowId
+	grandchild WindowId
+	sibling    WindowId
+}
+
+struct ManagedOwnerCascadeProof {
+mut:
+	cleanup_order   []WindowId
+	cleanup_reasons []WindowCleanupReason
+	destroyed_order []WindowId
+	callback_order  []string
+	all_live_inside bool
+	deferred_inside []WindowId
+	fail_cleanup    WindowId
+	failure_message string
+}
+
+fn managed_owner_cleanup(mut context WindowCleanupContext, mut proof ManagedOwnerCascadeProof) ! {
+	proof.cleanup_order << context.window_id()
+	proof.cleanup_reasons << context.reason()
+	if context.window_id() == proof.fail_cleanup && proof.failure_message != '' {
+		return error(proof.failure_message)
+	}
+}
+
+fn create_managed_owner_tree(mut app App, mut proof ManagedOwnerCascadeProof) !ManagedOwnerTree {
+	owner := app.create_window(
+		title:      'managed owner'
+		cleanup_fn: fn [mut proof] (mut context WindowCleanupContext) ! {
+			managed_owner_cleanup(mut context, mut proof)!
+		}
+	)!
+	child := app.create_window(
+		title:      'managed child'
+		owner:      owner
+		modal:      true
+		cleanup_fn: fn [mut proof] (mut context WindowCleanupContext) ! {
+			managed_owner_cleanup(mut context, mut proof)!
+		}
+	)!
+	grandchild := app.create_window(
+		title:      'managed grandchild'
+		owner:      child
+		cleanup_fn: fn [mut proof] (mut context WindowCleanupContext) ! {
+			managed_owner_cleanup(mut context, mut proof)!
+		}
+	)!
+	sibling := app.create_window(
+		title:      'managed sibling'
+		owner:      owner
+		cleanup_fn: fn [mut proof] (mut context WindowCleanupContext) ! {
+			managed_owner_cleanup(mut context, mut proof)!
+		}
+	)!
+	return ManagedOwnerTree{
+		owner:      owner
+		child:      child
+		grandchild: grandchild
+		sibling:    sibling
+	}
+}
+
+fn managed_owner_tree_order(tree ManagedOwnerTree) []WindowId {
+	return [tree.grandchild, tree.child, tree.sibling, tree.owner]
+}
+
+fn assert_managed_owner_events_exactly_once(events []multiwindow.QueuedEvent, order []WindowId, readbacks []multiwindow.ServiceReadbackId) {
+	assert events.len == order.len * 2
+	for index in 1 .. events.len {
+		assert events[index - 1].sequence < events[index].sequence
+	}
+	for index, window in order {
+		readback_event := events[index * 2]
+		destroyed_event := events[index * 2 + 1]
+		assert readback_event.kind == .readback
+		assert readback_event.readback.id == readbacks[index]
+		assert readback_event.readback.window == window.core
+		assert readback_event.readback.status == .cancelled
+		assert destroyed_event.kind == .lifecycle
+		assert destroyed_event.lifecycle.kind == .window_destroyed
+		assert destroyed_event.lifecycle.window_id == window.core
+	}
+}
+
+fn with_mock_native_window_borrow_for_managed_test(mut app App, id WindowId, f NativeWindowBorrowFn) ! {
+	app_ptr := unsafe { voidptr(&app) }
+	callback := fn [app_ptr, f] (borrow multiwindow.NativeWindowBorrow) ! {
+		mut facade := unsafe { &App(app_ptr) }
+		mut lease := NativeWindowLease{
+			app:          facade
+			app_instance: borrow.app_instance_for_gg()
+			window:       window_id_from_core(borrow.window_for_gg())
+			lease_epoch:  borrow.epoch_for_gg()
+			backend:      native_backend_from_core(borrow.backend_for_gg())
+			primary:      borrow.primary_for_gg()
+			secondary:    borrow.secondary_for_gg()
+		}
+		facade.render_runtime.begin_user_callback()
+		mut callback_error := IError(none)
+		f(mut lease) or { callback_error = err }
+		facade.render_runtime.end_user_callback()
+		if callback_error !is none {
+			return callback_error
+		}
+	}
+	mut borrow_error := IError(none)
+	app.core.with_mock_native_window_borrow_for_gg_test(id.core, callback) or { borrow_error = err }
+	app.flush_deferred_transitions()!
+	if borrow_error !is none {
+		return borrow_error
+	}
+}
+
+fn test_managed_owner_destroy_is_child_first_and_exactly_once() {
+	mut app := new_app(backend: .mock)!
+	mut proof := &ManagedOwnerCascadeProof{}
+	tree := create_managed_owner_tree(mut app, mut proof)!
+	order := managed_owner_tree_order(tree)
+	assert app.drain_window_queued_events()!.len == 4
+	mut readbacks := []multiwindow.ServiceReadbackId{cap: order.len}
+	for index, window in order {
+		readbacks << seed_managed_window_capture_for_test(mut app, window, u64(20 + index))!
+	}
+
+	app.destroy_window(tree.owner)!
+	assert proof.cleanup_order == order
+	assert proof.cleanup_reasons == []WindowCleanupReason{len: order.len, init: .requested}
+	assert app.window_ids()!.len == 0
+	assert app.pending_window_captures.len == 0
+	assert app.render_runtime.windows.all(it.status == .destroyed)
+	events := app.core.drain_queued_events()!
+	assert_managed_owner_events_exactly_once(events, order, readbacks)
+
+	app.destroy_window(tree.owner)!
+	assert proof.cleanup_order == order
+	assert app.core.drain_queued_events()!.len == 0
+	app.stop()!
+	assert app.core.drain_queued_events()!.len == 0
+}
+
+fn test_managed_owner_destroy_purges_descendant_image_readbacks_exactly_once() {
+	mut app := new_app(backend: .mock)!
+	mut proof := &ManagedOwnerCascadeProof{}
+	tree := create_managed_owner_tree(mut app, mut proof)!
+	order := managed_owner_tree_order(tree)
+	assert app.drain_window_queued_events()!.len == 4
+	mut readbacks := []multiwindow.ServiceReadbackId{cap: order.len}
+	for index, window in order {
+		readbacks << seed_managed_image_readback_for_test(mut app, window, u64(100 + index))!
+	}
+	assert app.pending_window_captures.len == 0
+	assert app.pending_image_readbacks.len == order.len
+
+	app.destroy_window(tree.owner)!
+	assert proof.cleanup_order == order
+	assert app.pending_window_captures.len == 0
+	assert app.pending_image_readbacks.len == 0
+	events := app.core.drain_queued_events()!
+	assert_managed_owner_events_exactly_once(events, order, readbacks)
+
+	app.destroy_window(tree.owner)!
+	assert proof.cleanup_order == order
+	assert app.core.drain_queued_events()!.len == 0
+	app.stop()!
+}
+
+fn test_managed_owner_destroy_continues_after_terminal_child_cleanup_error() {
+	mut app := new_app(backend: .mock)!
+	mut proof := &ManagedOwnerCascadeProof{}
+	tree := create_managed_owner_tree(mut app, mut proof)!
+	order := managed_owner_tree_order(tree)
+	assert app.drain_window_queued_events()!.len == 4
+	proof.fail_cleanup = tree.grandchild
+	proof.failure_message = 'managed owner grandchild cleanup failed'
+	mut readbacks := []multiwindow.ServiceReadbackId{cap: order.len}
+	for index, window in order {
+		readbacks << seed_managed_window_capture_for_test(mut app, window, u64(60 + index))!
+	}
+
+	mut destroy_error := ''
+	app.destroy_window(tree.owner) or { destroy_error = err.msg() }
+	assert destroy_error.contains(proof.failure_message)
+	assert proof.cleanup_order == order
+	assert proof.cleanup_reasons == []WindowCleanupReason{len: order.len, init: .requested}
+	assert app.window_ids()!.len == 0
+	assert app.pending_window_captures.len == 0
+	assert app.render_runtime.windows.all(it.status == .destroyed)
+	events := app.core.drain_queued_events()!
+	assert_managed_owner_events_exactly_once(events, order, readbacks)
+
+	app.destroy_window(tree.owner)!
+	assert proof.cleanup_order == order
+	assert app.core.drain_queued_events()!.len == 0
+	app.stop()!
+}
+
+fn test_managed_owner_destroy_defers_complete_order_until_callback_returns() {
+	mut app := new_app(backend: .mock)!
+	mut proof := &ManagedOwnerCascadeProof{}
+	tree := create_managed_owner_tree(mut app, mut proof)!
+	order := managed_owner_tree_order(tree)
+	assert app.drain_window_queued_events()!.len == 4
+	app.core.enqueue_mock_close_requested_for_test(tree.owner.core)!
+	app.run(
+		event_fn: fn [tree, order, mut proof] (event WindowEvent, mut app App) ! {
+			match event.kind {
+				.window_close_requested {
+					proof.callback_order << 'before-destroy'
+					app.destroy_window(tree.sibling)!
+					assert app.render_runtime.deferred_windows == [tree.sibling]
+					app.destroy_window(tree.owner)!
+					app.destroy_window(tree.owner)!
+					proof.all_live_inside = order.all(app.window_exists(it))
+					proof.deferred_inside = app.render_runtime.deferred_windows.clone()
+					assert proof.cleanup_order.len == 0
+					proof.callback_order << 'after-destroy'
+				}
+				.window_destroyed {
+					proof.destroyed_order << event.window
+					if proof.destroyed_order.len == order.len {
+						app.stop()!
+					}
+				}
+				else {}
+			}
+		}
+	)!
+	assert proof.callback_order == ['before-destroy', 'after-destroy']
+	assert proof.all_live_inside
+	assert proof.deferred_inside == order
+	assert proof.cleanup_order == order
+	assert proof.cleanup_reasons == []WindowCleanupReason{len: order.len, init: .requested}
+	assert proof.destroyed_order == order
+	assert app.core.status() == .stopped
+}
+
+fn test_managed_owner_destroy_during_descendant_native_borrow_waits_for_release() {
+	mut app := new_app(backend: .mock)!
+	mut proof := &ManagedOwnerCascadeProof{}
+	tree := create_managed_owner_tree(mut app, mut proof)!
+	order := managed_owner_tree_order(tree)
+	assert app.drain_window_queued_events()!.len == 4
+	app_ptr := unsafe { voidptr(app) }
+	callback := fn [app_ptr, tree, order, mut proof] (mut lease NativeWindowLease) ! {
+		mut owner := unsafe { &App(app_ptr) }
+		assert lease.window == tree.grandchild
+		assert lease.backend == .mock
+		owner.destroy_window(tree.owner)!
+		proof.all_live_inside = order.all(owner.window_exists(it))
+		proof.deferred_inside = owner.render_runtime.deferred_windows.clone()
+		assert proof.cleanup_order.len == 0
+	}
+
+	with_mock_native_window_borrow_for_managed_test(mut app, tree.grandchild, callback)!
+	assert proof.all_live_inside
+	assert proof.deferred_inside == order
+	assert proof.cleanup_order == order
+	assert proof.cleanup_reasons == []WindowCleanupReason{len: order.len, init: .requested}
+	assert app.window_ids()!.len == 0
+	events := app.core.drain_queued_events()!
+	assert events.len == order.len
+	assert events.map(it.kind) == []multiwindow.QueuedEventKind{len: order.len, init: .lifecycle}
+	assert events.map(window_id_from_core(it.lifecycle.window_id)) == order
+
+	app.destroy_window(tree.owner)!
+	assert proof.cleanup_order == order
+	assert app.core.drain_queued_events()!.len == 0
+	app.stop()!
+}
+
+fn test_deferred_owner_destroy_continues_after_terminal_child_cleanup_error() {
+	mut app := new_app(backend: .mock)!
+	mut proof := &ManagedOwnerCascadeProof{}
+	tree := create_managed_owner_tree(mut app, mut proof)!
+	order := managed_owner_tree_order(tree)
+	assert app.drain_window_queued_events()!.len == 4
+	proof.fail_cleanup = tree.grandchild
+	proof.failure_message = 'deferred grandchild cleanup failed'
+	mut readbacks := []multiwindow.ServiceReadbackId{cap: order.len}
+	for index, window in order {
+		readbacks << seed_managed_window_capture_for_test(mut app, window, u64(80 + index))!
+	}
+	app.core.enqueue_mock_close_requested_for_test(tree.owner.core)!
+	mut run_error := ''
+	app.run(
+		event_fn: fn [tree, order, mut proof] (event WindowEvent, mut app App) ! {
+			if event.kind == .window_close_requested {
+				app.destroy_window(tree.owner)!
+				proof.all_live_inside = order.all(app.window_exists(it))
+				assert proof.cleanup_order.len == 0
+			}
+		}
+	) or { run_error = err.msg() }
+	assert run_error.contains(proof.failure_message)
+	assert proof.all_live_inside
+	assert proof.cleanup_order == order
+	assert proof.cleanup_reasons == []WindowCleanupReason{len: order.len, init: .requested}
+	assert app.window_ids()!.len == 0
+	assert app.pending_window_captures.len == 0
+	assert app.render_runtime.deferred_windows.len == 0
+	events := app.core.drain_queued_events()!
+	assert_managed_owner_events_exactly_once(events, order, readbacks)
+	mut stop_error := ''
+	app.stop() or { stop_error = err.msg() }
+	assert stop_error.contains(proof.failure_message)
+	assert proof.cleanup_order == order
+	assert app.core.drain_queued_events()!.len == 0
+}
+
+fn test_deferred_owner_destroy_restores_reversible_failure_suffix_for_retry() {
+	mut app := new_app(backend: .mock)!
+	mut proof := &ManagedOwnerCascadeProof{}
+	tree := create_managed_owner_tree(mut app, mut proof)!
+	order := managed_owner_tree_order(tree)
+	assert app.drain_window_queued_events()!.len == 4
+	mut readbacks := []multiwindow.ServiceReadbackId{cap: order.len}
+	for index, window in order {
+		readbacks << seed_managed_window_capture_for_test(mut app, window, u64(120 + index))!
+	}
+	failure := 'managed owner reversible teardown prepare failure'
+	app.render_runtime.set_internal_fault(.teardown_prepare, 1, failure)!
+	app.render_runtime.begin_user_callback()
+	app.destroy_window(tree.owner)!
+	app.render_runtime.end_user_callback()
+	assert app.render_runtime.deferred_windows == order
+
+	mut first_error := ''
+	app.flush_deferred_transitions() or { first_error = err.msg() }
+	assert first_error.contains(failure)
+	assert !app.window_exists(tree.grandchild)
+	assert order[1..].all(app.window_exists(it))
+	assert proof.cleanup_order == [tree.grandchild]
+	assert proof.cleanup_reasons == [.requested]
+	assert app.pending_window_captures.len == order.len - 1
+	assert app.render_runtime.deferred_windows == order[1..]
+	prefix_events := app.core.drain_queued_events()!
+	assert_managed_owner_events_exactly_once(prefix_events, order[..1], readbacks[..1])
+
+	app.flush_deferred_transitions()!
+	assert proof.cleanup_order == order
+	assert proof.cleanup_reasons == []WindowCleanupReason{len: order.len, init: .requested}
+	assert app.window_ids()!.len == 0
+	assert app.pending_window_captures.len == 0
+	assert app.render_runtime.deferred_windows.len == 0
+	suffix_events := app.core.drain_queued_events()!
+	assert_managed_owner_events_exactly_once(suffix_events, order[1..], readbacks[1..])
+	assert app.core.drain_queued_events()!.len == 0
+
+	app.destroy_window(tree.owner)!
+	assert proof.cleanup_order == order
+	assert app.core.drain_queued_events()!.len == 0
+	app.stop()!
+}
+
+fn test_managed_owner_destroy_admission_rejects_atomically() {
+	mut app := new_app(backend: .mock)!
+	mut proof := &ManagedOwnerCascadeProof{}
+	tree := create_managed_owner_tree(mut app, mut proof)!
+	_ = app.drain_window_queued_events()!
+	app.render_runtime.mutex.lock()
+	child_index := app.render_runtime.window_index_locked(tree.child)!
+	app.render_runtime.windows[child_index].status = .destroyed
+	app.render_runtime.mutex.unlock()
+	app.render_runtime.begin_user_callback()
+	mut rejected := false
+	app.destroy_window(tree.owner) or {
+		assert err.msg() == err_multiwindow_window_not_found
+		rejected = true
+	}
+	app.render_runtime.end_user_callback()
+	assert rejected
+	app.render_runtime.mutex.lock()
+	owner_index := app.render_runtime.window_index_locked(tree.owner)!
+	assert app.render_runtime.windows[owner_index].status == .registered
+	assert !app.render_runtime.windows[owner_index].cleanup_reason_set
+	assert app.render_runtime.deferred_windows.len == 0
+	app.render_runtime.windows[child_index].status = .registered
+	app.render_runtime.mutex.unlock()
+	assert app.window_ids()!.len == 4
+	app.stop()!
+}
+
+fn test_managed_owner_stop_is_child_first_and_exactly_once() {
+	mut app := new_app(backend: .mock)!
+	mut proof := &ManagedOwnerCascadeProof{}
+	tree := create_managed_owner_tree(mut app, mut proof)!
+	order := managed_owner_tree_order(tree)
+	assert app.drain_window_queued_events()!.len == 4
+	mut readbacks := []multiwindow.ServiceReadbackId{cap: order.len}
+	for index, window in order {
+		readbacks << seed_managed_window_capture_for_test(mut app, window, u64(40 + index))!
+	}
+
+	app.stop()!
+	assert proof.cleanup_order == order
+	assert proof.cleanup_reasons == []WindowCleanupReason{len: order.len, init: .app_stop}
+	assert app.window_ids()!.len == 0
+	assert app.pending_window_captures.len == 0
+	assert app.render_runtime.windows.all(it.status == .destroyed)
+	events := app.core.drain_queued_events()!
+	assert_managed_owner_events_exactly_once(events, order, readbacks)
+
+	app.stop()!
+	assert proof.cleanup_order == order
+	assert app.core.drain_queued_events()!.len == 0
+}
+
+fn test_readback_rect_fits_exact_edge_and_rejects_overflow_without_admission() {
+	assert readback_rect_fits(WindowPixelRect{
+		x:      639
+		y:      479
+		width:  1
+		height: 1
+	}, 640, 480)
+	assert !readback_rect_fits(WindowPixelRect{
+		x:      0x7fffffff
+		y:      0
+		width:  1
+		height: 1
+	}, 640, 480)
+	assert !readback_rect_fits(WindowPixelRect{
+		x:      1
+		y:      1
+		width:  0x7fffffff
+		height: 1
+	}, 640, 480)
+
+	mut app := new_app(backend: .mock)!
+	window := app.create_window(title: 'readback-overflow', width: 640, height: 480)!
+	_ = app.drain_window_queued_events()!
+	assert app.pending_window_captures.len == 0
+	app.request_window_capture(window, WindowReadbackConfig{
+		rect: WindowPixelRect{
+			x:      0x7fffffff
+			y:      0
+			width:  1
+			height: 1
+		}
+	}) or {
+		assert err.msg() == err_multiwindow_render_readback_unsupported
+		assert app.pending_window_captures.len == 0
+		assert app.drain_window_queued_events()!.len == 0
+		app.stop()!
+		return
+	}
+	assert false, 'overflowing readback rectangle entered the pending/event pipeline'
+}
+
 struct Package2RunSeen {
 mut:
 	order                []string
@@ -109,6 +602,21 @@ fn seed_managed_window_capture_for_test(mut app App, window WindowId, batch_epoc
 		attempt_batch_epoch:    batch_epoch
 		staged_batch_epoch:     batch_epoch
 		staged_pixels:          []u8{len: 16, init: 0xff}
+	}
+	return readback
+}
+
+fn seed_managed_image_readback_for_test(mut app App, window WindowId, batch_epoch u64) !multiwindow.ServiceReadbackId {
+	readback := app.core.service_begin_window_readback(window.core)!
+	app.pending_image_readbacks << MultiWindowPendingImageReadback{
+		id:                     readback
+		window:                 window
+		batch_epoch:            batch_epoch
+		target_submitted_frame: 1
+		width:                  2
+		height:                 2
+		stride:                 8
+		pixels:                 []u8{len: 16, init: 0xff}
 	}
 	return readback
 }

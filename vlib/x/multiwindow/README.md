@@ -43,6 +43,10 @@ println('${info.title}: ${info.width}x${info.height}')
 backend is `.mock`; `.auto` must be requested explicitly. The `gg` facade has
 its own configuration and defaults to `.auto`.
 
+`Config.app_id` supplies the native application identity. It is currently
+marshalled to Wayland as the `xdg_toplevel` app id; an empty value uses
+`v.x.multiwindow`. Other backends currently ignore it.
+
 `Config.require_renderer: true` asks the selected backend to initialize its
 renderer during `new_app()`. The render API requires that creation-time request
 and `Capabilities.explicit_swapchain`; `x.multiwindow` does not lazily
@@ -98,8 +102,10 @@ the display server, graphics device, or platform API is unavailable.
 - `readback`: whether the backend exposes at least one readback path. X11
   exposes native window capture without a renderer. X11 and Wayland managed
   image readback require an active GL renderer; with that renderer, window
-  capture is managed by `gg` from its owned framebuffer. Confirm both operations per
-  window through the `gg` readback capability query.
+  capture is managed by `gg` from its owned framebuffer. Mock exposes its
+  deterministic window path, while AppKit reports readback only with a ready
+  Metal renderer. Confirm individual operations per window through the `gg`
+  readback capability query.
 
 Plain capability probes do not necessarily connect to the display server, so
 runtime optional globals can be unknown before startup and most of those probes
@@ -152,10 +158,15 @@ generation-checked `WindowId`. The stored `WindowInfo` uses the actual size
 reported by the backend after clamping or native size queries, not just the
 requested `WindowConfig`.
 
-`destroy_window()` destroys one live window and emits a destroy event. Destroying
-the last window does not stop the app. `stop()` destroys all remaining live
-windows, marks the app stopped, stops the backend, and closes owner-queue
-admission.
+A modal window must name a live owner from the same app. Ownerless modal
+configurations are rejected before native creation, whether initially visible
+or hidden. Destroying an owner destroys its complete owned-window tree in
+child-first order, so no child outlives the native owner it references.
+
+`destroy_window()` destroys one live window, or the child-first owner cascade
+rooted at that window, and emits a destroy event for each window. Destroying the
+last window does not stop the app. `stop()` destroys all remaining live windows,
+marks the app stopped, stops the backend, and closes owner-queue admission.
 
 Window handles are generation checked. A handle for a destroyed slot becomes
 stale if that slot is later reused.
@@ -180,15 +191,24 @@ The simple read helpers `status()`, `capabilities()`, `window_exists()`, and
 
 ## Events
 
-Events are explicit. Native lifecycle and input events are not delivered to user
-code until the owner thread calls:
+Events are explicit. One canonical queue preserves acceptance order across four
+families: lifecycle, input, service, and readback. Native events are not
+delivered to user code until the owner thread calls `poll_events()`.
+
+The owner thread can then call:
 
 - `poll_events()` to collect backend/native events into the App queue;
-- `drain_events()` to retrieve and clear queued lifecycle events;
-- `drain_input_events()` to retrieve and clear queued input events without
-  consuming lifecycle events;
-- `drain_queued_events()` to retrieve lifecycle and input events together in the
-  exact order accepted by `App`.
+- `drain_events()` for lifecycle events;
+- `drain_input_events()` for input events;
+- `drain_service_events()` for service events;
+- `drain_readback_events()` for readback results;
+- `drain_queued_events()` for all four families in their exact global order.
+
+Each specialized drain consumes only the contiguous prefix of its own family.
+If a different family is at the head of the queue it returns an empty slice and
+leaves that event, and everything after it, untouched. This prevents a
+specialized consumer from silently reordering the stream. Use
+`drain_queued_events()` whenever cross-family order matters.
 
 Lifecycle event kinds are:
 
@@ -253,12 +273,77 @@ Current native input support is intentionally capability-scoped:
   corresponding capability. Clipboard paste is an input signal; clipboard
   contents are not stored on `InputEvent`.
 
-`QueuedEvent` is the ordered queue entry used when lifecycle and input events
-must be consumed as a single stream. Its `kind` field tells whether the entry
-contains a lifecycle `Event` or an `InputEvent`. Use `drain_queued_events()` when
-relative ordering matters, for example input -> close-request -> input; use the
-separate `drain_events()` and `drain_input_events()` helpers only when that
-cross-family ordering is not needed.
+`QueuedEvent` is the ordered envelope. Its `kind` selects exactly one of
+`lifecycle`, `input`, `service`, or `readback`, and `sequence` is the admitted
+global delivery sequence.
+
+## Window Services
+
+Window services are capability-first. Query
+`service_operation_capability(window, operation)` on the live app before each
+optional operation; the running backend result is authoritative. `available`
+means the operation can be attempted now, `conditional` means a compositor,
+window configuration, or recent user action can still decide it, and
+`unsupported` must be handled without calling the operation. The
+`asynchronous` bit means the call is not synchronously authoritative; it does
+not promise a later canonical-queue result. Check `state_observable` before
+waiting for a state observation. Wayland minimize is asynchronous with
+`state_observable == false`, so no resulting minimized-state observation is
+guaranteed.
+
+Use `service_window_state()` for the latest observed mapping, visibility,
+focus, minimized/maximized/fullscreen, mouse-lock, position, and monitor
+membership state. Unknown fields are explicit. `service_monitor_ids()` returns
+currently available generation-checked monitor ids, and
+`service_monitor_info()` returns geometry, work area, scale, primary state, and
+the observation sequence. A removed monitor can become unavailable and a later
+replacement receives a new generation; monitor names are descriptive and are
+not identities.
+
+Clipboard reads and writes return a `ServiceRequestId`. Completion is a
+terminal `.clipboard` service event with `.ready`, `.cancelled`, or `.failed`.
+Portal-parent export follows the same request-id-to-event flow, but a ready
+result also owns a `ServicePortalLeaseId`. Keep that lease alive while the
+identifier is used and release it explicitly with
+`service_release_portal_parent()`. X11 identifiers start with `x11:`; Wayland
+xdg-foreign-v2 identifiers start with `wayland:`. Treat the remainder as opaque.
+Destroying an owner processes its descendants child-first. For each destroyed
+window, pending clipboard and portal requests are cancelled and portal leases
+are invalidated during sealing, before teardown results can be delivered.
+Service cancellations precede readback cancellation and the final lifecycle
+event in the canonical queue; replay does not create another terminal.
+
+Native window handles are not owned by callers. The `gg` facade exposes them
+only through a synchronous callback-bounded borrow; the pointer or integer
+handle must not be stored, returned, or used after that callback. Backend handle
+shapes are HWND on Win32, NSWindow on AppKit, Display plus Window on X11, and
+wl_display plus wl_surface on Wayland.
+
+Readback is asynchronous and terminal. The low-level
+`service_request_window_readback()` reads the supplied width and height from the
+framebuffer origin; `service_request_window_readback_region()` accepts
+non-negative coordinates and a positive rectangle fully contained in the
+target. Ready results own top-left RGBA8 pixels with an explicit stride and
+producing `submitted_frame`; cancellation or failure has no pixel payload.
+Window destruction and app stop cancel pending work. The user-facing `gg`
+facade publishes readbacks through its run callback and the canonical queue
+rather than a separate gg readback drain. Aggregate `Capabilities.readback` and
+per-window capability queries report availability; each request still validates
+identity, ownership, render-target/sample constraints, and rectangle bounds.
+
+Runtime support differs by backend:
+
+| Backend | Service summary |
+| --- | --- |
+| Mock | Deterministic state, monitors, clipboard, portal, and readback for tests; no native-window borrow. |
+| X11 | Native state/monitors, clipboard, portal (`x11:`), borrow, and native window capture; EWMH/focus/mouse-lock and rendered image readback depend on live runtime support. |
+| Wayland | Runtime-global-driven state/monitors, clipboard, portal (`wayland:`), borrow, and mouse lock; focus/raise/position are unsupported. Show/minimize/maximize/restore/fullscreen/mouse-lock are asynchronous, but minimize is not state-observable, so callers are not guaranteed a resulting minimized-state observation. Rendered readback requires the active gg GL path. |
+| AppKit | Native state/monitors, borrow, clipboard, window operations, and titlebar appearance as reported by the live bridge; portal export is unsupported and readback requires active Metal. |
+| Win32 | Native state/monitors, borrow, clipboard, and standard window operations; focus and mouse lock are conditional, maximize depends on window configuration, and portal/readback are currently unsupported. |
+
+This table is orientation, not a substitute for the per-window runtime query.
+Optional compositor protocols, EWMH atoms, renderer state, user-action tokens,
+and window configuration can change an operation's effective support.
 
 ## Rendering
 
@@ -305,10 +390,29 @@ contracts. Local precedent does not override those lifetime and threading rules.
 `-d gg_multiwindow`. It maps `gg` types to `x.multiwindow` and declares the
 managed `sokol.gfx`/`sokol.sgl` surface.
 
-`examples/gg/multiwindow.v` is the interactive example:
+The main facade mapping is:
+
+| `gg` | `x.multiwindow` |
+| --- | --- |
+| `gg.App`, `gg.WindowId` | `multiwindow.App`, `multiwindow.WindowId` |
+| `gg.WindowEvent`, `gg.WindowInputEvent` | `multiwindow.Event`, `multiwindow.InputEvent` |
+| `gg.WindowServiceEvent` | `multiwindow.ServiceEvent` |
+| `gg.WindowReadbackResult` | `multiwindow.ServiceReadbackResult` |
+| `gg.WindowQueuedEvent` | `multiwindow.QueuedEvent` |
+| `window_state`, `monitor_ids`, `window_operation_capability` | `service_window_state`, `service_monitor_ids`, `service_operation_capability` |
+| `drain_window_queued_events` | `drain_queued_events` |
+
+Application code should stay on one side of this mapping. The facade converts
+opaque ids and snapshots; it does not transfer ownership of low-level native or
+render objects.
+
+`examples/gg/multiwindow.v` is the interactive rendering example, and
+`examples/gg/multiwindow_services.v` is the compact capability-first services,
+queue, borrow, portal, and optional-readback example:
 
 ```sh
 ./v -d gg_multiwindow run examples/gg/multiwindow.v
+./v -d gg_multiwindow run examples/gg/multiwindow_services.v
 ```
 
 For Linux X11 native rendering, including Xvfb runs, add the X11 backend flag:

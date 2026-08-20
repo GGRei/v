@@ -1398,13 +1398,17 @@ fn (backend &X11Backend) service_monitor_snapshot(app_instance u64) ![]ServiceMo
 				}
 			}
 			monitors << ServiceMonitorInfo{
-				id:        ServiceMonitorId{
+				native_key: ServiceMonitorNativeKey{
+					kind:    .x11_atom
+					numeric: u64(item.name)
+				}
+				id:         ServiceMonitorId{
 					app_instance: app_instance
 					slot:         slot
 					generation:   1
 				}
-				name:      name
-				geometry:  ServiceKnownRect{
+				name:       name
+				geometry:   ServiceKnownRect{
 					known: true
 					value: ServiceRect{
 						x:      item.x
@@ -1413,11 +1417,14 @@ fn (backend &X11Backend) service_monitor_snapshot(app_instance u64) ![]ServiceMo
 						height: item.height
 					}
 				}
-				work_area: monitor_work_area
-				scale:     ServiceKnownScale{}
-				primary:   if item.primary != 0 { .on } else { .off }
-				available: true
+				work_area:  monitor_work_area
+				scale:      ServiceKnownScale{}
+				primary:    if item.primary != 0 { .on } else { .off }
+				available:  true
 			}
+		}
+		if !service_monitor_snapshot_identity_valid(monitors, .x11, app_instance) {
+			return error(err_capability_unsupported)
 		}
 		return monitors
 	} $else {
@@ -1746,6 +1753,60 @@ $if test {
 		}
 	}
 
+	fn (mut backend X11Backend) service_queue_clipboard_selection_reply_for_test(text string, relevant bool) ! {
+		$if linux && x_multiwindow_x11 ? {
+			if backend.clipboard_reads.len == 0 || text == '' {
+				return error(err_capability_unsupported)
+			}
+			read := backend.clipboard_reads[0]
+			payload := text.bytes()
+			C.XChangeProperty(backend.display, read.requestor, read.property,
+				backend.clipboard_utf8, 8, x11_prop_mode_replace, payload.data, payload.len)
+			mut event := C.XEvent{}
+			unsafe {
+				event.xselection.@type = x11_selection_notify
+				event.xselection.display = backend.display
+				event.xselection.requestor = if relevant { read.requestor } else { backend.root }
+				event.xselection.selection = backend.clipboard
+				event.xselection.target = backend.clipboard_utf8
+				event.xselection.property = read.property
+			}
+			C.XPutBackEvent(backend.display, &event)
+			backend.clipboard_reads[0].deadline_ns = vtime.sys_mono_now() - 1
+			return
+		}
+		_ = text
+		_ = relevant
+		return error(err_backend_unsupported)
+	}
+
+	fn (mut backend X11Backend) service_queue_clipboard_incr_terminal_for_test(text string) ! {
+		$if linux && x_multiwindow_x11 ? {
+			if backend.clipboard_reads.len == 0 {
+				return error(err_capability_unsupported)
+			}
+			read := backend.clipboard_reads[0]
+			backend.clipboard_reads[0].incremental = true
+			backend.clipboard_reads[0].data = text.bytes()
+			backend.clipboard_reads[0].reserved_bytes = text.len
+			C.XChangeProperty(backend.display, read.requestor, read.property,
+				backend.clipboard_utf8, 8, x11_prop_mode_replace, unsafe { nil }, 0)
+			mut event := C.XEvent{}
+			unsafe {
+				event.xproperty.@type = x11_property_notify
+				event.xproperty.display = backend.display
+				event.xproperty.window = read.requestor
+				event.xproperty.atom = read.property
+				event.xproperty.state = x11_property_new_value
+			}
+			C.XPutBackEvent(backend.display, &event)
+			backend.clipboard_reads[0].deadline_ns = vtime.sys_mono_now() - 1
+			return
+		}
+		_ = text
+		return error(err_backend_unsupported)
+	}
+
 	fn (backend &X11Backend) service_clipboard_pending_counts_for_test() (int, int) {
 		return backend.clipboard_reads.len, backend.clipboard_transfers.len
 	}
@@ -1829,7 +1890,6 @@ fn (mut backend X11Backend) poll_queued_events() ![]QueuedEvent {
 		if !backend.started || backend.display == unsafe { nil } {
 			return events
 		}
-		events << backend.expire_clipboard_operations(vtime.sys_mono_now())
 		for C.XPending(backend.display) > 0 {
 			mut event := C.XEvent{}
 			C.XNextEvent(backend.display, &event)

@@ -16,7 +16,7 @@ static inline int v_gg_multiwindow_gl_readback_window_rgba8(int framebuffer_heig
 	int x, int y, int width, int height, uint8_t *pixels, size_t pixels_len) {
 #if defined(SOKOL_GLCORE) || defined(SOKOL_GLES3)
 	if (framebuffer_height <= 0 || x < 0 || y < 0 || width <= 0 || height <= 0 ||
-		y + height > framebuffer_height || pixels == NULL ||
+		height > framebuffer_height || y > framebuffer_height - height || pixels == NULL ||
 		pixels_len != (size_t)width * (size_t)height * 4) {
 		return V_GG_MULTIWINDOW_GL_READBACK_INVALID;
 	}
@@ -63,7 +63,8 @@ static inline int v_gg_multiwindow_gl_readback_image_rgba8(uint32_t image_id,
 	size_t pixels_len) {
 #if defined(SOKOL_GLCORE) || defined(SOKOL_GLES3)
 	if (image_id == 0 || image_height <= 0 || x < 0 || y < 0 || width <= 0 ||
-		height <= 0 || pixels == NULL || pixels_len != (size_t)width * (size_t)height * 4) {
+		height <= 0 || height > image_height || y > image_height - height || pixels == NULL ||
+		pixels_len != (size_t)width * (size_t)height * 4) {
 		return V_GG_MULTIWINDOW_GL_READBACK_INVALID;
 	}
 	sg_image image = { image_id };

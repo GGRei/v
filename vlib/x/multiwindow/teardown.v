@@ -580,6 +580,14 @@ fn (app &App) live_window_ids_for_stop() ![]WindowId {
 	return ids
 }
 
+// live_window_ids_for_stop_for_gg is an internal bridge reserved for the gg
+// facade teardown. It is not a user API and must not be exposed in user README
+// documentation.
+pub fn (app &App) live_window_ids_for_stop_for_gg() ![]WindowId {
+	app.assert_owner_thread()!
+	return app.live_window_ids_for_stop()
+}
+
 fn (mut app App) seal_remaining_windows_terminal_for_stop() ![]WindowDestroyTicket {
 	app.state_mutex.lock()
 	defer {

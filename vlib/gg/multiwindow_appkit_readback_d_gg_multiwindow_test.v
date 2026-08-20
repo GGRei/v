@@ -176,6 +176,7 @@ fn test_multiwindow_appkit_public_readback_requires_live_metal_renderer() {
 		mut app := new_app(backend: .appkit, require_renderer: false)!
 		window :=
 			app.create_window(title: 'AppKit rendererless readback capability', visible: false)!
+		assert !app.capabilities().readback
 		capabilities := app.window_readback_capabilities(window)!
 		assert !capabilities.offscreen_image
 		assert !capabilities.window_capture
@@ -190,6 +191,7 @@ fn test_multiwindow_appkit_public_readbacks_are_per_window_and_post_submit() {
 			return
 		}
 		mut app := new_app(backend: .appkit, require_renderer: true)!
+		assert app.capabilities().readback
 		results := chan WindowReadbackResult{cap: 6}
 		mut first := &AppKitPublicReadbackState{}
 		mut second := &AppKitPublicReadbackState{}

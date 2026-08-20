@@ -248,7 +248,9 @@ fn (mut app App) accept_backend_service_event_locked(event ServiceEvent, deliver
 		} else {
 			[]ServiceMonitorInfo{}
 		}
-		monitors := app.services.reconcile_monitor_snapshot(snapshot, delivery_token)
+		monitors := app.services.reconcile_monitor_snapshot(snapshot, delivery_token) or {
+			return false
+		}
 		sequenced = ServiceEvent{
 			...sequenced
 			monitor:  if monitors.len > 0 { monitors[0] } else { event.monitor }

@@ -49,6 +49,11 @@ struct Win32ServiceMonitorRecord {
 	available  bool
 }
 
+struct Win32ServiceMonitorPlan {
+	records  []Win32ServiceMonitorRecord
+	monitors []ServiceMonitorInfo
+}
+
 struct Win32ServiceMetricsObservation {
 	event       QueuedEvent
 	monitor_ids []ServiceMonitorId
@@ -151,13 +156,17 @@ fn win32_service_visibility(value int) ServiceVisibilityState {
 
 fn win32_service_monitor_info(raw Win32ServiceRawMonitor, record Win32ServiceMonitorRecord, app_instance u64) ServiceMonitorInfo {
 	return ServiceMonitorInfo{
-		id:        ServiceMonitorId{
+		native_key: ServiceMonitorNativeKey{
+			kind: .win32_device
+			text: raw.name
+		}
+		id:         ServiceMonitorId{
 			app_instance: app_instance
 			slot:         record.slot
 			generation:   record.generation
 		}
-		name:      raw.name
-		geometry:  ServiceKnownRect{
+		name:       raw.name
+		geometry:   ServiceKnownRect{
 			known: raw.width > 0 && raw.height > 0
 			value: ServiceRect{
 				x:      raw.x
@@ -166,7 +175,7 @@ fn win32_service_monitor_info(raw Win32ServiceRawMonitor, record Win32ServiceMon
 				height: raw.height
 			}
 		}
-		work_area: ServiceKnownRect{
+		work_area:  ServiceKnownRect{
 			known: raw.work_width > 0 && raw.work_height > 0
 			value: ServiceRect{
 				x:      raw.work_x
@@ -175,12 +184,12 @@ fn win32_service_monitor_info(raw Win32ServiceRawMonitor, record Win32ServiceMon
 				height: raw.work_height
 			}
 		}
-		scale:     ServiceKnownScale{
+		scale:      ServiceKnownScale{
 			known: raw.dpi > 0
 			value: if raw.dpi > 0 { f32(raw.dpi) / 96.0 } else { f32(0) }
 		}
-		primary:   if raw.primary != 0 { .on } else { .off }
-		available: true
+		primary:    if raw.primary != 0 { .on } else { .off }
+		available:  true
 	}
 }
 
@@ -266,6 +275,35 @@ fn win32_reconcile_service_monitors(mut records []Win32ServiceMonitorRecord, sna
 		}
 	}
 	return monitors
+}
+
+fn win32_service_raw_monitor_snapshot_valid(snapshot []Win32ServiceRawMonitor) bool {
+	for index, raw in snapshot {
+		if raw.native_id == 0 || raw.name == '' {
+			return false
+		}
+		for previous in 0 .. index {
+			if snapshot[previous].native_id == raw.native_id || snapshot[previous].name == raw.name {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+fn win32_plan_service_monitors(records []Win32ServiceMonitorRecord, snapshot []Win32ServiceRawMonitor, app_instance u64) !Win32ServiceMonitorPlan {
+	if !win32_service_raw_monitor_snapshot_valid(snapshot) {
+		return error(err_capability_unsupported)
+	}
+	mut staged_records := records.clone()
+	monitors := win32_reconcile_service_monitors(mut staged_records, snapshot, app_instance)
+	if !service_monitor_snapshot_identity_valid(monitors, .win32, app_instance) {
+		return error(err_capability_unsupported)
+	}
+	return Win32ServiceMonitorPlan{
+		records:  staged_records
+		monitors: monitors
+	}
 }
 
 fn win32_service_monitor_ids_for_native(records []Win32ServiceMonitorRecord, native_id u64, app_instance u64) []ServiceMonitorId {
@@ -704,10 +742,9 @@ fn (mut backend Win32Backend) service_monitor_snapshot(app_instance u64) ![]Serv
 			return error(err_backend_unsupported)
 		}
 		raw := win32_service_raw_monitor_snapshot()!
-		mut staged_records := backend.service_monitors.clone()
-		monitors := win32_reconcile_service_monitors(mut staged_records, raw, app_instance)
-		backend.service_monitors = staged_records
-		return monitors
+		plan := win32_plan_service_monitors(backend.service_monitors, raw, app_instance)!
+		backend.service_monitors = plan.records
+		return plan.monitors
 	} $else {
 		_ = app_instance
 		return error(err_backend_unsupported)
@@ -796,9 +833,10 @@ fn (mut backend Win32Backend) collect_service_refresh_events() ![]Win32NativeQue
 		mut events := []Win32NativeQueuedEvent{}
 		if display_sequence != 0 {
 			raw_monitors := win32_service_raw_monitor_snapshot()!
-			mut staged_records := backend.service_monitors.clone()
-			monitors := win32_reconcile_service_monitors(mut staged_records, raw_monitors,
-				app_instance)
+			plan := win32_plan_service_monitors(backend.service_monitors, raw_monitors,
+				app_instance)!
+			staged_records := plan.records
+			monitors := plan.monitors
 			events << Win32NativeQueuedEvent{
 				sequence: display_sequence
 				event:    queued_service_event(ServiceEvent{

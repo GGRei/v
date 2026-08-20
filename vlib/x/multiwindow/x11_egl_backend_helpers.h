@@ -1370,7 +1370,8 @@ static inline int v_multiwindow_x11_readback_rgba8(Display *display, unsigned lo
 	}
 	XWindowAttributes attrs;
 	if (!XGetWindowAttributes(display, (Window)window, &attrs) || attrs.map_state != IsViewable
-		|| x + width > attrs.width || y + height > attrs.height) {
+		|| width > attrs.width || height > attrs.height || x > attrs.width - width
+		|| y > attrs.height - height) {
 		return 0;
 	}
 	XImage *image = XGetImage(display, (Drawable)window, x, y, (unsigned int)width,

@@ -35,6 +35,7 @@ fn (mut app App) publish_mock_state_locked(index int, operation ServiceOperation
 	}), token)
 }
 
+// service_window_state returns the latest native observation for one live window.
 pub fn (app &App) service_window_state(id WindowId) !ServiceWindowState {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
@@ -52,6 +53,7 @@ pub fn (app &App) service_window_state(id WindowId) !ServiceWindowState {
 	return service_window_state_with_sequence(state, state.sequence)
 }
 
+// service_monitor_ids returns currently available generation-checked monitors.
 pub fn (app &App) service_monitor_ids() ![]ServiceMonitorId {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
@@ -68,6 +70,7 @@ pub fn (app &App) service_monitor_ids() ![]ServiceMonitorId {
 	return ids
 }
 
+// service_monitor_info returns the latest snapshot for one monitor generation.
 pub fn (app &App) service_monitor_info(id ServiceMonitorId) !ServiceMonitorInfo {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
@@ -78,17 +81,20 @@ pub fn (app &App) service_monitor_info(id ServiceMonitorId) !ServiceMonitorInfo 
 	index := app.services.monitor_index(id)!
 	monitor := app.services.monitors[index]
 	return ServiceMonitorInfo{
-		id:        monitor.id
-		name:      monitor.name
-		geometry:  monitor.geometry
-		work_area: monitor.work_area
-		scale:     monitor.scale
-		primary:   monitor.primary
-		available: monitor.available
-		sequence:  monitor.sequence
+		native_key: monitor.native_key
+		id:         monitor.id
+		name:       monitor.name
+		geometry:   monitor.geometry
+		work_area:  monitor.work_area
+		scale:      monitor.scale
+		primary:    monitor.primary
+		available:  monitor.available
+		sequence:   monitor.sequence
 	}
 }
 
+// service_operation_capability reports authoritative runtime support for one
+// operation on one live window. Query it immediately before optional operations.
 pub fn (app &App) service_operation_capability(id WindowId, operation ServiceOperation) !ServiceOperationCapability {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
@@ -100,6 +106,7 @@ pub fn (app &App) service_operation_capability(id WindowId, operation ServiceOpe
 	return app.backend.service_operation_capability(id, operation)
 }
 
+// service_cursor_support reports runtime support for one native cursor shape.
 pub fn (app &App) service_cursor_support(id WindowId, shape CursorShape) !ServiceSupportLevel {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
@@ -111,6 +118,7 @@ pub fn (app &App) service_cursor_support(id WindowId, shape CursorShape) !Servic
 	return app.backend.cursor_support(shape)
 }
 
+// service_show_window requests that a live window become mapped and visible.
 pub fn (mut app App) service_show_window(id WindowId) ! {
 	if app.service_operation_uses_mock(id, .show)! {
 		app.update_mock_mapping(id, true, .show)!
@@ -120,6 +128,7 @@ pub fn (mut app App) service_show_window(id WindowId) ! {
 	app.publish_native_state(id, .show, state)!
 }
 
+// service_hide_window requests that a live window become hidden or unmapped.
 pub fn (mut app App) service_hide_window(id WindowId) ! {
 	if app.service_operation_uses_mock(id, .hide)! {
 		app.update_mock_mapping(id, false, .hide)!
@@ -145,6 +154,7 @@ fn (mut app App) update_mock_mapping(id WindowId, visible bool, operation Servic
 	app.publish_mock_state_locked(index, operation)!
 }
 
+// service_request_focus asks the native platform to focus a live window.
 pub fn (mut app App) service_request_focus(id WindowId) ! {
 	if !app.service_operation_uses_mock(id, .focus)! {
 		state := app.backend.service_focus_window(id)!
@@ -168,6 +178,7 @@ pub fn (mut app App) service_request_focus(id WindowId) ! {
 	app.publish_mock_state_locked(index, .focus)!
 }
 
+// service_raise_window asks the native platform to raise a live window.
 pub fn (mut app App) service_raise_window(id WindowId) ! {
 	if app.service_operation_uses_mock(id, .raise)! {
 		app.publish_mock_unchanged_state(id, .raise)!
@@ -177,6 +188,7 @@ pub fn (mut app App) service_raise_window(id WindowId) ! {
 	app.publish_native_state(id, .raise, state)!
 }
 
+// service_set_position requests a native top-level position when supported.
 pub fn (mut app App) service_set_position(id WindowId, x int, y int) ! {
 	if !app.service_operation_uses_mock(id, .position)! {
 		state := app.backend.service_set_window_position(id, x, y)!
@@ -201,6 +213,7 @@ pub fn (mut app App) service_set_position(id WindowId, x int, y int) ! {
 	app.publish_mock_state_locked(index, .position)!
 }
 
+// service_minimize_window requests native minimization.
 pub fn (mut app App) service_minimize_window(id WindowId) ! {
 	if app.service_operation_uses_mock(id, .minimize)! {
 		app.update_mock_window_mode(id, .minimize)!
@@ -210,6 +223,7 @@ pub fn (mut app App) service_minimize_window(id WindowId) ! {
 	app.publish_native_state(id, .minimize, state)!
 }
 
+// service_maximize_window requests native maximization.
 pub fn (mut app App) service_maximize_window(id WindowId) ! {
 	if app.service_operation_uses_mock(id, .maximize)! {
 		app.update_mock_window_mode(id, .maximize)!
@@ -219,6 +233,7 @@ pub fn (mut app App) service_maximize_window(id WindowId) ! {
 	app.publish_native_state(id, .maximize, state)!
 }
 
+// service_restore_window leaves a supported minimized/maximized/fullscreen state.
 pub fn (mut app App) service_restore_window(id WindowId) ! {
 	if app.service_operation_uses_mock(id, .restore)! {
 		app.update_mock_window_mode(id, .restore)!
@@ -228,6 +243,7 @@ pub fn (mut app App) service_restore_window(id WindowId) ! {
 	app.publish_native_state(id, .restore, state)!
 }
 
+// service_set_fullscreen requests or leaves native fullscreen state.
 pub fn (mut app App) service_set_fullscreen(id WindowId, enabled bool) ! {
 	if !app.service_operation_uses_mock(id, .fullscreen)! {
 		state := app.backend.service_set_fullscreen(id, enabled)!
@@ -280,6 +296,7 @@ fn (mut app App) publish_mock_unchanged_state(id WindowId, operation ServiceOper
 	app.publish_mock_state_locked(index, operation)!
 }
 
+// service_set_mouse_lock requests or releases relative pointer confinement.
 pub fn (mut app App) service_set_mouse_lock(id WindowId, enabled bool) ! {
 	if !app.service_operation_uses_mock(id, .mouse_lock)! {
 		state := app.backend.service_set_mouse_lock(id, enabled)!
@@ -398,6 +415,7 @@ fn service_window_state_observation_equal(left ServiceWindowState, right Service
 	return true
 }
 
+// service_set_titlebar_appearance requests a supported native titlebar theme.
 pub fn (mut app App) service_set_titlebar_appearance(id WindowId, appearance ServiceTitlebarAppearance) ! {
 	if !app.service_operation_uses_mock(id, .titlebar_appearance)! {
 		app.backend.service_set_titlebar_appearance(id, appearance)!
@@ -406,6 +424,8 @@ pub fn (mut app App) service_set_titlebar_appearance(id WindowId, appearance Ser
 	app.publish_mock_unchanged_state(id, .titlebar_appearance)!
 }
 
+// service_request_clipboard_text starts an asynchronous clipboard read and
+// returns the id matched by a terminal clipboard ServiceEvent.
 pub fn (mut app App) service_request_clipboard_text(id WindowId) !ServiceRequestId {
 	if app.service_operation_uses_mock(id, .clipboard_read)! {
 		return app.complete_mock_clipboard(id, false, '')!
@@ -421,6 +441,8 @@ pub fn (mut app App) service_request_clipboard_text(id WindowId) !ServiceRequest
 	return request
 }
 
+// service_set_clipboard_text starts an asynchronous clipboard write and returns
+// the id matched by a terminal clipboard ServiceEvent.
 pub fn (mut app App) service_set_clipboard_text(id WindowId, text string) !ServiceRequestId {
 	if app.service_operation_uses_mock(id, .clipboard_write)! {
 		return app.complete_mock_clipboard(id, true, text)!
@@ -528,6 +550,8 @@ fn (mut app App) complete_native_clipboard_request(id ServiceRequestId, window W
 	return error(err_service_request_stale)
 }
 
+// service_request_portal_parent starts an asynchronous native-parent export. A
+// ready event carries an opaque identifier and an explicitly released lease.
 pub fn (mut app App) service_request_portal_parent(id WindowId) !ServiceRequestId {
 	if app.service_operation_uses_mock(id, .portal_parent)! {
 		request, lease := app.begin_portal_parent_request(id)!
@@ -623,6 +647,7 @@ fn (mut app App) rollback_portal_parent_request(request ServiceRequestId, lease 
 	}
 }
 
+// service_release_portal_parent releases a ready portal-parent export lease.
 pub fn (mut app App) service_release_portal_parent(id ServicePortalLeaseId) ! {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
@@ -661,10 +686,13 @@ pub fn (mut app App) service_release_portal_parent(id ServicePortalLeaseId) ! {
 	return error(err_service_request_stale)
 }
 
+// service_request_window_readback requests an origin-based native readback of
+// the supplied width and height and queues one terminal ServiceReadbackResult.
 pub fn (mut app App) service_request_window_readback(id WindowId, width int, height int, submitted_frame u64) !ServiceReadbackId {
 	return app.service_request_window_readback_region(id, 0, 0, width, height, submitted_frame)!
 }
 
+// service_begin_window_readback reserves a pending low-level readback identity.
 pub fn (mut app App) service_begin_window_readback(id WindowId) !ServiceReadbackId {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
@@ -697,6 +725,7 @@ fn (app &App) pending_readback_index_locked(readback ServiceReadbackId) !int {
 	return error(err_service_request_stale)
 }
 
+// service_stage_window_readback_for_gg is an internal gg-facade bridge; not user API.
 pub fn (mut app App) service_stage_window_readback_for_gg(readback ServiceReadbackId, x int, y int, width int, height int, producing_frame u64) ! {
 	app.assert_owner_thread()!
 	if x < 0 || y < 0 || width <= 0 || height <= 0 || producing_frame == 0 {
@@ -719,6 +748,7 @@ pub fn (mut app App) service_stage_window_readback_for_gg(readback ServiceReadba
 	app.backend.service_stage_window_readback(readback, x, y, width, height, producing_frame)!
 }
 
+// service_stage_image_readback_for_gg is an internal gg-facade bridge; not user API.
 pub fn (mut app App) service_stage_image_readback_for_gg(readback ServiceReadbackId, image_id u32, x int, y int, width int, height int, producing_frame u64) ! {
 	app.assert_owner_thread()!
 	if image_id == 0 || x < 0 || y < 0 || width <= 0 || height <= 0 || producing_frame == 0 {
@@ -742,6 +772,7 @@ pub fn (mut app App) service_stage_image_readback_for_gg(readback ServiceReadbac
 		producing_frame)!
 }
 
+// service_arm_image_readback_pass_for_gg is an internal gg-facade bridge; not user API.
 pub fn (mut app App) service_arm_image_readback_pass_for_gg(id WindowId, image_id u32, pass_serial u64, producing_frame u64) ! {
 	app.assert_owner_thread()!
 	if image_id == 0 || pass_serial == 0 || producing_frame == 0 {
@@ -764,6 +795,7 @@ pub fn (mut app App) service_arm_image_readback_pass_for_gg(id WindowId, image_i
 	app.backend.service_arm_image_readback_pass(id, image_id, pass_serial, producing_frame)!
 }
 
+// service_resolve_readbacks_after_submit_for_gg is an internal gg-facade bridge; not user API.
 pub fn (mut app App) service_resolve_readbacks_after_submit_for_gg(id WindowId, submitted_frame u64, submission_succeeded bool) ! {
 	app.assert_owner_thread()!
 	if submitted_frame == 0 {
@@ -782,6 +814,7 @@ pub fn (mut app App) service_resolve_readbacks_after_submit_for_gg(id WindowId, 
 	app.backend.service_resolve_readbacks_after_submit(id, submitted_frame, submission_succeeded)!
 }
 
+// service_abandon_window_readback_for_gg is an internal gg-facade bridge; not user API.
 pub fn (mut app App) service_abandon_window_readback_for_gg(readback ServiceReadbackId, message string) ! {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
@@ -802,6 +835,7 @@ pub fn (mut app App) service_abandon_window_readback_for_gg(readback ServiceRead
 	}
 }
 
+// service_finish_window_readback publishes a ready owned RGBA8 terminal result.
 pub fn (mut app App) service_finish_window_readback(readback ServiceReadbackId, width int, height int, stride int, pixels []u8, submitted_frame u64) ! {
 	if width <= 0 || height <= 0 || stride < width * 4
 		|| u64(stride) * u64(height) != u64(pixels.len) {
@@ -819,6 +853,7 @@ pub fn (mut app App) service_finish_window_readback(readback ServiceReadbackId, 
 	})!
 }
 
+// service_fail_window_readback publishes a failed terminal result without pixels.
 pub fn (mut app App) service_fail_window_readback(readback ServiceReadbackId, message string) ! {
 	app.finish_pending_window_readback(readback, ServiceReadbackResult{
 		id:     readback
@@ -851,6 +886,8 @@ fn (mut app App) mark_pending_window_readback_terminal_locked(readback ServiceRe
 	return index
 }
 
+// service_request_window_readback_region requests a positive bounded native
+// pixel region and queues exactly one terminal result.
 pub fn (mut app App) service_request_window_readback_region(id WindowId, x int, y int, width int, height int, submitted_frame u64) !ServiceReadbackId {
 	if x < 0 || y < 0 || width <= 0 || height <= 0 || u64(width) * u64(height) > u64(0x1fffffff) {
 		return error(err_readback_invalid)
@@ -864,6 +901,7 @@ pub fn (mut app App) service_request_window_readback_region(id WindowId, x int, 
 	return app.service_complete_readback(id, width, height, stride, pixels, submitted_frame)!
 }
 
+// service_complete_readback creates and immediately publishes one ready RGBA8 result.
 pub fn (mut app App) service_complete_readback(id WindowId, width int, height int, stride int, pixels []u8, submitted_frame u64) !ServiceReadbackId {
 	if width <= 0 || height <= 0 || stride < width * 4
 		|| u64(stride) * u64(height) != u64(pixels.len) {
@@ -874,6 +912,7 @@ pub fn (mut app App) service_complete_readback(id WindowId, width int, height in
 	return readback
 }
 
+// with_native_window_for_gg is an internal gg-facade bridge; not user API.
 pub fn (mut app App) with_native_window_for_gg(id WindowId, callback NativeWindowBorrowCallback) ! {
 	app.assert_owner_thread()!
 	if callback == unsafe { nil } {
@@ -899,6 +938,14 @@ pub fn (mut app App) with_native_window_for_gg(id WindowId, callback NativeWindo
 
 fn (mut app App) with_native_window_borrow_for_test(id WindowId, callback NativeWindowBorrowCallback) ! {
 	app.with_native_window_borrow(id, .mock, unsafe { nil }, 0, callback)!
+}
+
+$if test {
+	// with_mock_native_window_borrow_for_gg_test is an internal gg-facade bridge; not user API.
+	// It gives same-module tests a real core borrow lifetime only in test builds.
+	pub fn (mut app App) with_mock_native_window_borrow_for_gg_test(id WindowId, callback NativeWindowBorrowCallback) ! {
+		app.with_native_window_borrow_for_test(id, callback)!
+	}
 }
 
 fn (mut app App) with_native_window_borrow(id WindowId, backend NativeWindowBackend, primary voidptr, secondary u64, callback NativeWindowBorrowCallback) ! {
@@ -956,6 +1003,7 @@ fn (mut app App) with_native_window_borrow(id WindowId, backend NativeWindowBack
 	}
 }
 
+// validate_native_borrow_for_gg is an internal gg-facade bridge; not user API.
 pub fn (app &App) validate_native_borrow_for_gg(id WindowId, epoch u64) !NativeWindowBackend {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
@@ -1141,6 +1189,8 @@ fn (mut app App) commit_window_service_cancellation_locked(plan WindowServiceCan
 	app.services.portal_leases = retained_leases
 }
 
+// drain_service_events consumes only the contiguous service prefix of the
+// canonical queue. It never skips lifecycle, input, or readback events.
 pub fn (mut app App) drain_service_events() ![]ServiceEvent {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
@@ -1168,6 +1218,8 @@ pub fn (mut app App) drain_service_events() ![]ServiceEvent {
 	return selected
 }
 
+// drain_readback_events consumes only the contiguous readback prefix of the
+// canonical queue. It never skips lifecycle, input, or service events.
 pub fn (mut app App) drain_readback_events() ![]ServiceReadbackResult {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()

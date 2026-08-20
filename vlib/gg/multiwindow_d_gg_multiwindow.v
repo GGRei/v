@@ -86,7 +86,8 @@ pub fn (id WindowId) str() string {
 	return id.core.str()
 }
 
-// AppConfig configures a multi-window gg application facade.
+// AppConfig configures a multi-window gg application facade. app_id supplies
+// the native application identity where supported (currently Wayland xdg-shell).
 @[params]
 pub struct AppConfig {
 pub:
@@ -96,7 +97,8 @@ pub:
 	app_id           string
 }
 
-// WindowConfig describes one window at creation time.
+// WindowConfig describes one window at creation time. A modal window must name
+// a live same-app owner; ownerless modal configurations are rejected pre-allocation.
 @[params]
 pub struct WindowConfig {
 pub:
@@ -139,7 +141,8 @@ pub:
 	native_decorations bool
 }
 
-// Capabilities reports the active gg.App backend contract.
+// Capabilities reports the active gg.App backend-wide contract. Optional
+// per-window service/readback queries remain authoritative for runtime state.
 pub struct Capabilities {
 pub:
 	backend                 MultiWindowBackend
@@ -202,8 +205,11 @@ pub type AppInputFn = fn (event WindowInputEvent, mut app App) !
 // WindowDrawFn records drawing commands for one WindowContext.
 pub type WindowDrawFn = fn (mut window WindowContext) !
 
-// RunConfig configures the gg.App loop. Use event_fn without frame_fn for
-// lifecycle-only loops that do not require a renderer.
+// RunConfig configures the gg.App loop. event_fn, input_fn, window_service_fn,
+// and readback_fn receive the four canonical queue families in global order.
+// An error from any of those callbacks reinserts the current event and untouched
+// suffix in the same order, so all four handlers must be idempotent.
+// Use event_fn without frame_fn for lifecycle-only loops without a renderer.
 @[params]
 pub struct RunConfig {
 pub:
@@ -361,7 +367,8 @@ pub fn (app &App) window_infos() ![]WindowInfo {
 	return infos
 }
 
-// destroy_window destroys a live window.
+// destroy_window destroys a live window and its owned descendants child-first.
+// Destroying the final window does not stop the app; call stop explicitly.
 pub fn (mut app App) destroy_window(id WindowId) ! {
 	app.destroy_window_managed(id, .requested)!
 }
@@ -382,7 +389,7 @@ pub fn (app &App) capabilities() Capabilities {
 	return capabilities_from_core(app.core.capabilities())
 }
 
-// drain_events returns and clears pending window lifecycle events.
+// drain_events consumes only the contiguous lifecycle prefix of the ordered queue.
 pub fn (mut app App) drain_events() ![]WindowEvent {
 	app.ensure_initialized()!
 	core_events := app.core.drain_events()!
@@ -394,7 +401,7 @@ pub fn (mut app App) drain_events() ![]WindowEvent {
 	return events
 }
 
-// drain_input_events returns and clears pending window-scoped input events.
+// drain_input_events consumes only the contiguous input prefix of the ordered queue.
 pub fn (mut app App) drain_input_events() ![]WindowInputEvent {
 	app.ensure_initialized()!
 	core_events := app.core.drain_input_events()!
@@ -406,12 +413,13 @@ pub fn (mut app App) drain_input_events() ![]WindowInputEvent {
 }
 
 // window_state returns the latest native state observed for a live window.
+// Unknown fields were not reported by the running backend.
 pub fn (app &App) window_state(id WindowId) !WindowState {
 	app.ensure_initialized()!
 	return window_state_from_core(app.core.service_window_state(id.core)!)
 }
 
-// monitor_ids returns generation-checked ids for currently known monitors.
+// monitor_ids returns generation-checked ids for currently available monitors.
 pub fn (app &App) monitor_ids() ![]WindowMonitorId {
 	app.ensure_initialized()!
 	core_ids := app.core.service_monitor_ids()!
@@ -422,13 +430,15 @@ pub fn (app &App) monitor_ids() ![]WindowMonitorId {
 	return ids
 }
 
-// monitor_info returns the latest snapshot for a monitor generation.
+// monitor_info returns the latest snapshot for a monitor generation. Names are
+// descriptive; the generation-checked id is the identity.
 pub fn (app &App) monitor_info(id WindowMonitorId) !WindowMonitorInfo {
 	app.ensure_initialized()!
 	return window_monitor_info_from_core(app.core.service_monitor_info(window_monitor_id_to_core(id))!)
 }
 
-// window_operation_capability reports runtime support for one live window.
+// window_operation_capability reports authoritative runtime support for one
+// operation on one live window. Query it immediately before optional operations.
 pub fn (app &App) window_operation_capability(id WindowId, operation WindowOperation) !WindowOperationCapability {
 	app.ensure_initialized()!
 	core_capability := app.core.service_operation_capability(id.core,
@@ -451,7 +461,8 @@ pub fn (app &App) supports_window_cursor(id WindowId, shape WindowCursorShape) !
 		window_cursor_shape_to_core(shape))!)
 }
 
-// with_native_window borrows a live native window only for the callback.
+// with_native_window borrows a live native window only for the callback. The
+// lease and nested backend handles must not escape or be retained.
 pub fn (mut app App) with_native_window(id WindowId, f NativeWindowBorrowFn) ! {
 	app.ensure_initialized()!
 	app.assert_owner_thread()!
@@ -486,82 +497,102 @@ pub fn (mut app App) with_native_window(id WindowId, f NativeWindowBorrowFn) ! {
 	}
 }
 
+// show_window requests that a live window become mapped and visible.
 pub fn (mut app App) show_window(id WindowId) ! {
 	app.ensure_initialized()!
 	app.core.service_show_window(id.core)!
 }
 
+// hide_window requests that a live window become hidden or unmapped.
 pub fn (mut app App) hide_window(id WindowId) ! {
 	app.ensure_initialized()!
 	app.core.service_hide_window(id.core)!
 }
 
+// request_window_focus asks the platform to focus a live window.
 pub fn (mut app App) request_window_focus(id WindowId) ! {
 	app.ensure_initialized()!
 	app.core.service_request_focus(id.core)!
 }
 
+// raise_window asks the platform to raise a live window.
 pub fn (mut app App) raise_window(id WindowId) ! {
 	app.ensure_initialized()!
 	app.core.service_raise_window(id.core)!
 }
 
+// set_window_position requests a native top-level position when supported.
 pub fn (mut app App) set_window_position(id WindowId, x int, y int) ! {
 	app.ensure_initialized()!
 	app.core.service_set_position(id.core, x, y)!
 }
 
+// minimize_window requests native minimization.
 pub fn (mut app App) minimize_window(id WindowId) ! {
 	app.ensure_initialized()!
 	app.core.service_minimize_window(id.core)!
 }
 
+// maximize_window requests native maximization.
 pub fn (mut app App) maximize_window(id WindowId) ! {
 	app.ensure_initialized()!
 	app.core.service_maximize_window(id.core)!
 }
 
+// restore_window leaves the supported minimized, maximized, or fullscreen state.
 pub fn (mut app App) restore_window(id WindowId) ! {
 	app.ensure_initialized()!
 	app.core.service_restore_window(id.core)!
 }
 
+// set_window_fullscreen requests or leaves native fullscreen state.
 pub fn (mut app App) set_window_fullscreen(id WindowId, enabled bool) ! {
 	app.ensure_initialized()!
 	app.core.service_set_fullscreen(id.core, enabled)!
 }
 
+// request_clipboard_text starts an asynchronous clipboard read. Match the id
+// with a terminal clipboard WindowServiceEvent.
 pub fn (mut app App) request_clipboard_text(id WindowId) !ClipboardRequestId {
 	app.ensure_initialized()!
 	return clipboard_request_id_from_core(app.core.service_request_clipboard_text(id.core)!)
 }
 
+// set_clipboard_text starts an asynchronous clipboard write. Match the id with
+// a terminal clipboard WindowServiceEvent.
 pub fn (mut app App) set_clipboard_text(id WindowId, text string) !ClipboardRequestId {
 	app.ensure_initialized()!
 	return clipboard_request_id_from_core(app.core.service_set_clipboard_text(id.core, text)!)
 }
 
+// request_portal_parent starts an asynchronous native-parent export. A ready
+// event owns a lease that must be released explicitly.
 pub fn (mut app App) request_portal_parent(id WindowId) !PortalParentRequestId {
 	app.ensure_initialized()!
 	return portal_parent_request_id_from_core(app.core.service_request_portal_parent(id.core)!)
 }
 
+// release_portal_parent releases a ready portal-parent export lease.
 pub fn (mut app App) release_portal_parent(id PortalParentLeaseId) ! {
 	app.ensure_initialized()!
 	app.core.service_release_portal_parent(multiwindow.service_portal_lease_id_from_gg(id.app_instance,
 		id.serial))!
 }
 
+// set_window_mouse_lock requests or releases relative pointer confinement.
 pub fn (mut app App) set_window_mouse_lock(id WindowId, enabled bool) ! {
 	app.ensure_initialized()!
 	app.core.service_set_mouse_lock(id.core, enabled)!
 }
 
+// set_window_titlebar_appearance requests a supported native titlebar theme.
 pub fn (mut app App) set_window_titlebar_appearance(id WindowId, appearance WindowTitlebarAppearance) ! {
 	app.ensure_initialized()!
 	app.core.service_set_titlebar_appearance(id.core, window_titlebar_to_core(appearance))!
 }
 
+// drain_window_service_events consumes only the contiguous service prefix of
+// the ordered queue. It never skips lifecycle, input, or readback events.
 pub fn (mut app App) drain_window_service_events() ![]WindowServiceEvent {
 	app.ensure_initialized()!
 	core_events := app.core.drain_service_events()!
@@ -572,6 +603,8 @@ pub fn (mut app App) drain_window_service_events() ![]WindowServiceEvent {
 	return events
 }
 
+// drain_window_queued_events consumes lifecycle, input, service, and readback
+// events in exact global admission order.
 pub fn (mut app App) drain_window_queued_events() ![]WindowQueuedEvent {
 	app.ensure_initialized()!
 	core_events := app.core.drain_queued_events()!
@@ -582,6 +615,7 @@ pub fn (mut app App) drain_window_queued_events() ![]WindowQueuedEvent {
 	return events
 }
 
+// with_win32 exposes the borrowed HWND only during f.
 pub fn (mut lease NativeWindowLease) with_win32(f Win32NativeWindowFn) ! {
 	lease.validate_native_backend(.win32)!
 	if f == unsafe { nil } {
@@ -590,6 +624,7 @@ pub fn (mut lease NativeWindowLease) with_win32(f Win32NativeWindowFn) ! {
 	f(lease.primary)!
 }
 
+// with_appkit exposes the borrowed NSWindow pointer only during f.
 pub fn (mut lease NativeWindowLease) with_appkit(f AppKitNativeWindowFn) ! {
 	lease.validate_native_backend(.appkit)!
 	if f == unsafe { nil } {
@@ -598,6 +633,7 @@ pub fn (mut lease NativeWindowLease) with_appkit(f AppKitNativeWindowFn) ! {
 	f(lease.primary)!
 }
 
+// with_x11 exposes borrowed Display and Window handles only during f.
 pub fn (mut lease NativeWindowLease) with_x11(f X11NativeWindowFn) ! {
 	lease.validate_native_backend(.x11)!
 	if f == unsafe { nil } {
@@ -606,6 +642,7 @@ pub fn (mut lease NativeWindowLease) with_x11(f X11NativeWindowFn) ! {
 	f(lease.primary, lease.secondary)!
 }
 
+// with_wayland exposes borrowed wl_display and wl_surface pointers only during f.
 pub fn (mut lease NativeWindowLease) with_wayland(f WaylandNativeWindowFn) ! {
 	lease.validate_native_backend(.wayland)!
 	if f == unsafe { nil } {
@@ -625,7 +662,8 @@ fn (mut lease NativeWindowLease) validate_native_backend(expected MultiWindowBac
 	}
 }
 
-// poll_events lets the backend route native lifecycle/input events into the gg.App queue.
+// poll_events routes native lifecycle, input, service, and readback events into
+// the gg.App canonical queue.
 pub fn (mut app App) poll_events() !int {
 	app.ensure_initialized()!
 	count := app.core.poll_events()!
@@ -657,8 +695,10 @@ pub fn (mut app App) drain_pending(max_jobs int) !int {
 	return app.core.drain_pending(max_jobs)!
 }
 
-// run starts the multi-window owner loop. event_fn can drive lifecycle-only
-// apps without a renderer; frame_fn/draw_window require explicit swapchains.
+// run starts the owner loop and dispatches lifecycle, input, service, and
+// readback callbacks in canonical order. Rendering callbacks require swapchains.
+// A queue-callback error reinserts the current event and untouched suffix, so
+// event, input, service, and readback handlers must be idempotent.
 pub fn (mut app App) run(config RunConfig) ! {
 	app.run_managed(config)!
 }

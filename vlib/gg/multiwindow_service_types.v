@@ -16,12 +16,15 @@ pub enum WindowObservedBool {
 	on
 }
 
+// WindowMappingState reports whether a native window is attached to the
+// platform's visible window hierarchy.
 pub enum WindowMappingState {
 	unknown
 	unmapped
 	mapped
 }
 
+// WindowVisibilityState is the latest native visibility observation.
 pub enum WindowVisibilityState {
 	unknown
 	hidden
@@ -50,6 +53,7 @@ pub enum WindowOperation {
 	window_capture
 }
 
+// WindowServiceEventKind selects the payload carried by WindowServiceEvent.
 pub enum WindowServiceEventKind {
 	state
 	metrics
@@ -59,6 +63,7 @@ pub enum WindowServiceEventKind {
 	portal_parent
 }
 
+// WindowServiceStatus is the terminal status of an asynchronous service request.
 pub enum WindowServiceStatus {
 	ready
 	cancelled
@@ -73,6 +78,10 @@ pub enum WindowTitlebarAppearance {
 	dark
 }
 
+// WindowOperationCapability is the authoritative per-window runtime answer for
+// one optional operation. asynchronous does not promise a later queued result;
+// state_observable says whether callers can rely on a resulting state
+// observation. Conditional operations can still require user action.
 pub struct WindowOperationCapability {
 pub:
 	support              WindowSupportLevel
@@ -88,10 +97,12 @@ pub struct WindowMonitorId {
 	generation   u32
 }
 
+// str returns a diagnostic monitor identity without exposing mutable fields.
 pub fn (id WindowMonitorId) str() string {
 	return 'WindowMonitorId(${id.app_instance}:${id.slot}:${id.generation})'
 }
 
+// WindowPosition carries a native position only when known is true.
 pub struct WindowPosition {
 pub:
 	known bool
@@ -99,6 +110,7 @@ pub:
 	y     int
 }
 
+// WindowRect is an integer native monitor rectangle.
 pub struct WindowRect {
 pub:
 	x      int
@@ -107,18 +119,22 @@ pub:
 	height int
 }
 
+// WindowKnownRect distinguishes an unavailable monitor rectangle from zeroes.
 pub struct WindowKnownRect {
 pub:
 	known bool
 	value WindowRect
 }
 
+// WindowKnownScale distinguishes an unavailable scale from zero.
 pub struct WindowKnownScale {
 pub:
 	known bool
 	value f32
 }
 
+// WindowMonitorInfo is an immutable observation for one monitor generation.
+// Names are descriptive; WindowMonitorId is the identity.
 pub struct WindowMonitorInfo {
 pub:
 	id        WindowMonitorId
@@ -131,6 +147,8 @@ pub:
 	sequence  u64
 }
 
+// WindowState is the latest native observation for one live window. Unknown
+// fields were not reported by the backend; sequence orders accepted updates.
 pub struct WindowState {
 pub:
 	mapping      WindowMappingState
@@ -152,6 +170,7 @@ pub struct ClipboardRequestId {
 	serial       u64
 }
 
+// str returns a diagnostic clipboard request identity.
 pub fn (id ClipboardRequestId) str() string {
 	return 'ClipboardRequestId(${id.app_instance}:${id.serial})'
 }
@@ -162,20 +181,24 @@ pub struct PortalParentRequestId {
 	serial       u64
 }
 
+// str returns a diagnostic portal-parent request identity.
 pub fn (id PortalParentRequestId) str() string {
 	return 'PortalParentRequestId(${id.app_instance}:${id.serial})'
 }
 
-// PortalParentLeaseId identifies a portal parent export until explicit release.
+// PortalParentLeaseId identifies a portal parent export until release or
+// window/app teardown invalidates it.
 pub struct PortalParentLeaseId {
 	app_instance u64
 	serial       u64
 }
 
+// str returns a diagnostic portal-parent lease identity.
 pub fn (id PortalParentLeaseId) str() string {
 	return 'PortalParentLeaseId(${id.app_instance}:${id.serial})'
 }
 
+// ClipboardResult is the terminal result matched to ClipboardRequestId.
 pub struct ClipboardResult {
 pub:
 	id     ClipboardRequestId
@@ -185,6 +208,8 @@ pub:
 	error  string
 }
 
+// PortalParentResult is the terminal result matched to PortalParentRequestId.
+// A ready event already queued before teardown can carry a stale lease.
 pub struct PortalParentResult {
 pub:
 	id         PortalParentRequestId
@@ -195,6 +220,8 @@ pub:
 	error      string
 }
 
+// WindowServiceEvent carries one native service observation or terminal result.
+// kind selects the meaningful payload field.
 pub struct WindowServiceEvent {
 pub:
 	kind          WindowServiceEventKind
@@ -210,6 +237,7 @@ pub:
 	portal_parent PortalParentResult
 }
 
+// WindowQueuedEventKind identifies one of the four canonical queue families.
 pub enum WindowQueuedEventKind {
 	lifecycle
 	input
@@ -217,8 +245,8 @@ pub enum WindowQueuedEventKind {
 	readback
 }
 
-// WindowQueuedEvent is the canonical ordered delivery envelope for package-1
-// and package-2 events. Advanced text input adds its payload in package 3.
+// WindowQueuedEvent is the canonical ordered delivery envelope for lifecycle,
+// input, service, and readback events. sequence preserves global admission order.
 pub struct WindowQueuedEvent {
 pub:
 	kind      WindowQueuedEventKind
@@ -229,12 +257,17 @@ pub:
 	readback  WindowReadbackResult
 }
 
+// Win32NativeWindowFn receives a borrowed HWND valid only for the callback.
 pub type Win32NativeWindowFn = fn (hwnd voidptr) !
 
+// AppKitNativeWindowFn receives a borrowed NSWindow pointer valid only for the callback.
 pub type AppKitNativeWindowFn = fn (ns_window voidptr) !
 
+// X11NativeWindowFn receives borrowed Display and Window handles valid only for the callback.
 pub type X11NativeWindowFn = fn (display voidptr, window u64) !
 
+// WaylandNativeWindowFn receives borrowed wl_display and wl_surface pointers valid only for the callback.
 pub type WaylandNativeWindowFn = fn (display voidptr, surface voidptr) !
 
+// WindowServiceFn is called by App.run for ordered native service events.
 pub type WindowServiceFn = fn (event WindowServiceEvent, mut app App) !

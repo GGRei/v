@@ -38,6 +38,7 @@ struct ServicePortalLease {
 struct ServiceRegistry {
 mut:
 	app_instance      u64
+	backend           BackendKind
 	windows           []ServiceWindowRecord
 	monitors          []ServiceMonitorInfo
 	next_request      u64 = 1
@@ -52,6 +53,7 @@ fn new_service_registry(app_instance u64, backend BackendKind) ServiceRegistry {
 	if backend != .mock {
 		return ServiceRegistry{
 			app_instance: app_instance
+			backend:      backend
 		}
 	}
 	monitor_id := ServiceMonitorId{
@@ -61,30 +63,35 @@ fn new_service_registry(app_instance u64, backend BackendKind) ServiceRegistry {
 	}
 	return ServiceRegistry{
 		app_instance: app_instance
+		backend:      backend
 		monitors:     [
 			ServiceMonitorInfo{
-				id:        monitor_id
-				name:      'mock-primary'
-				geometry:  ServiceKnownRect{
+				native_key: ServiceMonitorNativeKey{
+					kind: .mock
+					text: 'mock-primary'
+				}
+				id:         monitor_id
+				name:       'mock-primary'
+				geometry:   ServiceKnownRect{
 					known: true
 					value: ServiceRect{
 						width:  1920
 						height: 1080
 					}
 				}
-				work_area: ServiceKnownRect{
+				work_area:  ServiceKnownRect{
 					known: true
 					value: ServiceRect{
 						width:  1920
 						height: 1040
 					}
 				}
-				scale:     ServiceKnownScale{
+				scale:      ServiceKnownScale{
 					known: true
 					value: 1.0
 				}
-				primary:   .on
-				available: true
+				primary:    .on
+				available:  true
 			},
 		]
 	}
@@ -106,101 +113,201 @@ fn (registry &ServiceRegistry) monitor_index(id ServiceMonitorId) !int {
 	if id.app_instance != registry.app_instance {
 		return error(err_app_identity_mismatch)
 	}
-	if id.slot < 0 || id.slot >= registry.monitors.len || registry.monitors[id.slot].id != id {
-		return error(err_service_request_stale)
+	for index, monitor in registry.monitors {
+		if monitor.id == id {
+			return index
+		}
 	}
-	return id.slot
+	return error(err_service_request_stale)
 }
 
 fn (mut registry ServiceRegistry) replace_monitors(monitors []ServiceMonitorInfo) {
-	registry.monitors = monitors.clone()
+	if registry.monitor_snapshot_identity_valid(monitors) {
+		registry.monitors = monitors.clone()
+	}
+}
+
+fn (key ServiceMonitorNativeKey) valid() bool {
+	return match key.kind {
+		.mock { key.numeric == 0 && key.text == 'mock-primary' }
+		.x11_atom, .wayland_global, .appkit_display { key.numeric != 0 && key.text == '' }
+		.win32_device { key.numeric == 0 && key.text != '' }
+		.invalid { false }
+	}
+}
+
+fn service_monitor_native_kind_for_backend(backend BackendKind) ServiceMonitorNativeKind {
+	return match backend {
+		.mock { .mock }
+		.x11 { .x11_atom }
+		.wayland { .wayland_global }
+		.appkit { .appkit_display }
+		.win32 { .win32_device }
+		.auto { .invalid }
+	}
+}
+
+fn service_monitor_snapshot_identity_valid(snapshot []ServiceMonitorInfo, backend BackendKind, app_instance u64) bool {
+	if backend == .auto || app_instance == 0 {
+		return false
+	}
+	expected_kind := service_monitor_native_kind_for_backend(backend)
+	for index, candidate in snapshot {
+		if !candidate.native_key.valid() || candidate.native_key.kind != expected_kind
+			|| candidate.id.app_instance != app_instance || candidate.id.slot < 0
+			|| candidate.id.generation == 0 {
+			return false
+		}
+		for previous in 0 .. index {
+			if snapshot[previous].native_key == candidate.native_key
+				|| snapshot[previous].id == candidate.id
+				|| snapshot[previous].id.slot == candidate.id.slot {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+fn (registry &ServiceRegistry) monitor_snapshot_identity_valid(snapshot []ServiceMonitorInfo) bool {
+	return service_monitor_snapshot_identity_valid(snapshot, registry.backend,
+		registry.app_instance)
 }
 
 fn service_monitor_info_for_slot(info ServiceMonitorInfo, app_instance u64, slot int, generation u32, available bool, sequence u64) ServiceMonitorInfo {
 	return ServiceMonitorInfo{
-		id:        ServiceMonitorId{
+		native_key: info.native_key
+		id:         ServiceMonitorId{
 			app_instance: app_instance
 			slot:         slot
 			generation:   generation
 		}
-		name:      info.name
-		geometry:  info.geometry
-		work_area: info.work_area
-		scale:     info.scale
-		primary:   info.primary
-		available: available
-		sequence:  sequence
+		name:       info.name
+		geometry:   info.geometry
+		work_area:  info.work_area
+		scale:      info.scale
+		primary:    info.primary
+		available:  available
+		sequence:   sequence
 	}
 }
 
-fn (mut registry ServiceRegistry) reconcile_monitor_snapshot(snapshot []ServiceMonitorInfo, sequence u64) []ServiceMonitorInfo {
-	mut seen := []bool{len: registry.monitors.len}
-	mut slots := []int{len: snapshot.len, init: -1}
+fn (mut registry ServiceRegistry) reconcile_monitor_snapshot(snapshot []ServiceMonitorInfo, sequence u64) ?[]ServiceMonitorInfo {
+	if !registry.monitor_snapshot_identity_valid(snapshot) || snapshot.any(!it.available) {
+		return none
+	}
+	mut staged := registry.monitors.clone()
+	mut seen := []bool{len: staged.len}
+	mut record_indices := []int{len: snapshot.len, init: -1}
 	for snapshot_index, candidate in snapshot {
-		for index, current in registry.monitors {
-			if !seen[index] && current.name == candidate.name && current.available {
-				slots[snapshot_index] = index
+		for index, current in staged {
+			if !seen[index] && current.native_key == candidate.native_key && current.available {
+				if registry.backend != .x11 && candidate.id != current.id {
+					return none
+				}
+				record_indices[snapshot_index] = index
 				seen[index] = true
 				break
 			}
 		}
 	}
 	for snapshot_index, candidate in snapshot {
-		if slots[snapshot_index] >= 0 {
+		if record_indices[snapshot_index] >= 0 {
 			continue
 		}
-		for index, current in registry.monitors {
-			if !seen[index] && current.name == candidate.name && !current.available
-				&& current.id.generation < u32(0xffffffff) {
-				slots[snapshot_index] = index
+		mut exact_reusable := false
+		for index, current in staged {
+			if !seen[index] && current.native_key == candidate.native_key && !current.available
+				&& current.id.generation < max_u32 {
+				exact_reusable = true
+				expected := ServiceMonitorId{
+					app_instance: registry.app_instance
+					slot:         current.id.slot
+					generation:   current.id.generation + 1
+				}
+				if registry.backend == .x11 || candidate.id == expected {
+					record_indices[snapshot_index] = index
+					seen[index] = true
+					break
+				}
+			}
+		}
+		if registry.backend != .x11 && exact_reusable && record_indices[snapshot_index] < 0 {
+			return none
+		}
+	}
+	for snapshot_index, candidate in snapshot {
+		if record_indices[snapshot_index] >= 0 {
+			continue
+		}
+		if registry.backend == .x11 {
+			for index, current in staged {
+				if !seen[index] && !current.available && current.id.generation < max_u32 {
+					record_indices[snapshot_index] = index
+					seen[index] = true
+					break
+				}
+			}
+			continue
+		}
+		for index, current in staged {
+			if !seen[index] && !current.available && current.id.generation < max_u32
+				&& candidate.id.slot == current.id.slot
+				&& candidate.id.generation == current.id.generation + 1 {
+				record_indices[snapshot_index] = index
 				seen[index] = true
 				break
 			}
 		}
-	}
-	for snapshot_index, _ in snapshot {
-		if slots[snapshot_index] >= 0 {
-			continue
-		}
-		for index, current in registry.monitors {
-			if !seen[index] && !current.available && current.id.generation < u32(0xffffffff) {
-				slots[snapshot_index] = index
-				seen[index] = true
-				break
+		if record_indices[snapshot_index] < 0 {
+			known_slot := staged.any(it.id.slot == candidate.id.slot)
+			known_key := staged.any(it.native_key == candidate.native_key)
+			if known_slot
+				|| (candidate.id.generation != 1 && (registry.backend != .wayland || known_key)) {
+				return none
 			}
 		}
 	}
 	for snapshot_index, candidate in snapshot {
-		mut slot := slots[snapshot_index]
-		if slot < 0 {
-			slot = registry.monitors.len
-			registry.monitors << service_monitor_info_for_slot(candidate, registry.app_instance,
-				slot, 1, true, sequence)
+		mut record_index := record_indices[snapshot_index]
+		if record_index < 0 {
+			mut public_slot := candidate.id.slot
+			mut generation := candidate.id.generation
+			if registry.backend == .x11 {
+				public_slot = staged.len
+				generation = 1
+				for staged.any(it.id.slot == public_slot) {
+					public_slot++
+				}
+			}
+			staged << service_monitor_info_for_slot(candidate, registry.app_instance, public_slot,
+				generation, true, sequence)
 			seen << true
 			continue
 		}
-		current := registry.monitors[slot]
+		current := staged[record_index]
 		generation := if current.available {
 			current.id.generation
 		} else {
 			current.id.generation + 1
 		}
-		registry.monitors[slot] = service_monitor_info_for_slot(candidate, registry.app_instance,
-			slot, generation, true, sequence)
-		seen[slot] = true
+		staged[record_index] = service_monitor_info_for_slot(candidate, registry.app_instance,
+			current.id.slot, generation, true, sequence)
+		seen[record_index] = true
 	}
-	for index, current in registry.monitors {
+	for index, current in staged {
 		if index < seen.len && !seen[index] && current.available {
-			registry.monitors[index] = service_monitor_info_for_slot(current,
-				registry.app_instance, index, current.id.generation, false, sequence)
+			staged[index] = service_monitor_info_for_slot(current, registry.app_instance,
+				current.id.slot, current.id.generation, false, sequence)
 		}
 	}
 	mut available := []ServiceMonitorInfo{}
-	for monitor in registry.monitors {
+	for monitor in staged {
 		if monitor.available {
 			available << monitor
 		}
 	}
+	registry.monitors = staged
 	return available
 }
 

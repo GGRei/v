@@ -58,8 +58,7 @@ fn (backend &Backend) service_window_state(id WindowId) !ServiceWindowState {
 }
 
 fn (backend &Backend) service_state_publication_is_deferred(id WindowId, operation ServiceOperation) bool {
-	return backend.kind == .appkit
-		&& backend.service_operation_capability(id, operation).asynchronous
+	return backend.service_operation_capability(id, operation).asynchronous
 }
 
 fn mock_service_operation_capability(operation ServiceOperation) ServiceOperationCapability {

@@ -376,16 +376,16 @@ jobs:
             -Compiler tcc `
             -Expectation Green `
             -ExpectedOracleSha256 '804e8cbc5f5f7c390e90736d54a60d65d19b649a94afa4915bd9cb4e95c4e04d' `
-            -ExpectedNativeTestSha256 '76fb33a9473d99b3e3157fc3a42c3fedb037882200693b3c6c7bf4547119c460' `
+            -ExpectedNativeTestSha256 '2cd62571721f49fcaeb234ef28a8f20a12c0109acedff33b0fea8bf2331fec54' `
             -ExpectedPublicTestSha256 'd08eafb919ae97b185fc480c22f6d990973396152e9a0b3a01035c3e9a30275c' `
             -ExpectedNoOptProbeSha256 '288f148ca15b6694481f117c03be5f80c4045baf76d3b0e90db61b5e0596741c' `
-            -ExpectedServiceBackendSha256 '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d' `
+            -ExpectedServiceBackendSha256 '8515db375427e3b145052567582ead24a18c0b35fb286d15ff7d704d35ae240b' `
             -ExpectedWin32BackendSha256 '4b854e9dd019bb8193057c08aaa0a8185096f165afff99d7ed519c5442e0e52e' `
-            -ExpectedWin32ServiceBackendSha256 '02076f74e9537323f688e256d3613f87534cd304ca1bc99b7433f406ffd6ebad' `
+            -ExpectedWin32ServiceBackendSha256 '99b06a401e8787006252c7fdc43fbb263f12e0ba5971df9d4946f0de1b577359' `
             -ExpectedWin32ServiceNativeSha256 '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73' `
             -ExpectedRedSurfaceSha256 '04b271a1ece4844a60a338358ec292d1e59448b962f6be7fb9c5765206678a7e' `
-            -ExpectedGreenSurfaceSha256 'b4a4fb9eb5d6fbd679c983f9f0fbcac63585bd52390569223b122d7f8dbc0d0c' `
-            -ExpectedRunnerSha256 '35e40d424b7d3fba538cfbfac0b2363f6786b45c9624107df47690c27aa2183f'
+            -ExpectedGreenSurfaceSha256 '33bcf85ace6c887ead86d00cd5ed960c3b7be2e15898c4d8465a3258564590e5' `
+            -ExpectedRunnerSha256 '3937f06a791c24f2ac96c9b5ea8b59c1da1ab99d8eb08f52950a556d017e3397'
       - name: Win32 W5 raw-input A0 preflight
         shell: pwsh
         run: |
@@ -408,25 +408,25 @@ jobs:
             -ExpectedA0MainSha256 '5f30869ae97f680032e622273ea69986d612cc82cad2adf53e4c3b1415154301' `
             -ExpectedA0TupleSha256 '99ef24bf101dc83543f26f86cb23a80c82607e0f1b35c32e9dbb431368ecc7c4' `
             -ExpectedA0RunnerSha256 'ce4da58e24730899f970a7566dc65d82eb0c07d38f74efcaeeb02c450a011b68' `
-            -ExpectedGgFacadeSha256 '86bfd61377e1aab276d5156fd808741663db0c42b0edc43f16f5955423f60382' `
-            -ExpectedGgNoFlagSha256 '99e37df1fba39e72d9c74490dc6de216dbf984d0586aedcaf5d5d62edc0c0ed2' `
-            -ExpectedGgServiceTypesSha256 'ec55d5540f456e2f2090b382bc0c16778794913ab95654526832e60f0f8e5849' `
-            -ExpectedAppSha256 'af268df808e190318e77c44256de6f98038b5d094a7c308d79f34921ea25b6bd' `
-            -ExpectedTypesSha256 '640b1590b25acc56eae75bd8af7f7521c10bf8cd2406b7fa7ba4844680dc03a9' `
+            -ExpectedGgFacadeSha256 '7228f1fb113ef1cbd019b25c21fe32d7798cab87e141ed8ddb014a944363ae8f' `
+            -ExpectedGgNoFlagSha256 'ad528c64cf18bce9415dd0e50513fb87d8d0b58c8ac4a99025a5c8955e7d9549' `
+            -ExpectedGgServiceTypesSha256 '6775854b4a1a66e75099e7a390089f6a96f77c4bdd9eed5bccf4a33538e4d5b0' `
+            -ExpectedAppSha256 'e8a01a50a4176edb118b3fddea41472f9c32047d63a73db7ca3a11ad7e499d8f' `
+            -ExpectedTypesSha256 '0a9058ba7928945e24284c867eb6182336ea3b1d41e1337786c71105b1fe93b3' `
             -ExpectedBackendSha256 'dcd0f088c235ae030f8bbc9ab63082c38d93f6f1194373e74d8dcb454d100a3f' `
-            -ExpectedServiceApiSha256 '0d13b992ca9edd0bc2f10bc4cdd0e01eaf865cd8a4c543f3ee4ea482cdd5a897' `
-            -ExpectedServiceTypesSha256 'b14d0527430a4b718c90b02132994e35ba4d6340956546406a2d49a61dfdd34f' `
-            -ExpectedServiceRegistrySha256 '73a65c6444884e80feb5b3a10104002de0c1fc94a0f0bbffab8c46a1b4c7e7c1' `
-            -ExpectedEventDeliverySha256 '7209202474ce1c20baadb6565ac3ac73673e653aaf072cdde2c95f5b9cd98221' `
-            -ExpectedPublicRoutingSurfaceSha256 '20402c4033c7abbdec8c27d0639baa355ad4256a61a3563dad53123b7b488566' `
-            -ExpectedServiceBackendSha256 '7c49e96feee30a8c990431ee9701e17dee0484f15e6a6a57f4e648f379794d8d' `
+            -ExpectedServiceApiSha256 '44859381e900eaa56fd72490e7d6d2c940423f7b00848df8ef0e8f93eeddc4e3' `
+            -ExpectedServiceTypesSha256 '1ed698e3e359fd529fda0ccc8fdf652a16d02c69c98b0d8e8a3fd8b5e1d4aacf' `
+            -ExpectedServiceRegistrySha256 'a70004c4deb62b27cedb340611d4393d7fff1343bca493d61862db047b06e68b' `
+            -ExpectedEventDeliverySha256 '8916370a7df40619608cd1f65954d2906a83e726a54ba754d40ee732f6514011' `
+            -ExpectedPublicRoutingSurfaceSha256 '41e9d536291606d8f01d23a4e216cc705f98e553d98915932ba1ce71ecf17ccf' `
+            -ExpectedServiceBackendSha256 '8515db375427e3b145052567582ead24a18c0b35fb286d15ff7d704d35ae240b' `
             -ExpectedEventDispatchSha256 '7ef6c7cbd34511d6c19c1a3a269b46876db791b9412bb88e3a8d4dcd543bfd4e' `
             -ExpectedWin32BackendSha256 '4b854e9dd019bb8193057c08aaa0a8185096f165afff99d7ed519c5442e0e52e' `
             -ExpectedWin32BackendHelpersSha256 'eef8fc485a4774fd380b9b2c7deebbf6b349b432430d0182bad7325a6e684329' `
-            -ExpectedWin32ServiceBackendSha256 '02076f74e9537323f688e256d3613f87534cd304ca1bc99b7433f406ffd6ebad' `
+            -ExpectedWin32ServiceBackendSha256 '99b06a401e8787006252c7fdc43fbb263f12e0ba5971df9d4946f0de1b577359' `
             -ExpectedWin32ServiceNativeSha256 '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73' `
-            -ExpectedGreenProductionSurfaceSha256 'dcb863245235cb778312e4a08c0d81eb5d4685c162fb71da228f02e608becd47' `
-            -ExpectedRunnerSha256 '5d3c74cfb4c57792a0e6cec9ceb4eaadace9672b9e531f2a9644db4a9f1137ae'
+            -ExpectedGreenProductionSurfaceSha256 'fb3b6b81f15f7cefae9ca31362965ca3174f0e0409e145e52a95b00f2a73cd0c' `
+            -ExpectedRunnerSha256 '38ce5e587dc22d5e6b2c952a5b16beb5297734f1fe769ffa321e254e533e86e0'
       - name: Public gg Win32 controls/state native diagnostic
         if: ${{ always() }}
         shell: pwsh

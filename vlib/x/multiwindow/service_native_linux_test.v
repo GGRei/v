@@ -492,6 +492,115 @@ fn test_x11_clipboard_global_operation_and_byte_limits() {
 	}
 }
 
+fn test_x11_queued_selection_notify_wins_over_expired_deadline() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		owner := app.create_window(title: 'queued-selection-owner')!
+		reader := app.create_window(title: 'queued-selection-reader')!
+		_ = app.drain_queued_events()!
+		app.backend.x11.service_make_clipboard_peer_unresponsive_for_test(owner)!
+		request := app.service_request_clipboard_text(reader)!
+		app.backend.x11.service_queue_clipboard_selection_reply_for_test('queued-reply', true)!
+		_ = app.poll_events()!
+		results := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == request)
+		assert results.len == 1
+		assert results[0].service.clipboard.status == .ready
+		assert results[0].service.clipboard.text == 'queued-reply'
+		reads, _ := app.backend.x11.service_clipboard_pending_counts_for_test()
+		assert reads == 0
+		app.stop()!
+	}
+}
+
+fn test_x11_irrelevant_queued_selection_notify_still_expires_after_drain() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		owner := app.create_window(title: 'irrelevant-selection-owner')!
+		reader := app.create_window(title: 'irrelevant-selection-reader')!
+		_ = app.drain_queued_events()!
+		app.backend.x11.service_make_clipboard_peer_unresponsive_for_test(owner)!
+		request := app.service_request_clipboard_text(reader)!
+		app.backend.x11.service_queue_clipboard_selection_reply_for_test('irrelevant', false)!
+		_ = app.poll_events()!
+		results := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == request)
+		assert results.len == 1
+		assert results[0].service.clipboard.status == .failed
+		assert results[0].service.clipboard.error == err_clipboard_timeout
+		app.stop()!
+	}
+}
+
+fn test_x11_queued_incr_property_notify_wins_over_expired_deadline() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		owner := app.create_window(title: 'queued-incr-owner')!
+		reader := app.create_window(title: 'queued-incr-reader')!
+		_ = app.drain_queued_events()!
+		app.backend.x11.service_make_clipboard_peer_unresponsive_for_test(owner)!
+		request := app.service_request_clipboard_text(reader)!
+		app.backend.x11.service_queue_clipboard_incr_terminal_for_test('queued-incr')!
+		_ = app.poll_events()!
+		results := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == request)
+		assert results.len == 1
+		assert results[0].service.clipboard.status == .ready
+		assert results[0].service.clipboard.text == 'queued-incr'
+		reads, _ := app.backend.x11.service_clipboard_pending_counts_for_test()
+		assert reads == 0
+		app.stop()!
+	}
+}
+
+fn test_x11_readback_bounds_accept_exact_edge_and_reject_max_int_without_event() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		window := app.create_window(title: 'readback-overflow-bounds', width: 32, height: 24)!
+		_ = app.drain_queued_events()!
+		mut probe := app.backend.x11.service_readback_probe_for_test(window, 32, 24)!
+		for _ in 0 .. 100 {
+			if probe.map_state == 2 {
+				break
+			}
+			_ = app.poll_events()!
+			_ = app.drain_queued_events()!
+			time.sleep(time.millisecond)
+			probe = app.backend.x11.service_readback_probe_for_test(window, 32, 24)!
+		}
+		assert probe.map_state == 2
+
+		edge := app.service_request_window_readback_region(window, probe.actual_width - 1,
+			probe.actual_height - 1, 1, 1, 1)!
+		edge_results := app.drain_queued_events()!.filter(it.kind == .readback
+			&& it.readback.id == edge)
+		assert edge_results.len == 1
+		assert edge_results[0].readback.status == .ready
+		pending_before := app.services.readbacks.len
+
+		mut overflow_error := ''
+		app.service_request_window_readback_region(window, 0x7fffffff, 0, 1, 1, 2) or {
+			overflow_error = err.msg()
+		}
+		assert overflow_error == err_readback_invalid
+		assert app.services.readbacks.len == pending_before
+		assert app.drain_queued_events()!.len == 0
+		app.stop()!
+	}
+}
+
 fn test_x11_selection_clear_destroy_and_stop_purge_clipboard_state() {
 	$if linux && x_multiwindow_x11 ? {
 		if os.getenv('DISPLAY') == '' {
@@ -580,29 +689,132 @@ fn test_x11_selection_clear_destroy_and_stop_purge_clipboard_state() {
 	}
 }
 
-fn test_monitor_reconciliation_keeps_slots_and_advances_replug_generation() {
-	mut registry := new_service_registry(73, .x11)
-	first := ServiceMonitorInfo{
-		id:        ServiceMonitorId{
-			app_instance: 73
-			slot:         0
-			generation:   1
+fn x11_registry_monitor_candidate(app_instance u64, atom u64, slot int, generation u32, name string, x int) ServiceMonitorInfo {
+	return ServiceMonitorInfo{
+		native_key: ServiceMonitorNativeKey{
+			kind:    .x11_atom
+			numeric: atom
 		}
-		name:      'HDMI-A-1'
-		available: true
+		id:         ServiceMonitorId{
+			app_instance: app_instance
+			slot:         slot
+			generation:   generation
+		}
+		name:       name
+		geometry:   ServiceKnownRect{
+			known: true
+			value: ServiceRect{
+				x:      x
+				width:  100
+				height: 100
+			}
+		}
+		available:  true
 	}
-	registry.replace_monitors([first])
-	assert registry.reconcile_monitor_snapshot([], 10).len == 0
+}
+
+fn test_monitor_reconciliation_uses_native_keys_for_duplicate_names_and_replug() {
+	instance := u64(73)
+	mut registry := new_service_registry(instance, .x11)
+	first_a := service_monitor_info_for_slot(x11_registry_monitor_candidate(instance, 101, 0, 1,
+		'same-name', 10), instance, 0, 3, true, 1)
+	first_b := service_monitor_info_for_slot(x11_registry_monitor_candidate(instance, 202, 1, 1,
+		'same-name', 20), instance, 1, 7, true, 1)
+	registry.replace_monitors([first_a, first_b])
+
+	reversed := registry.reconcile_monitor_snapshot([
+		x11_registry_monitor_candidate(instance, 202, 0, 1, 'same-name', 222),
+		x11_registry_monitor_candidate(instance, 101, 1, 1, 'same-name', 111),
+	], 2) or { panic('valid reversed monitor snapshot was rejected') }
+	assert reversed.len == 2
+	assert registry.monitors[0].native_key.numeric == 101
+	assert registry.monitors[0].geometry.value.x == 111
+	assert registry.monitors[0].id == first_a.id
+	assert registry.monitors[1].native_key.numeric == 202
+	assert registry.monitors[1].geometry.value.x == 222
+	assert registry.monitors[1].id == first_b.id
+
+	removed_id := registry.monitors[0].id
+	registry.reconcile_monitor_snapshot([
+		x11_registry_monitor_candidate(instance, 202, 0, 1, 'same-name', 223),
+	], 3) or { panic('valid monitor removal snapshot was rejected') }
 	assert !registry.monitors[0].available
-	replugged := registry.reconcile_monitor_snapshot([first], 11)
-	assert replugged.len == 1
-	assert replugged[0].id.slot == first.id.slot
-	assert replugged[0].id.generation == first.id.generation + 1
-	registry.monitor_index(first.id) or {
-		assert err.msg() == err_service_request_stale
+	assert registry.monitors[1].id == first_b.id
+
+	registry.reconcile_monitor_snapshot([
+		x11_registry_monitor_candidate(instance, 202, 0, 1, 'same-name', 224),
+		x11_registry_monitor_candidate(instance, 101, 1, 1, 'renamed-a', 112),
+	], 4) or { panic('valid monitor replug snapshot was rejected') }
+	assert registry.monitors[0].available
+	assert registry.monitors[0].id.slot == removed_id.slot
+	assert registry.monitors[0].id.generation == removed_id.generation + 1
+	assert registry.monitors[0].name == 'renamed-a'
+	mut removed_stale := false
+	_ = registry.monitor_index(removed_id) or {
+		removed_stale = err.msg() == err_service_request_stale
+		-1
+	}
+	assert removed_stale
+	assert registry.monitors[0].id != removed_id
+
+	registry.reconcile_monitor_snapshot([
+		x11_registry_monitor_candidate(instance, 202, 0, 1, 'same-name', 225),
+	], 5) or { panic('valid second removal snapshot was rejected') }
+	replugged_id := registry.monitors[0].id
+	registry.reconcile_monitor_snapshot([
+		x11_registry_monitor_candidate(instance, 202, 0, 1, 'same-name', 226),
+		x11_registry_monitor_candidate(instance, 303, 1, 1, 'same-name', 333),
+	], 6) or { panic('valid replacement snapshot was rejected') }
+	assert registry.monitors[0].native_key.numeric == 303
+	assert registry.monitors[0].id.slot == replugged_id.slot
+	assert registry.monitors[0].id.generation == replugged_id.generation + 1
+	assert registry.monitors[1].native_key.numeric == 202
+	assert registry.monitors[1].id == first_b.id
+	mut replugged_stale := false
+	_ = registry.monitor_index(replugged_id) or {
+		replugged_stale = err.msg() == err_service_request_stale
+		-1
+	}
+	assert replugged_stale
+	assert registry.monitors[0].id != replugged_id
+
+	before := registry.monitors.clone()
+	registry.reconcile_monitor_snapshot([
+		x11_registry_monitor_candidate(instance, 202, 0, 1, 'same-name', 1),
+		x11_registry_monitor_candidate(instance, 202, 1, 1, 'same-name', 2),
+	], 7) or {
+		assert registry.monitors == before
 		return
 	}
-	assert false, 'removed monitor generation remained valid after replug'
+	assert false, 'duplicate native monitor keys were accepted'
+}
+
+fn test_monitor_reconciliation_does_not_wrap_exhausted_generation() {
+	instance := u64(74)
+	mut registry := new_service_registry(instance, .x11)
+	exhausted := service_monitor_info_for_slot(x11_registry_monitor_candidate(instance, 404, 0, 1,
+		'exhausted', 0), instance, 0, max_u32, false, 1)
+	registry.replace_monitors([exhausted])
+	reappeared := registry.reconcile_monitor_snapshot([
+		x11_registry_monitor_candidate(instance, 404, 0, 1, 'exhausted', 1),
+	], 2) or { panic('valid exhausted-generation reappearance was rejected') }
+	assert reappeared.len == 1
+	assert reappeared[0].id.slot == 1
+	assert reappeared[0].id.generation == 1
+	assert registry.monitors[0].id.generation == max_u32
+	assert !registry.monitors[0].available
+}
+
+fn test_monitor_native_key_survives_service_event_sequence_copy() {
+	monitor := x11_registry_monitor_candidate(75, 505, 0, 1, 'sequence-copy', 0)
+	sequenced := service_event_with_sequence(ServiceEvent{
+		kind:     .monitor
+		monitor:  monitor
+		monitors: [monitor]
+	}, 9)
+	assert sequenced.monitor.native_key == monitor.native_key
+	assert sequenced.monitors.len == 1
+	assert sequenced.monitors[0].native_key == monitor.native_key
 }
 
 fn test_x11_native_borrow_copy_is_stale_after_callback() {

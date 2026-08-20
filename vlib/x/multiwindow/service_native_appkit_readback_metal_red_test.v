@@ -178,6 +178,7 @@ fn main() {
 	mut app := multiwindow.new_app(backend: .appkit, require_renderer: false) or {
 		panic(err)
 	}
+	assert !app.capabilities().readback
 	app.stop() or { panic(err) }
 }') or {
 			panic(err)

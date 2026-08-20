@@ -182,8 +182,8 @@ pub fn (mut app App) create_window(config WindowConfig) !WindowId {
 	return id
 }
 
-// destroy_window destroys one live window. The app remains alive when any window,
-// including the last one, is destroyed.
+// destroy_window destroys a live window and all of its owned descendants in
+// child-first order. The App remains alive even when the final window is destroyed.
 pub fn (mut app App) destroy_window(id WindowId) ! {
 	app.assert_owner_thread()!
 	if app.window_destroy_finished(id) {
@@ -380,7 +380,7 @@ pub fn (app &App) window_status(id WindowId) !WindowStatus {
 	return slot.status
 }
 
-// drain_events returns and clears pending lifecycle events.
+// drain_events consumes only the contiguous lifecycle prefix of the canonical queue.
 pub fn (mut app App) drain_events() ![]Event {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
@@ -393,8 +393,8 @@ pub fn (mut app App) drain_events() ![]Event {
 	return app.drain_lifecycle_events_locked()!
 }
 
-// drain_input_events returns and clears pending input events without consuming
-// lifecycle events.
+// drain_input_events consumes only the contiguous input prefix of the canonical
+// queue. It never skips lifecycle, service, or readback events.
 pub fn (mut app App) drain_input_events() ![]InputEvent {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
@@ -407,8 +407,8 @@ pub fn (mut app App) drain_input_events() ![]InputEvent {
 	return app.drain_input_events_locked()!
 }
 
-// drain_queued_events returns and clears pending lifecycle/input events in the
-// exact order accepted by App.
+// drain_queued_events consumes lifecycle, input, service, and readback events in
+// the exact global order accepted by App.
 pub fn (mut app App) drain_queued_events() ![]QueuedEvent {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
@@ -441,7 +441,8 @@ pub fn (mut app App) drain_queued_events() ![]QueuedEvent {
 	return events
 }
 
-// poll_events lets the backend route native lifecycle and input events into App events.
+// poll_events lets the backend route all native lifecycle, input, service, and
+// readback events into the canonical App queue.
 pub fn (mut app App) poll_events() !int {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
@@ -931,6 +932,9 @@ fn validate_window_config(config WindowConfig) ! {
 	}
 	if config.sample_count <= 0 {
 		return error(err_render_sample_count_invalid)
+	}
+	if config.modal && config.owner == none {
+		return error(err_owner_relation_invalid)
 	}
 }
 

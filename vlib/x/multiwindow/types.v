@@ -67,6 +67,7 @@ pub enum InputEventKind {
 	files_dropped
 }
 
+// QueuedEventKind identifies one of the four canonical delivery families.
 pub enum QueuedEventKind {
 	lifecycle
 	input
@@ -134,7 +135,8 @@ pub fn (id WindowId) app_instance_for_gg() u64 {
 	return id.app_instance
 }
 
-// Config configures a multi-window App.
+// Config configures a multi-window App. app_id supplies a native application
+// identity where supported (currently the Wayland xdg-shell app id).
 @[params]
 pub struct Config {
 pub:
@@ -144,7 +146,8 @@ pub:
 	app_id           string
 }
 
-// WindowConfig describes one window at creation time.
+// WindowConfig describes one window at creation time. modal requires a live
+// same-App owner and is validated before a native window is allocated.
 @[params]
 pub struct WindowConfig {
 pub:
@@ -190,7 +193,8 @@ pub:
 	native_decorations bool
 }
 
-// Capabilities reports what the selected backend can do.
+// Capabilities reports the active backend-wide contract. Optional per-window
+// service/readback queries remain authoritative for operations with runtime state.
 pub struct Capabilities {
 pub:
 	backend                 BackendKind
@@ -264,7 +268,8 @@ pub:
 	dropped_files      []string
 }
 
-// QueuedEvent preserves backend ordering between lifecycle and input events.
+// QueuedEvent preserves global admission order across lifecycle, input,
+// service, and readback events. kind selects the meaningful payload field.
 pub struct QueuedEvent {
 	delivery_token u64
 pub:

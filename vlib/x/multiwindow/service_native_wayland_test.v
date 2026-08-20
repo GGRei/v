@@ -229,6 +229,51 @@ fn test_wayland_xdg_configure_states_are_published_after_surface_configure() {
 	}
 }
 
+fn test_wayland_state_operations_are_deferred_by_capability_until_observation() {
+	$if linux && sokol_wayland ? {
+		mut backend := &WaylandBackend{
+			started:                  true
+			display:                  voidptr(usize(1))
+			pointer:                  voidptr(usize(2))
+			relative_pointer_manager: voidptr(usize(3))
+			pointer_constraints:      voidptr(usize(4))
+		}
+		for operation in [ServiceOperation.show, .minimize, .maximize, .restore, .fullscreen,
+			.mouse_lock] {
+			assert backend.service_operation_capability(operation).asynchronous
+		}
+		assert !backend.service_operation_capability(.hide).asynchronous
+
+		mut app := new_app()!
+		window := app.create_window(title: 'wayland-deferred-publication')!
+		_ = app.drain_queued_events()!
+		before := app.service_window_state(window)!
+		app.backend.kind = .wayland
+		app.publish_native_state(window, .maximize, ServiceWindowState{
+			maximized: .on
+		})!
+		assert app.service_window_state(window)!.maximized == before.maximized
+		assert app.drain_queued_events()!.len == 0
+
+		acceptance := app.accept_backend_event_batch([
+			queued_service_event(ServiceEvent{
+				kind:      .state
+				window:    window
+				operation: .maximize
+				state:     ServiceWindowState{
+					maximized: .on
+				}
+			}),
+		], 1)!
+		assert acceptance.accepted == 1
+		assert app.service_window_state(window)!.maximized == .on
+		events := app.drain_queued_events()!
+		assert events.filter(it.kind == .service && it.service.operation == .maximize).len == 1
+		app.backend.kind = .mock
+		app.stop()!
+	}
+}
+
 fn test_wayland_relative_pointer_callbacks_publish_observed_state_and_motion() {
 	$if linux && sokol_wayland ? {
 		mut backend := &WaylandBackend{}
@@ -711,10 +756,23 @@ fn test_wayland_hidden_window_remaps_through_fresh_xdg_configure_cycle() {
 		assert app.service_window_state(window)!.mapping == .unmapped
 
 		app.service_show_window(window)!
+		assert app.service_window_state(window)!.mapping == .unmapped
+		_ = app.poll_events()!
+		first_show := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.operation == .show)
+		assert first_show.len == 1
+		assert first_show[0].service.state.mapping == .mapped
 		assert app.service_window_state(window)!.mapping == .mapped
 		app.service_hide_window(window)!
 		assert app.service_window_state(window)!.mapping == .unmapped
+		_ = app.drain_queued_events()!
 		app.service_show_window(window)!
+		assert app.service_window_state(window)!.mapping == .unmapped
+		_ = app.poll_events()!
+		second_show := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.operation == .show)
+		assert second_show.len == 1
+		assert second_show[0].service.state.mapping == .mapped
 		assert app.service_window_state(window)!.mapping == .mapped
 		app.stop()!
 	}

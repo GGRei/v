@@ -6305,7 +6305,18 @@ fn (mut backend WaylandBackend) destroy_data_device_manager() {
 
 fn (backend &WaylandBackend) service_operation_capability(operation ServiceOperation) ServiceOperationCapability {
 	return match operation {
-		.show, .hide {
+		.show {
+			ServiceOperationCapability{
+				support:          if backend.started && backend.transport_can_marshal() {
+					.available
+				} else {
+					.unsupported
+				}
+				asynchronous:     true
+				state_observable: true
+			}
+		}
+		.hide {
 			ServiceOperationCapability{
 				support:          if backend.started && backend.transport_can_marshal() {
 					.available
@@ -6361,12 +6372,14 @@ fn (backend &WaylandBackend) service_operation_capability(operation ServiceOpera
 				} else {
 					.unsupported
 				}
+				asynchronous:     true
 				state_observable: true
 			}
 		}
 		.minimize, .maximize, .fullscreen {
 			ServiceOperationCapability{
 				support:          .available
+				asynchronous:     true
 				state_observable: operation != .minimize
 			}
 		}
@@ -6375,6 +6388,7 @@ fn (backend &WaylandBackend) service_operation_capability(operation ServiceOpera
 			// request that restores a compositor-minimized toplevel.
 			ServiceOperationCapability{
 				support:          .conditional
+				asynchronous:     true
 				state_observable: true
 			}
 		}
@@ -6769,13 +6783,17 @@ fn (backend &WaylandBackend) service_monitor_snapshot(app_instance u64) ![]Servi
 			'Wayland output ${output.slot}'
 		}
 		monitors << ServiceMonitorInfo{
-			id:        ServiceMonitorId{
+			native_key: ServiceMonitorNativeKey{
+				kind:    .wayland_global
+				numeric: u64(output.global_name)
+			}
+			id:         ServiceMonitorId{
 				app_instance: app_instance
 				slot:         output.slot
 				generation:   output.generation
 			}
-			name:      name
-			geometry:  ServiceKnownRect{
+			name:       name
+			geometry:   ServiceKnownRect{
 				// wl_output geometry is not compositor-logical placement. Keep the
 				// public rectangle unknown until xdg-output supplies that authority.
 				known: false
@@ -6786,14 +6804,17 @@ fn (backend &WaylandBackend) service_monitor_snapshot(app_instance u64) ![]Servi
 					height: height / scale
 				}
 			}
-			work_area: ServiceKnownRect{}
-			scale:     ServiceKnownScale{
+			work_area:  ServiceKnownRect{}
+			scale:      ServiceKnownScale{
 				known: output.ready && output.scale > 0
 				value: f32(scale)
 			}
-			primary:   .unknown
-			available: true
+			primary:    .unknown
+			available:  true
 		}
+	}
+	if !service_monitor_snapshot_identity_valid(monitors, .wayland, app_instance) {
+		return error(err_capability_unsupported)
 	}
 	return monitors
 }

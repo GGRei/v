@@ -26,6 +26,7 @@ fn test_multiwindow_new_app_reports_core_capabilities() {
 	assert caps.focus_events
 	assert caps.drop_events
 	assert caps.touch_events
+	assert caps.readback
 	assert !caps.cursor_shapes
 	assert !caps.interactive_move_resize
 	assert !caps.native_decorations

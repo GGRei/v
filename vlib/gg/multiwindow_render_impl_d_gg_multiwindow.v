@@ -167,6 +167,14 @@ fn (mut app App) arm_appkit_image_readbacks_for_pass(id WindowId, image_id u32, 
 	app.core.service_arm_image_readback_pass_for_gg(id.core, image_id, pass_serial, producing_frame)!
 }
 
+fn readback_rect_fits(rect WindowPixelRect, target_width int, target_height int) bool {
+	if target_width <= 0 || target_height <= 0 || rect.x < 0 || rect.y < 0 || rect.width <= 0
+		|| rect.height <= 0 || rect.width > target_width || rect.height > target_height {
+		return false
+	}
+	return rect.x <= target_width - rect.width && rect.y <= target_height - rect.height
+}
+
 fn (mut app App) request_window_capture_managed(id WindowId, config WindowReadbackConfig) !WindowReadbackId {
 	app.ensure_initialized()!
 	app.assert_owner_thread() or { return error(err_multiwindow_render_owner_thread) }
@@ -187,8 +195,7 @@ fn (mut app App) request_window_capture_managed(id WindowId, config WindowReadba
 		mut x := 0
 		mut y := 0
 		if rect := config.rect {
-			if rect.width <= 0 || rect.height <= 0 || rect.x < 0 || rect.y < 0
-				|| rect.x + rect.width > width || rect.y + rect.height > height {
+			if !readback_rect_fits(rect, width, height) {
 				return error(err_multiwindow_render_readback_unsupported)
 			}
 			width = rect.width
@@ -248,8 +255,7 @@ fn (mut app App) request_window_capture_managed(id WindowId, config WindowReadba
 	mut x := 0
 	mut y := 0
 	if rect := config.rect {
-		if rect.width <= 0 || rect.height <= 0 || rect.x < 0 || rect.y < 0
-			|| rect.x + rect.width > info.width || rect.y + rect.height > info.height {
+		if !readback_rect_fits(rect, info.width, info.height) {
 			return error(err_multiwindow_render_readback_unsupported)
 		}
 		width = rect.width
@@ -715,8 +721,7 @@ fn (mut context WindowContext) request_image_readback_managed(id WindowImageId, 
 	mut width := snapshot.desc.width
 	mut height := snapshot.desc.height
 	if rect := config.rect {
-		if rect.width <= 0 || rect.height <= 0 || rect.x < 0 || rect.y < 0
-			|| rect.x + rect.width > width || rect.y + rect.height > height {
+		if !readback_rect_fits(rect, width, height) {
 			return error(err_multiwindow_render_readback_unsupported)
 		}
 		x = rect.x

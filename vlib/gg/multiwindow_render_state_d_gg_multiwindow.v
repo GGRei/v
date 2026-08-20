@@ -983,23 +983,84 @@ fn (mut runtime MultiWindowRenderRuntime) end_user_callback() {
 	runtime.mutex.unlock()
 }
 
-fn (mut runtime MultiWindowRenderRuntime) defer_destroy_in_callback(id WindowId) !bool {
+fn (mut runtime MultiWindowRenderRuntime) admit_destroy_order(ids []WindowId, reason WindowCleanupReason) !bool {
 	runtime.mutex.lock()
 	defer {
 		runtime.mutex.unlock()
 	}
-	index := runtime.window_index_locked(id)!
+	mut indexes := []int{cap: ids.len}
+	for id in ids {
+		index := runtime.window_index_locked(id)!
+		if runtime.windows[index].status in [.invalid, .destroyed] {
+			return error(err_multiwindow_window_not_found)
+		}
+		indexes << index
+	}
 	if runtime.callback_depth == 0 {
 		return false
 	}
-	if runtime.windows[index].status == .destroyed {
-		return error(err_multiwindow_window_not_found)
+	merged := merge_deferred_destroy_order(runtime.deferred_windows, ids)
+	for offset, _ in ids {
+		index := indexes[offset]
+		runtime.windows[index].status = .closing
+		if !runtime.windows[index].cleanup_reason_set {
+			runtime.windows[index].cleanup_reason = reason
+			runtime.windows[index].cleanup_reason_set = true
+		}
 	}
-	runtime.windows[index].status = .closing
-	if id !in runtime.deferred_windows {
-		runtime.deferred_windows << id
-	}
+	runtime.deferred_windows = merged
 	return true
+}
+
+fn (mut runtime MultiWindowRenderRuntime) restore_deferred_destroy_order(ids []WindowId, reason WindowCleanupReason) ! {
+	runtime.mutex.lock()
+	defer {
+		runtime.mutex.unlock()
+	}
+	mut indexes := []int{cap: ids.len}
+	for id in ids {
+		index := runtime.window_index_locked(id)!
+		if runtime.windows[index].status in [.invalid, .destroyed] {
+			return error(err_multiwindow_window_not_found)
+		}
+		indexes << index
+	}
+	merged := merge_deferred_destroy_order(runtime.deferred_windows, ids)
+	for offset, _ in ids {
+		index := indexes[offset]
+		runtime.windows[index].status = .closing
+		if !runtime.windows[index].cleanup_reason_set {
+			runtime.windows[index].cleanup_reason = reason
+			runtime.windows[index].cleanup_reason_set = true
+		}
+	}
+	runtime.deferred_windows = merged
+}
+
+fn merge_deferred_destroy_order(current []WindowId, incoming []WindowId) []WindowId {
+	mut first_overlap := current.len
+	for index, deferred in current {
+		if deferred in incoming {
+			first_overlap = index
+			break
+		}
+	}
+	mut merged := []WindowId{cap: current.len + incoming.len}
+	for index in 0 .. first_overlap {
+		merged << current[index]
+	}
+	for id in incoming {
+		if id !in merged {
+			merged << id
+		}
+	}
+	for index in first_overlap .. current.len {
+		deferred := current[index]
+		if deferred !in incoming {
+			merged << deferred
+		}
+	}
+	return merged
 }
 
 fn (mut runtime MultiWindowRenderRuntime) defer_stop_in_callback() bool {

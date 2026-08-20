@@ -65,6 +65,11 @@ mut:
 	available  bool
 }
 
+struct AppKitServiceMonitorPlan {
+	records  []AppKitServiceMonitorRecord
+	monitors []ServiceMonitorInfo
+}
+
 $if darwin {
 	#flag darwin -fobjc-arc
 	#flag darwin -framework Cocoa
@@ -417,13 +422,17 @@ fn appkit_service_operation_from_native(value int) ?ServiceOperation {
 
 fn appkit_service_monitor_info(raw AppKitServiceRawMonitor, record AppKitServiceMonitorRecord, app_instance u64) ServiceMonitorInfo {
 	return ServiceMonitorInfo{
-		id:        ServiceMonitorId{
+		native_key: ServiceMonitorNativeKey{
+			kind:    .appkit_display
+			numeric: raw.native_id
+		}
+		id:         ServiceMonitorId{
 			app_instance: app_instance
 			slot:         record.slot
 			generation:   record.generation
 		}
-		name:      raw.name
-		geometry:  ServiceKnownRect{
+		name:       raw.name
+		geometry:   ServiceKnownRect{
 			known: raw.width > 0 && raw.height > 0
 			value: ServiceRect{
 				x:      raw.x
@@ -432,7 +441,7 @@ fn appkit_service_monitor_info(raw AppKitServiceRawMonitor, record AppKitService
 				height: raw.height
 			}
 		}
-		work_area: ServiceKnownRect{
+		work_area:  ServiceKnownRect{
 			known: raw.work_width > 0 && raw.work_height > 0
 			value: ServiceRect{
 				x:      raw.work_x
@@ -441,46 +450,61 @@ fn appkit_service_monitor_info(raw AppKitServiceRawMonitor, record AppKitService
 				height: raw.work_height
 			}
 		}
-		scale:     ServiceKnownScale{
+		scale:      ServiceKnownScale{
 			known: raw.scale > 0
 			value: raw.scale
 		}
-		primary:   appkit_service_observed_bool_from_native(raw.primary)
-		available: true
+		primary:    appkit_service_observed_bool_from_native(raw.primary)
+		available:  true
 	}
 }
 
 fn appkit_reconcile_service_monitors(mut records []AppKitServiceMonitorRecord, snapshot []AppKitServiceRawMonitor, app_instance u64) []ServiceMonitorInfo {
 	mut seen := []bool{len: records.len}
+	mut slots := []int{len: snapshot.len, init: -1}
 	mut monitors := []ServiceMonitorInfo{cap: snapshot.len}
-	for raw in snapshot {
+	for snapshot_index, raw in snapshot {
 		if raw.native_id == 0 {
 			continue
 		}
-		mut slot := -1
 		for index, record in records {
 			if record.native_id == raw.native_id && record.available && !seen[index] {
-				slot = index
+				slots[snapshot_index] = index
+				seen[index] = true
 				break
 			}
 		}
-		if slot < 0 {
-			for index, record in records {
-				if record.native_id == raw.native_id && !record.available && !seen[index]
-					&& record.generation < u32(0xffffffff) {
-					slot = index
-					break
-				}
+	}
+	for snapshot_index, raw in snapshot {
+		if slots[snapshot_index] >= 0 || raw.native_id == 0 {
+			continue
+		}
+		for index, record in records {
+			if record.native_id == raw.native_id && !record.available && !seen[index]
+				&& record.generation < max_u32 {
+				slots[snapshot_index] = index
+				seen[index] = true
+				break
 			}
 		}
-		if slot < 0 {
-			for index, record in records {
-				if !record.available && !seen[index] && record.generation < u32(0xffffffff) {
-					slot = index
-					break
-				}
+	}
+	for snapshot_index, raw in snapshot {
+		if slots[snapshot_index] >= 0 || raw.native_id == 0 {
+			continue
+		}
+		for index, record in records {
+			if !record.available && !seen[index] && record.generation < max_u32 {
+				slots[snapshot_index] = index
+				seen[index] = true
+				break
 			}
 		}
+	}
+	for snapshot_index, raw in snapshot {
+		if raw.native_id == 0 {
+			continue
+		}
+		mut slot := slots[snapshot_index]
 		if slot < 0 {
 			slot = records.len
 			records << AppKitServiceMonitorRecord{
@@ -502,7 +526,6 @@ fn appkit_reconcile_service_monitors(mut records []AppKitServiceMonitorRecord, s
 				generation: generation
 				available:  true
 			}
-			seen[slot] = true
 		}
 		monitors << appkit_service_monitor_info(raw, records[slot], app_instance)
 	}
@@ -512,6 +535,35 @@ fn appkit_reconcile_service_monitors(mut records []AppKitServiceMonitorRecord, s
 		}
 	}
 	return monitors
+}
+
+fn appkit_service_raw_monitor_snapshot_valid(snapshot []AppKitServiceRawMonitor) bool {
+	for index, raw in snapshot {
+		if raw.native_id == 0 {
+			return false
+		}
+		for previous in 0 .. index {
+			if snapshot[previous].native_id == raw.native_id {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+fn appkit_plan_service_monitors(records []AppKitServiceMonitorRecord, snapshot []AppKitServiceRawMonitor, app_instance u64) !AppKitServiceMonitorPlan {
+	if !appkit_service_raw_monitor_snapshot_valid(snapshot) {
+		return error(err_capability_unsupported)
+	}
+	mut staged_records := records.clone()
+	monitors := appkit_reconcile_service_monitors(mut staged_records, snapshot, app_instance)
+	if !service_monitor_snapshot_identity_valid(monitors, .appkit, app_instance) {
+		return error(err_capability_unsupported)
+	}
+	return AppKitServiceMonitorPlan{
+		records:  staged_records
+		monitors: monitors
+	}
 }
 
 fn appkit_clipboard_length_is_valid(length usize) bool {
@@ -970,10 +1022,10 @@ fn (mut backend AppKitBackend) service_monitor_snapshot(app_instance u64) ![]Ser
 				name: monitor_name
 			}
 		}
-		monitors := appkit_reconcile_service_monitors(mut backend.service_monitors, snapshot,
-			app_instance)
+		plan := appkit_plan_service_monitors(backend.service_monitors, snapshot, app_instance)!
+		backend.service_monitors = plan.records
 		backend.service_monitor_revision = C.v_multiwindow_appkit_service_monitor_revision()
-		return monitors
+		return plan.monitors
 	} $else {
 		_ = app_instance
 		return error(err_backend_unsupported)
@@ -1314,6 +1366,7 @@ fn (backend &AppKitBackend) capabilities_for_renderer(renderer_ready bool) Capab
 		owner_queue:        true
 		explicit_swapchain: appkit_metal_supported() && renderer_ready
 		metal:              appkit_metal_supported() && renderer_ready
+		readback:           appkit_metal_supported() && renderer_ready
 		input_events:       true
 		mouse_events:       true
 		keyboard_events:    true

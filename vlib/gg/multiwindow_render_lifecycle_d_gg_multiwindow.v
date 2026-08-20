@@ -600,16 +600,38 @@ fn (mut app App) destroy_window_managed(id WindowId, reason WindowCleanupReason)
 	app.ensure_initialized()!
 	app.assert_owner_thread() or { return error(err_multiwindow_render_owner_thread) }
 	app.core.ensure_event_admission_for_gg()!
-	if app.render_runtime.defer_destroy_in_callback(id)! {
+	if !app.window_exists(id) {
+		return app.core.destroy_window(id.core)
+	}
+	core_order := app.core.window_destroy_order(id.core)!
+	mut order := []WindowId{cap: core_order.len}
+	for core_id in core_order {
+		order << window_id_from_core(core_id)
+	}
+	if app.render_runtime.admit_destroy_order(order, reason)! {
 		return
 	}
-	app.destroy_window_now(id, reason)!
-	app.flush_deferred_transitions()!
+	mut errors := []IError{}
+	for window in order {
+		app.destroy_window_now(window, reason) or {
+			errors << err
+			if app.window_exists(window) {
+				break
+			}
+		}
+	}
+	app.flush_deferred_transitions() or { errors << err }
+	if errors.len > 0 {
+		return aggregate_managed_ierror(err_multiwindow_render_cleanup_failed, errors)
+	}
 }
 
 fn (mut app App) destroy_window_now(id WindowId, reason WindowCleanupReason) ! {
 	if !app.window_exists(id) {
 		return app.core.destroy_window(id.core)
+	}
+	if message := app.render_runtime.take_internal_fault(.teardown_prepare) {
+		return error(message)
 	}
 	ticket := app.core.prepare_window_destroy(id.core)!
 	app.render_runtime.begin_destroy(id, reason) or {
@@ -791,7 +813,7 @@ fn (mut app App) stop_now() ! {
 	}
 	app.render_runtime.begin_stop()
 	app.consume_backend_teardowns() or { errors << err.msg() }
-	ids := app.core.window_ids() or {
+	ids := app.core.live_window_ids_for_stop_for_gg() or {
 		errors << err.msg()
 		[]multiwindow.WindowId{}
 	}
@@ -1008,10 +1030,21 @@ fn (mut app App) apply_deferred_transitions(transitions MultiWindowDeferredTrans
 		app.stop_now()!
 		return
 	}
-	for id in transitions.windows {
+	mut errors := []IError{}
+	for index, id in transitions.windows {
 		if app.window_exists(id) {
-			app.destroy_window_now(id, .requested)!
+			app.destroy_window_now(id, .requested) or {
+				errors << err
+				if app.window_exists(id) {
+					app.render_runtime.restore_deferred_destroy_order(transitions.windows[index..],
+						.requested) or { errors << err }
+					break
+				}
+			}
 		}
+	}
+	if errors.len > 0 {
+		return aggregate_managed_ierror(err_multiwindow_render_cleanup_failed, errors)
 	}
 }
 

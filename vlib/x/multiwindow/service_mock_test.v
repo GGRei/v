@@ -293,6 +293,111 @@ fn test_service_cancellation_is_exactly_once_before_registry_removal() {
 	assert false, 'destroyed service record remained registered'
 }
 
+fn test_owner_cascade_cancels_descendant_clipboard_portal_and_leases_exactly_once() {
+	mut app := new_app()!
+	owner := app.create_window(title: 'service cascade owner')!
+	child := app.create_window(WindowConfig{
+		title: 'service cascade child'
+		owner: owner
+	})!
+	grandchild := app.create_window(WindowConfig{
+		title: 'service cascade grandchild'
+		owner: child
+	})!
+	sibling := app.create_window(WindowConfig{
+		title: 'service cascade sibling'
+		owner: owner
+	})!
+	order := [grandchild, child, sibling, owner]
+	descendants := order[..order.len - 1]
+	assert app.drain_events()!.len == order.len
+	mut clipboard_requests := []ServiceRequestId{cap: descendants.len}
+	mut portal_requests := []ServiceRequestId{cap: descendants.len}
+	mut portal_leases := []ServicePortalLeaseId{cap: descendants.len}
+	for window in descendants {
+		clipboard := app.services.take_request_id()!
+		portal := app.services.take_request_id()!
+		lease := ServicePortalLeaseId{
+			app_instance: app.instance_id
+			serial:       portal.serial
+		}
+		app.services.pending << PendingServiceRequest{
+			id:     clipboard
+			window: window
+			kind:   .clipboard_read
+		}
+		app.services.pending << PendingServiceRequest{
+			id:     portal
+			window: window
+			kind:   .portal_parent
+		}
+		app.services.portal_leases << ServicePortalLease{
+			id:     lease
+			window: window
+		}
+		clipboard_requests << clipboard
+		portal_requests << portal
+		portal_leases << lease
+	}
+	assert app.services.pending.len == descendants.len * 2
+	assert app.services.portal_leases.len == descendants.len
+
+	app.destroy_window(owner)!
+	assert app.services.pending.len == descendants.len * 2
+	assert app.services.pending.all(it.terminal)
+	assert app.services.portal_leases.len == 0
+	for lease in portal_leases {
+		mut rejected := false
+		app.service_release_portal_parent(lease) or {
+			assert err.msg() == err_service_request_stale
+			rejected = true
+		}
+		assert rejected
+	}
+	events := app.drain_queued_events()!
+	assert events.len == descendants.len * 3 + 1
+	for index in 1 .. events.len {
+		assert events[index - 1].sequence < events[index].sequence
+	}
+	mut event_index := 0
+	for index, window in descendants {
+		clipboard_event := events[event_index]
+		portal_event := events[event_index + 1]
+		destroyed_event := events[event_index + 2]
+		assert clipboard_event.kind == .service
+		assert clipboard_event.service.kind == .clipboard
+		assert clipboard_event.service.clipboard.id == clipboard_requests[index]
+		assert clipboard_event.service.clipboard.window == window
+		assert clipboard_event.service.clipboard.status == .cancelled
+		assert portal_event.kind == .service
+		assert portal_event.service.kind == .portal_parent
+		assert portal_event.service.portal_parent.id == portal_requests[index]
+		assert portal_event.service.portal_parent.window == window
+		assert portal_event.service.portal_parent.status == .cancelled
+		assert destroyed_event.kind == .lifecycle
+		assert destroyed_event.lifecycle.kind == .window_destroyed
+		assert destroyed_event.lifecycle.window_id == window
+		event_index += 3
+	}
+	assert events[event_index].kind == .lifecycle
+	assert events[event_index].lifecycle.kind == .window_destroyed
+	assert events[event_index].lifecycle.window_id == owner
+	assert app.services.pending.len == 0
+	for window in order {
+		app.services.window_index(window) or {
+			assert err.msg() == err_stale_window
+			continue
+		}
+		assert false, 'destroyed service cascade record remained registered'
+	}
+
+	app.destroy_window(owner)!
+	assert app.drain_queued_events()!.len == 0
+	assert app.services.pending.len == 0
+	assert app.services.portal_leases.len == 0
+	app.stop()!
+}
+
 fn test_backend_readback_acceptance_terminalizes_pending_before_destroy() {
 	mut app := new_app()!
 	window := app.create_window()!
