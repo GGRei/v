@@ -2558,7 +2558,8 @@ fn test_wayland_hidden_windows_are_created_for_later_mapping() {
 	wayland_source := multiwindow_source_file('wayland_backend.c.v')
 	create_window_body :=
 		wayland_source.all_after('fn (mut backend WaylandBackend) create_window').all_before('fn (mut backend WaylandBackend) destroy_window')
-	assert create_window_body.contains('requested_visible:   config.visible')
+	compact_create_window_body := create_window_body.replace(' ', '').replace('\t', '')
+	assert compact_create_window_body.contains('requested_visible:config.visible')
 	assert create_window_body.contains('else if !config.visible')
 	assert_source_order(create_window_body, 'else if !config.visible',
 		'record.enqueue_service_state(.hide)')
@@ -2569,6 +2570,48 @@ fn test_wayland_hidden_windows_are_created_for_later_mapping() {
 		'backend.attempt_wayland_flush(window_seed)')
 	assert_source_order(create_window_body, 'backend.attempt_wayland_flush(window_seed)',
 		'backend.attempt_wayland_roundtrip(window_seed)')
+	show_body := wayland_source.all_after('fn (mut backend WaylandBackend) service_show_window')
+		.all_before('fn (mut backend WaylandBackend) service_hide_window')
+	hide_body := wayland_source.all_after('fn (mut backend WaylandBackend) service_hide_window')
+		.all_before('fn (mut backend WaylandBackend) service_minimize_window')
+	assert show_body.contains('backend.replay_window_toplevel_attributes_and_commit(index)')
+	assert !show_body.contains('attempt_wayland_roundtrip')
+	assert_source_order(show_body, 'requested_visible = true',
+		'backend.replay_window_toplevel_attributes_and_commit(index)')
+	assert_source_order(show_body, 'backend.replay_window_toplevel_attributes_and_commit(index)',
+		'backend.attempt_wayland_flush(seed)')
+	assert hide_body.contains('backend.attempt_wayland_hide_barrier(seed)')
+	assert !hide_body.contains('attempt_wayland_roundtrip')
+	assert_source_order(hide_body, 'hide_barrier_active = true',
+		'backend.attempt_wayland_hide_barrier(seed)')
+	assert_source_order(hide_body, 'backend.attempt_wayland_hide_barrier(seed)',
+		'requested_visible = false')
+	assert_source_order(hide_body, 'requested_visible = false',
+		'C.v_multiwindow_wayland_unmap_surface')
+	hide_barrier_body := wayland_source.all_after('fn (mut backend WaylandBackend) attempt_wayland_hide_barrier')
+		.all_before('fn (mut backend WaylandBackend) abandon_renderer_ownership')
+	assert hide_barrier_body.contains('backend.attempt_wayland_roundtrip(boundary_seed)')
+	replay_body := wayland_source.all_after('fn (mut backend WaylandBackend) replay_window_toplevel_attributes(index int)')
+		.all_before('fn (mut backend WaylandBackend) replay_window_toplevel_attributes_and_commit')
+	for replay_attribute in ['record.title', 'record.app_id', 'record.owner_id', 'record.min_width',
+		'record.max_width', 'record.request_server_decoration', 'record.requested_maximized',
+		'record.requested_fullscreen'] {
+		assert replay_body.contains(replay_attribute)
+	}
+	assert wayland_source.contains('reapply_parent_to_live_children_on_first_map')
+	assert wayland_source.contains('if was_mapped {')
+	end_render_body := wayland_source.all_after('fn (mut backend WaylandBackend) end_render(frame RenderFrame)')
+		.all_before('fn (mut backend WaylandBackend) ensure_lifecycle_buffers()')
+	assert_source_order(end_render_body, 'C.v_multiwindow_linux_egl_swap_buffers',
+		'backend.reapply_parent_to_live_children_on_first_map')
+	assert_source_order(end_render_body, 'backend.reapply_parent_to_live_children_on_first_map',
+		'backend.attempt_wayland_flush(frame_seed)')
+	lifecycle_body := wayland_source.all_after('fn (mut backend WaylandBackend) ensure_lifecycle_buffer(index int)')
+		.all_before('fn (mut record WaylandWindowRecord) release_fallback_buffer')
+	assert_source_order(lifecycle_body, 'C.v_multiwindow_wayland_attach_buffer',
+		'backend.reapply_parent_to_live_children_on_first_map')
+	assert_source_order(lifecycle_body, 'backend.reapply_parent_to_live_children_on_first_map',
+		'backend.attempt_wayland_flush')
 }
 
 fn test_wayland_initial_size_is_clamped_before_mapping() {
@@ -3086,7 +3129,9 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 	assert wayland_source.contains('pending_drop_poll_cycle_expired')
 	assert wayland_source.contains('C.v_multiwindow_wayland_fd_set_nonblocking')
 	assert wayland_source.contains('C.v_multiwindow_wayland_read_would_block')
-	assert wayland_source.contains('C.poll(&poll_fd, u64(1), 0)')
+	assert wayland_source.contains('pending_drop_poll_once')
+	assert wayland_source.contains('pending_drop_read_once')
+	assert wayland_source.contains('return C.poll(unsafe { &C.pollfd(poll_fd) }, u64(1), 0)')
 	assert wayland_source.contains('for _ in 0 .. wayland_data_offer_max_read_chunks')
 	assert wayland_source.contains('backend.drain_pending_data_offer_drop()')
 	assert_source_order(poll_body, 'dispatch := backend.dispatch_pending_nonblocking()',
@@ -3109,7 +3154,7 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 	assert drop_callback_body.contains('backend.data_offer_allows_finish()')
 	assert drop_callback_body.contains('backend.begin_pending_data_offer_drop()')
 	expire_body := wayland_source.all_after('fn (mut backend WaylandBackend) pending_drop_poll_cycle_expired() bool')
-		.all_before('fn (mut backend WaylandBackend) drain_pending_data_offer_drop()')
+		.all_before('fn (mut backend WaylandBackend) pending_drop_poll_once')
 	assert expire_body.contains('backend.pending_drop_poll_cycles++')
 	assert expire_body.contains('wayland_data_offer_max_pending_poll_cycles')
 	assert !expire_body.contains('v_multiwindow_wayland_data_offer_finish')
@@ -3118,8 +3163,11 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 		.all_before('fn (mut backend WaylandBackend) finish_pending_data_offer_drop()')
 	assert drain_body.contains('if backend.pending_drop_poll_cycle_expired() {')
 	assert drain_body.contains('backend.clear_data_offer(true)')
-	assert_source_order(drain_body, 'backend.pending_drop_poll_cycle_expired()',
-		'C.poll(&poll_fd, u64(1), 0)')
+	assert drain_body.contains('!read_interrupted && backend.pending_drop_poll_cycle_expired()')
+	assert_source_order(drain_body, 'poll_result := backend.pending_drop_poll_once',
+		'if poll_result == 0')
+	assert_source_order(drain_body, 'if poll_result == 0',
+		'backend.pending_drop_poll_cycle_expired()')
 	finish_body := wayland_source.all_after('fn (mut backend WaylandBackend) finish_pending_data_offer_drop()')
 		.all_before('fn (mut backend WaylandBackend) destroy_data_device()')
 	assert_source_order(finish_body, 'backend.pending_drop_allows_finish()',

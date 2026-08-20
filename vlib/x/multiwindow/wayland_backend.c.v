@@ -102,7 +102,10 @@ const wayland_data_offer_max_pending_poll_cycles = 300
 const wayland_clipboard_max_bytes = 16 * 1024 * 1024
 const wayland_clipboard_io_chunk_size = 16 * 1024
 const wayland_clipboard_max_io_chunks_per_poll = 16
+const wayland_clipboard_max_outgoing_transfers = 8
+const wayland_clipboard_max_outgoing_snapshot_bytes = u64(64 * 1024 * 1024)
 const wayland_clipboard_timeout_ns = i64(2_000_000_000)
+const wayland_io_test_interrupted = i64(-2)
 const wayland_max_fallback_buffers = 3
 const wayland_anchor_release_protocol_destroy = u64(1)
 const wayland_anchor_release_local_proxy_destroy = u64(2)
@@ -142,6 +145,14 @@ struct WaylandWindowRecord {
 	resizable bool
 	high_dpi  bool
 mut:
+	title                          string
+	app_id                         string
+	owner_id                       ?WindowId
+	max_width                      int
+	max_height                     int
+	request_server_decoration      bool
+	requested_maximized            bool
+	requested_fullscreen           bool
 	surface                        voidptr
 	xdg_surface                    voidptr
 	xdg_toplevel                   voidptr
@@ -156,6 +167,7 @@ mut:
 	configured                     bool
 	requested_visible              bool
 	hide_barrier_active            bool
+	hide_barrier_state_observed    bool
 	mapped                         bool
 	publish_show_on_map            bool
 	pending_egl_resize             bool
@@ -244,13 +256,41 @@ mut:
 	deadline_ns i64
 }
 
+struct WaylandClipboardSend {
+	fd      int = -1
+	payload string
+mut:
+	offset      int
+	deadline_ns i64
+	blocked     bool
+}
+
+struct WaylandIoTestSeam {
+mut:
+	clipboard_read_interruptions    int
+	clipboard_write_interruptions   int
+	pending_drop_read_interruptions int
+	pending_drop_poll_interruptions int
+	pending_drop_native_bypass      bool
+}
+
 struct WaylandClipboardSourceTestSeam {
 mut:
 	active          bool
 	create_override bool
 	next_source     voidptr
 	fail_listener   bool
+	bypass_protocol bool
 	destroyed       []usize
+	destroyed_local []bool
+}
+
+struct WaylandToplevelReplayTestSeam {
+mut:
+	active                bool
+	operations            []string
+	hide_barrier_override bool
+	hide_barrier_succeeds bool
 }
 
 @[heap]
@@ -323,11 +363,13 @@ mut:
 	clipboard_source              voidptr
 	clipboard_text                string
 	clipboard_source_test         WaylandClipboardSourceTestSeam
-	clipboard_send_fd             int = -1
-	clipboard_send_offset         int
-	clipboard_send_deadline_ns    i64
+	toplevel_replay_test          WaylandToplevelReplayTestSeam
+	clipboard_sends               []WaylandClipboardSend
+	clipboard_send_cursor         int
+	clipboard_send_snapshot_bytes u64
 	clipboard_read                WaylandClipboardRead
 	clipboard_read_active         bool
+	io_test                       WaylandIoTestSeam
 	wm_base                       voidptr
 	wm_base_name                  u32
 	decoration_manager            voidptr
@@ -477,7 +519,7 @@ fn (backend &WaylandBackend) retains_native_ownership_except_display() bool {
 	clipboard_live := backend.data_device_manager != unsafe { nil }
 		|| backend.data_device != unsafe { nil } || backend.incoming_offer != unsafe { nil }
 		|| backend.selection_offer != unsafe { nil } || backend.clipboard_source != unsafe { nil }
-		|| backend.clipboard_send_fd >= 0 || backend.clipboard_read_active
+		|| backend.clipboard_sends.len != 0 || backend.clipboard_read_active
 	data_offer_live := backend.data_offer != unsafe { nil }
 		|| backend.pending_drop_offer != unsafe { nil } || backend.pending_drop_fd >= 0
 	portal_live := backend.foreign_exporter != unsafe { nil } || backend.portal_exports.len != 0
@@ -937,6 +979,9 @@ $if linux && sokol_wayland ? {
 	fn C.v_multiwindow_wayland_data_offer_receive(offer &C.wl_data_offer, mime_type &char, fd int)
 	fn C.v_multiwindow_wayland_fd_set_nonblocking(fd int) int
 	fn C.v_multiwindow_wayland_read_would_block() int
+	fn C.v_multiwindow_wayland_io_interrupted() int
+	fn C.v_multiwindow_wayland_safe_write(fd int, buffer voidptr, size usize) isize
+	fn C.v_multiwindow_wayland_safe_write_broken_pipe_probe() int
 	fn C.v_multiwindow_wayland_toplevel_state_contains(states &C.wl_array, expected u32) int
 	fn C.wl_surface_set_buffer_scale(surface &C.wl_surface, scale int)
 	fn C.v_multiwindow_wayland_data_offer_finish(offer &C.wl_data_offer)
@@ -1585,6 +1630,11 @@ $if linux && sokol_wayland ? {
 		}
 		mut record := unsafe { &WaylandWindowRecord(data) }
 		if record.hide_barrier_active {
+			record.requested_maximized = C.v_multiwindow_wayland_toplevel_state_contains(states,
+				wayland_xdg_toplevel_state_maximized) != 0
+			record.requested_fullscreen = C.v_multiwindow_wayland_toplevel_state_contains(states,
+				wayland_xdg_toplevel_state_fullscreen) != 0
+			record.hide_barrier_state_observed = true
 			return
 		}
 		record.pending_service_state_valid = true
@@ -2329,14 +2379,24 @@ $if linux && sokol_wayland ? {
 		if source != backend.clipboard_source
 			|| (C.strcmp(mime_type, c'text/plain;charset=utf-8') != 0
 			&& C.strcmp(mime_type, c'text/plain') != 0)
-			|| backend.clipboard_send_fd >= 0
 			|| C.v_multiwindow_wayland_fd_set_nonblocking(fd) == 0 {
 			C.close(fd)
 			return
 		}
-		backend.clipboard_send_fd = fd
-		backend.clipboard_send_offset = 0
-		backend.clipboard_send_deadline_ns = vtime.sys_mono_now() + wayland_clipboard_timeout_ns
+		payload_bytes := u64(backend.clipboard_text.len)
+		if backend.clipboard_sends.len >= wayland_clipboard_max_outgoing_transfers
+			|| payload_bytes > wayland_clipboard_max_outgoing_snapshot_bytes
+			|| backend.clipboard_send_snapshot_bytes > wayland_clipboard_max_outgoing_snapshot_bytes - payload_bytes {
+			C.close(fd)
+			return
+		}
+		payload := backend.clipboard_text.clone()
+		backend.clipboard_sends << WaylandClipboardSend{
+			fd:          fd
+			payload:     payload
+			deadline_ns: vtime.sys_mono_now() + wayland_clipboard_timeout_ns
+		}
+		backend.clipboard_send_snapshot_bytes += payload_bytes
 	}
 
 	@[export: 'v_multiwindow_wayland_data_source_cancelled']
@@ -2347,7 +2407,7 @@ $if linux && sokol_wayland ? {
 		}
 		mut backend := unsafe { &WaylandBackend(data) }
 		if source == backend.clipboard_source {
-			backend.destroy_clipboard_source(true)
+			backend.destroy_clipboard_source(!backend.transport_can_marshal())
 		}
 	}
 }
@@ -2358,6 +2418,133 @@ fn new_wayland_backend() WaylandBackend {
 
 fn (backend &WaylandBackend) native_app_id() string {
 	return if backend.app_id == '' { 'v.x.multiwindow' } else { backend.app_id }
+}
+
+fn (backend &WaylandBackend) mapped_owner_toplevel(owner_id ?WindowId) voidptr {
+	owner := owner_id or { return unsafe { nil } }
+	owner_index := backend.window_record_index(owner) or { return unsafe { nil } }
+	owner_record := backend.windows[owner_index]
+	if !owner_record.mapped || owner_record.xdg_toplevel == unsafe { nil } {
+		return unsafe { nil }
+	}
+	return owner_record.xdg_toplevel
+}
+
+fn (mut backend WaylandBackend) replay_window_toplevel_attributes(index int) {
+	$if linux && sokol_wayland ? {
+		if index < 0 || index >= backend.windows.len {
+			return
+		}
+		record := backend.windows[index]
+		if record.xdg_toplevel == unsafe { nil } {
+			return
+		}
+		owner_toplevel := backend.mapped_owner_toplevel(record.owner_id)
+		$if test {
+			if backend.toplevel_replay_test.active {
+				backend.toplevel_replay_test.operations << 'title'
+				backend.toplevel_replay_test.operations << 'app_id'
+				if owner_toplevel != unsafe { nil } {
+					backend.toplevel_replay_test.operations << 'parent'
+				}
+				backend.toplevel_replay_test.operations << 'min_size'
+				backend.toplevel_replay_test.operations << 'max_size'
+				if record.request_server_decoration && record.toplevel_decoration != unsafe { nil } {
+					backend.toplevel_replay_test.operations << 'decoration'
+				}
+				if record.requested_maximized {
+					backend.toplevel_replay_test.operations << 'maximize'
+				}
+				if record.requested_fullscreen {
+					backend.toplevel_replay_test.operations << 'fullscreen'
+				}
+				return
+			}
+		}
+		toplevel := unsafe { &C.xdg_toplevel(record.xdg_toplevel) }
+		C.v_multiwindow_wayland_xdg_toplevel_set_title(toplevel, &char(record.title.str))
+		C.v_multiwindow_wayland_xdg_toplevel_set_app_id(toplevel, &char(record.app_id.str))
+		if owner_toplevel != unsafe { nil } {
+			C.v_multiwindow_wayland_xdg_toplevel_set_parent(toplevel, unsafe {
+				&C.xdg_toplevel(owner_toplevel)
+			})
+		}
+		C.v_multiwindow_wayland_xdg_toplevel_set_min_size(toplevel, i32(record.min_width),
+			i32(record.min_height))
+		C.v_multiwindow_wayland_xdg_toplevel_set_max_size(toplevel, i32(record.max_width),
+			i32(record.max_height))
+		if record.request_server_decoration && record.toplevel_decoration != unsafe { nil } {
+			C.v_multiwindow_wayland_xdg_toplevel_decoration_set_server_side(unsafe {
+				&C.zxdg_toplevel_decoration_v1(record.toplevel_decoration)
+			})
+		}
+		if record.requested_maximized {
+			C.v_multiwindow_wayland_xdg_toplevel_set_maximized(toplevel)
+		}
+		if record.requested_fullscreen {
+			C.v_multiwindow_wayland_xdg_toplevel_set_fullscreen(toplevel, unsafe { nil })
+		}
+	}
+}
+
+fn (mut backend WaylandBackend) replay_window_toplevel_attributes_and_commit(index int) {
+	$if linux && sokol_wayland ? {
+		backend.replay_window_toplevel_attributes(index)
+		$if test {
+			if backend.toplevel_replay_test.active {
+				backend.toplevel_replay_test.operations << 'commit'
+				return
+			}
+		}
+		if index >= 0 && index < backend.windows.len
+			&& backend.windows[index].surface != unsafe { nil } {
+			C.wl_surface_commit(unsafe { &C.wl_surface(backend.windows[index].surface) })
+		}
+	}
+}
+
+fn (mut backend WaylandBackend) reapply_parent_to_live_children(parent WindowId) {
+	$if linux && sokol_wayland ? {
+		parent_index := backend.window_record_index(parent) or { return }
+		parent_record := backend.windows[parent_index]
+		if parent_record.xdg_toplevel == unsafe { nil } {
+			return
+		}
+		for index in 0 .. backend.windows.len {
+			child := backend.windows[index]
+			owner := child.owner_id or { continue }
+			if owner != parent || !child.mapped || child.xdg_toplevel == unsafe { nil } {
+				continue
+			}
+			$if test {
+				if backend.toplevel_replay_test.active {
+					backend.toplevel_replay_test.operations << 'child_parent'
+					continue
+				}
+			}
+			C.v_multiwindow_wayland_xdg_toplevel_set_parent(unsafe {
+				&C.xdg_toplevel(child.xdg_toplevel)
+			}, unsafe { &C.xdg_toplevel(parent_record.xdg_toplevel) })
+		}
+	}
+}
+
+fn (mut backend WaylandBackend) reapply_parent_to_live_children_on_first_map(parent WindowId, was_mapped bool) {
+	if was_mapped {
+		return
+	}
+	backend.reapply_parent_to_live_children(parent)
+}
+
+fn (mut backend WaylandBackend) observe_window_mapped(index int) {
+	if index < 0 || index >= backend.windows.len || backend.windows[index].mapped {
+		return
+	}
+	backend.windows[index].mapped = true
+	if backend.windows[index].publish_show_on_map {
+		backend.windows[index].publish_show_on_map = false
+		backend.windows[index].enqueue_service_state(.show)
+	}
 }
 
 fn (backend &WaylandBackend) cursor_support(shape CursorShape) ServiceSupportLevel {
@@ -3170,6 +3357,20 @@ fn (mut backend WaylandBackend) attempt_wayland_roundtrip(boundary_seed NativeOp
 	}
 }
 
+fn (mut backend WaylandBackend) attempt_wayland_hide_barrier(boundary_seed NativeOperationSeed) NativeRenderResult {
+	$if test {
+		if backend.toplevel_replay_test.hide_barrier_override {
+			return if backend.toplevel_replay_test.hide_barrier_succeeds {
+				native_render_ok(.wayland, .display_roundtrip, .renderer)
+			} else {
+				native_wayland_logical_result(.display_roundtrip, .renderer, .renderer_unavailable,
+					0, err_wayland_dispatch_failed)
+			}
+		}
+	}
+	return backend.attempt_wayland_roundtrip(boundary_seed)
+}
+
 fn (mut backend WaylandBackend) abandon_renderer_ownership() {
 	backend.release_egl_lifetime()
 	backend.render_health = .abandoned
@@ -3303,20 +3504,27 @@ fn (mut backend WaylandBackend) create_window(id WindowId, config WindowConfig) 
 		record_min_width := if config.resizable { config.min_width } else { actual_size.width }
 		record_min_height := if config.resizable { config.min_height } else { actual_size.height }
 		mut record := &WaylandWindowRecord{
-			id:                  id
-			high_dpi:            config.high_dpi
-			surface:             unsafe { voidptr(surface) }
-			xdg_surface:         unsafe { voidptr(xdg_surface) }
-			xdg_toplevel:        unsafe { voidptr(xdg_toplevel) }
-			resizable:           config.resizable
-			native_operations:   backend.native_operations
-			owner:               backend
-			width:               actual_size.width
-			height:              actual_size.height
-			min_width:           record_min_width
-			min_height:          record_min_height
-			requested_visible:   config.visible
-			publish_show_on_map: config.visible
+			id:                        id
+			high_dpi:                  config.high_dpi
+			title:                     config.title.clone()
+			app_id:                    backend.native_app_id().clone()
+			owner_id:                  config.owner
+			max_width:                 if config.resizable { 0 } else { actual_size.width }
+			max_height:                if config.resizable { 0 } else { actual_size.height }
+			request_server_decoration: !config.borderless
+			requested_fullscreen:      config.fullscreen
+			surface:                   unsafe { voidptr(surface) }
+			xdg_surface:               unsafe { voidptr(xdg_surface) }
+			xdg_toplevel:              unsafe { voidptr(xdg_toplevel) }
+			resizable:                 config.resizable
+			native_operations:         backend.native_operations
+			owner:                     backend
+			width:                     actual_size.width
+			height:                    actual_size.height
+			min_width:                 record_min_width
+			min_height:                record_min_height
+			requested_visible:         config.visible
+			publish_show_on_map:       config.visible
 		}
 		if C.v_multiwindow_wayland_add_surface_listener(surface, record.listener_data()) < 0 {
 			_ = backend.destroy_window_record(mut record)
@@ -3330,9 +3538,8 @@ fn (mut backend WaylandBackend) create_window(id WindowId, config WindowConfig) 
 			_ = backend.destroy_window_record(mut record)
 			return error(err_wayland_create_surface_failed)
 		}
-		C.v_multiwindow_wayland_xdg_toplevel_set_title(xdg_toplevel, &char(config.title.str))
-		app_id := backend.native_app_id()
-		C.v_multiwindow_wayland_xdg_toplevel_set_app_id(xdg_toplevel, &char(app_id.str))
+		C.v_multiwindow_wayland_xdg_toplevel_set_title(xdg_toplevel, &char(record.title.str))
+		C.v_multiwindow_wayland_xdg_toplevel_set_app_id(xdg_toplevel, &char(record.app_id.str))
 		if owner := config.owner {
 			owner_index := backend.window_record_index(owner) or {
 				_ = backend.destroy_window_record(mut record)
@@ -3457,6 +3664,7 @@ fn (mut backend WaylandBackend) set_window_title(id WindowId, title string) ! {
 		if !flush.succeeded() {
 			return error(err_wayland_flush_failed)
 		}
+		backend.windows[index].title = title.clone()
 		return
 	} $else {
 		_ = id
@@ -4676,6 +4884,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				}
 			}
 			mut record := backend.windows[index]
+			was_mapped := record.mapped
 			if backend.render_health.blocks_graphics() || backend.wayland_display_unavailable {
 				if record.frame_callback != unsafe { nil } {
 					_ = backend.destroy_frame_callback_lifetime(mut record)
@@ -4853,6 +5062,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 						.renderer, .renderer_unavailable, 0, err_wayland_connect_failed))
 				}
 			}
+			backend.reapply_parent_to_live_children_on_first_map(record.id, was_mapped)
 			flush := backend.attempt_wayland_flush(frame_seed)
 			if !flush.succeeded() {
 				_ = backend.destroy_frame_callback_lifetime(mut record)
@@ -4862,7 +5072,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 					outcome: flush
 				}
 			}
-			record.observe_mapped()
+			backend.observe_window_mapped(index)
 			return BackendFinalizeAttempt{
 				status:  .submitted
 				outcome: flush
@@ -5244,6 +5454,7 @@ fn (mut backend WaylandBackend) ensure_lifecycle_buffer(index int) ! {
 			return error(err_window_not_found)
 		}
 		record := backend.windows[index]
+		was_mapped := record.mapped
 		if record.surface == unsafe { nil } {
 			return error(err_window_not_found)
 		}
@@ -5281,6 +5492,7 @@ fn (mut backend WaylandBackend) ensure_lifecycle_buffer(index int) ! {
 		backend.windows[index].fallback_current_buffer = buffer
 		backend.windows[index].fallback_buffer_width = width
 		backend.windows[index].fallback_buffer_height = height
+		backend.reapply_parent_to_live_children_on_first_map(record.id, was_mapped)
 		if backend.display != unsafe { nil } {
 			flush := backend.attempt_wayland_flush(wayland_window_operation_seed(record.id,
 				record.render_target_generation, .display_transport))
@@ -5288,7 +5500,7 @@ fn (mut backend WaylandBackend) ensure_lifecycle_buffer(index int) ! {
 				return error(err_wayland_flush_failed)
 			}
 		}
-		backend.windows[index].observe_mapped()
+		backend.observe_window_mapped(index)
 		return
 	}
 	_ = index
@@ -5320,6 +5532,7 @@ fn (mut record WaylandWindowRecord) release_fallback_buffer(buffer voidptr) {
 fn (mut backend WaylandBackend) close_connection() string {
 	$if linux && sokol_wayland ? {
 		mut cleanup_error := ''
+		backend.close_all_clipboard_sends()
 		mut window_index := backend.windows.len
 		for window_index > 0 {
 			window_index--
@@ -5917,20 +6130,42 @@ fn (mut backend WaylandBackend) set_selection_offer(offer voidptr) {
 	}
 }
 
-fn (mut backend WaylandBackend) close_clipboard_send() {
+fn (mut backend WaylandBackend) close_clipboard_send_at(index int) {
+	if index < 0 || index >= backend.clipboard_sends.len {
+		return
+	}
+	send := backend.clipboard_sends[index]
 	$if linux && sokol_wayland ? {
-		if backend.clipboard_send_fd >= 0 {
-			C.close(backend.clipboard_send_fd)
+		if send.fd >= 0 {
+			C.close(send.fd)
 		}
 	}
-	backend.clipboard_send_fd = -1
-	backend.clipboard_send_offset = 0
-	backend.clipboard_send_deadline_ns = 0
+	payload_bytes := u64(send.payload.len)
+	backend.clipboard_send_snapshot_bytes = if payload_bytes <= backend.clipboard_send_snapshot_bytes {
+		backend.clipboard_send_snapshot_bytes - payload_bytes
+	} else {
+		0
+	}
+	backend.clipboard_sends.delete(index)
+	if index < backend.clipboard_send_cursor {
+		backend.clipboard_send_cursor--
+	}
+	if backend.clipboard_sends.len == 0
+		|| backend.clipboard_send_cursor >= backend.clipboard_sends.len {
+		backend.clipboard_send_cursor = 0
+	}
+}
+
+fn (mut backend WaylandBackend) close_all_clipboard_sends() {
+	for backend.clipboard_sends.len > 0 {
+		backend.close_clipboard_send_at(backend.clipboard_sends.len - 1)
+	}
+	backend.clipboard_send_cursor = 0
+	backend.clipboard_send_snapshot_bytes = 0
 }
 
 fn (mut backend WaylandBackend) destroy_clipboard_source(local_only bool) {
 	$if linux && sokol_wayland ? {
-		backend.close_clipboard_send()
 		backend.destroy_clipboard_source_handle(backend.clipboard_source, local_only)
 	}
 	backend.clipboard_source = unsafe { nil }
@@ -5945,6 +6180,7 @@ fn (mut backend WaylandBackend) destroy_clipboard_source_handle(source voidptr, 
 		$if test {
 			if backend.clipboard_source_test.active {
 				backend.clipboard_source_test.destroyed << usize(source)
+				backend.clipboard_source_test.destroyed_local << local_only
 				return
 			}
 		}
@@ -5981,6 +6217,9 @@ fn (mut backend WaylandBackend) add_clipboard_source_listener(source voidptr) in
 				backend.clipboard_source_test.fail_listener = false
 				return -1
 			}
+			if backend.clipboard_source_test.active && backend.clipboard_source_test.bypass_protocol {
+				return 0
+			}
 		}
 		return C.v_multiwindow_wayland_add_data_source_listener(unsafe { &C.wl_data_source(source) },
 			backend)
@@ -5989,37 +6228,95 @@ fn (mut backend WaylandBackend) add_clipboard_source_listener(source voidptr) in
 	return -1
 }
 
+fn (mut backend WaylandBackend) clipboard_read_once(fd int, buffer voidptr, size usize) i64 {
+	$if linux && sokol_wayland ? {
+		$if test {
+			if backend.io_test.clipboard_read_interruptions > 0 {
+				backend.io_test.clipboard_read_interruptions--
+				return wayland_io_test_interrupted
+			}
+		}
+		return i64(C.read(fd, buffer, size))
+	}
+	return -1
+}
+
+fn (mut backend WaylandBackend) clipboard_write_once(fd int, buffer voidptr, size usize) i64 {
+	$if linux && sokol_wayland ? {
+		$if test {
+			if backend.io_test.clipboard_write_interruptions > 0 {
+				backend.io_test.clipboard_write_interruptions--
+				return wayland_io_test_interrupted
+			}
+		}
+		return i64(C.v_multiwindow_wayland_safe_write(fd, buffer, size))
+	}
+	return -1
+}
+
 fn (mut backend WaylandBackend) drain_clipboard_send() {
 	$if linux && sokol_wayland ? {
-		if backend.clipboard_send_fd < 0 {
+		if backend.clipboard_sends.len == 0 {
 			return
 		}
-		if vtime.sys_mono_now() >= backend.clipboard_send_deadline_ns {
-			backend.close_clipboard_send()
-			return
+		for index in 0 .. backend.clipboard_sends.len {
+			backend.clipboard_sends[index].blocked = false
 		}
-		for _ in 0 .. wayland_clipboard_max_io_chunks_per_poll {
-			remaining := backend.clipboard_text.len - backend.clipboard_send_offset
+		mut attempts := 0
+		mut skipped := 0
+		for backend.clipboard_sends.len > 0 && attempts < wayland_clipboard_max_io_chunks_per_poll {
+			if backend.clipboard_send_cursor >= backend.clipboard_sends.len {
+				backend.clipboard_send_cursor = 0
+			}
+			index := backend.clipboard_send_cursor
+			if backend.clipboard_sends[index].blocked {
+				backend.clipboard_send_cursor = (index + 1) % backend.clipboard_sends.len
+				skipped++
+				if skipped >= backend.clipboard_sends.len {
+					return
+				}
+				continue
+			}
+			skipped = 0
+			remaining := backend.clipboard_sends[index].payload.len - backend.clipboard_sends[index].offset
 			if remaining <= 0 {
-				backend.close_clipboard_send()
-				return
+				backend.close_clipboard_send_at(index)
+				continue
 			}
 			chunk := if remaining < wayland_clipboard_io_chunk_size {
 				remaining
 			} else {
 				wayland_clipboard_io_chunk_size
 			}
-			ptr := unsafe { backend.clipboard_text.str + backend.clipboard_send_offset }
-			n := C.write(backend.clipboard_send_fd, ptr, usize(chunk))
+			ptr := unsafe {
+				backend.clipboard_sends[index].payload.str + backend.clipboard_sends[index].offset
+			}
+			attempts++
+			n := backend.clipboard_write_once(backend.clipboard_sends[index].fd, ptr, usize(chunk))
 			if n > 0 {
-				backend.clipboard_send_offset += int(n)
+				backend.clipboard_sends[index].offset += int(n)
+				if backend.clipboard_sends[index].offset >= backend.clipboard_sends[index].payload.len {
+					backend.close_clipboard_send_at(index)
+				} else {
+					backend.clipboard_send_cursor = (index + 1) % backend.clipboard_sends.len
+				}
+				continue
+			}
+			if n == wayland_io_test_interrupted
+				|| (n < 0 && C.v_multiwindow_wayland_io_interrupted() != 0) {
+				backend.clipboard_send_cursor = (index + 1) % backend.clipboard_sends.len
 				continue
 			}
 			if n < 0 && C.v_multiwindow_wayland_read_would_block() != 0 {
-				return
+				if vtime.sys_mono_now() >= backend.clipboard_sends[index].deadline_ns {
+					backend.close_clipboard_send_at(index)
+					continue
+				}
+				backend.clipboard_sends[index].blocked = true
+				backend.clipboard_send_cursor = (index + 1) % backend.clipboard_sends.len
+				continue
 			}
-			backend.close_clipboard_send()
-			return
+			backend.close_clipboard_send_at(index)
 		}
 	}
 }
@@ -6083,7 +6380,8 @@ fn (mut backend WaylandBackend) drain_clipboard_read() {
 			remaining := wayland_clipboard_max_bytes - backend.clipboard_read.buffer.len
 			if remaining <= 0 {
 				mut probe := [1]u8{}
-				n := C.read(backend.clipboard_read.fd, unsafe { &probe[0] }, usize(1))
+				n := backend.clipboard_read_once(backend.clipboard_read.fd, unsafe { &probe[0] },
+					usize(1))
 				if n > 0 {
 					backend.finish_clipboard_read(.failed, '', err_clipboard_capacity)
 					return
@@ -6094,6 +6392,10 @@ fn (mut backend WaylandBackend) drain_clipboard_read() {
 					}
 					backend.finish_clipboard_read(.ready, text, '')
 					return
+				}
+				if n == wayland_io_test_interrupted
+					|| (n < 0 && C.v_multiwindow_wayland_io_interrupted() != 0) {
+					continue
 				}
 				if C.v_multiwindow_wayland_read_would_block() != 0 {
 					if vtime.sys_mono_now() >= backend.clipboard_read.deadline_ns {
@@ -6109,7 +6411,8 @@ fn (mut backend WaylandBackend) drain_clipboard_read() {
 			} else {
 				wayland_clipboard_io_chunk_size
 			}
-			n := C.read(backend.clipboard_read.fd, unsafe { &chunk[0] }, usize(read_size))
+			n := backend.clipboard_read_once(backend.clipboard_read.fd, unsafe { &chunk[0] },
+				usize(read_size))
 			if n > 0 {
 				for index in 0 .. int(n) {
 					backend.clipboard_read.buffer << chunk[index]
@@ -6126,6 +6429,10 @@ fn (mut backend WaylandBackend) drain_clipboard_read() {
 				}
 				backend.finish_clipboard_read(.ready, text, '')
 				return
+			}
+			if n == wayland_io_test_interrupted
+				|| (n < 0 && C.v_multiwindow_wayland_io_interrupted() != 0) {
+				continue
 			}
 			if C.v_multiwindow_wayland_read_would_block() != 0 {
 				if vtime.sys_mono_now() >= backend.clipboard_read.deadline_ns {
@@ -6234,7 +6541,12 @@ fn (mut backend WaylandBackend) clear_pending_data_offer_drop(destroy bool) {
 		}
 		if backend.pending_drop_offer != unsafe { nil } {
 			if destroy {
-				if !backend.destroy_proxy_locally_if_needed(backend.pending_drop_offer) {
+				mut destroy_native := true
+				$if test {
+					destroy_native = !backend.io_test.pending_drop_native_bypass
+				}
+				if destroy_native
+					&& !backend.destroy_proxy_locally_if_needed(backend.pending_drop_offer) {
 					C.v_multiwindow_wayland_data_offer_destroy(unsafe {
 						&C.wl_data_offer(backend.pending_drop_offer)
 					})
@@ -6258,29 +6570,61 @@ fn (mut backend WaylandBackend) pending_drop_poll_cycle_expired() bool {
 	return backend.pending_drop_poll_cycles > wayland_data_offer_max_pending_poll_cycles
 }
 
+fn (mut backend WaylandBackend) pending_drop_poll_once(poll_fd voidptr) int {
+	$if linux && sokol_wayland ? {
+		$if test {
+			if backend.io_test.pending_drop_poll_interruptions > 0 {
+				backend.io_test.pending_drop_poll_interruptions--
+				return int(wayland_io_test_interrupted)
+			}
+		}
+		return C.poll(unsafe { &C.pollfd(poll_fd) }, u64(1), 0)
+	}
+	return -1
+}
+
+fn (mut backend WaylandBackend) pending_drop_read_once(fd int, buffer voidptr, size usize) i64 {
+	$if linux && sokol_wayland ? {
+		$if test {
+			if backend.io_test.pending_drop_read_interruptions > 0 {
+				backend.io_test.pending_drop_read_interruptions--
+				return wayland_io_test_interrupted
+			}
+		}
+		return i64(C.read(fd, buffer, size))
+	}
+	return -1
+}
+
 fn (mut backend WaylandBackend) drain_pending_data_offer_drop() {
 	$if linux && sokol_wayland ? {
 		if backend.pending_drop_offer == unsafe { nil } || backend.pending_drop_fd < 0 {
-			return
-		}
-		if backend.pending_drop_poll_cycle_expired() {
-			backend.clear_data_offer(true)
 			return
 		}
 		mut poll_fd := C.pollfd{
 			fd:     backend.pending_drop_fd
 			events: wayland_poll_in | wayland_poll_err | wayland_poll_hup
 		}
-		poll_result := C.poll(&poll_fd, u64(1), 0)
+		poll_result := backend.pending_drop_poll_once(voidptr(&poll_fd))
+		if poll_result == int(wayland_io_test_interrupted)
+			|| (poll_result < 0 && C.v_multiwindow_wayland_io_interrupted() != 0) {
+			return
+		}
 		if poll_result == 0 {
+			if backend.pending_drop_poll_cycle_expired() {
+				backend.clear_data_offer(true)
+			}
 			return
 		}
 		if poll_result < 0 || (poll_fd.revents & wayland_poll_err) != 0 {
 			backend.clear_data_offer(true)
 			return
 		}
-		mut should_finish := (poll_fd.revents & wayland_poll_hup) != 0
-		if (poll_fd.revents & wayland_poll_in) != 0 || should_finish {
+		poll_hup := (poll_fd.revents & wayland_poll_hup) != 0
+		mut should_finish := false
+		mut made_progress := false
+		mut read_interrupted := false
+		if (poll_fd.revents & wayland_poll_in) != 0 || poll_hup {
 			mut chunk := [wayland_data_offer_drain_chunk_size]u8{}
 			for _ in 0 .. wayland_data_offer_max_read_chunks {
 				remaining := wayland_uri_list_buffer_size - backend.pending_drop_buffer.len
@@ -6293,8 +6637,10 @@ fn (mut backend WaylandBackend) drain_pending_data_offer_drop() {
 				} else {
 					wayland_data_offer_drain_chunk_size
 				}
-				n := C.read(backend.pending_drop_fd, unsafe { &chunk[0] }, usize(read_size))
+				n := backend.pending_drop_read_once(backend.pending_drop_fd, unsafe { &chunk[0] },
+					usize(read_size))
 				if n > 0 {
+					made_progress = true
 					for i in 0 .. int(n) {
 						backend.pending_drop_buffer << chunk[i]
 					}
@@ -6303,6 +6649,11 @@ fn (mut backend WaylandBackend) drain_pending_data_offer_drop() {
 				if n == 0 {
 					should_finish = true
 					break
+				}
+				if n == wayland_io_test_interrupted
+					|| (n < 0 && C.v_multiwindow_wayland_io_interrupted() != 0) {
+					read_interrupted = true
+					continue
 				}
 				if C.v_multiwindow_wayland_read_would_block() != 0 {
 					break
@@ -6314,6 +6665,10 @@ fn (mut backend WaylandBackend) drain_pending_data_offer_drop() {
 		if should_finish && backend.transport_can_marshal()
 			&& !backend.render_health.blocks_graphics() {
 			backend.finish_pending_data_offer_drop()
+			return
+		}
+		if !made_progress && !read_interrupted && backend.pending_drop_poll_cycle_expired() {
+			backend.clear_data_offer(true)
 		}
 	}
 }
@@ -6340,9 +6695,15 @@ fn (mut backend WaylandBackend) finish_pending_data_offer_drop() {
 			}
 		}
 		if should_finish {
-			C.v_multiwindow_wayland_data_offer_finish(unsafe {
-				&C.wl_data_offer(backend.pending_drop_offer)
-			})
+			mut finish_native := true
+			$if test {
+				finish_native = !backend.io_test.pending_drop_native_bypass
+			}
+			if finish_native {
+				C.v_multiwindow_wayland_data_offer_finish(unsafe {
+					&C.wl_data_offer(backend.pending_drop_offer)
+				})
+			}
 		}
 		backend.clear_data_offer(true)
 	}
@@ -6496,7 +6857,7 @@ fn (mut backend WaylandBackend) service_show_window(id WindowId) !ServiceWindowS
 		if !backend.windows[index].configured {
 			backend.windows[index].frame_ready = false
 		}
-		C.wl_surface_commit(unsafe { &C.wl_surface(backend.windows[index].surface) })
+		backend.replay_window_toplevel_attributes_and_commit(index)
 		seed := wayland_window_operation_seed(id, backend.windows[index].render_target_generation,
 			.display_transport)
 		flush := backend.attempt_wayland_flush(seed)
@@ -6521,6 +6882,26 @@ fn (mut backend WaylandBackend) service_hide_window(id WindowId) !ServiceWindowS
 		if !backend.transport_can_marshal() || backend.windows[index].surface == unsafe { nil } {
 			return error(err_capability_unsupported)
 		}
+		old_requested_maximized := backend.windows[index].requested_maximized
+		old_requested_fullscreen := backend.windows[index].requested_fullscreen
+		backend.windows[index].hide_barrier_state_observed = false
+		backend.windows[index].hide_barrier_active = true
+		seed := wayland_window_operation_seed(id, backend.windows[index].render_target_generation,
+			.display_transport)
+		barrier := backend.attempt_wayland_hide_barrier(seed)
+		backend.windows[index].hide_barrier_active = false
+		if !barrier.succeeded() {
+			backend.windows[index].requested_maximized = old_requested_maximized
+			backend.windows[index].requested_fullscreen = old_requested_fullscreen
+			backend.windows[index].hide_barrier_state_observed = false
+			return error(err_wayland_dispatch_failed)
+		}
+		if !backend.windows[index].hide_barrier_state_observed
+			&& backend.windows[index].observed_service_state_valid {
+			backend.windows[index].requested_maximized = backend.windows[index].observed_maximized
+			backend.windows[index].requested_fullscreen = backend.windows[index].observed_fullscreen
+		}
+		backend.windows[index].hide_barrier_state_observed = false
 		backend.release_window_mouse_lock(index, true)
 		if backend.windows[index].frame_callback != unsafe { nil } {
 			destroy := backend.destroy_frame_callback_lifetime(mut backend.windows[index])
@@ -6530,31 +6911,27 @@ fn (mut backend WaylandBackend) service_hide_window(id WindowId) !ServiceWindowS
 		}
 		backend.windows[index].requested_visible = false
 		backend.windows[index].publish_show_on_map = false
-		backend.windows[index].hide_barrier_active = true
-		C.v_multiwindow_wayland_unmap_surface(unsafe {
-			&C.wl_surface(backend.windows[index].surface)
-		})
 		backend.windows[index].mapped = false
-		backend.windows[index].frame_ready = false
-		backend.windows[index].render_target_generation =
-			exhaust_backend_target_generation(backend.windows[index].render_target_generation)
-		seed := wayland_window_operation_seed(id, backend.windows[index].render_target_generation,
-			.display_transport)
-		flush := backend.attempt_wayland_flush(seed)
-		if !flush.succeeded() {
-			backend.windows[index].hide_barrier_active = false
-			return error(err_wayland_flush_failed)
-		}
-		barrier := backend.attempt_wayland_roundtrip(seed)
-		backend.windows[index].hide_barrier_active = false
-		if !barrier.succeeded() {
-			return error(err_wayland_dispatch_failed)
-		}
 		backend.windows[index].configured = false
+		backend.windows[index].frame_ready = false
 		backend.windows[index].pending_toplevel_width = 0
 		backend.windows[index].pending_toplevel_height = 0
 		backend.windows[index].pending_egl_resize = false
 		backend.windows[index].pending_service_state_valid = false
+		backend.windows[index].observed_service_state_valid = false
+		backend.windows[index].toplevel_decoration_configured = false
+		backend.windows[index].toplevel_decoration_mode = 0
+		backend.windows[index].render_target_generation =
+			exhaust_backend_target_generation(backend.windows[index].render_target_generation)
+		C.v_multiwindow_wayland_unmap_surface(unsafe {
+			&C.wl_surface(backend.windows[index].surface)
+		})
+		unmap_seed := wayland_window_operation_seed(id,
+			backend.windows[index].render_target_generation, .display_transport)
+		flush := backend.attempt_wayland_flush(unmap_seed)
+		if !flush.succeeded() {
+			return error(err_wayland_flush_failed)
+		}
 		return backend.service_window_state(id)!
 	} $else {
 		_ = id
@@ -6564,7 +6941,7 @@ fn (mut backend WaylandBackend) service_hide_window(id WindowId) !ServiceWindowS
 
 fn (mut backend WaylandBackend) service_minimize_window(id WindowId) !ServiceWindowState {
 	$if linux && sokol_wayland ? {
-		record := backend.service_window_record(id)!
+		mut record := backend.service_window_record(id)!
 		C.v_multiwindow_wayland_xdg_toplevel_set_minimized(unsafe {
 			&C.xdg_toplevel(record.xdg_toplevel)
 		})
@@ -6578,11 +6955,12 @@ fn (mut backend WaylandBackend) service_minimize_window(id WindowId) !ServiceWin
 
 fn (mut backend WaylandBackend) service_maximize_window(id WindowId) !ServiceWindowState {
 	$if linux && sokol_wayland ? {
-		record := backend.service_window_record(id)!
+		mut record := backend.service_window_record(id)!
 		C.v_multiwindow_wayland_xdg_toplevel_set_maximized(unsafe {
 			&C.xdg_toplevel(record.xdg_toplevel)
 		})
 		backend.flush_service_request(record)!
+		record.requested_maximized = true
 		return backend.service_window_state(id)!
 	} $else {
 		_ = id
@@ -6592,7 +6970,7 @@ fn (mut backend WaylandBackend) service_maximize_window(id WindowId) !ServiceWin
 
 fn (mut backend WaylandBackend) service_restore_window(id WindowId) !ServiceWindowState {
 	$if linux && sokol_wayland ? {
-		record := backend.service_window_record(id)!
+		mut record := backend.service_window_record(id)!
 		C.v_multiwindow_wayland_xdg_toplevel_unset_maximized(unsafe {
 			&C.xdg_toplevel(record.xdg_toplevel)
 		})
@@ -6600,6 +6978,8 @@ fn (mut backend WaylandBackend) service_restore_window(id WindowId) !ServiceWind
 			&C.xdg_toplevel(record.xdg_toplevel)
 		})
 		backend.flush_service_request(record)!
+		record.requested_maximized = false
+		record.requested_fullscreen = false
 		return backend.service_window_state(id)!
 	} $else {
 		_ = id
@@ -6609,7 +6989,7 @@ fn (mut backend WaylandBackend) service_restore_window(id WindowId) !ServiceWind
 
 fn (mut backend WaylandBackend) service_set_fullscreen(id WindowId, enabled bool) !ServiceWindowState {
 	$if linux && sokol_wayland ? {
-		record := backend.service_window_record(id)!
+		mut record := backend.service_window_record(id)!
 		if enabled {
 			C.v_multiwindow_wayland_xdg_toplevel_set_fullscreen(unsafe {
 				&C.xdg_toplevel(record.xdg_toplevel)
@@ -6620,6 +7000,7 @@ fn (mut backend WaylandBackend) service_set_fullscreen(id WindowId, enabled bool
 			})
 		}
 		backend.flush_service_request(record)!
+		record.requested_fullscreen = enabled
 		return backend.service_window_state(id)!
 	} $else {
 		_ = id
@@ -6729,35 +7110,36 @@ fn (record &WaylandWindowRecord) service_window_state() ServiceWindowState {
 		}
 	}
 	return ServiceWindowState{
-		mapping:      if record.mapped { .mapped } else { .unmapped }
-		visibility:   if record.mapped { .visible } else { .hidden }
-		active:       if record.observed_service_state_valid {
+		mapping:                     if record.mapped { .mapped } else { .unmapped }
+		visibility:                  if record.mapped { .visible } else { .hidden }
+		active:                      if record.observed_service_state_valid {
 			if record.observed_active { ServiceObservedBool.on } else { ServiceObservedBool.off }
 		} else {
 			ServiceObservedBool.unknown
 		}
-		focused:      if record.observed_service_state_valid {
+		focused:                     if record.observed_service_state_valid {
 			if record.observed_active { ServiceObservedBool.on } else { ServiceObservedBool.off }
 		} else {
 			ServiceObservedBool.unknown
 		}
-		minimized:    .unknown
-		maximized:    if record.observed_service_state_valid {
+		minimized:                   .unknown
+		maximized:                   if record.observed_service_state_valid {
 			if record.observed_maximized { ServiceObservedBool.on } else { ServiceObservedBool.off }
 		} else {
 			ServiceObservedBool.unknown
 		}
-		fullscreen:   if record.observed_service_state_valid {
+		fullscreen:                  if record.observed_service_state_valid {
 			if record.observed_fullscreen { ServiceObservedBool.on } else { ServiceObservedBool.off }
 		} else {
 			ServiceObservedBool.unknown
 		}
-		mouse_locked: if record.mouse_lock_requested {
+		mouse_locked:                if record.mouse_lock_requested {
 			if record.mouse_locked { ServiceObservedBool.on } else { ServiceObservedBool.off }
 		} else {
 			ServiceObservedBool.off
 		}
-		monitor_ids:  monitor_ids
+		monitor_ids:                 monitor_ids
+		monitor_membership_observed: true
 	}
 }
 
@@ -6772,17 +7154,6 @@ fn (mut record WaylandWindowRecord) enqueue_service_state(operation ServiceOpera
 		}))
 	} $else {
 		_ = operation
-	}
-}
-
-fn (mut record WaylandWindowRecord) observe_mapped() {
-	if record.mapped {
-		return
-	}
-	record.mapped = true
-	if record.publish_show_on_map {
-		record.publish_show_on_map = false
-		record.enqueue_service_state(.show)
 	}
 }
 
@@ -7038,21 +7409,31 @@ fn (mut backend WaylandBackend) service_set_clipboard_text(id WindowId, request 
 			backend.destroy_clipboard_source_handle(source, false)
 			return error(err_capability_unsupported)
 		}
-		C.v_multiwindow_wayland_data_source_offer(unsafe { &C.wl_data_source(source) },
-			c'text/plain;charset=utf-8')
-		C.v_multiwindow_wayland_data_source_offer(unsafe { &C.wl_data_source(source) },
-			c'text/plain')
+		mut bypass_protocol := false
+		$if test {
+			bypass_protocol = backend.clipboard_source_test.active
+				&& backend.clipboard_source_test.bypass_protocol
+		}
+		if !bypass_protocol {
+			C.v_multiwindow_wayland_data_source_offer(unsafe { &C.wl_data_source(source) },
+				c'text/plain;charset=utf-8')
+			C.v_multiwindow_wayland_data_source_offer(unsafe { &C.wl_data_source(source) },
+				c'text/plain')
+		}
 		old_source := backend.clipboard_source
 		backend.clipboard_source = source
 		backend.clipboard_text = text.clone()
-		C.v_multiwindow_wayland_data_device_set_selection(unsafe {
-			&C.wl_data_device(backend.data_device)
-		}, unsafe { &C.wl_data_source(source) }, serial)
-		backend.close_clipboard_send()
+		if !bypass_protocol {
+			C.v_multiwindow_wayland_data_device_set_selection(unsafe {
+				&C.wl_data_device(backend.data_device)
+			}, unsafe { &C.wl_data_source(source) }, serial)
+		}
 		backend.destroy_clipboard_source_handle(old_source, false)
-		backend.flush_service_request(backend.windows[index]) or {
-			backend.destroy_clipboard_source(false)
-			return err
+		if !bypass_protocol {
+			backend.flush_service_request(backend.windows[index]) or {
+				backend.destroy_clipboard_source(false)
+				return err
+			}
 		}
 		return BackendClipboardStart{
 			completed: true

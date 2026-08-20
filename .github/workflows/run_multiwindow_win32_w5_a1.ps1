@@ -170,22 +170,22 @@ $publicSurface = @(
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/app.v'; Known = 'e8a01a50a4176edb118b3fddea41472f9c32047d63a73db7ca3a11ad7e499d8f'; Passed = $ExpectedAppSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/types.v'; Known = '0a9058ba7928945e24284c867eb6182336ea3b1d41e1337786c71105b1fe93b3'; Passed = $ExpectedTypesSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/backend.v'; Known = 'dcd0f088c235ae030f8bbc9ab63082c38d93f6f1194373e74d8dcb454d100a3f'; Passed = $ExpectedBackendSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_api.v'; Known = '80241b413b449431f01a624e143de407fdc0387dcd6df7f644d7c4083f6bbafa'; Passed = $ExpectedServiceApiSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_types.v'; Known = '1ed698e3e359fd529fda0ccc8fdf652a16d02c69c98b0d8e8a3fd8b5e1d4aacf'; Passed = $ExpectedServiceTypesSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_registry.v'; Known = 'a70004c4deb62b27cedb340611d4393d7fff1343bca493d61862db047b06e68b'; Passed = $ExpectedServiceRegistrySha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/event_delivery.v'; Known = '8916370a7df40619608cd1f65954d2906a83e726a54ba754d40ee732f6514011'; Passed = $ExpectedEventDeliverySha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_api.v'; Known = '6d2a3f1377f79afbfe95811dc1803e438f7a8241e394a75a6247dd6a4957d39b'; Passed = $ExpectedServiceApiSha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_types.v'; Known = '27ea45e8651b050d8c5cf3345c74055935c610675e1404c763aa44c9dcef1409'; Passed = $ExpectedServiceTypesSha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_registry.v'; Known = '20d3863dd6e9655d344324bb48803539e461feb0e2025e2939fdc108c31e2394'; Passed = $ExpectedServiceRegistrySha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/event_delivery.v'; Known = '214f89e97e9dd0ba35c74eca73f435edc8025e45bae9576bc4d2f0317ae631a5'; Passed = $ExpectedEventDeliverySha256 }
 )
-$knownPublicRoutingSurfaceSha256 = '768dfcf8f20ede2ac1b49eb56f97dd5fc0b6af97dd1dcc0d7cea1e0757cab2ea'
+$knownPublicRoutingSurfaceSha256 = 'e4827e78081ec6a25923d7fc713a7398a51d01e2e5346f3a628caf7f3d4f878f'
 
 $greenProductionSurface = @(
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_backend.v'; Known = '8515db375427e3b145052567582ead24a18c0b35fb286d15ff7d704d35ae240b'; Passed = $ExpectedServiceBackendSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/event_dispatch_d_gg_multiwindow.v'; Known = '7ef6c7cbd34511d6c19c1a3a269b46876db791b9412bb88e3a8d4dcd543bfd4e'; Passed = $ExpectedEventDispatchSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend.c.v'; Known = '4b854e9dd019bb8193057c08aaa0a8185096f165afff99d7ed519c5442e0e52e'; Passed = $ExpectedWin32BackendSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend_helpers.h'; Known = 'eef8fc485a4774fd380b9b2c7deebbf6b349b432430d0182bad7325a6e684329'; Passed = $ExpectedWin32BackendHelpersSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_backend.c.v'; Known = '99b06a401e8787006252c7fdc43fbb263f12e0ba5971df9d4946f0de1b577359'; Passed = $ExpectedWin32ServiceBackendSha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_backend.c.v'; Known = 'e2e05250d55fd3b0b2739ba592f96117e614ab19eb2f7a550258ee68ab9abd16'; Passed = $ExpectedWin32ServiceBackendSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_native.h'; Known = '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73'; Passed = $ExpectedWin32ServiceNativeSha256 }
 )
-$knownGreenProductionSurfaceSha256 = 'fb3b6b81f15f7cefae9ca31362965ca3174f0e0409e145e52a95b00f2a73cd0c'
+$knownGreenProductionSurfaceSha256 = '6960d1b2b7f993c3c5817048f1a0f8d0b57334769b4de030336bb02df308ca84'
 
 $fatalPattern = '(?i)(fatal error|unhandled exception|access violation|STATUS_ACCESS_VIOLATION|0xC0000005|segmentation fault|stack overflow|illegal instruction|abort trap|process crashed|application crashed|V panic:)'
 $compilerDiagnosticPattern = '(?im)(C compilation error|builder error|failed to compile|cannot compile|fatal error|error C[0-9]{4}|warning C[0-9]{4}|warning:|error:|undefined reference|unresolved external symbol|LNK[0-9]{4})'

@@ -714,20 +714,22 @@ fn (backend &Win32Backend) service_window_state_with_monitors(index int, monitor
 	}
 	native_monitor := win32_service_window_monitor(backend.windows[index].hwnd)
 	return ServiceWindowState{
-		mapping:      win32_service_mapping(raw.mapping)
-		visibility:   win32_service_visibility(raw.visibility)
-		active:       win32_service_observed_bool(raw.active)
-		focused:      win32_service_observed_bool(raw.focused)
-		minimized:    win32_service_observed_bool(raw.minimized)
-		maximized:    win32_service_observed_bool(raw.maximized)
-		fullscreen:   win32_service_observed_bool(raw.fullscreen)
-		mouse_locked: win32_service_observed_bool(raw.mouse_locked)
-		position:     ServicePosition{
+		mapping:                     win32_service_mapping(raw.mapping)
+		visibility:                  win32_service_visibility(raw.visibility)
+		active:                      win32_service_observed_bool(raw.active)
+		focused:                     win32_service_observed_bool(raw.focused)
+		minimized:                   win32_service_observed_bool(raw.minimized)
+		maximized:                   win32_service_observed_bool(raw.maximized)
+		fullscreen:                  win32_service_observed_bool(raw.fullscreen)
+		mouse_locked:                win32_service_observed_bool(raw.mouse_locked)
+		position:                    ServicePosition{
 			known: raw.position_known != 0
 			x:     raw.x
 			y:     raw.y
 		}
-		monitor_ids:  win32_service_monitor_ids_for_native(monitors, native_monitor, app_instance)
+		monitor_ids:                 win32_service_monitor_ids_for_native(monitors, native_monitor,
+			app_instance)
+		monitor_membership_observed: true
 	}
 }
 

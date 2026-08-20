@@ -415,46 +415,65 @@ fn service_window_state_has_observation(state ServiceWindowState) bool {
 	return state.mapping != .unknown || state.visibility != .unknown || state.active != .unknown
 		|| state.focused != .unknown || state.minimized != .unknown || state.maximized != .unknown
 		|| state.fullscreen != .unknown || state.mouse_locked != .unknown || state.position.known
-		|| state.monitor_ids.len != 0
+		|| service_window_state_observes_monitor_membership(state)
 }
 
 fn merge_service_window_state(current ServiceWindowState, observed ServiceWindowState) ServiceWindowState {
+	current_membership_observed := service_window_state_observes_monitor_membership(current)
+	observed_membership := service_window_state_observes_monitor_membership(observed)
 	return ServiceWindowState{
-		mapping:      if observed.mapping == .unknown { current.mapping } else { observed.mapping }
-		visibility:   if observed.visibility == .unknown {
+		mapping:                     if observed.mapping == .unknown {
+			current.mapping
+		} else {
+			observed.mapping
+		}
+		visibility:                  if observed.visibility == .unknown {
 			current.visibility
 		} else {
 			observed.visibility
 		}
-		active:       if observed.active == .unknown { current.active } else { observed.active }
-		focused:      if observed.focused == .unknown { current.focused } else { observed.focused }
-		minimized:    if observed.minimized == .unknown {
+		active:                      if observed.active == .unknown {
+			current.active
+		} else {
+			observed.active
+		}
+		focused:                     if observed.focused == .unknown {
+			current.focused
+		} else {
+			observed.focused
+		}
+		minimized:                   if observed.minimized == .unknown {
 			current.minimized
 		} else {
 			observed.minimized
 		}
-		maximized:    if observed.maximized == .unknown {
+		maximized:                   if observed.maximized == .unknown {
 			current.maximized
 		} else {
 			observed.maximized
 		}
-		fullscreen:   if observed.fullscreen == .unknown {
+		fullscreen:                  if observed.fullscreen == .unknown {
 			current.fullscreen
 		} else {
 			observed.fullscreen
 		}
-		mouse_locked: if observed.mouse_locked == .unknown {
+		mouse_locked:                if observed.mouse_locked == .unknown {
 			current.mouse_locked
 		} else {
 			observed.mouse_locked
 		}
-		position:     if observed.position.known { observed.position } else { current.position }
-		monitor_ids:  if observed.monitor_ids.len != 0 {
+		position:                    if observed.position.known {
+			observed.position
+		} else {
+			current.position
+		}
+		monitor_ids:                 if observed_membership {
 			observed.monitor_ids.clone()
 		} else {
 			current.monitor_ids.clone()
 		}
-		sequence:     current.sequence
+		sequence:                    current.sequence
+		monitor_membership_observed: current_membership_observed || observed_membership
 	}
 }
 
@@ -463,7 +482,9 @@ fn service_window_state_observation_equal(left ServiceWindowState, right Service
 		|| left.active != right.active || left.focused != right.focused
 		|| left.minimized != right.minimized || left.maximized != right.maximized
 		|| left.fullscreen != right.fullscreen || left.mouse_locked != right.mouse_locked
-		|| left.position != right.position || left.monitor_ids.len != right.monitor_ids.len {
+		|| left.position != right.position
+		|| service_window_state_observes_monitor_membership(left) != service_window_state_observes_monitor_membership(right)
+		|| left.monitor_ids.len != right.monitor_ids.len {
 		return false
 	}
 	for index, monitor in left.monitor_ids {

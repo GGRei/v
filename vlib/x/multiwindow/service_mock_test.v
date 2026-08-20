@@ -1035,5 +1035,55 @@ fn test_service_metrics_event_uses_one_authoritative_sequence() {
 	assert events[0].sequence == events[0].service.sequence
 	assert events[0].service.sequence == events[0].service.metrics.metrics_sequence
 	assert events[0].service.metrics.framebuffer_width == 640
+	assert events[0].service.state.monitor_membership_observed
+	assert events[0].service.state.monitor_ids == app.service_monitor_ids()!
 	app.stop()!
+}
+
+fn test_service_monitor_membership_distinguishes_observed_empty_from_partial_state() {
+	first := ServiceMonitorId{
+		app_instance: 7
+		slot:         1
+		generation:   2
+	}
+	second := ServiceMonitorId{
+		app_instance: 7
+		slot:         3
+		generation:   4
+	}
+	current := service_window_state_with_observed_monitor_membership(ServiceWindowState{
+		focused:     .off
+		monitor_ids: [first, second]
+	})
+
+	partial := merge_service_window_state(current, ServiceWindowState{
+		focused: .on
+	})
+	assert partial.focused == .on
+	assert partial.monitor_ids == [first, second]
+	assert partial.monitor_membership_observed
+
+	observed_empty := service_window_state_with_observed_monitor_membership(ServiceWindowState{
+		focused: .on
+	})
+	assert service_window_state_has_observation(observed_empty)
+	cleared := merge_service_window_state(partial, observed_empty)
+	assert cleared.monitor_ids.len == 0
+	assert cleared.monitor_membership_observed
+	assert !service_window_state_observation_equal(partial, cleared)
+
+	reordered := merge_service_window_state(cleared, ServiceWindowState{
+		monitor_ids: [second, first]
+	})
+	assert reordered.monitor_ids == [second, first]
+	assert reordered.monitor_membership_observed
+	sequenced := service_window_state_with_sequence(reordered, 91)
+	assert sequenced.sequence == 91
+	assert sequenced.monitor_ids == [second, first]
+	assert sequenced.monitor_membership_observed
+
+	appkit_empty := appkit_service_window_state_from_raw(AppKitServiceRawWindowState{},
+		[]AppKitServiceMonitorRecord{}, 7)
+	assert appkit_empty.monitor_ids.len == 0
+	assert appkit_empty.monitor_membership_observed
 }

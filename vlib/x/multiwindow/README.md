@@ -141,8 +141,10 @@ Backend notes:
 - Wayland is Linux-only and exists only in builds compiled with
   `-d sokol_wayland`. It requires `wl_compositor` and `xdg_wm_base`, supports
   initially hidden windows through an explicit remap/configure cycle, and
-  currently rejects programmatic resize. Rendering uses Wayland EGL/OpenGL
-  when initialized.
+  replays the window title, app id, owner relation, size constraints,
+  decoration preference, and requested maximize/fullscreen state when a hidden
+  toplevel is shown again. It currently rejects programmatic resize. Rendering
+  uses Wayland EGL/OpenGL when initialized.
 - AppKit is macOS-only. It must start on the main thread and uses Metal when
   rendering is required.
 - Win32 is Windows-only and supports native lifecycle and min-size enforcement.
@@ -304,7 +306,9 @@ currently available generation-checked monitor ids, and
 `service_monitor_info()` returns geometry, work area, scale, primary state, and
 the observation sequence. A removed monitor can become unavailable and a later
 replacement receives a new generation; monitor names are descriptive and are
-not identities.
+not identities. A full backend observation can authoritatively report an empty
+membership and clears older ids; partial state observations preserve the last
+known membership.
 
 Clipboard reads and writes return a `ServiceRequestId`. Completion is a
 terminal `.clipboard` service event with `.ready`, `.cancelled`, or `.failed`.
@@ -315,6 +319,9 @@ identifier is used and release it explicitly with
 xdg-foreign-v2 identifiers start with `wayland:`. Treat the remainder as opaque.
 If preparing a replacement Wayland clipboard source fails before selection
 submission, the previously published clipboard value remains unchanged.
+Each Wayland clipboard send already accepted by the compositor owns a bounded
+snapshot of the offered text and can finish independently after selection
+replacement or source cancellation.
 Destroying an owner processes its descendants child-first. For each destroyed
 window, pending clipboard and portal requests are cancelled and portal leases
 are invalidated during sealing, before teardown results can be delivered.

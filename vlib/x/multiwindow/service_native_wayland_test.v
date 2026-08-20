@@ -116,6 +116,7 @@ fn test_wayland_output_removal_updates_membership_scale_and_metrics() {
 		assert window.output_slots.len == 0
 		assert window.buffer_scale == 1
 		assert window.service_window_state().monitor_ids.len == 0
+		assert window.service_window_state().monitor_membership_observed
 		assert window.pending_events.len == 1
 		assert window.pending_events[0].event.kind == .service
 		assert window.pending_events[0].event.service.kind == .metrics
@@ -226,6 +227,111 @@ fn test_wayland_hide_barrier_ignores_configure_without_discarding_initial_hidden
 		wayland_xdg_surface_configure(initial_hidden.listener_data(), unsafe { nil }, 8)
 		assert initial_hidden.configured
 		assert initial_hidden.frame_ready
+	}
+}
+
+fn test_wayland_remap_replays_persisted_toplevel_attributes_before_commit_and_parent_after_map() {
+	$if linux && sokol_wayland ? {
+		mut backend := &WaylandBackend{
+			toplevel_replay_test: WaylandToplevelReplayTestSeam{
+				active: true
+			}
+		}
+		owner_id := WindowId{
+			app_instance: 1
+			slot:         0
+			generation:   1
+		}
+		child_id := WindowId{
+			app_instance: 1
+			slot:         1
+			generation:   1
+		}
+		mut owner := &WaylandWindowRecord{
+			id:           owner_id
+			owner:        backend
+			xdg_toplevel: voidptr(usize(0xb1))
+			mapped:       true
+		}
+		mut child := &WaylandWindowRecord{
+			id:                        child_id
+			owner:                     backend
+			owner_id:                  owner_id
+			title:                     'restored title'
+			app_id:                    'org.vlang.remap'
+			min_width:                 20
+			min_height:                10
+			max_width:                 200
+			max_height:                100
+			request_server_decoration: true
+			requested_maximized:       true
+			requested_fullscreen:      true
+			surface:                   voidptr(usize(0xb2))
+			xdg_toplevel:              voidptr(usize(0xb3))
+			toplevel_decoration:       voidptr(usize(0xb4))
+			mapped:                    true
+		}
+		backend.windows << owner
+		backend.windows << child
+
+		backend.replay_window_toplevel_attributes_and_commit(1)
+		assert backend.toplevel_replay_test.operations == ['title', 'app_id', 'parent', 'min_size',
+			'max_size', 'decoration', 'maximize', 'fullscreen', 'commit']
+		backend.toplevel_replay_test.operations.clear()
+		backend.reapply_parent_to_live_children_on_first_map(owner_id, true)
+		assert backend.toplevel_replay_test.operations.len == 0
+		backend.reapply_parent_to_live_children_on_first_map(owner_id, false)
+		assert backend.toplevel_replay_test.operations == ['child_parent']
+	}
+}
+
+fn test_wayland_hide_barrier_failure_preserves_visible_window_state() {
+	$if linux && sokol_wayland ? {
+		mut backend := &WaylandBackend{
+			display:              voidptr(usize(0xc1))
+			toplevel_replay_test: WaylandToplevelReplayTestSeam{
+				hide_barrier_override: true
+			}
+		}
+		window := WindowId{
+			app_instance: 1
+			slot:         0
+			generation:   1
+		}
+		mut record := &WaylandWindowRecord{
+			id:                             window
+			owner:                          backend
+			surface:                        voidptr(usize(0xc2))
+			requested_visible:              true
+			mapped:                         true
+			configured:                     true
+			frame_ready:                    true
+			pending_toplevel_width:         77
+			pending_toplevel_height:        55
+			pending_egl_resize:             true
+			pending_service_state_valid:    true
+			observed_service_state_valid:   true
+			toplevel_decoration_configured: true
+			toplevel_decoration_mode:       wayland_xdg_toplevel_decoration_mode_server_side
+			render_target_generation:       9
+		}
+		backend.windows << record
+		mut failure := ''
+		backend.service_hide_window(window) or { failure = err.msg() }
+		assert failure == err_wayland_dispatch_failed
+		assert record.requested_visible
+		assert record.mapped
+		assert record.configured
+		assert record.frame_ready
+		assert record.pending_toplevel_width == 77
+		assert record.pending_toplevel_height == 55
+		assert record.pending_egl_resize
+		assert record.pending_service_state_valid
+		assert record.observed_service_state_valid
+		assert record.toplevel_decoration_configured
+		assert record.toplevel_decoration_mode == wayland_xdg_toplevel_decoration_mode_server_side
+		assert record.render_target_generation == 9
+		assert !record.hide_barrier_active
 	}
 }
 
@@ -826,17 +932,18 @@ fn test_wayland_hidden_window_remaps_through_fresh_xdg_configure_cycle() {
 
 		app.service_show_window(window)!
 		assert app.service_window_state(window)!.mapping == .unmapped
-		mut first_show := []QueuedEvent{}
-		for _ in 0 .. 100 {
-			_ = app.poll_events()!
-			first_show << app.drain_queued_events()!.filter(it.kind == .service
-				&& it.service.window == window && it.service.kind == .state
-				&& it.service.operation == .show)
-			if first_show.len > 0 {
-				break
-			}
-			time.sleep(time.millisecond)
+		first_index := app.backend.wayland.window_record_index(window) or {
+			assert false, 'Wayland initially hidden record disappeared'
+			0
 		}
+		first_roundtrip := app.backend.wayland.attempt_wayland_roundtrip(wayland_window_operation_seed(window,
+			app.backend.wayland.windows[first_index].render_target_generation, .display_transport))
+		assert first_roundtrip.succeeded()
+		assert app.backend.wayland.windows[first_index].configured
+		_ = app.poll_events()!
+		first_show := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.window == window && it.service.kind == .state
+			&& it.service.operation == .show)
 		assert first_show.len == 1
 		assert first_show[0].service.state.mapping == .mapped
 		assert app.service_window_state(window)!.mapping == .mapped
@@ -848,7 +955,9 @@ fn test_wayland_hidden_window_remaps_through_fresh_xdg_configure_cycle() {
 		}
 		assert !app.backend.wayland.windows[index_after_hide].configured
 		assert !app.backend.wayland.windows[index_after_hide].pending_service_state_valid
-		_ = app.drain_queued_events()!
+		hide_events := app.drain_queued_events()!
+		assert hide_events.filter(it.kind == .service && it.service.window == window
+			&& it.service.kind == .state && it.service.operation == .show).len == 0
 		app.service_show_window(window)!
 		assert app.service_window_state(window)!.mapping == .unmapped
 		index := app.backend.wayland.window_record_index(window) or {
@@ -856,23 +965,14 @@ fn test_wayland_hidden_window_remaps_through_fresh_xdg_configure_cycle() {
 			0
 		}
 		assert !app.backend.wayland.windows[index].configured
-		mut second_show := []QueuedEvent{}
-		for _ in 0 .. 100 {
-			_ = app.poll_events()!
-			second_show << app.drain_queued_events()!.filter(it.kind == .service
-				&& it.service.window == window && it.service.kind == .state
-				&& it.service.operation == .show)
-			if second_show.len > 0 {
-				break
-			}
-			time.sleep(time.millisecond)
-		}
-		for _ in 0 .. 3 {
-			_ = app.poll_events()!
-			second_show << app.drain_queued_events()!.filter(it.kind == .service
-				&& it.service.window == window && it.service.kind == .state
-				&& it.service.operation == .show)
-		}
+		second_roundtrip := app.backend.wayland.attempt_wayland_roundtrip(wayland_window_operation_seed(window,
+			app.backend.wayland.windows[index].render_target_generation, .display_transport))
+		assert second_roundtrip.succeeded()
+		assert app.backend.wayland.windows[index].configured
+		_ = app.poll_events()!
+		second_show := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.window == window && it.service.kind == .state
+			&& it.service.operation == .show)
 		assert second_show.len == 1
 		assert second_show[0].service.state.mapping == .mapped
 		assert app.service_window_state(window)!.mapping == .mapped
@@ -952,6 +1052,7 @@ fn test_wayland_clipboard_queued_eof_wins_over_expired_deadline_exactly_once() {
 		assert C.write(fds[1], payload.str, usize(payload.len)) == payload.len
 		C.close(fds[1])
 		backend.clipboard_read.deadline_ns = 0
+		backend.io_test.clipboard_read_interruptions = 1
 
 		backend.drain_clipboard_read()
 
@@ -1047,7 +1148,12 @@ fn wayland_assert_clipboard_replacement_preflight_failure(fail_listener bool) {
 		assert C.pipe(&fds[0]) == 0
 		backend.clipboard_source = old_source
 		backend.clipboard_text = 'previous clipboard'
-		backend.clipboard_send_fd = fds[1]
+		backend.clipboard_sends << WaylandClipboardSend{
+			fd:          fds[1]
+			payload:     'previous clipboard'
+			deadline_ns: i64(0x7fffffffffffffff)
+		}
+		backend.clipboard_send_snapshot_bytes = u64('previous clipboard'.len)
 		backend.clipboard_source_test = WaylandClipboardSourceTestSeam{
 			active:          true
 			create_override: true
@@ -1063,7 +1169,9 @@ fn wayland_assert_clipboard_replacement_preflight_failure(fail_listener bool) {
 		assert failure == err_capability_unsupported
 		assert backend.clipboard_source == old_source
 		assert backend.clipboard_text == 'previous clipboard'
-		assert backend.clipboard_send_fd == fds[1]
+		assert backend.clipboard_sends.len == 1
+		assert backend.clipboard_sends[0].fd == fds[1]
+		assert backend.clipboard_sends[0].payload == 'previous clipboard'
 		assert record.pending_events.len == 0
 		if fail_listener {
 			assert backend.clipboard_source_test.destroyed == [usize(new_source)]
@@ -1071,10 +1179,9 @@ fn wayland_assert_clipboard_replacement_preflight_failure(fail_listener bool) {
 			assert backend.clipboard_source_test.destroyed.len == 0
 		}
 		assert C.write(fds[1], c'x', usize(1)) == 1
-		backend.clipboard_send_fd = -1
 		backend.clipboard_source = unsafe { nil }
 		backend.clipboard_source_test.active = false
-		C.close(fds[1])
+		backend.close_all_clipboard_sends()
 		C.close(fds[0])
 	}
 }
@@ -1217,6 +1324,7 @@ fn test_wayland_clipboard_exact_capacity_succeeds_at_eof() {
 		payload := []u8{len: wayland_clipboard_max_bytes, init: `a`}
 		_, record, fds := wayland_test_begin_clipboard_read(mut backend, 82, payload)
 		C.close(fds[1])
+		backend.io_test.clipboard_read_interruptions = 1
 
 		backend.drain_clipboard_read()
 
@@ -1274,7 +1382,118 @@ fn test_wayland_clipboard_exact_capacity_waits_on_eagain_then_succeeds_at_eof() 
 	}
 }
 
-fn test_wayland_clipboard_send_accepts_only_one_fd_and_purges_it() {
+fn test_wayland_file_drop_poll_and_read_eintr_preserve_transaction_until_exact_terminal() {
+	$if linux && sokol_wayland ? {
+		mut backend := &WaylandBackend{
+			display: voidptr(usize(0x91))
+			io_test: WaylandIoTestSeam{
+				pending_drop_poll_interruptions: 1
+				pending_drop_read_interruptions: 1
+				pending_drop_native_bypass:      true
+			}
+		}
+		window := WindowId{
+			app_instance: 1
+			slot:         0
+			generation:   1
+		}
+		mut record := &WaylandWindowRecord{
+			id:     window
+			owner:  backend
+			width:  40
+			height: 30
+		}
+		backend.windows << record
+		mut fds := [-1, -1]!
+		assert C.pipe(&fds[0]) == 0
+		assert C.v_multiwindow_wayland_fd_set_nonblocking(fds[0]) == 1
+		payload := 'file:///tmp/eintr-proof\n'
+		assert C.write(fds[1], payload.str, usize(payload.len)) == payload.len
+		C.close(fds[1])
+		offer := voidptr(usize(0x92))
+		backend.data_offer = offer
+		backend.pending_drop_offer = offer
+		backend.pending_drop_fd = fds[0]
+		backend.pending_drop_window = window
+		backend.pending_drop_window_valid = true
+		backend.pending_drop_source_actions = wayland_dnd_action_copy
+		backend.pending_drop_selected_action = wayland_dnd_action_copy
+		backend.pending_drop_action_received = true
+
+		backend.drain_pending_data_offer_drop()
+		assert backend.pending_drop_offer == offer
+		assert backend.pending_drop_fd == fds[0]
+		assert backend.pending_drop_poll_cycles == 0
+		assert record.pending_events.len == 0
+
+		backend.pending_drop_poll_cycles = wayland_data_offer_max_pending_poll_cycles
+		backend.drain_pending_data_offer_drop()
+		assert backend.pending_drop_offer == unsafe { nil }
+		assert backend.pending_drop_fd == -1
+		assert record.pending_events.len == 1
+		event := record.pending_events[0].event
+		assert event.kind == .input
+		assert event.input.kind == .files_dropped
+		assert event.input.dropped_files == ['/tmp/eintr-proof']
+		backend.drain_pending_data_offer_drop()
+		assert record.pending_events.len == 1
+	}
+}
+
+fn test_wayland_file_drop_empty_open_pipe_expires_without_terminal_event() {
+	$if linux && sokol_wayland ? {
+		mut backend := &WaylandBackend{
+			display: voidptr(usize(0x93))
+			io_test: WaylandIoTestSeam{
+				pending_drop_native_bypass: true
+			}
+		}
+		window := WindowId{
+			app_instance: 1
+			slot:         0
+			generation:   1
+		}
+		mut record := &WaylandWindowRecord{
+			id:    window
+			owner: backend
+		}
+		backend.windows << record
+		mut fds := [-1, -1]!
+		assert C.pipe(&fds[0]) == 0
+		assert C.v_multiwindow_wayland_fd_set_nonblocking(fds[0]) == 1
+		offer := voidptr(usize(0x94))
+		backend.data_offer = offer
+		backend.pending_drop_offer = offer
+		backend.pending_drop_fd = fds[0]
+		backend.pending_drop_window = window
+		backend.pending_drop_window_valid = true
+		backend.pending_drop_source_actions = wayland_dnd_action_copy
+		backend.pending_drop_selected_action = wayland_dnd_action_copy
+		backend.pending_drop_action_received = true
+		backend.pending_drop_poll_cycles = wayland_data_offer_max_pending_poll_cycles
+
+		backend.drain_pending_data_offer_drop()
+		assert backend.pending_drop_offer == unsafe { nil }
+		assert backend.pending_drop_fd == -1
+		assert record.pending_events.len == 0
+		C.close(fds[1])
+	}
+}
+
+fn wayland_read_exact_pipe_payload(fd int, expected_len int) string {
+	mut payload := []u8{len: expected_len}
+	mut offset := 0
+	for offset < expected_len {
+		n := C.read(fd, unsafe { &payload[offset] }, usize(expected_len - offset))
+		assert n > 0
+		offset += int(n)
+	}
+	mut eof := [1]u8{}
+	assert C.read(fd, unsafe { &eof[0] }, usize(1)) == 0
+	return payload.bytestr()
+}
+
+fn test_wayland_clipboard_send_is_fair_when_first_consumer_is_backpressured() {
 	$if linux && sokol_wayland ? {
 		mut backend := &WaylandBackend{}
 		source := voidptr(usize(0x61))
@@ -1284,20 +1503,207 @@ fn test_wayland_clipboard_send_accepts_only_one_fd_and_purges_it() {
 		mut second := [-1, -1]!
 		assert C.pipe(&first[0]) == 0
 		assert C.pipe(&second[0]) == 0
+		assert C.v_multiwindow_wayland_fd_set_nonblocking(first[1]) == 1
+		mut fill := [4096]u8{}
+		mut saturated := false
+		for _ in 0 .. 4096 {
+			if C.write(first[1], unsafe { &fill[0] }, usize(fill.len)) < 0 {
+				assert C.v_multiwindow_wayland_read_would_block() != 0
+				saturated = true
+				break
+			}
+		}
+		assert saturated
 
 		wayland_data_source_send(backend, source, c'text/plain;charset=utf-8', first[1])
-		assert backend.clipboard_send_fd == first[1]
 		wayland_data_source_send(backend, source, c'text/plain', second[1])
-		assert backend.clipboard_send_fd == first[1]
-		assert C.write(second[1], c'x', usize(1)) == -1
-
-		backend.clipboard_send_deadline_ns = 0
+		assert backend.clipboard_sends.len == 2
 		backend.drain_clipboard_send()
-		assert backend.clipboard_send_fd == -1
-		backend.drain_clipboard_send()
-		assert backend.clipboard_send_fd == -1
+		assert backend.clipboard_sends.len == 1
+		assert backend.clipboard_sends[0].fd == first[1]
+		assert wayland_read_exact_pipe_payload(second[0], backend.clipboard_text.len) == backend.clipboard_text
+		backend.close_all_clipboard_sends()
+		assert backend.clipboard_sends.len == 0
 		C.close(first[0])
 		C.close(second[0])
+		backend.clipboard_source = unsafe { nil }
+	}
+}
+
+fn test_wayland_clipboard_send_snapshots_survive_replacement_and_cancel() {
+	$if linux && sokol_wayland ? {
+		old_source := voidptr(usize(0x71))
+		new_source := voidptr(usize(0x72))
+		mut backend := &WaylandBackend{
+			started:               true
+			display:               voidptr(usize(0x73))
+			data_device_manager:   voidptr(usize(0x74))
+			data_device:           voidptr(usize(0x75))
+			seat:                  voidptr(usize(0x76))
+			poll_generation:       1
+			clipboard_source:      old_source
+			clipboard_text:        'old payload'
+			clipboard_source_test: WaylandClipboardSourceTestSeam{
+				active:          true
+				create_override: true
+				next_source:     new_source
+				bypass_protocol: true
+			}
+		}
+		window := WindowId{
+			app_instance: 1
+			slot:         0
+			generation:   1
+		}
+		mut record := &WaylandWindowRecord{
+			id:    window
+			owner: backend
+		}
+		record.store_user_action_serial(31, backend.poll_generation)
+		backend.windows << record
+		mut old_pipe := [-1, -1]!
+		mut new_pipe := [-1, -1]!
+		assert C.pipe(&old_pipe[0]) == 0
+		assert C.pipe(&new_pipe[0]) == 0
+		wayland_data_source_send(backend, old_source, c'text/plain', old_pipe[1])
+		assert backend.clipboard_sends.len == 1
+
+		result := backend.service_set_clipboard_text(window, ServiceRequestId{
+			app_instance: 1
+			serial:       91
+		}, 'new payload')!
+		assert result.completed
+		assert backend.clipboard_source == new_source
+		wayland_data_source_send(backend, new_source, c'text/plain;charset=utf-8', new_pipe[1])
+		assert backend.clipboard_sends.len == 2
+		wayland_data_source_cancelled(backend, new_source)
+		assert backend.clipboard_source == unsafe { nil }
+		assert backend.clipboard_sends.len == 2
+		assert backend.clipboard_source_test.destroyed == [usize(old_source), usize(new_source)]
+		assert backend.clipboard_source_test.destroyed_local == [false, false]
+
+		backend.io_test.clipboard_write_interruptions = 1
+		backend.drain_clipboard_send()
+		assert backend.clipboard_sends.len == 0
+		assert backend.clipboard_send_snapshot_bytes == 0
+		assert wayland_read_exact_pipe_payload(old_pipe[0], 'old payload'.len) == 'old payload'
+		assert wayland_read_exact_pipe_payload(new_pipe[0], 'new payload'.len) == 'new payload'
+		C.close(old_pipe[0])
+		C.close(new_pipe[0])
+	}
+}
+
+fn test_wayland_clipboard_send_expired_writable_progress_and_teardown_are_independent() {
+	$if linux && sokol_wayland ? {
+		mut backend := &WaylandBackend{}
+		source := voidptr(usize(0x81))
+		backend.clipboard_source = source
+		backend.clipboard_text = 'still delivered'
+		mut expired := [-1, -1]!
+		mut live := [-1, -1]!
+		assert C.pipe(&expired[0]) == 0
+		assert C.pipe(&live[0]) == 0
+		wayland_data_source_send(backend, source, c'text/plain', expired[1])
+		wayland_data_source_send(backend, source, c'text/plain', live[1])
+		assert backend.clipboard_sends.len == 2
+		backend.clipboard_sends[0].deadline_ns = 0
+		backend.drain_clipboard_send()
+		assert backend.clipboard_sends.len == 0
+		assert wayland_read_exact_pipe_payload(expired[0], 'still delivered'.len) == 'still delivered'
+		assert wayland_read_exact_pipe_payload(live[0], 'still delivered'.len) == 'still delivered'
+		C.close(expired[0])
+		C.close(live[0])
+
+		mut teardown := [-1, -1]!
+		assert C.pipe(&teardown[0]) == 0
+		wayland_data_source_send(backend, source, c'text/plain', teardown[1])
+		assert backend.clipboard_sends.len == 1
+		backend.close_all_clipboard_sends()
+		assert backend.clipboard_sends.len == 0
+		assert backend.clipboard_send_snapshot_bytes == 0
+		mut eof := [1]u8{}
+		assert C.read(teardown[0], unsafe { &eof[0] }, usize(1)) == 0
+		C.close(teardown[0])
+		backend.clipboard_source = unsafe { nil }
+	}
+}
+
+fn test_wayland_clipboard_send_expired_backpressure_closes_only_that_transfer() {
+	$if linux && sokol_wayland ? {
+		mut backend := &WaylandBackend{}
+		source := voidptr(usize(0x82))
+		backend.clipboard_source = source
+		backend.clipboard_text = 'independent live payload'
+		mut expired := [-1, -1]!
+		mut live := [-1, -1]!
+		assert C.pipe(&expired[0]) == 0
+		assert C.pipe(&live[0]) == 0
+		assert C.v_multiwindow_wayland_fd_set_nonblocking(expired[1]) == 1
+		mut fill := [4096]u8{}
+		mut saturated := false
+		for _ in 0 .. 4096 {
+			if C.write(expired[1], unsafe { &fill[0] }, usize(fill.len)) < 0 {
+				assert C.v_multiwindow_wayland_read_would_block() != 0
+				saturated = true
+				break
+			}
+		}
+		assert saturated
+
+		wayland_data_source_send(backend, source, c'text/plain', expired[1])
+		wayland_data_source_send(backend, source, c'text/plain', live[1])
+		assert backend.clipboard_sends.len == 2
+		backend.clipboard_sends[0].deadline_ns = 0
+		backend.drain_clipboard_send()
+		assert backend.clipboard_sends.len == 0
+		assert wayland_read_exact_pipe_payload(live[0], backend.clipboard_text.len) == backend.clipboard_text
+		C.close(expired[0])
+		C.close(live[0])
+		backend.clipboard_source = unsafe { nil }
+	}
+}
+
+fn test_wayland_clipboard_safe_write_contains_sigpipe_in_child_process() {
+	$if linux && sokol_wayland ? {
+		assert C.v_multiwindow_wayland_safe_write_broken_pipe_probe() == 1
+	}
+}
+
+fn test_wayland_clipboard_send_rejects_invalid_and_bounded_admissions_only() {
+	$if linux && sokol_wayland ? {
+		mut backend := &WaylandBackend{}
+		source := voidptr(usize(0xa1))
+		backend.clipboard_source = source
+		backend.clipboard_text = 'x'
+		mut invalid_source := [-1, -1]!
+		mut invalid_mime := [-1, -1]!
+		mut byte_limit := [-1, -1]!
+		mut count_limit := [-1, -1]!
+		assert C.pipe(&invalid_source[0]) == 0
+		assert C.pipe(&invalid_mime[0]) == 0
+		assert C.pipe(&byte_limit[0]) == 0
+		assert C.pipe(&count_limit[0]) == 0
+
+		wayland_data_source_send(backend, voidptr(usize(0xa2)), c'text/plain', invalid_source[1])
+		wayland_data_source_send(backend, source, c'application/octet-stream', invalid_mime[1])
+		backend.clipboard_send_snapshot_bytes = wayland_clipboard_max_outgoing_snapshot_bytes
+		wayland_data_source_send(backend, source, c'text/plain', byte_limit[1])
+		backend.clipboard_send_snapshot_bytes = 0
+		for _ in 0 .. wayland_clipboard_max_outgoing_transfers {
+			backend.clipboard_sends << WaylandClipboardSend{}
+		}
+		wayland_data_source_send(backend, source, c'text/plain', count_limit[1])
+
+		assert backend.clipboard_sends.len == wayland_clipboard_max_outgoing_transfers
+		assert C.write(invalid_source[1], c'x', usize(1)) == -1
+		assert C.write(invalid_mime[1], c'x', usize(1)) == -1
+		assert C.write(byte_limit[1], c'x', usize(1)) == -1
+		assert C.write(count_limit[1], c'x', usize(1)) == -1
+		backend.close_all_clipboard_sends()
+		C.close(invalid_source[0])
+		C.close(invalid_mime[0])
+		C.close(byte_limit[0])
+		C.close(count_limit[0])
 		backend.clipboard_source = unsafe { nil }
 	}
 }

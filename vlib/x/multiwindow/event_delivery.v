@@ -225,10 +225,7 @@ fn (mut app App) accept_backend_service_event_locked(event ServiceEvent, deliver
 	} else if event.kind == .metrics {
 		index := app.services.window_index(event.window) or { return false }
 		merged := merge_service_window_state(app.services.windows[index].state, event.state)
-		authoritative := ServiceWindowState{
-			...service_window_state_with_sequence(merged, delivery_token)
-			monitor_ids: event.state.monitor_ids.clone()
-		}
+		authoritative := service_window_state_with_sequence(merged, delivery_token)
 		metrics := RenderMetricsSnapshot{
 			...event.metrics
 			metrics_sequence: delivery_token

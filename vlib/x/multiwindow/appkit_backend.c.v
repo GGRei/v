@@ -379,21 +379,22 @@ fn appkit_service_monitor_id_for_native(records []AppKitServiceMonitorRecord, na
 
 fn appkit_service_window_state_from_raw(raw AppKitServiceRawWindowState, monitors []AppKitServiceMonitorRecord, app_instance u64) ServiceWindowState {
 	return ServiceWindowState{
-		mapping:      appkit_service_mapping_from_native(raw.mapping)
-		visibility:   appkit_service_visibility_from_native(raw.visibility)
-		active:       appkit_service_observed_bool_from_native(raw.active)
-		focused:      appkit_service_observed_bool_from_native(raw.focused)
-		minimized:    appkit_service_observed_bool_from_native(raw.minimized)
-		maximized:    appkit_service_observed_bool_from_native(raw.maximized)
-		fullscreen:   appkit_service_observed_bool_from_native(raw.fullscreen)
-		mouse_locked: appkit_service_observed_bool_from_native(raw.mouse_locked)
-		position:     ServicePosition{
+		mapping:                     appkit_service_mapping_from_native(raw.mapping)
+		visibility:                  appkit_service_visibility_from_native(raw.visibility)
+		active:                      appkit_service_observed_bool_from_native(raw.active)
+		focused:                     appkit_service_observed_bool_from_native(raw.focused)
+		minimized:                   appkit_service_observed_bool_from_native(raw.minimized)
+		maximized:                   appkit_service_observed_bool_from_native(raw.maximized)
+		fullscreen:                  appkit_service_observed_bool_from_native(raw.fullscreen)
+		mouse_locked:                appkit_service_observed_bool_from_native(raw.mouse_locked)
+		position:                    ServicePosition{
 			known: raw.position_known == 1
 			x:     raw.x
 			y:     raw.y
 		}
-		monitor_ids:  appkit_service_monitor_id_for_native(monitors, raw.monitor_native_id,
-			app_instance)
+		monitor_ids:                 appkit_service_monitor_id_for_native(monitors,
+			raw.monitor_native_id, app_instance)
+		monitor_membership_observed: true
 	}
 }
 

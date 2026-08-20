@@ -198,6 +198,10 @@ pub:
 	position     ServicePosition
 	monitor_ids  []ServiceMonitorId
 	sequence     u64
+mut:
+	// monitor_membership_observed distinguishes an observed empty membership
+	// from a partial state observation which did not report monitors.
+	monitor_membership_observed bool
 }
 
 // ServiceRequestId identifies one accepted asynchronous service request.
@@ -386,18 +390,31 @@ pub type NativeWindowBorrowCallback = fn (NativeWindowBorrow) !
 
 fn service_window_state_with_sequence(state ServiceWindowState, sequence u64) ServiceWindowState {
 	return ServiceWindowState{
-		mapping:      state.mapping
-		visibility:   state.visibility
-		active:       state.active
-		focused:      state.focused
-		minimized:    state.minimized
-		maximized:    state.maximized
-		fullscreen:   state.fullscreen
-		mouse_locked: state.mouse_locked
-		position:     state.position
-		monitor_ids:  state.monitor_ids.clone()
-		sequence:     sequence
+		mapping:                     state.mapping
+		visibility:                  state.visibility
+		active:                      state.active
+		focused:                     state.focused
+		minimized:                   state.minimized
+		maximized:                   state.maximized
+		fullscreen:                  state.fullscreen
+		mouse_locked:                state.mouse_locked
+		position:                    state.position
+		monitor_ids:                 state.monitor_ids.clone()
+		sequence:                    sequence
+		monitor_membership_observed: state.monitor_membership_observed
 	}
+}
+
+fn service_window_state_with_observed_monitor_membership(state ServiceWindowState) ServiceWindowState {
+	return ServiceWindowState{
+		...state
+		monitor_ids:                 state.monitor_ids.clone()
+		monitor_membership_observed: true
+	}
+}
+
+fn service_window_state_observes_monitor_membership(state ServiceWindowState) bool {
+	return state.monitor_membership_observed || state.monitor_ids.len != 0
 }
 
 fn service_monitor_info_with_sequence(info ServiceMonitorInfo, sequence u64) ServiceMonitorInfo {

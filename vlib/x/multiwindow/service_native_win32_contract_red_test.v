@@ -1804,13 +1804,14 @@ fn test_win32_native_monitor_dpi_display_change_and_generation_red() {
 
 				empty_monitors.len == 1 && empty_monitors[0].service.monitors.len == 0)
 			win32_red_add(mut issues, 'unplug metrics payload retained window monitor membership',
-
-				empty_metrics.len == 1 && empty_metrics[0].service.state.monitor_ids.len == 0)
+				empty_metrics.len == 1 && empty_metrics[0].service.state.monitor_ids.len == 0
+				&& empty_metrics[0].service.state.monitor_membership_observed)
 			win32_red_add(mut issues, 'unplug snapshot left available monitor ids',
 				app.service_monitor_ids()!.len == 0)
 			unplug_state := app.service_window_state(window)!
 			win32_red_add(mut issues, 'unplug snapshot left window monitor membership',
-				unplug_state.monitor_ids.len == 0)
+
+				unplug_state.monitor_ids.len == 0 && unplug_state.monitor_membership_observed)
 			unplugged := app.service_monitor_info(stale_target.id) or {
 				issues << 'unplugged monitor id could not expose unavailable state: ${err.msg()}'
 				ServiceMonitorInfo{}

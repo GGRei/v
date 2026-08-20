@@ -322,7 +322,7 @@ fn (mut registry ServiceRegistry) register_window(id WindowId, config WindowConf
 		owner:   config.owner
 		modal:   config.modal
 		state:   ServiceWindowState{
-			mapping:      if mock {
+			mapping:                     if mock {
 				if config.visible {
 					ServiceMappingState.mapped
 				} else {
@@ -331,7 +331,7 @@ fn (mut registry ServiceRegistry) register_window(id WindowId, config WindowConf
 			} else {
 				ServiceMappingState.unknown
 			}
-			visibility:   if mock {
+			visibility:                  if mock {
 				if config.visible {
 					ServiceVisibilityState.visible
 				} else {
@@ -340,18 +340,19 @@ fn (mut registry ServiceRegistry) register_window(id WindowId, config WindowConf
 			} else {
 				ServiceVisibilityState.unknown
 			}
-			active:       if mock { .off } else { .unknown }
-			focused:      if mock { .off } else { .unknown }
-			minimized:    if mock { .off } else { .unknown }
-			maximized:    if mock { .off } else { .unknown }
-			fullscreen:   if mock {
+			active:                      if mock { .off } else { .unknown }
+			focused:                     if mock { .off } else { .unknown }
+			minimized:                   if mock { .off } else { .unknown }
+			maximized:                   if mock { .off } else { .unknown }
+			fullscreen:                  if mock {
 				if config.fullscreen { ServiceObservedBool.on } else { ServiceObservedBool.off }
 			} else {
 				ServiceObservedBool.unknown
 			}
-			mouse_locked: if mock { .off } else { .unknown }
-			position:     ServicePosition{}
-			monitor_ids:  monitor_ids
+			mouse_locked:                if mock { .off } else { .unknown }
+			position:                    ServicePosition{}
+			monitor_ids:                 monitor_ids
+			monitor_membership_observed: mock
 		}
 		metrics: if mock {
 			RenderMetricsSnapshot{

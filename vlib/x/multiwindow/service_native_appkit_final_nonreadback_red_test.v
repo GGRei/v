@@ -300,7 +300,12 @@ fn test_appkit_native_two_window_close_retains_services_until_finish_and_release
 		assert app.backend.appkit.windows[backend_index].native_destroyed
 		assert !app.backend.appkit.windows[backend_index].services_released
 		assert app.backend.appkit.windows[backend_index].state != unsafe { nil }
-		_ = app.service_window_state(second)!
+		mut sealed_state_error := ''
+		_ = app.service_window_state(second) or {
+			sealed_state_error = err.msg()
+			ServiceWindowState{}
+		}
+		assert sealed_state_error == err_stale_window
 		assert C.v_multiwindow_appkit_test_release_services_count() == 0
 
 		app.finish_window_destroy(notices[0].ticket, []string{})!

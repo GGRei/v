@@ -219,7 +219,9 @@ Check `.state_observable` before waiting for a state observation. Wayland
 minimize is asynchronous with `state_observable == false`, so no resulting
 minimized-state observation is guaranteed. Use `window_state()` for the latest
 observed state and `monitor_ids()` plus `monitor_info()` for generation-checked
-monitor snapshots. Monitor names are descriptive, not stable identities.
+monitor snapshots. Full observations can authoritatively clear membership;
+partial state observations preserve the last known ids. Monitor names are
+descriptive, not stable identities.
 
 Clipboard reads and writes return `ClipboardRequestId`; match it with the
 terminal `.clipboard` `WindowServiceEvent`. Portal export returns
@@ -231,7 +233,8 @@ everything after the prefix as opaque. Wayland clipboard uses the seat data
 device, writes require a recent input serial, and portal export requires
 xdg-foreign-v2. If preparing a replacement Wayland clipboard source fails
 before selection submission, the previously published clipboard value remains
-unchanged.
+unchanged. A compositor clipboard send already accepted by Wayland uses its own
+bounded text snapshot and can finish after replacement or source cancellation.
 
 `with_native_window()` is callback-only. Inside its callback, invoke exactly
 the accessor matching `app.capabilities().backend`:
@@ -276,7 +279,7 @@ Runtime support differs by backend:
 | --- | --- |
 | Mock | Deterministic state, monitors, clipboard, portal, and readback for tests; native borrow is unsupported. |
 | X11 | Native state/monitors, clipboard, portal (`x11:`), scoped borrow, and native window capture; focus is available only when the live server advertises EWMH `_NET_ACTIVE_WINDOW`, its request is asynchronous, and authoritative state comes from `FocusIn`/`FocusOut`. Other EWMH, mouse-lock, and rendered-image support also depend on the live server/renderer. |
-| Wayland | Runtime-global-driven state/monitors, clipboard, portal (`wayland:`), scoped borrow, and mouse lock; focus/raise/position are unsupported. Show/minimize/maximize/restore/fullscreen/mouse-lock are asynchronous, but minimize is not state-observable, so callers are not guaranteed a resulting minimized-state observation. Rendered readback requires the active GL path. |
+| Wayland | Runtime-global-driven state/monitors, clipboard, portal (`wayland:`), scoped borrow, and mouse lock; focus/raise/position are unsupported. Hide/show remapping preserves configured metadata, ownership, constraints, decorations, and maximize/fullscreen intent. Show/minimize/maximize/restore/fullscreen/mouse-lock are asynchronous, but minimize is not state-observable, so callers are not guaranteed a resulting minimized-state observation. Rendered readback requires the active GL path. |
 | AppKit | Native state/monitors, scoped borrow, clipboard, window operations, and titlebar appearance as reported by the live bridge; portal is unsupported and readback requires active Metal. |
 | Win32 | Native state/monitors, scoped borrow, clipboard, and standard window operations; focus/mouse lock are conditional, maximize depends on window configuration, and portal/readback are currently unsupported. |
 

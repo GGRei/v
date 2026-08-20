@@ -6,10 +6,14 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
+#include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
 #include <wayland-egl.h>
@@ -1158,6 +1162,95 @@ static inline int v_multiwindow_wayland_fd_set_nonblocking(int fd) {
 
 static inline int v_multiwindow_wayland_read_would_block(void) {
 	return errno == EAGAIN || errno == EWOULDBLOCK;
+}
+
+static inline int v_multiwindow_wayland_io_interrupted(void) {
+	return errno == EINTR;
+}
+
+static inline ssize_t v_multiwindow_wayland_safe_write(int fd, const void *buffer, size_t size) {
+	sigset_t sigpipe_set;
+	sigset_t old_mask;
+	sigset_t pending;
+	if (sigemptyset(&sigpipe_set) != 0 || sigaddset(&sigpipe_set, SIGPIPE) != 0) {
+		return -1;
+	}
+	int mask_result = pthread_sigmask(SIG_BLOCK, &sigpipe_set, &old_mask);
+	if (mask_result != 0) {
+		errno = mask_result;
+		return -1;
+	}
+	if (sigpending(&pending) != 0) {
+		int saved_errno = errno;
+		int restore_result = pthread_sigmask(SIG_SETMASK, &old_mask, NULL);
+		errno = restore_result != 0 ? restore_result : saved_errno;
+		return -1;
+	}
+	int had_pending_sigpipe = sigismember(&pending, SIGPIPE) == 1;
+	ssize_t result = -1;
+	int attempts = 0;
+	do {
+		errno = 0;
+		result = write(fd, buffer, size);
+		attempts++;
+	} while (result < 0 && errno == EINTR && attempts < 8);
+	int saved_errno = errno;
+	if (result < 0 && saved_errno == EPIPE && !had_pending_sigpipe) {
+		struct timespec no_wait = {0, 0};
+		while (sigtimedwait(&sigpipe_set, NULL, &no_wait) < 0 && errno == EINTR) {}
+	}
+	int restore_result = pthread_sigmask(SIG_SETMASK, &old_mask, NULL);
+	if (restore_result != 0) {
+		errno = restore_result;
+		return -1;
+	}
+	errno = saved_errno;
+	return result;
+}
+
+static inline int v_multiwindow_wayland_safe_write_broken_pipe_probe(void) {
+	int pipe_fds[2] = {-1, -1};
+	if (pipe(pipe_fds) != 0) {
+		return 0;
+	}
+	close(pipe_fds[0]);
+	pipe_fds[0] = -1;
+	pid_t child = fork();
+	if (child < 0) {
+		close(pipe_fds[1]);
+		return 0;
+	}
+	if (child == 0) {
+		if (signal(SIGPIPE, SIG_DFL) == SIG_ERR) {
+			_exit(1);
+		}
+		sigset_t unblocked_sigpipe;
+		if (sigemptyset(&unblocked_sigpipe) != 0
+				|| sigaddset(&unblocked_sigpipe, SIGPIPE) != 0
+				|| pthread_sigmask(SIG_UNBLOCK, &unblocked_sigpipe, NULL) != 0) {
+			_exit(1);
+		}
+		sigset_t before_mask;
+		sigset_t after_mask;
+		if (pthread_sigmask(SIG_BLOCK, NULL, &before_mask) != 0) {
+			_exit(1);
+		}
+		const char byte = 'x';
+		ssize_t result = v_multiwindow_wayland_safe_write(pipe_fds[1], &byte, 1);
+		int is_epipe = result == -1 && errno == EPIPE;
+		int mask_unchanged = pthread_sigmask(SIG_BLOCK, NULL, &after_mask) == 0
+			&& sigismember(&before_mask, SIGPIPE) == sigismember(&after_mask, SIGPIPE);
+		close(pipe_fds[1]);
+		_exit(is_epipe && mask_unchanged ? 0 : 1);
+	}
+	close(pipe_fds[1]);
+	int status = 0;
+	while (waitpid(child, &status, 0) < 0) {
+		if (errno != EINTR) {
+			return 0;
+		}
+	}
+	return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
 static inline int v_multiwindow_wayland_toplevel_state_contains(
