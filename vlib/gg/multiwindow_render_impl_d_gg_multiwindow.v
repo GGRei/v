@@ -175,6 +175,32 @@ fn readback_rect_fits(rect WindowPixelRect, target_width int, target_height int)
 	return rect.x <= target_width - rect.width && rect.y <= target_height - rect.height
 }
 
+fn capture_block_reason_prevents_future_frame(reason multiwindow.RenderBlockReason) bool {
+	return reason in [.no_workload, .not_configured, .hidden, .minimized, .occluded, .unmapped,
+		.not_viewable, .zero_sized, .backend_unavailable, .renderer_failed]
+}
+
+fn managed_window_capture_has_producer(producer MultiWindowCaptureProducer, snapshot multiwindow.RenderWindowSnapshot) bool {
+	if !snapshot.metrics.metrics_available || snapshot.metrics.framebuffer_width <= 0
+		|| snapshot.metrics.framebuffer_height <= 0 || snapshot.target.sample_count <= 0 {
+		return false
+	}
+	if producer.frame_active {
+		return true
+	}
+	if !producer.frame_fn_configured {
+		return false
+	}
+	return !capture_block_reason_prevents_future_frame(snapshot.block_reason)
+}
+
+fn (mut app App) request_window_capture_redraw(id WindowId) ! {
+	if message := app.render_runtime.take_internal_fault(.capture_request_redraw) {
+		return error(message)
+	}
+	app.core.request_redraw(id.core)!
+}
+
 fn (mut app App) request_window_capture_managed(id WindowId, config WindowReadbackConfig) !WindowReadbackId {
 	app.ensure_initialized()!
 	app.assert_owner_thread() or { return error(err_multiwindow_render_owner_thread) }
@@ -206,6 +232,11 @@ fn (mut app App) request_window_capture_managed(id WindowId, config WindowReadba
 		if snapshot.submitted_frame == u64(0xffffffffffffffff) {
 			return error(err_multiwindow_render_readback_unsupported)
 		}
+		producer := app.render_runtime.window_capture_producer(id)!
+		if !managed_window_capture_has_producer(producer, snapshot) {
+			return error(err_multiwindow_render_readback_unsupported)
+		}
+		app.request_window_capture_redraw(id)!
 		readback := app.core.service_begin_window_readback(id.core)!
 		if backend == .appkit {
 			rect := WindowPixelRect{
@@ -215,10 +246,6 @@ fn (mut app App) request_window_capture_managed(id WindowId, config WindowReadba
 				height: height
 			}
 			app.stage_appkit_window_capture(readback, rect, snapshot.submitted_frame + 1) or {
-				app.core.service_abandon_window_readback_for_gg(readback, err.msg())!
-				return window_readback_id_from_core(readback)
-			}
-			app.core.request_redraw(id.core) or {
 				app.core.service_abandon_window_readback_for_gg(readback, err.msg())!
 				return window_readback_id_from_core(readback)
 			}
@@ -236,7 +263,6 @@ fn (mut app App) request_window_capture_managed(id WindowId, config WindowReadba
 			target_submitted_frame: snapshot.submitted_frame + 1
 			attempt_batch_epoch:    app.active_batch_epoch
 		}
-		app.core.request_redraw(id.core)!
 		return window_readback_id_from_core(readback)
 	}
 	if backend == .wayland {

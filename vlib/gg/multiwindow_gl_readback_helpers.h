@@ -10,7 +10,30 @@ enum {
 	V_GG_MULTIWINDOW_GL_READBACK_INVALID = 1,
 	V_GG_MULTIWINDOW_GL_READBACK_UNSUPPORTED = 2,
 	V_GG_MULTIWINDOW_GL_READBACK_FAILED = 3,
+	V_GG_MULTIWINDOW_GL_ERROR_DRAIN_LIMIT = 64,
 };
+
+#if defined(SOKOL_GLCORE) || defined(SOKOL_GLES3)
+static inline int v_gg_multiwindow_gl_drain_preexisting_errors(void) {
+	for (int i = 0; i < V_GG_MULTIWINDOW_GL_ERROR_DRAIN_LIMIT; i++) {
+		if (glGetError() == GL_NO_ERROR) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static inline int v_gg_multiwindow_gl_collect_operation_errors(void) {
+	int failed = 0;
+	for (int i = 0; i < V_GG_MULTIWINDOW_GL_ERROR_DRAIN_LIMIT; i++) {
+		if (glGetError() == GL_NO_ERROR) {
+			return failed;
+		}
+		failed = 1;
+	}
+	return 1;
+}
+#endif
 
 static inline int v_gg_multiwindow_gl_readback_window_rgba8(int framebuffer_height,
 	int x, int y, int width, int height, uint8_t *pixels, size_t pixels_len) {
@@ -20,15 +43,17 @@ static inline int v_gg_multiwindow_gl_readback_window_rgba8(int framebuffer_heig
 		pixels_len != (size_t)width * (size_t)height * 4) {
 		return V_GG_MULTIWINDOW_GL_READBACK_INVALID;
 	}
+	if (!v_gg_multiwindow_gl_drain_preexisting_errors()) {
+		return V_GG_MULTIWINDOW_GL_READBACK_FAILED;
+	}
 
 	GLint previous_pack_alignment = 0;
 	glGetIntegerv(GL_PACK_ALIGNMENT, &previous_pack_alignment);
 	glPixelStorei(GL_PACK_ALIGNMENT, 1);
 	glReadPixels(x, framebuffer_height - y - height, width, height, GL_RGBA,
 		GL_UNSIGNED_BYTE, pixels);
-	GLenum error = glGetError();
 	glPixelStorei(GL_PACK_ALIGNMENT, previous_pack_alignment);
-	if (error != GL_NO_ERROR) {
+	if (v_gg_multiwindow_gl_collect_operation_errors()) {
 		return V_GG_MULTIWINDOW_GL_READBACK_FAILED;
 	}
 
@@ -77,6 +102,9 @@ static inline int v_gg_multiwindow_gl_readback_image_rgba8(uint32_t image_id,
 		info.msaa_render_buffer != 0) {
 		return V_GG_MULTIWINDOW_GL_READBACK_UNSUPPORTED;
 	}
+	if (!v_gg_multiwindow_gl_drain_preexisting_errors()) {
+		return V_GG_MULTIWINDOW_GL_READBACK_FAILED;
+	}
 
 	GLint previous_framebuffer = 0;
 	GLint previous_read_buffer = 0;
@@ -88,27 +116,28 @@ static inline int v_gg_multiwindow_gl_readback_image_rgba8(uint32_t image_id,
 	GLuint framebuffer = 0;
 	glGenFramebuffers(1, &framebuffer);
 	if (framebuffer == 0) {
+		(void)v_gg_multiwindow_gl_collect_operation_errors();
 		return V_GG_MULTIWINDOW_GL_READBACK_FAILED;
 	}
 	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, info.tex_target,
 		info.tex[info.active_slot], 0);
-	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+	int framebuffer_complete =
+		glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+	if (framebuffer_complete) {
+		glReadBuffer(GL_COLOR_ATTACHMENT0);
+		glPixelStorei(GL_PACK_ALIGNMENT, 1);
+		glReadPixels(x, image_height - y - height, width, height, GL_RGBA,
+			GL_UNSIGNED_BYTE, pixels);
+		glPixelStorei(GL_PACK_ALIGNMENT, previous_pack_alignment);
 		glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)previous_framebuffer);
-		glDeleteFramebuffers(1, &framebuffer);
-		return V_GG_MULTIWINDOW_GL_READBACK_FAILED;
+		glReadBuffer((GLenum)previous_read_buffer);
+	} else {
+		glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)previous_framebuffer);
 	}
-
-	glReadBuffer(GL_COLOR_ATTACHMENT0);
-	glPixelStorei(GL_PACK_ALIGNMENT, 1);
-	glReadPixels(x, image_height - y - height, width, height, GL_RGBA,
-		GL_UNSIGNED_BYTE, pixels);
-	GLenum error = glGetError();
-	glPixelStorei(GL_PACK_ALIGNMENT, previous_pack_alignment);
-	glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)previous_framebuffer);
-	glReadBuffer((GLenum)previous_read_buffer);
 	glDeleteFramebuffers(1, &framebuffer);
-	if (error != GL_NO_ERROR) {
+	int operation_failed = v_gg_multiwindow_gl_collect_operation_errors();
+	if (!framebuffer_complete || operation_failed) {
 		return V_GG_MULTIWINDOW_GL_READBACK_FAILED;
 	}
 

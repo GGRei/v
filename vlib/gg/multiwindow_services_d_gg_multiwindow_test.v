@@ -519,6 +519,100 @@ fn test_readback_rect_fits_exact_edge_and_rejects_overflow_without_admission() {
 	assert false, 'overflowing readback rectangle entered the pending/event pipeline'
 }
 
+fn capture_producer_snapshot_for_test(reason multiwindow.RenderBlockReason, metrics_available bool, width int, height int) multiwindow.RenderWindowSnapshot {
+	return multiwindow.RenderWindowSnapshot{
+		metrics:      multiwindow.RenderMetricsSnapshot{
+			framebuffer_width:  width
+			framebuffer_height: height
+			metrics_available:  metrics_available
+		}
+		target:       multiwindow.RenderTargetSnapshot{
+			sample_count: 1
+		}
+		block_reason: reason
+	}
+}
+
+fn test_managed_window_capture_requires_a_real_viable_frame_producer() {
+	ready := capture_producer_snapshot_for_test(.none, true, 64, 48)
+	frame_fn := MultiWindowCaptureProducer{
+		frame_fn_configured: true
+	}
+	assert managed_window_capture_has_producer(frame_fn, ready)
+	assert !managed_window_capture_has_producer(MultiWindowCaptureProducer{}, ready)
+	assert !managed_window_capture_has_producer(frame_fn, capture_producer_snapshot_for_test(.none,
+		false, 64, 48))
+	assert !managed_window_capture_has_producer(frame_fn, capture_producer_snapshot_for_test(.zero_sized,
+		true, 0, 0))
+
+	for reason in [multiwindow.RenderBlockReason.no_workload, .not_configured, .hidden, .minimized,
+		.occluded, .unmapped, .not_viewable, .zero_sized, .backend_unavailable, .renderer_failed] {
+		blocked := capture_producer_snapshot_for_test(reason, true, 64, 48)
+		assert !managed_window_capture_has_producer(frame_fn, blocked)
+		assert managed_window_capture_has_producer(MultiWindowCaptureProducer{
+			frame_active: true
+		}, blocked)
+	}
+	for reason in [multiwindow.RenderBlockReason.frame_callback_pending, .resize_pending,
+		.drawable_unavailable] {
+		assert managed_window_capture_has_producer(frame_fn, capture_producer_snapshot_for_test(reason,
+			true, 64, 48))
+	}
+}
+
+fn test_managed_window_capture_producer_distinguishes_init_and_resource_only_windows() {
+	mut app := new_app(backend: .mock)!
+	init_only := app.create_window(title: 'capture init only')!
+	resource_only := app.create_window(title: 'capture resource only')!
+	frame_window := app.create_window(title: 'capture frame producer')!
+	app.render_runtime.mutex.lock()
+	init_index := app.render_runtime.window_index_locked(init_only)!
+	frame_index := app.render_runtime.window_index_locked(frame_window)!
+	app.render_runtime.windows[init_index].init_fn = fn (mut context WindowInitContext) ! {
+		_ = context
+	}
+	app.render_runtime.windows[frame_index].frame_fn = fn (mut context WindowContext) ! {
+		_ = context
+	}
+	app.render_runtime.mutex.unlock()
+	assert !app.render_runtime.window_capture_producer(init_only)!.frame_fn_configured
+	assert !app.render_runtime.window_capture_producer(resource_only)!.frame_fn_configured
+	assert app.render_runtime.window_capture_producer(frame_window)!.frame_fn_configured
+
+	app.render_runtime.mutex.lock()
+	active_index := app.render_runtime.window_index_locked(resource_only)!
+	app.render_runtime.windows[active_index].active_lease_epoch = 1
+	app.render_runtime.windows[active_index].active_phase = .frame
+	app.render_runtime.mutex.unlock()
+	assert app.render_runtime.window_capture_producer(resource_only)!.frame_active
+	app.render_runtime.mutex.lock()
+	app.render_runtime.windows[active_index].active_lease_epoch = 0
+	app.render_runtime.windows[active_index].active_phase = .invalid
+	app.render_runtime.mutex.unlock()
+	app.stop()!
+}
+
+fn test_managed_window_capture_redraw_failure_precedes_pending_admission() {
+	mut app := new_app(backend: .mock)!
+	window := app.create_window(title: 'capture redraw failure')!
+	_ = app.drain_window_queued_events()!
+	before := app.core.render_window_snapshot(window.core)!
+	failure := 'injected capture redraw admission failure'
+	app.render_runtime.set_internal_fault(.capture_request_redraw, 0, failure)!
+	mut rejected := false
+	app.request_window_capture_redraw(window) or {
+		assert err.msg() == failure
+		rejected = true
+	}
+	assert rejected
+	after := app.core.render_window_snapshot(window.core)!
+	assert after.dirty_epoch == before.dirty_epoch
+	assert app.pending_window_captures.len == 0
+	assert app.pending_image_readbacks.len == 0
+	assert app.core.drain_readback_events()!.len == 0
+	app.stop()!
+}
+
 struct Package2RunSeen {
 mut:
 	order                []string

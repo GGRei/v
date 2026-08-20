@@ -203,6 +203,143 @@ fn test_mock_readback_is_canonical_owned_rgba8() {
 	app.stop()!
 }
 
+fn test_service_readback_layout_validation_is_overflow_safe_and_atomic() {
+	mut app := new_app()!
+	window := app.create_window()!
+	_ = app.drain_events()!
+	request_before := app.services.next_request
+	delivery_before := app.next_event_delivery_token
+	app.service_complete_readback(window, 600_000_000, 1, 1, [u8(0)], 1) or {
+		assert err.msg() == err_readback_invalid
+		assert app.services.next_request == request_before
+		assert app.next_event_delivery_token == delivery_before
+		assert app.services.readbacks.len == 0
+		assert app.drain_queued_events()!.len == 0
+	}
+	assert app.services.next_request == request_before
+	assert app.services.readbacks.len == 0
+
+	readback := app.service_begin_window_readback(window)!
+	request_after_begin := app.services.next_request
+	delivery_after_begin := app.next_event_delivery_token
+	app.service_finish_window_readback(readback, 600_000_000, 1, 1, [u8(0)], 2) or {
+		assert err.msg() == err_readback_invalid
+		assert app.services.next_request == request_after_begin
+		assert app.next_event_delivery_token == delivery_after_begin
+		assert app.services.readbacks.len == 1
+		assert app.services.readbacks[0].id == readback
+		assert !app.services.readbacks[0].terminal
+		assert app.drain_queued_events()!.len == 0
+	}
+	assert app.services.readbacks.len == 1
+	assert !app.services.readbacks[0].terminal
+
+	app.service_finish_window_readback(readback, 2, 2, 12, []u8{len: 24}, 3)!
+	finished := app.drain_queued_events()!
+	assert finished.len == 1
+	assert finished[0].kind == .readback
+	assert finished[0].readback.id == readback
+	assert finished[0].readback.status == .ready
+	assert finished[0].readback.width == 2
+	assert finished[0].readback.height == 2
+	assert finished[0].readback.stride == 12
+	assert finished[0].readback.pixels_rgba8.len == 24
+	assert app.services.readbacks.len == 0
+
+	completed := app.service_complete_readback(window, 1, 2, 8, []u8{len: 16}, 4)!
+	completed_events := app.drain_queued_events()!
+	assert completed_events.len == 1
+	assert completed_events[0].readback.id == completed
+	assert completed_events[0].readback.stride == 8
+	assert completed_events[0].readback.pixels_rgba8.len == 16
+	app.stop()!
+}
+
+fn test_mock_focus_publishes_losses_then_gain_with_authoritative_sequences() {
+	mut app := new_app()!
+	a := app.create_window(title: 'focus A')!
+	b := app.create_window(title: 'focus B')!
+	c := app.create_window(title: 'focus C')!
+	_ = app.drain_events()!
+
+	app.service_request_focus(a)!
+	first := app.drain_queued_events()!
+	assert first.len == 1
+	assert first[0].kind == .service
+	assert first[0].service.window == a
+	assert first[0].service.state.active == .on
+	assert first[0].service.state.focused == .on
+	c_before := app.service_window_state(c)!
+
+	app.service_request_focus(b)!
+	transfer := app.drain_queued_events()!
+	assert transfer.len == 2
+	assert transfer[0].kind == .service
+	assert transfer[0].service.window == a
+	assert transfer[0].service.operation == .focus
+	assert transfer[0].service.state.active == .off
+	assert transfer[0].service.state.focused == .off
+	assert transfer[1].kind == .service
+	assert transfer[1].service.window == b
+	assert transfer[1].service.operation == .focus
+	assert transfer[1].service.state.active == .on
+	assert transfer[1].service.state.focused == .on
+	assert transfer[0].sequence < transfer[1].sequence
+	assert transfer[0].service.sequence == transfer[0].sequence
+	assert transfer[0].service.state.sequence == transfer[0].sequence
+	assert transfer[1].service.sequence == transfer[1].sequence
+	assert transfer[1].service.state.sequence == transfer[1].sequence
+	assert app.service_window_state(a)!.sequence == transfer[0].sequence
+	assert app.service_window_state(b)!.sequence == transfer[1].sequence
+	c_after := app.service_window_state(c)!
+	assert c_after.active == c_before.active
+	assert c_after.focused == c_before.focused
+	assert c_after.sequence == c_before.sequence
+
+	app.service_request_focus(b)!
+	assert app.drain_queued_events()!.len == 0
+	assert app.service_window_state(a)!.sequence == transfer[0].sequence
+	assert app.service_window_state(b)!.sequence == transfer[1].sequence
+	app.stop()!
+}
+
+fn test_mock_focus_delivery_exhaustion_is_atomic() {
+	mut app := new_app()!
+	a := app.create_window(title: 'focus exhaustion A')!
+	b := app.create_window(title: 'focus exhaustion B')!
+	_ = app.drain_events()!
+	app.service_request_focus(a)!
+	_ = app.drain_queued_events()!
+	a_before := app.service_window_state(a)!
+	b_before := app.service_window_state(b)!
+	saved_delivery_token := app.next_event_delivery_token
+	app.state_mutex.lock()
+	app.next_event_delivery_token = ~u64(0)
+	app.state_mutex.unlock()
+
+	mut rejected := false
+	app.service_request_focus(b) or {
+		assert err.msg() == err_event_delivery_exhausted
+		rejected = true
+	}
+	assert rejected
+	assert app.next_event_delivery_token == ~u64(0)
+	assert app.drain_queued_events()!.len == 0
+	a_after := app.service_window_state(a)!
+	b_after := app.service_window_state(b)!
+	assert a_after.active == a_before.active
+	assert a_after.focused == a_before.focused
+	assert a_after.sequence == a_before.sequence
+	assert b_after.active == b_before.active
+	assert b_after.focused == b_before.focused
+	assert b_after.sequence == b_before.sequence
+
+	app.state_mutex.lock()
+	app.next_event_delivery_token = saved_delivery_token
+	app.state_mutex.unlock()
+	app.stop()!
+}
+
 fn test_owner_modal_registry_and_child_first_cascade() {
 	mut app := new_app()!
 	owner := app.create_window(title: 'owner')!

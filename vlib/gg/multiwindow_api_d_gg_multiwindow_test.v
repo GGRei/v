@@ -698,6 +698,199 @@ fn test_multiwindow_x11_external_window_capture_waits_for_target_frame() {
 	run_x11_public_window_capture_test(true)!
 }
 
+struct X11CaptureAdmissionProof {
+mut:
+	frame_hits    int
+	rejection     string
+	pending_count int
+	readback_hits int
+}
+
+struct X11LegacyCaptureProducerProof {
+mut:
+	frame_hits    int
+	drawn_hits    int
+	show_sent     bool
+	service_hits  int
+	rejection     string
+	pending_count int
+	dirty_before  u64
+	dirty_after   u64
+	readback_hits int
+}
+
+fn test_multiwindow_x11_window_capture_rejects_nonproducers_before_admission() ! {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			eprintln('skip gg x11 capture producer admission test: DISPLAY is not set')
+			return
+		}
+		mut app := new_app(backend: .x11, require_renderer: true) or {
+			if err.msg() == 'multiwindow: x11 open display failed' {
+				return
+			}
+			return err
+		}
+		init_only := app.create_window(
+			title:   'capture init-only rejection'
+			init_fn: fn (mut context WindowInitContext) ! {
+				_ = context
+			}
+		)!
+		resource_only := app.create_window(title: 'capture resource-only rejection')!
+		hidden := app.create_window(
+			title:    'capture hidden-unconfigured rejection'
+			visible:  false
+			frame_fn: fn (mut context WindowContext) ! {
+				_ = context
+			}
+		)!
+		assert app.drain_window_queued_events()!.len == 3
+		for window in [init_only, resource_only, hidden] {
+			mut rejected := false
+			app.request_window_capture(window, WindowReadbackConfig{}) or {
+				assert err.msg() == err_multiwindow_render_readback_unsupported
+				rejected = true
+			}
+			assert rejected
+		}
+		assert app.pending_window_captures.len == 0
+		assert app.pending_image_readbacks.len == 0
+		assert app.drain_window_queued_events()!.len == 0
+		app.stop()!
+	}
+}
+
+fn test_multiwindow_x11_capture_redraw_failure_does_not_admit_pending_readback() ! {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			eprintln('skip gg x11 capture redraw failure test: DISPLAY is not set')
+			return
+		}
+		mut proof := &X11CaptureAdmissionProof{}
+		mut app := new_app(backend: .x11, require_renderer: true) or {
+			if err.msg() == 'multiwindow: x11 open display failed' {
+				return
+			}
+			return err
+		}
+		failure := 'injected x11 capture redraw failure'
+		_ = app.create_window(
+			title:       'capture redraw failure'
+			width:       64
+			height:      48
+			high_dpi:    false
+			redraw_mode: .continuous
+			frame_fn:    fn [failure, mut proof] (mut context WindowContext) ! {
+				proof.frame_hits++
+				context.with_swapchain(gfx.create_clear_pass_action(0, 0, 0, 1), fn (mut pass WindowPassContext) ! {
+					_ = pass
+				})!
+				if proof.frame_hits == 1 {
+					mut callback_app := context.app
+					callback_app.render_runtime.set_internal_fault(.capture_request_redraw, 0,
+						failure)!
+					callback_app.request_window_capture(context.window_id(), WindowReadbackConfig{}) or {
+						proof.rejection = err.msg()
+					}
+					proof.pending_count = callback_app.pending_window_captures.len
+					callback_app.stop()!
+				}
+			}
+		)!
+		app.run(
+			readback_fn: fn [mut proof] (result WindowReadbackResult, mut callback_app App) ! {
+				_ = result
+				proof.readback_hits++
+				callback_app.stop()!
+			}
+		)!
+		assert proof.frame_hits == 1
+		assert proof.rejection == failure
+		assert proof.pending_count == 0
+		assert proof.readback_hits == 0
+		assert app.pending_window_captures.len == 0
+		assert app.core.drain_readback_events()!.len == 0
+	}
+}
+
+fn test_multiwindow_x11_legacy_global_frame_is_not_an_off_frame_window_capture_producer() ! {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			eprintln('skip gg x11 legacy capture producer test: DISPLAY is not set')
+			return
+		}
+		mut proof := &X11LegacyCaptureProducerProof{}
+		mut app := new_app(backend: .x11, require_renderer: true) or {
+			if err.msg() == 'multiwindow: x11 open display failed' {
+				return
+			}
+			return err
+		}
+		drawn := app.create_window(
+			title:    'legacy capture drawn'
+			width:    64
+			height:   48
+			high_dpi: false
+		)!
+		omitted := app.create_window(
+			title:    'legacy capture omitted'
+			width:    64
+			height:   48
+			high_dpi: false
+		)!
+		app.run(
+			frame_fn:          fn [drawn, omitted, mut proof] (mut callback_app App) ! {
+				proof.frame_hits++
+				callback_app.draw_window(drawn, fn [mut proof] (mut window WindowContext) ! {
+					proof.drawn_hits++
+					window.draw_rect_filled(0, 0, 8, 8, Color{
+						r: 255
+						a: 255
+					})
+				})!
+				if !proof.show_sent {
+					proof.show_sent = true
+					callback_app.show_window(omitted)!
+				}
+			}
+			window_service_fn: fn [omitted, mut proof] (event WindowServiceEvent, mut callback_app App) ! {
+				if event.window != omitted || event.kind != .state || event.operation != .show {
+					return
+				}
+				if !proof.show_sent || proof.frame_hits == 0 {
+					return
+				}
+				proof.service_hits++
+				assert !callback_app.app_frame_active
+				proof.dirty_before = callback_app.core.render_window_snapshot(omitted.core)!.dirty_epoch
+				callback_app.request_window_capture(omitted, WindowReadbackConfig{}) or {
+					proof.rejection = err.msg()
+				}
+				proof.dirty_after = callback_app.core.render_window_snapshot(omitted.core)!.dirty_epoch
+				proof.pending_count = callback_app.pending_window_captures.len
+				callback_app.stop()!
+			}
+			readback_fn:       fn [mut proof] (result WindowReadbackResult, mut callback_app App) ! {
+				_ = result
+				proof.readback_hits++
+				callback_app.stop()!
+			}
+		)!
+		assert proof.frame_hits == 1
+		assert proof.drawn_hits == 1
+		assert proof.show_sent
+		assert proof.service_hits == 1
+		assert proof.rejection == err_multiwindow_render_readback_unsupported
+		assert proof.pending_count == 0
+		assert proof.dirty_after == proof.dirty_before
+		assert proof.readback_hits == 0
+		assert app.pending_window_captures.len == 0
+		assert app.pending_image_readbacks.len == 0
+		assert app.core.drain_readback_events()!.len == 0
+	}
+}
+
 fn test_multiwindow_wayland_capabilities_match_new_app_render_policy() {
 	mut app := new_app(backend: .wayland, require_renderer: true) or { return }
 	caps := capabilities_for_backend_with_renderer(.wayland) or {

@@ -35,6 +35,56 @@ fn (mut app App) publish_mock_state_locked(index int, operation ServiceOperation
 	}), token)
 }
 
+fn (mut app App) publish_mock_focus_locked(index int) ! {
+	mut losses := []int{}
+	for i, window in app.services.windows {
+		if i != index && (window.state.active == .on || window.state.focused == .on) {
+			losses << i
+		}
+	}
+	target := app.services.windows[index]
+	needs_gain := target.state.active != .on || target.state.focused != .on
+	count := losses.len + if needs_gain { 1 } else { 0 }
+	if count == 0 {
+		return
+	}
+	first_token := app.reserve_event_delivery_tokens_locked(count)!
+	mut offset := u64(0)
+	for loss_index in losses {
+		token := first_token + offset
+		state := service_window_state_with_sequence(ServiceWindowState{
+			...app.services.windows[loss_index].state
+			active:  .off
+			focused: .off
+		}, token)
+		app.services.windows[loss_index].state = state
+		app.enqueue_reserved_event_locked(queued_service_event(ServiceEvent{
+			kind:      .state
+			window:    app.services.windows[loss_index].id
+			sequence:  token
+			state:     state
+			operation: .focus
+		}), token)
+		offset++
+	}
+	if needs_gain {
+		token := first_token + offset
+		state := service_window_state_with_sequence(ServiceWindowState{
+			...app.services.windows[index].state
+			active:  .on
+			focused: .on
+		}, token)
+		app.services.windows[index].state = state
+		app.enqueue_reserved_event_locked(queued_service_event(ServiceEvent{
+			kind:      .state
+			window:    app.services.windows[index].id
+			sequence:  token
+			state:     state
+			operation: .focus
+		}), token)
+	}
+}
+
 // service_window_state returns the latest native observation for one live window.
 pub fn (app &App) service_window_state(id WindowId) !ServiceWindowState {
 	app.assert_owner_thread()!
@@ -168,14 +218,7 @@ pub fn (mut app App) service_request_focus(id WindowId) ! {
 	}
 	app.ensure_mock_service_locked()!
 	index := app.services.window_index(id)!
-	for i in 0 .. app.services.windows.len {
-		app.services.windows[i].state = ServiceWindowState{
-			...app.services.windows[i].state
-			active:  if i == index { .on } else { .off }
-			focused: if i == index { .on } else { .off }
-		}
-	}
-	app.publish_mock_state_locked(index, .focus)!
+	app.publish_mock_focus_locked(index)!
 }
 
 // service_raise_window asks the native platform to raise a live window.
@@ -837,10 +880,7 @@ pub fn (mut app App) service_abandon_window_readback_for_gg(readback ServiceRead
 
 // service_finish_window_readback publishes a ready owned RGBA8 terminal result.
 pub fn (mut app App) service_finish_window_readback(readback ServiceReadbackId, width int, height int, stride int, pixels []u8, submitted_frame u64) ! {
-	if width <= 0 || height <= 0 || stride < width * 4
-		|| u64(stride) * u64(height) != u64(pixels.len) {
-		return error(err_readback_invalid)
-	}
+	validate_service_readback_rgba8_layout(width, height, stride, pixels.len)!
 	app.finish_pending_window_readback(readback, ServiceReadbackResult{
 		id:              readback
 		window:          readback.window
@@ -851,6 +891,23 @@ pub fn (mut app App) service_finish_window_readback(readback ServiceReadbackId, 
 		stride:          stride
 		pixels_rgba8:    pixels.clone()
 	})!
+}
+
+fn validate_service_readback_rgba8_layout(width int, height int, stride int, pixels_len int) ! {
+	if width <= 0 || height <= 0 || stride <= 0 || pixels_len < 0 {
+		return error(err_readback_invalid)
+	}
+	width_u64 := u64(width)
+	height_u64 := u64(height)
+	stride_u64 := u64(stride)
+	if width_u64 > ~u64(0) / u64(4) {
+		return error(err_readback_invalid)
+	}
+	row_bytes := width_u64 * u64(4)
+	if row_bytes > stride_u64 || stride_u64 > ~u64(0) / height_u64
+		|| stride_u64 * height_u64 != u64(pixels_len) {
+		return error(err_readback_invalid)
+	}
 }
 
 // service_fail_window_readback publishes a failed terminal result without pixels.
@@ -903,10 +960,7 @@ pub fn (mut app App) service_request_window_readback_region(id WindowId, x int, 
 
 // service_complete_readback creates and immediately publishes one ready RGBA8 result.
 pub fn (mut app App) service_complete_readback(id WindowId, width int, height int, stride int, pixels []u8, submitted_frame u64) !ServiceReadbackId {
-	if width <= 0 || height <= 0 || stride < width * 4
-		|| u64(stride) * u64(height) != u64(pixels.len) {
-		return error(err_readback_invalid)
-	}
+	validate_service_readback_rgba8_layout(width, height, stride, pixels.len)!
 	readback := app.service_begin_window_readback(id)!
 	app.service_finish_window_readback(readback, width, height, stride, pixels, submitted_frame)!
 	return readback

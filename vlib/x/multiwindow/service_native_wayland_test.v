@@ -770,6 +770,7 @@ fn test_wayland_hidden_window_remaps_through_fresh_xdg_configure_cycle() {
 		assert app.service_window_state(window)!.mapping == .unmapped
 		_ = app.poll_events()!
 		second_show := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.window == window && it.service.kind == .state
 			&& it.service.operation == .show)
 		assert second_show.len == 1
 		assert second_show[0].service.state.mapping == .mapped

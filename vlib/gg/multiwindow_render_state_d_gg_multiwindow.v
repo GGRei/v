@@ -55,6 +55,11 @@ struct MultiWindowCleanupPlan {
 	run      bool
 }
 
+struct MultiWindowCaptureProducer {
+	frame_active        bool
+	frame_fn_configured bool
+}
+
 @[heap]
 struct MultiWindowRenderRuntime {
 mut:
@@ -362,6 +367,19 @@ fn (runtime &MultiWindowRenderRuntime) has_per_window_frame_callbacks() bool {
 		}
 	}
 	return false
+}
+
+fn (runtime &MultiWindowRenderRuntime) window_capture_producer(id WindowId) !MultiWindowCaptureProducer {
+	runtime.mutex.lock()
+	defer {
+		runtime.mutex.unlock()
+	}
+	window := runtime.windows[runtime.window_index_locked(id)!]
+	return MultiWindowCaptureProducer{
+		frame_active:        window.active_lease_epoch != 0 && window.active_phase == .frame
+		frame_fn_configured: window.status in [.registered, .initialized]
+			&& window.frame_fn != unsafe { nil }
+	}
 }
 
 fn (runtime &MultiWindowRenderRuntime) has_pending_window_initializers() bool {
