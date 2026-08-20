@@ -18,6 +18,42 @@ fn test_x11_service_state_transitions_are_qualified_by_native_property() {
 		false) == [.restore]
 }
 
+fn test_x11_focus_capability_defers_to_authoritative_focus_events_and_deduplicates() {
+	mut backend := Backend{
+		kind: .x11
+		x11:  new_x11_backend()
+	}
+	missing := backend.service_operation_capability(WindowId{}, .focus)
+	assert missing.support == .unsupported
+	assert !missing.asynchronous
+	assert !backend.service_state_publication_is_deferred(WindowId{}, .focus)
+
+	backend.x11.ewmh_active_window = true
+	available := backend.service_operation_capability(WindowId{}, .focus)
+	assert available.support == .available
+	assert available.asynchronous
+	assert available.state_observable
+	assert backend.service_state_publication_is_deferred(WindowId{}, .focus)
+
+	mut app := new_app()!
+	window := app.create_window()!
+	_ = app.drain_queued_events()!
+	focus := queued_service_event(ServiceEvent{
+		kind:      .state
+		window:    window
+		operation: .focus
+		state:     ServiceWindowState{
+			active:  .on
+			focused: .on
+		}
+	})
+	assert app.accept_backend_event_batch([focus], 1)!.accepted == 1
+	assert app.accept_backend_event_batch([focus], 2)!.accepted == 0
+	events := app.drain_queued_events()!
+	assert events.filter(it.kind == .service && it.service.operation == .focus).len == 1
+	app.stop()!
+}
+
 fn test_x11_native_service_controls_borrow_monitors_and_readback() {
 	$if linux && x_multiwindow_x11 ? {
 		if os.getenv('DISPLAY') == '' {

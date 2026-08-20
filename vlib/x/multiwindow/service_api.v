@@ -10,9 +10,13 @@ fn (app &App) ensure_mock_service_locked() ! {
 
 fn (mut app App) enqueue_service_event_locked(event ServiceEvent) !u64 {
 	token := app.reserve_event_delivery_tokens_locked(1)!
+	app.enqueue_reserved_service_event_locked(event, token)
+	return token
+}
+
+fn (mut app App) enqueue_reserved_service_event_locked(event ServiceEvent, token u64) {
 	sequenced := service_event_with_sequence(event, token)
 	app.enqueue_reserved_event_locked(queued_service_event(sequenced), token)
-	return token
 }
 
 fn (mut app App) enqueue_readback_event_locked(result ServiceReadbackResult) !u64 {
@@ -479,7 +483,10 @@ pub fn (mut app App) service_request_clipboard_text(id WindowId) !ServiceRequest
 		return err
 	}
 	if start.completed {
-		app.complete_native_clipboard_request(request, id, .clipboard_read, start.text)!
+		app.complete_native_clipboard_request(request, id, .clipboard_read, start.text) or {
+			app.rollback_native_service_request(request)
+			return err
+		}
 	}
 	return request
 }
@@ -496,7 +503,10 @@ pub fn (mut app App) service_set_clipboard_text(id WindowId, text string) !Servi
 		return err
 	}
 	if start.completed {
-		app.complete_native_clipboard_request(request, id, .clipboard_write, start.text)!
+		app.complete_native_clipboard_request(request, id, .clipboard_write, start.text) or {
+			app.rollback_native_service_request(request)
+			return err
+		}
 	}
 	return request
 }
@@ -509,6 +519,10 @@ fn (mut app App) complete_mock_clipboard(id WindowId, write bool, text string) !
 	}
 	app.ensure_mock_service_locked()!
 	app.services.window_index(id)!
+	if app.services.next_request == 0 {
+		return error(err_service_request_exhausted)
+	}
+	token := app.reserve_event_delivery_tokens_locked(1)!
 	request := app.services.take_request_id()!
 	if write {
 		app.services.clipboard_text = text.clone()
@@ -525,12 +539,12 @@ fn (mut app App) complete_mock_clipboard(id WindowId, write bool, text string) !
 		kind:     if write { .clipboard_write } else { .clipboard_read }
 		terminal: true
 	}
-	app.enqueue_service_event_locked(ServiceEvent{
+	app.enqueue_reserved_service_event_locked(ServiceEvent{
 		kind:      .clipboard
 		window:    id
 		operation: if write { .clipboard_write } else { .clipboard_read }
 		clipboard: result
-	})!
+	}, token)
 	return request
 }
 
@@ -572,34 +586,37 @@ fn (mut app App) complete_native_clipboard_request(id ServiceRequestId, window W
 	}
 	app.ensure_running_locked()!
 	app.ensure_event_admission_open_locked()!
+	mut matched_index := -1
 	for index, request in app.services.pending {
 		if request.id != id || request.window != window || request.terminal {
 			continue
 		}
-		app.services.pending[index].terminal = true
-		app.enqueue_service_event_locked(ServiceEvent{
-			kind:      .clipboard
-			window:    window
-			operation: operation
-			clipboard: ServiceClipboardResult{
-				id:     id
-				window: window
-				status: .ready
-				text:   text.clone()
-			}
-		})!
-		return
+		matched_index = index
+		break
 	}
-	return error(err_service_request_stale)
+	if matched_index < 0 {
+		return error(err_service_request_stale)
+	}
+	token := app.reserve_event_delivery_tokens_locked(1)!
+	app.services.pending[matched_index].terminal = true
+	app.enqueue_reserved_service_event_locked(ServiceEvent{
+		kind:      .clipboard
+		window:    window
+		operation: operation
+		clipboard: ServiceClipboardResult{
+			id:     id
+			window: window
+			status: .ready
+			text:   text.clone()
+		}
+	}, token)
 }
 
 // service_request_portal_parent starts an asynchronous native-parent export. A
 // ready event carries an opaque identifier and an explicitly released lease.
 pub fn (mut app App) service_request_portal_parent(id WindowId) !ServiceRequestId {
 	if app.service_operation_uses_mock(id, .portal_parent)! {
-		request, lease := app.begin_portal_parent_request(id)!
-		app.complete_portal_parent_request(request, id, lease, 'mock:${id.str()}')!
-		return request
+		return app.complete_mock_portal_parent(id)!
 	}
 	request, lease := app.begin_portal_parent_request(id)!
 	start := app.backend.service_start_portal_parent(id, request, lease) or {
@@ -607,8 +624,53 @@ pub fn (mut app App) service_request_portal_parent(id WindowId) !ServiceRequestI
 		return err
 	}
 	if start.completed {
-		app.complete_portal_parent_request(request, id, lease, start.identifier)!
+		app.complete_portal_parent_request(request, id, lease, start.identifier) or {
+			app.rollback_portal_parent_request(request, lease)
+			return err
+		}
 	}
+	return request
+}
+
+fn (mut app App) complete_mock_portal_parent(id WindowId) !ServiceRequestId {
+	app.assert_owner_thread()!
+	app.state_mutex.lock()
+	defer {
+		app.state_mutex.unlock()
+	}
+	app.ensure_mock_service_locked()!
+	app.services.window_index(id)!
+	if app.services.next_request == 0 {
+		return error(err_service_request_exhausted)
+	}
+	token := app.reserve_event_delivery_tokens_locked(1)!
+	request := app.services.take_request_id()!
+	lease := ServicePortalLeaseId{
+		app_instance: app.instance_id
+		serial:       request.serial
+	}
+	app.services.portal_leases << ServicePortalLease{
+		id:     lease
+		window: id
+	}
+	app.services.pending << PendingServiceRequest{
+		id:       request
+		window:   id
+		kind:     .portal_parent
+		terminal: true
+	}
+	app.enqueue_reserved_service_event_locked(ServiceEvent{
+		kind:          .portal_parent
+		window:        id
+		operation:     .portal_parent
+		portal_parent: ServicePortalParentResult{
+			id:         request
+			window:     id
+			status:     .ready
+			lease:      lease
+			identifier: 'mock:${id.str()}'
+		}
+	}, token)
 	return request
 }
 
@@ -645,19 +707,20 @@ fn (mut app App) complete_portal_parent_request(request ServiceRequestId, id Win
 	}
 	app.ensure_running_locked()!
 	app.ensure_event_admission_open_locked()!
-	mut matched := false
+	mut matched_index := -1
 	for index, pending in app.services.pending {
 		if pending.id == request && pending.window == id && pending.kind == .portal_parent
 			&& !pending.terminal {
-			app.services.pending[index].terminal = true
-			matched = true
+			matched_index = index
 			break
 		}
 	}
-	if !matched {
+	if matched_index < 0 {
 		return error(err_service_request_stale)
 	}
-	app.enqueue_service_event_locked(ServiceEvent{
+	token := app.reserve_event_delivery_tokens_locked(1)!
+	app.services.pending[matched_index].terminal = true
+	app.enqueue_reserved_service_event_locked(ServiceEvent{
 		kind:          .portal_parent
 		window:        id
 		operation:     .portal_parent
@@ -668,7 +731,7 @@ fn (mut app App) complete_portal_parent_request(request ServiceRequestId, id Win
 			lease:      lease
 			identifier: identifier
 		}
-	})!
+	}, token)
 }
 
 fn (mut app App) rollback_portal_parent_request(request ServiceRequestId, lease ServicePortalLeaseId) {

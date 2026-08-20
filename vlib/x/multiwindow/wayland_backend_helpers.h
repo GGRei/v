@@ -1229,15 +1229,33 @@ static inline int v_multiwindow_wayland_create_tmpfile(size_t size) {
 	return fd;
 }
 
-static inline void *v_multiwindow_wayland_create_shm_buffer(struct wl_shm *shm, int width, int height) {
-	if (shm == NULL || width <= 0 || height <= 0) {
-		return NULL;
+static inline int v_multiwindow_wayland_shm_layout(int width, int height,
+		int32_t *out_stride, int32_t *out_size) {
+	if (width <= 0 || height <= 0 || out_stride == NULL || out_size == NULL
+			|| (size_t)width > (size_t)INT32_MAX / 4u) {
+		return 0;
 	}
-	size_t stride = (size_t)width * 4;
+	size_t stride = (size_t)width * 4u;
+	if (stride == 0 || (size_t)height > (size_t)INT32_MAX / stride) {
+		return 0;
+	}
 	size_t size = stride * (size_t)height;
-	if (stride == 0 || size == 0 || size / stride != (size_t)height) {
+	if (stride > (size_t)INT32_MAX || size == 0 || size > (size_t)INT32_MAX) {
+		return 0;
+	}
+	*out_stride = (int32_t)stride;
+	*out_size = (int32_t)size;
+	return 1;
+}
+
+static inline void *v_multiwindow_wayland_create_shm_buffer(struct wl_shm *shm, int width, int height) {
+	int32_t stride32 = 0;
+	int32_t size32 = 0;
+	if (shm == NULL || !v_multiwindow_wayland_shm_layout(width, height, &stride32, &size32)) {
 		return NULL;
 	}
+	size_t stride = (size_t)stride32;
+	size_t size = (size_t)size32;
 	int fd = v_multiwindow_wayland_create_tmpfile(size);
 	if (fd < 0) {
 		return NULL;
@@ -1252,13 +1270,13 @@ static inline void *v_multiwindow_wayland_create_shm_buffer(struct wl_shm *shm, 
 	for (size_t i = 0; i < pixel_count; i++) {
 		pixels[i] = 0xff202020u;
 	}
-	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)size);
+	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, size32);
 	if (pool == NULL) {
 		munmap(data, size);
 		close(fd);
 		return NULL;
 	}
-	struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, width, height, (int32_t)stride, WL_SHM_FORMAT_XRGB8888);
+	struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, width, height, stride32, WL_SHM_FORMAT_XRGB8888);
 	wl_shm_pool_destroy(pool);
 	munmap(data, size);
 	close(fd);

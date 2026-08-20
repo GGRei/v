@@ -356,9 +356,20 @@ fn test_multiwindow_x11_runtime_create_destroy_when_display_is_available() {
 
 struct X11OffscreenReadbackTestState {
 mut:
+	image                    WindowImageId
+	attachments              WindowAttachmentsId
+	readback                 WindowReadbackId
+	expected_submitted_frame u64
+	pending_after_request    bool
+	requested                bool
+}
+
+struct X11OffscreenReadbackFailureTestState {
+mut:
 	image       WindowImageId
 	attachments WindowAttachmentsId
 	readback    WindowReadbackId
+	batch_epoch u64
 	requested   bool
 }
 
@@ -450,6 +461,7 @@ fn test_multiwindow_x11_public_managed_offscreen_readback_when_display_is_availa
 					drawing.v2f_c4b(2, 4, 255, 255, 255, 255)
 					drawing.end()
 				})!
+				state.expected_submitted_frame = context.info.submitted_frame + 1
 				state.readback = context.request_image_readback(state.image, WindowReadbackConfig{
 					rect: WindowPixelRect{
 						x:      2
@@ -458,6 +470,8 @@ fn test_multiwindow_x11_public_managed_offscreen_readback_when_display_is_availa
 						height: 2
 					}
 				})!
+				state.pending_after_request =
+					context.app.pending_image_readbacks.any(window_readback_id_from_core(it.id) == state.readback)
 			}
 			cleanup_fn:  fn [mut state] (mut context WindowCleanupContext) ! {
 				context.with_resources(fn [mut state] (mut resources WindowResourceContext) ! {
@@ -479,6 +493,8 @@ fn test_multiwindow_x11_public_managed_offscreen_readback_when_display_is_availa
 		assert result.id == state.readback
 		assert result.window == window
 		assert result.status == .ready
+		assert state.pending_after_request
+		assert result.submitted_frame == state.expected_submitted_frame
 		assert result.width == 2
 		assert result.height == 2
 		assert result.stride == 8
@@ -497,6 +513,79 @@ fn test_multiwindow_x11_public_managed_offscreen_readback_when_display_is_availa
 		}
 	} $else {
 		return
+	}
+}
+
+fn test_multiwindow_x11_failed_offscreen_readback_batch_is_terminal_exactly_once() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11, require_renderer: true) or { return }
+		mut state := &X11OffscreenReadbackFailureTestState{}
+		window := app.create_window(
+			title:       'V gg.App X11 failed offscreen readback'
+			width:       48
+			height:      48
+			redraw_mode: .continuous
+			init_fn:     fn [mut state] (mut context WindowInitContext) ! {
+				context.with_resources(fn [mut state] (mut resources WindowResourceContext) ! {
+					state.image = resources.make_image(&gfx.ImageDesc{
+						render_target: true
+						width:         4
+						height:        4
+						pixel_format:  .rgba8
+						sample_count:  1
+					})!
+					state.attachments = resources.make_attachments(WindowAttachmentsConfig{
+						colors: [state.image]
+					})!
+				})!
+			}
+			frame_fn:    fn [mut state] (mut context WindowContext) ! {
+				if state.requested {
+					return
+				}
+				state.requested = true
+				context.with_offscreen_sgl(WindowOffscreenPassConfig{
+					attachments: state.attachments
+					action:      gfx.create_clear_pass_action(1, 0, 0, 1)
+				}, fn (mut drawing WindowSglContext) ! {
+					drawing.defaults()
+				})!
+				state.batch_epoch = context.app.active_batch_epoch
+				state.readback =
+					context.request_image_readback(state.image, WindowReadbackConfig{})!
+				assert context.app.pending_image_readbacks.any(window_readback_id_from_core(it.id) == state.readback)
+				return error('injected failure before X11 offscreen submission')
+			}
+			cleanup_fn:  fn [mut state] (mut context WindowCleanupContext) ! {
+				context.with_resources(fn [mut state] (mut resources WindowResourceContext) ! {
+					resources.retire_attachments(state.attachments)!
+					resources.retire_image(state.image)!
+				})!
+			}
+		)!
+		mut run_error := ''
+		app.run() or { run_error = err.msg() }
+		assert run_error.contains('injected failure before X11 offscreen submission')
+		core_results := app.core.drain_readback_events()!
+		assert core_results.len == 1
+		result := window_readback_result_from_core(core_results[0])
+		assert result.id == state.readback
+		assert result.window == window
+		assert result.status == .failed
+		assert result.submitted_frame == 0
+		assert result.pixels_rgba8.len == 0
+		assert result.error.contains('injected failure before X11 offscreen submission')
+		assert app.pending_image_readbacks.len == 0
+		app.fail_linux_gl_image_readbacks_for_batch(state.batch_epoch,
+			'injected failure before X11 offscreen submission')!
+		assert app.core.drain_readback_events()!.len == 0
+		app.stop() or {
+			assert err.msg().contains('injected failure before X11 offscreen submission')
+		}
+		assert app.core.drain_readback_events()!.len == 0
 	}
 }
 

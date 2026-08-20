@@ -113,6 +113,7 @@ const wayland_dnd_action_copy = u32(1)
 const wayland_dnd_action_move = u32(2)
 const wayland_output_mode_current = u32(1)
 const wayland_fractional_scale_denominator = u32(120)
+const wayland_protocol_extent_max = u64(0x7fffffff)
 const wayland_prot_read = 1
 const wayland_map_private = 2
 const wayland_map_failed = voidptr(usize(~u64(0)))
@@ -154,6 +155,7 @@ mut:
 	pending_toplevel_height        int
 	configured                     bool
 	requested_visible              bool
+	hide_barrier_active            bool
 	mapped                         bool
 	publish_show_on_map            bool
 	pending_egl_resize             bool
@@ -589,16 +591,31 @@ fn (record &WaylandWindowRecord) effective_render_scale() f32 {
 }
 
 fn (record &WaylandWindowRecord) framebuffer_extent(logical int) int {
-	if logical <= 0 {
-		return 1
-	}
 	if record.uses_fractional_scale() && record.fractional_scale_numerator > 0 {
-		numerator := u64(record.fractional_scale_numerator)
-		denominator := u64(wayland_fractional_scale_denominator)
-		return int((u64(logical) * numerator + denominator - 1) / denominator)
+		return wayland_framebuffer_extent(logical, u64(record.fractional_scale_numerator),
+			u64(wayland_fractional_scale_denominator))
 	}
 	scale := if record.high_dpi && record.buffer_scale > 0 { record.buffer_scale } else { 1 }
-	return safe_wayland_extent(logical * scale)
+	return wayland_framebuffer_extent(logical, u64(scale), 1)
+}
+
+fn wayland_framebuffer_extent(logical int, numerator u64, denominator u64) int {
+	if logical <= 0 || numerator == 0 || denominator == 0 {
+		return 1
+	}
+	logical_u64 := u64(logical)
+	if numerator > u64(0xffffffffffffffff) / logical_u64 {
+		return int(wayland_protocol_extent_max)
+	}
+	product := logical_u64 * numerator
+	mut extent := product / denominator
+	if product % denominator != 0 {
+		extent++
+	}
+	if extent > wayland_protocol_extent_max {
+		return int(wayland_protocol_extent_max)
+	}
+	return if extent == 0 { 1 } else { int(extent) }
 }
 
 fn (record &WaylandWindowRecord) framebuffer_width() int {
@@ -929,6 +946,7 @@ $if linux && sokol_wayland ? {
 	fn C.v_multiwindow_wayland_viewport_destroy(viewport &C.wp_viewport)
 	fn C.v_multiwindow_wayland_viewporter_destroy(viewporter &C.wp_viewporter)
 	fn C.v_multiwindow_wayland_shm_destroy(shm &C.wl_shm)
+	fn C.v_multiwindow_wayland_shm_layout(width int, height int, out_stride &i32, out_size &i32) int
 	fn C.v_multiwindow_wayland_create_shm_buffer(shm &C.wl_shm, width int, height int) voidptr
 	fn C.v_multiwindow_wayland_attach_buffer(surface &C.wl_surface, buffer &C.wl_buffer, width int, height int)
 	fn C.v_multiwindow_wayland_add_buffer_listener(buffer &C.wl_buffer, data voidptr) int
@@ -1492,6 +1510,14 @@ $if linux && sokol_wayland ? {
 			return
 		}
 		mut record := unsafe { &WaylandWindowRecord(data) }
+		if record.hide_barrier_active {
+			if record.owner != unsafe { nil } && record.owner.transport_can_marshal() {
+				C.v_multiwindow_wayland_xdg_surface_ack_configure(unsafe {
+					&C.xdg_surface(xdg_surface)
+				}, serial)
+			}
+			return
+		}
 		mut width := record.width
 		mut height := record.height
 		if record.pending_toplevel_width > 0 {
@@ -1548,6 +1574,9 @@ $if linux && sokol_wayland ? {
 			return
 		}
 		mut record := unsafe { &WaylandWindowRecord(data) }
+		if record.hide_barrier_active {
+			return
+		}
 		record.pending_service_state_valid = true
 		record.pending_maximized = C.v_multiwindow_wayland_toplevel_state_contains(states,
 			wayland_xdg_toplevel_state_maximized) != 0
@@ -5180,13 +5209,6 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 	}
 }
 
-fn safe_wayland_extent(value int) int {
-	if value > 0 {
-		return value
-	}
-	return 1
-}
-
 fn (mut backend WaylandBackend) ensure_lifecycle_buffers() ! {
 	$if linux && sokol_wayland ? {
 		for i in 0 .. backend.windows.len {
@@ -5219,7 +5241,7 @@ fn (mut backend WaylandBackend) ensure_lifecycle_buffer(index int) ! {
 			return
 		}
 		if !record.configured {
-			return error(err_wayland_surface_not_configured)
+			return
 		}
 		width := record.framebuffer_width()
 		height := record.framebuffer_height()
@@ -6414,26 +6436,18 @@ fn (mut backend WaylandBackend) service_show_window(id WindowId) !ServiceWindowS
 		}
 		backend.windows[index].requested_visible = true
 		backend.windows[index].publish_show_on_map = true
+		backend.windows[index].mapped = false
 		if !backend.windows[index].configured {
-			C.wl_surface_commit(unsafe { &C.wl_surface(backend.windows[index].surface) })
-			seed := wayland_window_operation_seed(id,
-				backend.windows[index].render_target_generation, .display_transport)
-			flush := backend.attempt_wayland_flush(seed)
-			if !flush.succeeded() {
-				backend.windows[index].requested_visible = false
-				backend.windows[index].publish_show_on_map = false
-				return error(err_wayland_flush_failed)
-			}
-			roundtrip := backend.attempt_wayland_roundtrip(seed)
-			if !roundtrip.succeeded() || !backend.windows[index].configured {
-				backend.windows[index].requested_visible = false
-				backend.windows[index].publish_show_on_map = false
-				return error(err_wayland_dispatch_failed)
-			}
+			backend.windows[index].frame_ready = false
 		}
-		backend.windows[index].frame_ready = true
-		if !backend.renderer_ready() {
-			backend.ensure_lifecycle_buffer(index)!
+		C.wl_surface_commit(unsafe { &C.wl_surface(backend.windows[index].surface) })
+		seed := wayland_window_operation_seed(id, backend.windows[index].render_target_generation,
+			.display_transport)
+		flush := backend.attempt_wayland_flush(seed)
+		if !flush.succeeded() {
+			backend.windows[index].requested_visible = false
+			backend.windows[index].publish_show_on_map = false
+			return error(err_wayland_flush_failed)
 		}
 		return backend.service_window_state(id)!
 	} $else {
@@ -6458,22 +6472,33 @@ fn (mut backend WaylandBackend) service_hide_window(id WindowId) !ServiceWindowS
 				return native_render_error(destroy)
 			}
 		}
+		backend.windows[index].requested_visible = false
+		backend.windows[index].publish_show_on_map = false
+		backend.windows[index].hide_barrier_active = true
 		C.v_multiwindow_wayland_unmap_surface(unsafe {
 			&C.wl_surface(backend.windows[index].surface)
 		})
-		backend.windows[index].requested_visible = false
 		backend.windows[index].mapped = false
-		backend.windows[index].configured = false
 		backend.windows[index].frame_ready = false
-		backend.windows[index].publish_show_on_map = false
-		backend.windows[index].pending_service_state_valid = false
 		backend.windows[index].render_target_generation =
 			exhaust_backend_target_generation(backend.windows[index].render_target_generation)
-		flush := backend.attempt_wayland_flush(wayland_window_operation_seed(id,
-			backend.windows[index].render_target_generation, .display_transport))
+		seed := wayland_window_operation_seed(id, backend.windows[index].render_target_generation,
+			.display_transport)
+		flush := backend.attempt_wayland_flush(seed)
 		if !flush.succeeded() {
+			backend.windows[index].hide_barrier_active = false
 			return error(err_wayland_flush_failed)
 		}
+		barrier := backend.attempt_wayland_roundtrip(seed)
+		backend.windows[index].hide_barrier_active = false
+		if !barrier.succeeded() {
+			return error(err_wayland_dispatch_failed)
+		}
+		backend.windows[index].configured = false
+		backend.windows[index].pending_toplevel_width = 0
+		backend.windows[index].pending_toplevel_height = 0
+		backend.windows[index].pending_egl_resize = false
+		backend.windows[index].pending_service_state_valid = false
 		return backend.service_window_state(id)!
 	} $else {
 		_ = id

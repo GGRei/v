@@ -410,8 +410,8 @@ fn (mut app App) finish_managed_window_captures(outcome multiwindow.RenderBatchO
 	}
 }
 
-fn (mut app App) fail_wayland_image_readbacks_for_batch(batch_epoch u64, message string) ! {
-	if app.capabilities().backend != .wayland || app.pending_image_readbacks.len == 0 {
+fn (mut app App) fail_linux_gl_image_readbacks_for_batch(batch_epoch u64, message string) ! {
+	if app.pending_image_readbacks.len == 0 {
 		return
 	}
 	mut retained := []MultiWindowPendingImageReadback{cap: app.pending_image_readbacks.len}
@@ -436,12 +436,12 @@ fn (mut app App) fail_wayland_image_readbacks_for_batch(batch_epoch u64, message
 	}
 }
 
-fn (mut app App) finish_wayland_image_readbacks(outcome multiwindow.RenderBatchOutcome) ! {
-	if app.capabilities().backend != .wayland || app.pending_image_readbacks.len == 0 {
+fn (mut app App) finish_linux_gl_image_readbacks(outcome multiwindow.RenderBatchOutcome) ! {
+	if app.pending_image_readbacks.len == 0 {
 		return
 	}
 	if outcome.error != '' || !outcome.committed || outcome.finalized_submissions <= 0 {
-		app.fail_wayland_image_readbacks_for_batch(outcome.batch_epoch, outcome.error)!
+		app.fail_linux_gl_image_readbacks_for_batch(outcome.batch_epoch, outcome.error)!
 		return
 	}
 	mut retained := []MultiWindowPendingImageReadback{cap: app.pending_image_readbacks.len}
@@ -455,7 +455,7 @@ fn (mut app App) finish_wayland_image_readbacks(outcome multiwindow.RenderBatchO
 			app.core.service_fail_window_readback(readback.id, err.msg()) or { errors << err.msg() }
 			continue
 		}
-		if snapshot.submitted_frame < readback.target_submitted_frame {
+		if snapshot.submitted_frame != readback.target_submitted_frame {
 			app.core.service_fail_window_readback(readback.id,
 				err_multiwindow_render_readback_unsupported) or { errors << err.msg() }
 			continue
@@ -788,6 +788,9 @@ fn (mut context WindowContext) request_image_readback_managed(id WindowImageId, 
 			if gfx.query_backend() !in [.glcore33, .gles3] {
 				return error(err_multiwindow_render_readback_unsupported)
 			}
+			if context.info.submitted_frame == u64(0xffffffffffffffff) {
+				return error(err_multiwindow_render_readback_unsupported)
+			}
 			mut pixels := []u8{len: width * height * 4}
 			status := C.v_gg_multiwindow_gl_readback_image_rgba8(snapshot.image.id,
 				snapshot.desc.height, x, y, width, height, pixels.data, usize(pixels.len))
@@ -795,22 +798,19 @@ fn (mut context WindowContext) request_image_readback_managed(id WindowImageId, 
 				return error(err_multiwindow_render_readback_unsupported)
 			}
 			mut app := context.app
-			if app.capabilities().backend == .wayland {
-				readback := app.core.service_begin_window_readback(context.info.window.core)!
-				app.pending_image_readbacks << MultiWindowPendingImageReadback{
-					id:                     readback
-					window:                 context.info.window
-					batch_epoch:            app.active_batch_epoch
-					target_submitted_frame: context.info.submitted_frame + 1
-					width:                  width
-					height:                 height
-					stride:                 width * 4
-					pixels:                 pixels
-				}
-				return window_readback_id_from_core(readback)
+			readback := app.core.service_begin_window_readback(context.info.window.core)!
+			app.pending_image_readbacks << MultiWindowPendingImageReadback{
+				id:                     readback
+				window:                 context.info.window
+				image:                  id
+				batch_epoch:            app.active_batch_epoch
+				target_submitted_frame: context.info.submitted_frame + 1
+				width:                  width
+				height:                 height
+				stride:                 width * 4
+				pixels:                 pixels
 			}
-			return window_readback_id_from_core(app.core.service_complete_readback(context.info.window.core,
-				width, height, width * 4, pixels, context.info.submitted_frame)!)
+			return window_readback_id_from_core(readback)
 		} $else {
 			return error(err_multiwindow_render_readback_unsupported)
 		}

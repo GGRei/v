@@ -160,6 +160,75 @@ fn test_wayland_fractional_scale_preference_updates_metrics_and_framebuffer() {
 	}
 }
 
+fn test_wayland_framebuffer_extent_uses_widened_ceil_and_protocol_clamp() {
+	$if linux && sokol_wayland ? {
+		assert wayland_framebuffer_extent(0, 1, 1) == 1
+		assert wayland_framebuffer_extent(-1, 1, 1) == 1
+		assert wayland_framebuffer_extent(101, 180, 120) == 152
+		assert wayland_framebuffer_extent(1_073_741_823, 2, 1) == 2_147_483_646
+		assert wayland_framebuffer_extent(2_147_483_647, 1, 1) == 2_147_483_647
+		assert wayland_framebuffer_extent(2_147_483_647, 2, 1) == 2_147_483_647
+		assert wayland_framebuffer_extent(2_147_483_647, u64(~u32(0)),
+			u64(wayland_fractional_scale_denominator)) == 2_147_483_647
+	}
+}
+
+fn test_wayland_shm_layout_rejects_stride_and_size_narrowing_before_protocol_use() {
+	$if linux && sokol_wayland ? {
+		mut stride := i32(0)
+		mut size := i32(0)
+		assert C.v_multiwindow_wayland_shm_layout(1, 1, &stride, &size) == 1
+		assert stride == 4
+		assert size == 4
+
+		assert C.v_multiwindow_wayland_shm_layout(536_870_911, 1, &stride, &size) == 1
+		assert stride == 2_147_483_644
+		assert size == 2_147_483_644
+		assert C.v_multiwindow_wayland_shm_layout(536_870_912, 1, &stride, &size) == 0
+		assert C.v_multiwindow_wayland_shm_layout(1, 536_870_911, &stride, &size) == 1
+		assert stride == 4
+		assert size == 2_147_483_644
+		assert C.v_multiwindow_wayland_shm_layout(1, 536_870_912, &stride, &size) == 0
+		assert C.v_multiwindow_wayland_shm_layout(0, 1, &stride, &size) == 0
+	}
+}
+
+fn test_wayland_hide_barrier_ignores_configure_without_discarding_initial_hidden_configure() {
+	$if linux && sokol_wayland ? {
+		mut hidden := &WaylandWindowRecord{
+			width:                       80
+			height:                      60
+			configured:                  true
+			requested_visible:           false
+			hide_barrier_active:         true
+			pending_toplevel_width:      120
+			pending_toplevel_height:     90
+			pending_egl_resize:          true
+			pending_service_state_valid: true
+		}
+		wayland_xdg_toplevel_configure(hidden.listener_data(), unsafe { nil }, 120, 90,
+			unsafe { nil })
+		assert hidden.pending_toplevel_width == 120
+		assert hidden.pending_toplevel_height == 90
+		assert hidden.pending_service_state_valid
+		wayland_xdg_surface_configure(hidden.listener_data(), unsafe { nil }, 7)
+		assert hidden.configured
+		assert hidden.pending_toplevel_width == 120
+		assert hidden.pending_toplevel_height == 90
+		assert hidden.pending_egl_resize
+		assert hidden.pending_service_state_valid
+
+		mut initial_hidden := &WaylandWindowRecord{
+			width:             80
+			height:            60
+			requested_visible: false
+		}
+		wayland_xdg_surface_configure(initial_hidden.listener_data(), unsafe { nil }, 8)
+		assert initial_hidden.configured
+		assert initial_hidden.frame_ready
+	}
+}
+
 fn test_wayland_fractional_scale_requires_both_protocol_objects() {
 	$if linux && sokol_wayland ? {
 		mut backend := &WaylandBackend{}
@@ -757,21 +826,53 @@ fn test_wayland_hidden_window_remaps_through_fresh_xdg_configure_cycle() {
 
 		app.service_show_window(window)!
 		assert app.service_window_state(window)!.mapping == .unmapped
-		_ = app.poll_events()!
-		first_show := app.drain_queued_events()!.filter(it.kind == .service
-			&& it.service.operation == .show)
+		mut first_show := []QueuedEvent{}
+		for _ in 0 .. 100 {
+			_ = app.poll_events()!
+			first_show << app.drain_queued_events()!.filter(it.kind == .service
+				&& it.service.window == window && it.service.kind == .state
+				&& it.service.operation == .show)
+			if first_show.len > 0 {
+				break
+			}
+			time.sleep(time.millisecond)
+		}
 		assert first_show.len == 1
 		assert first_show[0].service.state.mapping == .mapped
 		assert app.service_window_state(window)!.mapping == .mapped
 		app.service_hide_window(window)!
 		assert app.service_window_state(window)!.mapping == .unmapped
+		index_after_hide := app.backend.wayland.window_record_index(window) or {
+			assert false, 'Wayland hidden window record disappeared'
+			0
+		}
+		assert !app.backend.wayland.windows[index_after_hide].configured
+		assert !app.backend.wayland.windows[index_after_hide].pending_service_state_valid
 		_ = app.drain_queued_events()!
 		app.service_show_window(window)!
 		assert app.service_window_state(window)!.mapping == .unmapped
-		_ = app.poll_events()!
-		second_show := app.drain_queued_events()!.filter(it.kind == .service
-			&& it.service.window == window && it.service.kind == .state
-			&& it.service.operation == .show)
+		index := app.backend.wayland.window_record_index(window) or {
+			assert false, 'Wayland remap window record disappeared'
+			0
+		}
+		assert !app.backend.wayland.windows[index].configured
+		mut second_show := []QueuedEvent{}
+		for _ in 0 .. 100 {
+			_ = app.poll_events()!
+			second_show << app.drain_queued_events()!.filter(it.kind == .service
+				&& it.service.window == window && it.service.kind == .state
+				&& it.service.operation == .show)
+			if second_show.len > 0 {
+				break
+			}
+			time.sleep(time.millisecond)
+		}
+		for _ in 0 .. 3 {
+			_ = app.poll_events()!
+			second_show << app.drain_queued_events()!.filter(it.kind == .service
+				&& it.service.window == window && it.service.kind == .state
+				&& it.service.operation == .show)
+		}
 		assert second_show.len == 1
 		assert second_show[0].service.state.mapping == .mapped
 		assert app.service_window_state(window)!.mapping == .mapped

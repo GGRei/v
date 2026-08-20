@@ -742,6 +742,33 @@ fn test_managed_window_capture_submit_failure_is_terminal_exactly_once() {
 	app.stop()!
 }
 
+fn test_linux_gl_image_readback_submit_failure_is_terminal_exactly_once() {
+	mut app := new_app(backend: .mock)!
+	window := app.create_window(title: 'image readback submit failure')!
+	_ = app.drain_events()!
+	readback := seed_managed_image_readback_for_test(mut app, window, 17)!
+
+	app.finish_linux_gl_image_readbacks(multiwindow.RenderBatchOutcome{
+		batch_epoch: 17
+		error:       'injected image submit failure'
+	})!
+	results := app.core.drain_readback_events()!
+	assert results.len == 1
+	assert results[0].id == readback
+	assert results[0].status == .failed
+	assert results[0].submitted_frame == 0
+	assert results[0].pixels_rgba8.len == 0
+	assert results[0].error == 'injected image submit failure'
+	assert app.pending_image_readbacks.len == 0
+
+	app.finish_linux_gl_image_readbacks(multiwindow.RenderBatchOutcome{
+		batch_epoch: 17
+		error:       'injected image submit failure'
+	})!
+	assert app.core.drain_readback_events()!.len == 0
+	app.stop()!
+}
+
 fn test_managed_window_capture_destroy_is_cancelled_exactly_once() {
 	mut app := new_app(backend: .mock)!
 	window := app.create_window(title: 'capture destroy cancellation')!

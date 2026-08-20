@@ -359,11 +359,11 @@ jobs:
             -ExpectedAppSha256 'e8a01a50a4176edb118b3fddea41472f9c32047d63a73db7ca3a11ad7e499d8f' `
             -ExpectedTypesSha256 '0a9058ba7928945e24284c867eb6182336ea3b1d41e1337786c71105b1fe93b3' `
             -ExpectedBackendSha256 'dcd0f088c235ae030f8bbc9ab63082c38d93f6f1194373e74d8dcb454d100a3f' `
-            -ExpectedServiceApiSha256 'd4f68f246dac3cf2772ac8c1f724b9f8acc0f81cef8fd14ead54a42b8c7a8121' `
+            -ExpectedServiceApiSha256 '8296ba5bf92055d69062d9bb916d07232989ecb3667e4f5f994bde6fe7aa4e02' `
             -ExpectedServiceTypesSha256 '1ed698e3e359fd529fda0ccc8fdf652a16d02c69c98b0d8e8a3fd8b5e1d4aacf' `
             -ExpectedServiceRegistrySha256 'a70004c4deb62b27cedb340611d4393d7fff1343bca493d61862db047b06e68b' `
             -ExpectedEventDeliverySha256 '8916370a7df40619608cd1f65954d2906a83e726a54ba754d40ee732f6514011' `
-            -ExpectedPublicRoutingSurfaceSha256 '6eecdac460e9569f58be1c2b2ad13d5de67871a2d596cd824508937bf2616235' `
+            -ExpectedPublicRoutingSurfaceSha256 'd25de818ccf3e3c9d5ab2c3f175075e9d30580f0e66dd59a40914ed3bf76da82' `
             -ExpectedServiceBackendSha256 '8515db375427e3b145052567582ead24a18c0b35fb286d15ff7d704d35ae240b' `
             -ExpectedEventDispatchSha256 '7ef6c7cbd34511d6c19c1a3a269b46876db791b9412bb88e3a8d4dcd543bfd4e' `
             -ExpectedWin32BackendSha256 '4b854e9dd019bb8193057c08aaa0a8185096f165afff99d7ed519c5442e0e52e' `
@@ -371,7 +371,7 @@ jobs:
             -ExpectedWin32ServiceBackendSha256 '99b06a401e8787006252c7fdc43fbb263f12e0ba5971df9d4946f0de1b577359' `
             -ExpectedWin32ServiceNativeSha256 '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73' `
             -ExpectedGreenProductionSurfaceSha256 'fb3b6b81f15f7cefae9ca31362965ca3174f0e0409e145e52a95b00f2a73cd0c' `
-            -ExpectedRunnerSha256 'a3a6f9c9fc5e586e20a88bc2595f39717595b8ca806194e5353701c15800c1af'
+            -ExpectedRunnerSha256 '750fe4c36bdd5de6eda7f95d92325b9fefc8fc63f9dab85b8d482a744f5e149d'
       - name: Prepare multiwindow Job Object watchdog
         shell: pwsh
         run: |

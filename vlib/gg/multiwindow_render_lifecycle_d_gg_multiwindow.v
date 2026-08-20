@@ -258,9 +258,11 @@ fn (mut app App) run_render_batch(legacy bool, frame_fn AppFrameFn) !int {
 			app.fail_managed_window_captures_for_batch(app.active_batch_epoch, batch_error) or {
 				errors << err.msg()
 			}
-			$if linux && sokol_wayland ? {
-				app.fail_wayland_image_readbacks_for_batch(app.active_batch_epoch, batch_error) or {
-					errors << err.msg()
+			$if linux {
+				$if x_multiwindow_x11 ? || sokol_wayland ? {
+					app.fail_linux_gl_image_readbacks_for_batch(app.active_batch_epoch, batch_error) or {
+						errors << err.msg()
+					}
 				}
 			}
 			app.latch_renderer_terminal_failure_if_unusable()
@@ -275,9 +277,11 @@ fn (mut app App) run_render_batch(legacy bool, frame_fn AppFrameFn) !int {
 			app.fail_managed_window_captures_for_batch(app.active_batch_epoch, batch_error) or {
 				errors << err.msg()
 			}
-			$if linux && sokol_wayland ? {
-				app.fail_wayland_image_readbacks_for_batch(app.active_batch_epoch, batch_error) or {
-					errors << err.msg()
+			$if linux {
+				$if x_multiwindow_x11 ? || sokol_wayland ? {
+					app.fail_linux_gl_image_readbacks_for_batch(app.active_batch_epoch, batch_error) or {
+						errors << err.msg()
+					}
 				}
 			}
 			app.latch_renderer_terminal_failure_if_unusable()
@@ -288,8 +292,10 @@ fn (mut app App) run_render_batch(legacy bool, frame_fn AppFrameFn) !int {
 	}
 	mut terminal_errors := []string{}
 	app.finish_managed_window_captures(outcome) or { terminal_errors << err.msg() }
-	$if linux && sokol_wayland ? {
-		app.finish_wayland_image_readbacks(outcome) or { terminal_errors << err.msg() }
+	$if linux {
+		$if x_multiwindow_x11 ? || sokol_wayland ? {
+			app.finish_linux_gl_image_readbacks(outcome) or { terminal_errors << err.msg() }
+		}
 	}
 	sokol_available := app.core.renderer_device_available_for_gg()
 	app.render_runtime.finish_batch(outcome.batch_epoch, outcome.committed, sokol_available) or {

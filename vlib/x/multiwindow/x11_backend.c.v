@@ -1033,6 +1033,7 @@ fn (backend &X11Backend) service_operation_capability(operation ServiceOperation
 		.focus {
 			ServiceOperationCapability{
 				support:          if backend.ewmh_active_window { .available } else { .unsupported }
+				asynchronous:     backend.ewmh_active_window
 				state_observable: backend.ewmh_active_window
 			}
 		}

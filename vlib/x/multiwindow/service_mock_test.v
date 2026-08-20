@@ -255,6 +255,218 @@ fn test_service_readback_layout_validation_is_overflow_safe_and_atomic() {
 	app.stop()!
 }
 
+fn test_mock_clipboard_and_portal_delivery_exhaustion_is_atomic_and_retryable() {
+	mut app := new_app()!
+	window := app.create_window()!
+	_ = app.drain_queued_events()!
+	app.state_mutex.lock()
+	app.services.clipboard_text = 'before'
+	saved_delivery_token := app.next_event_delivery_token
+	app.next_event_delivery_token = 0
+	app.state_mutex.unlock()
+	request_before := app.services.next_request
+	pending_before := app.services.pending.len
+	leases_before := app.services.portal_leases.len
+
+	mut rejected := 0
+	_ = app.service_set_clipboard_text(window, 'after') or {
+		assert err.msg() == err_event_delivery_exhausted
+		rejected++
+		ServiceRequestId{}
+	}
+	_ = app.service_request_clipboard_text(window) or {
+		assert err.msg() == err_event_delivery_exhausted
+		rejected++
+		ServiceRequestId{}
+	}
+	_ = app.service_request_portal_parent(window) or {
+		assert err.msg() == err_event_delivery_exhausted
+		rejected++
+		ServiceRequestId{}
+	}
+	assert rejected == 3
+	assert app.services.next_request == request_before
+	assert app.services.clipboard_text == 'before'
+	assert app.services.pending.len == pending_before
+	assert app.services.portal_leases.len == leases_before
+	assert app.drain_queued_events()!.len == 0
+
+	app.state_mutex.lock()
+	app.next_event_delivery_token = ~u64(0)
+	app.state_mutex.unlock()
+	clipboard := app.service_set_clipboard_text(window, 'after')!
+	assert clipboard.serial == request_before
+	assert app.next_event_delivery_token == 0
+	clipboard_events := app.drain_queued_events()!
+	assert clipboard_events.len == 1
+	assert clipboard_events[0].sequence == ~u64(0)
+	assert clipboard_events[0].service.clipboard.text == 'after'
+	request_after_clipboard := app.services.next_request
+	pending_after_clipboard := app.services.pending.len
+	leases_after_clipboard := app.services.portal_leases.len
+	mut rejected_after_max := 0
+	_ = app.service_set_clipboard_text(window, 'must-not-commit') or {
+		assert err.msg() == err_event_delivery_exhausted
+		rejected_after_max++
+		ServiceRequestId{}
+	}
+	_ = app.service_request_clipboard_text(window) or {
+		assert err.msg() == err_event_delivery_exhausted
+		rejected_after_max++
+		ServiceRequestId{}
+	}
+	_ = app.service_request_portal_parent(window) or {
+		assert err.msg() == err_event_delivery_exhausted
+		rejected_after_max++
+		ServiceRequestId{}
+	}
+	assert rejected_after_max == 3
+	assert app.services.next_request == request_after_clipboard
+	assert app.services.clipboard_text == 'after'
+	assert app.services.pending.len == pending_after_clipboard
+	assert app.services.portal_leases.len == leases_after_clipboard
+	assert app.drain_queued_events()!.len == 0
+
+	app.state_mutex.lock()
+	app.next_event_delivery_token = saved_delivery_token
+	app.state_mutex.unlock()
+	portal := app.service_request_portal_parent(window)!
+	assert portal.serial == request_after_clipboard
+	portal_events := app.drain_queued_events()!
+	assert portal_events.len == 1
+	assert portal_events[0].service.portal_parent.id == portal
+	app.service_release_portal_parent(portal_events[0].service.portal_parent.lease)!
+	app.stop()!
+}
+
+fn test_native_clipboard_and_portal_completion_reserve_before_terminal_mutation() {
+	mut app := new_app()!
+	window := app.create_window()!
+	_ = app.drain_queued_events()!
+	clipboard := app.begin_native_clipboard_request(window, .clipboard_read)!
+	second_clipboard := app.begin_native_clipboard_request(window, .clipboard_write)!
+	portal, lease := app.begin_portal_parent_request(window)!
+	saved_delivery_token := app.next_event_delivery_token
+	app.state_mutex.lock()
+	app.next_event_delivery_token = 0
+	app.state_mutex.unlock()
+
+	mut rejected := 0
+	app.complete_native_clipboard_request(clipboard, window, .clipboard_read, 'native') or {
+		assert err.msg() == err_event_delivery_exhausted
+		rejected++
+	}
+	app.complete_native_clipboard_request(second_clipboard, window, .clipboard_write,
+		'native-write') or {
+		assert err.msg() == err_event_delivery_exhausted
+		rejected++
+	}
+	app.complete_portal_parent_request(portal, window, lease, 'native-parent') or {
+		assert err.msg() == err_event_delivery_exhausted
+		rejected++
+	}
+	assert rejected == 3
+	assert app.services.pending.filter(it.id == clipboard && it.terminal).len == 0
+	assert app.services.pending.filter(it.id == second_clipboard && it.terminal).len == 0
+	assert app.services.pending.filter(it.id == portal && it.terminal).len == 0
+	assert app.services.portal_leases.any(it.id == lease && it.window == window)
+	assert app.drain_queued_events()!.len == 0
+
+	app.state_mutex.lock()
+	app.next_event_delivery_token = ~u64(0)
+	app.state_mutex.unlock()
+	app.complete_native_clipboard_request(clipboard, window, .clipboard_read, 'native')!
+	assert app.next_event_delivery_token == 0
+	max_event := app.drain_queued_events()!
+	assert max_event.len == 1
+	assert max_event[0].sequence == ~u64(0)
+	assert max_event[0].service.clipboard.id == clipboard
+	assert app.services.pending.filter(it.id == clipboard && it.terminal).len == 0
+
+	mut rejected_after_max := 0
+	app.complete_native_clipboard_request(second_clipboard, window, .clipboard_write,
+		'native-write') or {
+		assert err.msg() == err_event_delivery_exhausted
+		rejected_after_max++
+	}
+	app.complete_portal_parent_request(portal, window, lease, 'native-parent') or {
+		assert err.msg() == err_event_delivery_exhausted
+		rejected_after_max++
+	}
+	assert rejected_after_max == 2
+	assert app.services.pending.filter(it.id == second_clipboard && it.terminal).len == 0
+	assert app.services.pending.filter(it.id == portal && it.terminal).len == 0
+	assert app.services.portal_leases.any(it.id == lease && it.window == window)
+	assert app.drain_queued_events()!.len == 0
+
+	app.state_mutex.lock()
+	app.next_event_delivery_token = saved_delivery_token
+	app.state_mutex.unlock()
+	app.complete_native_clipboard_request(second_clipboard, window, .clipboard_write,
+		'native-write')!
+	app.complete_portal_parent_request(portal, window, lease, 'native-parent')!
+	events := app.drain_queued_events()!
+	assert events.len == 2
+	assert events[0].service.clipboard.id == second_clipboard
+	assert events[0].service.clipboard.text == 'native-write'
+	assert events[1].service.portal_parent.id == portal
+	assert events[1].service.portal_parent.lease == lease
+	assert app.services.pending.len == 0
+	app.service_release_portal_parent(lease)!
+	app.stop()!
+}
+
+fn test_public_synchronous_portal_completion_exhaustion_rolls_back_and_retries() {
+	mut app := new_app()!
+	window := app.create_window(title: 'synchronous portal rollback')!
+	_ = app.drain_queued_events()!
+	original_backend := app.backend.kind
+	app.backend.kind = .x11
+	app.backend.x11.windows << X11WindowRecord{
+		id:     window
+		window: X11NativeWindow(0x1234)
+	}
+	request_before := app.services.next_request
+	saved_delivery_token := app.next_event_delivery_token
+	app.state_mutex.lock()
+	app.next_event_delivery_token = 0
+	app.state_mutex.unlock()
+
+	app.service_request_portal_parent(window) or {
+		assert err.msg() == err_event_delivery_exhausted
+		assert app.services.next_request == request_before + 1
+		assert app.services.pending.len == 0
+		assert app.services.portal_leases.len == 0
+		assert app.drain_queued_events()!.len == 0
+
+		app.state_mutex.lock()
+		app.next_event_delivery_token = saved_delivery_token
+		app.state_mutex.unlock()
+		retry := app.service_request_portal_parent(window)!
+		assert retry.serial == request_before + 1
+		assert app.services.next_request == request_before + 2
+		assert app.services.pending.len == 1
+		assert app.services.pending[0].id == retry
+		assert app.services.pending[0].terminal
+		assert app.services.portal_leases.len == 1
+		events := app.drain_queued_events()!
+		assert events.len == 1
+		assert events[0].kind == .service
+		assert events[0].service.kind == .portal_parent
+		assert events[0].service.portal_parent.id == retry
+		assert events[0].service.portal_parent.identifier == 'x11:1234'
+		assert app.services.pending.len == 0
+		app.service_release_portal_parent(events[0].service.portal_parent.lease)!
+		assert app.services.portal_leases.len == 0
+
+		app.backend.x11.windows.clear()
+		app.backend.kind = original_backend
+		app.stop()!
+		return
+	}
+	assert false, 'synchronous portal completion unexpectedly consumed an exhausted delivery token'
+}
+
 fn test_mock_focus_publishes_losses_then_gain_with_authoritative_sequences() {
 	mut app := new_app()!
 	a := app.create_window(title: 'focus A')!
