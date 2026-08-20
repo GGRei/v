@@ -11,7 +11,42 @@
 #include <X11/keysym.h>
 #include <X11/XKBlib.h>
 #include <X11/Xutil.h>
+#include <xcb/xcb.h>
 #include "linux_egl_native_helpers.h"
+
+static inline int v_multiwindow_x11_send_event_checked(Display *display, unsigned long window,
+	XEvent *event) {
+	if (display == NULL || window == 0 || event == NULL) {
+		return 0;
+	}
+	const char *display_name = DisplayString(display);
+	if (display_name == NULL) {
+		return 0;
+	}
+	xcb_connection_t *connection = xcb_connect(display_name, NULL);
+	if (connection == NULL || xcb_connection_has_error(connection) != 0) {
+		if (connection != NULL) {
+			xcb_disconnect(connection);
+		}
+		return 0;
+	}
+	xcb_client_message_event_t message;
+	memset(&message, 0, sizeof(message));
+	message.response_type = XCB_CLIENT_MESSAGE;
+	message.format = (uint8_t)event->xclient.format;
+	message.window = (xcb_window_t)event->xclient.window;
+	message.type = (xcb_atom_t)event->xclient.message_type;
+	for (int i = 0; i < 5; ++i) {
+		message.data.data32[i] = (uint32_t)event->xclient.data.l[i];
+	}
+	xcb_void_cookie_t cookie = xcb_send_event_checked(connection, 0,
+		(xcb_window_t)window, XCB_EVENT_MASK_NO_EVENT, (const char *)&message);
+	xcb_generic_error_t *error = xcb_request_check(connection, cookie);
+	int sent = error == NULL && xcb_connection_has_error(connection) == 0;
+	free(error);
+	xcb_disconnect(connection);
+	return sent;
+}
 
 #ifndef MWM_HINTS_DECORATIONS
 #define MWM_HINTS_DECORATIONS (1L << 1)

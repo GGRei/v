@@ -256,9 +256,12 @@ Current native input support is intentionally capability-scoped:
   clipboard paste signal input events. Text uses Xlib XIM/XIC with
   `Xutf8LookupString`; this covers committed UTF-8 text from the active input
   method without exposing Xlib objects through the public API.
-- X11 receives file drops with XDND `text/uri-list` selection conversion. It
-  decodes local `file://` URIs and queues `.files_dropped` with routed
-  `dropped_files`.
+- X11 receives XDND `text/uri-list` file drops through inline or bounded ICCCM
+  INCR transfers (1 MiB maximum). It refreshes the inactivity deadline only on
+  transfer progress, never delivers a partial drop, and sends checked
+  `XdndFinished` replies without turning a vanished source window into a fatal
+  X error. Valid local `file://` URIs are queued as routed `.files_dropped`
+  events with cloned `dropped_files`.
 - Wayland routes pointer, keyboard, text/char through xkb keymap/state, focus,
   clipboard paste signal, resize input events, touch when the seat exposes
   `wl_touch`, and file drops when `wl_data_device`/`wl_data_offer`
@@ -295,11 +298,12 @@ waiting for a state observation. Wayland minimize is asynchronous with
 `state_observable == false`, so no resulting minimized-state observation is
 guaranteed.
 
-A prepared destroy ticket remains live and can still admit service work. Once
-the ticket is sealed, state/capability queries and new service, readback, and
-native-borrow admissions for that window fail as stale. Already admitted work
-follows the terminal or cancellation flow, and queued terminals remain
-deliverable.
+A prepared destroy ticket remains live and can still admit service work, but a
+new owned window cannot name that closing window until the ticket is rolled
+back. Once the ticket is sealed, state/capability queries and new service,
+readback, and native-borrow admissions for that window fail as stale. Already
+admitted work follows the terminal or cancellation flow, and queued terminals
+remain deliverable.
 
 Use `service_window_state()` for the latest observed mapping, visibility,
 focus, minimized/maximized/fullscreen, mouse-lock, position, and monitor
@@ -353,7 +357,7 @@ Runtime support differs by backend:
 | Backend | Service summary |
 | --- | --- |
 | Mock | Deterministic state, monitors, clipboard, portal, and readback for tests; no native-window borrow. |
-| X11 | Native state/monitors, clipboard, portal (`x11:`), borrow, and native window capture; focus is available only when the live server advertises EWMH `_NET_ACTIVE_WINDOW`, its request is asynchronous, and authoritative state comes from `FocusIn`/`FocusOut`. Other EWMH, mouse-lock, and rendered image support also depend on live runtime support. |
+| X11 | Native state/monitors, clipboard, portal (`x11:`), borrow, and native window capture; focus is available only when the live server advertises EWMH `_NET_ACTIVE_WINDOW`, its request is asynchronous, and authoritative state comes from `FocusIn`/`FocusOut`. Position requests are also asynchronous; root-coordinate observations triggered by `ConfigureNotify` are authoritative. Other EWMH, mouse-lock, and rendered image support also depend on live runtime support. |
 | Wayland | Runtime-global-driven state/monitors, clipboard, portal (`wayland:`), borrow, and mouse lock; focus/raise/position are unsupported. Show fails hidden and retryable when no fresh compositor configure is available. Show/minimize/maximize/restore/fullscreen/mouse-lock are asynchronous, but minimize is not state-observable, so callers are not guaranteed a resulting minimized-state observation. Rendered readback requires the active gg GL path. |
 | AppKit | Native state/monitors, borrow, clipboard, window operations, and titlebar appearance as reported by the live bridge; portal export is unsupported and readback requires active Metal. |
 | Win32 | Native state/monitors, borrow, clipboard, and standard window operations; focus and mouse lock are conditional, maximize depends on window configuration, and portal/readback are currently unsupported. |
@@ -456,7 +460,9 @@ only after renderer and window cleanup completes.
 
 - X11 support is compiled only with `-d x_multiwindow_x11`; without that flag,
   the X11 backend is unsupported and X11/EGL/OpenGL libraries are not linked by
-  low-level lifecycle or `.mock` imports.
+  low-level lifecycle or `.mock` imports. Enabled X11 builds link both Xlib and
+  XCB; on Debian-family systems `libx11-dev` supplies the `libxcb1-dev`
+  dependency.
 - Wayland support is compiled only with `-d sokol_wayland`; without that flag,
   the Wayland backend is unsupported and Wayland libraries are not linked.
 - Wayland programmatic resize is currently unsupported.

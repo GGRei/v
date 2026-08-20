@@ -173,6 +173,14 @@ pub fn (mut app App) finish_window_destroy(ticket WindowDestroyTicket, prior_err
 		}
 		return err
 	}
+	destroy_order := app.services.child_first_order(ticket.window) or {
+		app.state_mutex.unlock()
+		return err
+	}
+	if destroy_order.len > 1 {
+		app.state_mutex.unlock()
+		return error(err_owner_relation_invalid)
+	}
 	app.services.ensure_no_active_borrows(ticket.window) or {
 		app.state_mutex.unlock()
 		return err
@@ -278,7 +286,7 @@ fn render_teardown_notice_from_slot(app_instance u64, slot WindowSlot) RenderTea
 	}
 }
 
-fn (mut app App) accept_backend_teardown_locked(id WindowId) bool {
+fn (mut app App) accept_backend_teardown_locked(id WindowId, native_destroyed bool) bool {
 	if id.app_instance != app.instance_id || id.slot < 0 || id.slot >= app.windows.len {
 		return false
 	}
@@ -286,7 +294,8 @@ fn (mut app App) accept_backend_teardown_locked(id WindowId) bool {
 	if slot.id != id || slot.status != .alive {
 		return false
 	}
-	if slot.backend_destroyed {
+	if slot.teardown_notice_pending {
+		slot.backend_destroyed = slot.backend_destroyed || native_destroyed
 		return true
 	}
 	sequence := app.take_teardown_sequence_locked()
@@ -308,7 +317,7 @@ fn (mut app App) accept_backend_teardown_locked(id WindowId) bool {
 	// fallback, but ordering is stamped only at actual backend acceptance.
 	slot.destroy_stage = .sealed
 	slot.destroy_serial = serial
-	slot.backend_destroyed = true
+	slot.backend_destroyed = native_destroyed
 	slot.teardown_sequence = sequence
 	slot.teardown_snapshot = snapshot
 	slot.teardown_notice_pending = true
@@ -322,8 +331,8 @@ fn (mut app App) queue_backend_teardown_event_locked(id WindowId, delivery_token
 		return false
 	}
 	mut slot := &app.windows[id.slot]
-	if slot.id != id || slot.status != .alive || !slot.backend_destroyed
-		|| slot.destroy_event_queued || slot.destroy_event_emitted {
+	if slot.id != id || slot.status != .alive || slot.destroy_stage != .sealed
+		|| !slot.teardown_notice_pending || slot.destroy_event_queued || slot.destroy_event_emitted {
 		return false
 	}
 	slot.destroy_event_queued = true
@@ -580,6 +589,40 @@ fn (app &App) live_window_ids_for_stop() ![]WindowId {
 	return ids
 }
 
+fn (app &App) window_ids_for_ordered_stop() ![]WindowId {
+	app.state_mutex.lock()
+	defer {
+		app.state_mutex.unlock()
+	}
+	mut ids := []WindowId{}
+	for id in app.services.child_first_all()! {
+		slot := app.windows[id.slot]
+		if slot.status == .alive && slot.destroy_stage != .finished {
+			ids << slot.id
+		}
+	}
+	return ids
+}
+
+fn (app &App) window_destroy_state_for_stop(id WindowId) !(WindowDestroyStage, WindowDestroyTicket) {
+	app.state_mutex.lock()
+	defer {
+		app.state_mutex.unlock()
+	}
+	if id.app_instance != app.instance_id || id.slot < 0 || id.slot >= app.windows.len {
+		return error(err_stale_window)
+	}
+	slot := app.windows[id.slot]
+	if slot.id != id || slot.status != .alive || slot.destroy_stage == .finished {
+		return error(err_stale_window)
+	}
+	return slot.destroy_stage, WindowDestroyTicket{
+		app_instance: app.instance_id
+		window:       id
+		serial:       slot.destroy_serial
+	}
+}
+
 // live_window_ids_for_stop_for_gg is an internal bridge reserved for the gg
 // facade teardown. It is not a user API and must not be exposed in user README
 // documentation.
@@ -615,8 +658,41 @@ fn (app &App) sealed_window_tickets_for_stop() []WindowDestroyTicket {
 fn (app &App) window_tickets_for_stop(stage WindowDestroyStage) []WindowDestroyTicket {
 	app.state_mutex.lock()
 	mut tickets := []WindowDestroyTicket{}
-	for slot in app.windows {
+	mut included := map[string]bool{}
+	if stage == .sealed {
+		for id in app.teardown_acceptance_order {
+			if id.slot < 0 || id.slot >= app.windows.len {
+				continue
+			}
+			slot := app.windows[id.slot]
+			if slot.id == id && slot.status == .alive && slot.destroy_stage == stage
+				&& slot.destroy_serial != 0 {
+				tickets << WindowDestroyTicket{
+					app_instance: app.instance_id
+					window:       slot.id
+					serial:       slot.destroy_serial
+				}
+				included[id.str()] = true
+			}
+		}
+	}
+	for id in app.services.child_first_all() or { []WindowId{} } {
+		if included[id.str()] {
+			continue
+		}
+		slot := app.windows[id.slot]
 		if slot.status == .alive && slot.destroy_stage == stage && slot.destroy_serial != 0 {
+			tickets << WindowDestroyTicket{
+				app_instance: app.instance_id
+				window:       slot.id
+				serial:       slot.destroy_serial
+			}
+			included[id.str()] = true
+		}
+	}
+	for slot in app.windows {
+		if slot.status == .alive && slot.destroy_stage == stage && slot.destroy_serial != 0
+			&& !included[slot.id.str()] {
 			tickets << WindowDestroyTicket{
 				app_instance: app.instance_id
 				window:       slot.id

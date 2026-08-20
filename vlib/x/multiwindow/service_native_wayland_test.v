@@ -1591,6 +1591,35 @@ fn test_wayland_clipboard_chunk_quota_keeps_progress_active_past_deadline() {
 	}
 }
 
+fn test_wayland_clipboard_read_progress_refreshes_inactivity_deadline_before_eagain() {
+	$if linux && sokol_wayland ? {
+		mut backend := &WaylandBackend{}
+		_, record, fds := wayland_test_begin_clipboard_read(mut backend, 85, []u8{})
+		assert C.v_multiwindow_wayland_fd_set_nonblocking(fds[0]) == 1
+		payload := 'progress-before-read-eagain'
+		assert C.write(fds[1], payload.str, usize(payload.len)) == payload.len
+		backend.clipboard_read.deadline_ns = 0
+
+		backend.drain_clipboard_read()
+
+		assert backend.clipboard_read_active
+		assert backend.clipboard_read.buffer.bytestr() == payload
+		assert backend.clipboard_read.deadline_ns > 0
+		assert record.pending_events.len == 0
+
+		backend.clipboard_read.deadline_ns = 0
+		backend.drain_clipboard_read()
+		assert !backend.clipboard_read_active
+		assert record.pending_events.len == 1
+		result := record.pending_events[0].event.service.clipboard
+		assert result.status == .failed
+		assert result.error == err_clipboard_timeout
+		backend.drain_clipboard_read()
+		assert record.pending_events.len == 1
+		C.close(fds[1])
+	}
+}
+
 fn wayland_assert_clipboard_replacement_preflight_failure(fail_listener bool) {
 	$if linux && sokol_wayland ? {
 		mut backend := &WaylandBackend{
@@ -2000,6 +2029,49 @@ fn test_wayland_clipboard_send_is_fair_when_first_consumer_is_backpressured() {
 		C.close(first[0])
 		C.close(second[0])
 		backend.clipboard_source = unsafe { nil }
+	}
+}
+
+fn test_wayland_clipboard_send_progress_refreshes_inactivity_deadline_before_eagain() {
+	$if linux && sokol_wayland ? {
+		mut fds := [-1, -1]!
+		assert C.pipe(&fds[0]) == 0
+		assert C.v_multiwindow_wayland_fd_set_nonblocking(fds[1]) == 1
+		mut fill := [4096]u8{}
+		mut saturated := false
+		for _ in 0 .. 4096 {
+			if C.write(fds[1], unsafe { &fill[0] }, usize(fill.len)) < 0 {
+				assert C.v_multiwindow_wayland_read_would_block() != 0
+				saturated = true
+				break
+			}
+		}
+		assert saturated
+		mut drained := [4096]u8{}
+		assert C.read(fds[0], unsafe { &drained[0] }, usize(drained.len)) == drained.len
+		payload := 'p'.repeat(wayland_clipboard_io_chunk_size * 2)
+		mut backend := &WaylandBackend{
+			clipboard_sends:               [
+				WaylandClipboardSend{
+					fd:          fds[1]
+					payload:     payload
+					deadline_ns: 0
+				},
+			]
+			clipboard_send_snapshot_bytes: u64(payload.len)
+		}
+
+		backend.drain_clipboard_send()
+
+		assert backend.clipboard_sends.len == 1
+		assert backend.clipboard_sends[0].offset > 0
+		assert backend.clipboard_sends[0].deadline_ns > 0
+
+		backend.clipboard_sends[0].deadline_ns = 0
+		backend.drain_clipboard_send()
+		assert backend.clipboard_sends.len == 0
+		assert backend.clipboard_send_snapshot_bytes == 0
+		C.close(fds[0])
 	}
 }
 

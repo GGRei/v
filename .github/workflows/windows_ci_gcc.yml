@@ -354,14 +354,14 @@ jobs:
             -ExpectedGgFacadeSha256 '7228f1fb113ef1cbd019b25c21fe32d7798cab87e141ed8ddb014a944363ae8f' `
             -ExpectedGgNoFlagSha256 'ad528c64cf18bce9415dd0e50513fb87d8d0b58c8ac4a99025a5c8955e7d9549' `
             -ExpectedGgServiceTypesSha256 '6775854b4a1a66e75099e7a390089f6a96f77c4bdd9eed5bccf4a33538e4d5b0' `
-            -ExpectedAppSha256 'e8a01a50a4176edb118b3fddea41472f9c32047d63a73db7ca3a11ad7e499d8f' `
+            -ExpectedAppSha256 'af32eec55c119907a8bbf544842131018d36d3887347e26486e067a79d78a946' `
             -ExpectedTypesSha256 '0a9058ba7928945e24284c867eb6182336ea3b1d41e1337786c71105b1fe93b3' `
             -ExpectedBackendSha256 'dcd0f088c235ae030f8bbc9ab63082c38d93f6f1194373e74d8dcb454d100a3f' `
             -ExpectedServiceApiSha256 '6d2a3f1377f79afbfe95811dc1803e438f7a8241e394a75a6247dd6a4957d39b' `
             -ExpectedServiceTypesSha256 '27ea45e8651b050d8c5cf3345c74055935c610675e1404c763aa44c9dcef1409' `
             -ExpectedServiceRegistrySha256 '20d3863dd6e9655d344324bb48803539e461feb0e2025e2939fdc108c31e2394' `
-            -ExpectedEventDeliverySha256 '214f89e97e9dd0ba35c74eca73f435edc8025e45bae9576bc4d2f0317ae631a5' `
-            -ExpectedPublicRoutingSurfaceSha256 'e4827e78081ec6a25923d7fc713a7398a51d01e2e5346f3a628caf7f3d4f878f' `
+            -ExpectedEventDeliverySha256 '02e70e91abb216783faf5205f0e638f0d98ff470ee5f1e56f7b853d273bcca38' `
+            -ExpectedPublicRoutingSurfaceSha256 '0373f21b328505b6c08afab2b87d060d12520fd8fb24081a7a65f23322ed0f5f' `
             -ExpectedServiceBackendSha256 '8515db375427e3b145052567582ead24a18c0b35fb286d15ff7d704d35ae240b' `
             -ExpectedEventDispatchSha256 '7ef6c7cbd34511d6c19c1a3a269b46876db791b9412bb88e3a8d4dcd543bfd4e' `
             -ExpectedWin32BackendSha256 '4b854e9dd019bb8193057c08aaa0a8185096f165afff99d7ed519c5442e0e52e' `
@@ -369,7 +369,7 @@ jobs:
             -ExpectedWin32ServiceBackendSha256 'e2e05250d55fd3b0b2739ba592f96117e614ab19eb2f7a550258ee68ab9abd16' `
             -ExpectedWin32ServiceNativeSha256 '4e6c94be8b7ad24a33291ca19cd0d92097dd5b2d79315e1829caadb077e9ad73' `
             -ExpectedGreenProductionSurfaceSha256 '6960d1b2b7f993c3c5817048f1a0f8d0b57334769b4de030336bb02df308ca84' `
-            -ExpectedRunnerSha256 'fcd9badd3b6213ffd0e3ffdeb8a8706a691717e01bec6384a3599cb2ac35a84c'
+            -ExpectedRunnerSha256 'b0cac0922fb78e64690143c1b9d03dcfe51ba30e65caa81e6253134243de2a83'
       - name: Setup MinGW-w64 D3D11 headers for GCC and Clang
         uses: msys2/setup-msys2@v2
         with:

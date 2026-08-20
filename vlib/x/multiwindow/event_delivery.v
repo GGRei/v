@@ -17,6 +17,18 @@ struct BackendEventAcceptance {
 	delivery_error string
 }
 
+struct BackendTeardownTargetPlan {
+	id               WindowId
+	native_destroyed bool
+}
+
+struct BackendDestroyInputPlan {
+mut:
+	targets            []BackendTeardownTargetPlan
+	native_upgrade     WindowId
+	native_upgrade_set bool
+}
+
 // reserve_event_delivery_tokens_locked makes native batch acceptance infallible
 // after its state mutations begin. Rejected native events leave harmless gaps.
 fn (mut app App) reserve_event_delivery_tokens_locked(count int) !u64 {
@@ -50,50 +62,114 @@ fn (mut app App) enqueue_reserved_event_locked(event QueuedEvent, token u64) {
 fn (mut app App) accept_backend_event_batch(events []QueuedEvent, frame_count u64) !BackendEventAcceptance {
 	app.state_mutex.lock()
 	mut cancellation_capacity := 0
+	mut extra_destroy_tokens := 0
 	mut planned_teardowns := map[string]bool{}
-	for event in events {
+	mut destroy_plans := []BackendDestroyInputPlan{len: events.len}
+	for event_index, event in events {
 		if event.kind != .lifecycle || event.lifecycle.kind != .window_destroyed {
 			continue
 		}
-		id := event.lifecycle.window_id
-		key := id.str()
-		if planned_teardowns[key] || !app.backend_window_generation_present_locked(id)
-			|| app.windows[id.slot].services_cancelled {
+		root := event.lifecycle.window_id
+		if !app.backend_window_generation_present_locked(root) {
 			continue
 		}
-		plan := app.collect_window_service_cancellation_locked(id) or {
+		root_slot := app.windows[root.slot]
+		if root_slot.teardown_notice_pending {
+			if !root_slot.backend_destroyed {
+				destroy_plans[event_index].native_upgrade = root
+				destroy_plans[event_index].native_upgrade_set = true
+			}
+			continue
+		}
+		if root_slot.destroy_stage !in [.none, .prepared, .sealed] {
+			continue
+		}
+		order := app.services.child_first_order(root) or {
 			app.state_mutex.unlock()
 			return err
 		}
-		cancellation_capacity += plan.service_events.len + plan.readback_events.len
-		planned_teardowns[key] = true
+		mut targets := []BackendTeardownTargetPlan{}
+		for id in order {
+			key := id.str()
+			if app.windows[id.slot].teardown_notice_pending || planned_teardowns[key] {
+				if id == root && !app.windows[id.slot].backend_destroyed {
+					destroy_plans[event_index].native_upgrade = root
+					destroy_plans[event_index].native_upgrade_set = true
+				}
+				continue
+			}
+			if app.windows[id.slot].destroy_stage !in [.none, .prepared, .sealed] {
+				continue
+			}
+			if !app.windows[id.slot].services_cancelled {
+				cancellation := app.collect_window_service_cancellation_locked(id) or {
+					app.state_mutex.unlock()
+					return err
+				}
+				cancellation_capacity += cancellation.service_events.len +
+					cancellation.readback_events.len
+			}
+			targets << BackendTeardownTargetPlan{
+				id:               id
+				native_destroyed: id == root
+			}
+			planned_teardowns[key] = true
+		}
+		destroy_plans[event_index].targets = targets
+		if targets.len > 1 {
+			extra_destroy_tokens += targets.len - 1
+		}
 	}
 	first_delivery_token := app.reserve_event_delivery_tokens_locked(events.len +
-		cancellation_capacity) or {
+		extra_destroy_tokens + cancellation_capacity) or {
 		app.state_mutex.unlock()
 		return err
 	}
 	mut accepted := 0
-	mut cancellation_offset := 0
+	mut token_offset := 0
 	for event_index, event in events {
-		mut generation_valid := app.backend_event_generation_valid_locked(event)
 		if event.kind == .lifecycle && event.lifecycle.kind == .window_destroyed {
-			id := event.lifecycle.window_id
-			if app.backend_window_generation_present_locked(id)
-				&& !app.windows[id.slot].services_cancelled {
-				collected := app.collect_present_window_service_cancellation_locked(id)
-				plan := WindowServiceCancellationPlan{
-					...collected
-					first_token: first_delivery_token + u64(event_index + cancellation_offset)
+			plan := destroy_plans[event_index]
+			mut root_queued := false
+			for target in plan.targets {
+				if !app.windows[target.id.slot].services_cancelled {
+					collected := app.collect_present_window_service_cancellation_locked(target.id)
+					cancellation := WindowServiceCancellationPlan{
+						...collected
+						first_token: first_delivery_token + u64(token_offset)
+					}
+					cancellation_count := collected.service_events.len +
+						collected.readback_events.len
+					app.commit_window_service_cancellation_locked(cancellation)
+					app.windows[target.id.slot].services_cancelled = true
+					token_offset += cancellation_count
 				}
-				cancellation_count := collected.service_events.len + collected.readback_events.len
-				app.commit_window_service_cancellation_locked(plan)
-				app.windows[id.slot].services_cancelled = true
-				cancellation_offset += cancellation_count
+				app.accept_backend_teardown_locked(target.id, target.native_destroyed)
+				queued := app.queue_backend_teardown_event_locked(target.id, first_delivery_token +
+					u64(token_offset))
+				if target.id == event.lifecycle.window_id && queued {
+					root_queued = true
+				}
+				token_offset++
 			}
-			generation_valid = app.accept_backend_teardown_locked(event.lifecycle.window_id)
+			if plan.native_upgrade_set {
+				app.accept_backend_teardown_locked(plan.native_upgrade, true)
+			}
+			if plan.targets.len == 0 {
+				// Every native input owns one reserved slot. A duplicate leaves the
+				// slot as an intentional gap and never requeues a terminal event.
+				token_offset++
+			}
+			if root_queued {
+				accepted++
+			}
+			continue
 		}
-		delivery_token := first_delivery_token + u64(event_index + cancellation_offset)
+		mut generation_valid := app.backend_event_generation_valid_locked(event)
+		delivery_token := first_delivery_token + u64(token_offset)
+		// Every native input owns its reserved position even when validation below
+		// rejects it or a pending terminal lookup fails.
+		token_offset++
 		match event.kind {
 			.lifecycle {
 				if app.accept_lifecycle_event_locked(event.lifecycle, generation_valid,

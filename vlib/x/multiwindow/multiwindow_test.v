@@ -2273,9 +2273,11 @@ fn test_x11_backend_native_deps_are_flag_gated_source_guard() {
 	guarded_native_deps :=
 		source.all_after('$if linux && x_multiwindow_x11 ? {').all_before('\n}\n\nconst x11_client_message')
 	assert guarded_native_deps.contains('#flag linux -lX11')
+	assert guarded_native_deps.contains('#flag linux -lxcb')
 	assert guarded_native_deps.contains('#flag linux -lEGL')
 	assert guarded_native_deps.contains('#flag linux -lGL')
 	assert source.count('#flag linux -lX11') == 1
+	assert source.count('#flag linux -lxcb') == 1
 	assert source.count('#flag linux -lEGL') == 1
 	assert source.count('#flag linux -lGL') == 1
 	assert source.contains('$if gg_multiwindow ? || x_multiwindow_render ? {\n\timport sokol.gfx')
@@ -2320,6 +2322,13 @@ fn test_x11_input_support_queues_key_char_and_focus_source_guard() {
 	assert x11_backend_source.contains('C.XChangeProperty')
 	assert x11_backend_source.contains('C.XConvertSelection')
 	assert x11_backend_source.contains('C.XSendEvent')
+	assert x11_backend_source.contains('#flag linux -lxcb')
+	assert x11_helper_source.contains('#include <xcb/xcb.h>')
+	assert x11_helper_source.contains('xcb_connect(display_name, NULL)')
+	assert x11_helper_source.contains('xcb_send_event_checked')
+	assert x11_helper_source.contains('xcb_request_check')
+	assert x11_helper_source.contains('xcb_disconnect(connection)')
+	assert !x11_helper_source.contains('XSetErrorHandler')
 	assert x11_backend_source.contains('C.XFilterEvent(&event, X11NativeWindow(0))')
 	assert_source_order(x11_backend_source, 'C.XNextEvent(backend.display, &event)',
 		'C.XFilterEvent(&event, X11NativeWindow(0))')
@@ -2330,10 +2339,11 @@ fn test_x11_input_support_queues_key_char_and_focus_source_guard() {
 	assert x11_backend_source.contains('send_xdnd_status')
 	assert x11_backend_source.contains('send_xdnd_finished')
 	assert x11_backend_source.contains('.files_dropped')
-	assert x11_backend_source.contains('dropped_files_from_uri_list(payload)')
+	assert x11_backend_source.contains('dropped_files_from_uri_list(drop.data.bytestr())')
 	assert x11_backend_source.contains('const x11_xdnd_max_payload_bytes = 1024 * 1024')
 	assert x11_backend_source.contains('const x11_xdnd_max_payload_units = (x11_xdnd_max_payload_bytes + 3) / 4')
 	assert x11_backend_source.contains('const x11_xdnd_max_type_atoms = 64')
+	assert x11_backend_source.contains('const x11_xdnd_timeout_ns = i64(2_000_000_000)')
 	assert x11_backend_source.contains('fn (mut backend X11Backend) poll_queued_events')
 	assert x11_backend_source.contains('queued_input_event')
 	assert x11_backend_source.contains('C.v_multiwindow_x11_is_notify_grab_or_ungrab')
@@ -2363,23 +2373,53 @@ fn test_x11_input_support_queues_key_char_and_focus_source_guard() {
 	assert x11_backend_source.contains('return x11_signed_16(packed >> 16), x11_signed_16(packed)')
 	assert x11_backend_source.contains('fn x11_signed_16(value u32) int')
 	xdnd_selection_body :=
-		x11_backend_source.all_after('fn (mut backend X11Backend) queued_xdnd_selection_events').all_before('fn (mut backend X11Backend) xdnd_format_from_type_list')
-	xdnd_reject_body :=
-		xdnd_selection_body.all_after('if !valid_payload {').all_before('payload :=')
+		x11_backend_source.all_after('fn (mut backend X11Backend) queued_xdnd_selection_events').all_before('fn (mut backend X11Backend) queued_xdnd_property_events')
+	xdnd_property_body :=
+		x11_backend_source.all_after('fn (mut backend X11Backend) queued_xdnd_property_events').all_before('fn (mut backend X11Backend) begin_xdnd_incremental')
 	assert xdnd_selection_body.contains('status := C.XGetWindowProperty')
 	assert xdnd_selection_body.contains('X11NativeLong(x11_xdnd_max_payload_units)')
 	assert !xdnd_selection_body.contains('X11NativeLong(0x7fffffff)')
-	assert xdnd_selection_body.contains('status == x11_success')
+	assert xdnd_selection_body.contains('0, X11NativeAtom(0), &actual_type')
+	assert xdnd_selection_body.contains('actual_type == backend.clipboard_incr')
+	assert xdnd_selection_body.contains('actual_format == 32')
+	assert xdnd_selection_body.contains('item_count == X11NativeULong(1)')
+	assert xdnd_selection_body.contains('advertised > u64(x11_xdnd_max_payload_bytes)') == false
+	assert xdnd_selection_body.contains('backend.begin_xdnd_incremental(advertised)')
+	assert_source_order(xdnd_selection_body, 'backend.begin_xdnd_incremental(advertised)',
+		'backend.delete_xdnd_property_if_live(drop.requestor, drop.property)')
 	assert xdnd_selection_body.contains('actual_type == backend.text_uri_list')
 	assert xdnd_selection_body.contains('actual_format == 8')
 	assert xdnd_selection_body.contains('bytes_after == X11NativeULong(0)')
 	assert xdnd_selection_body.contains('item_count <= X11NativeULong(x11_xdnd_max_payload_bytes)')
-	assert xdnd_reject_body.contains('C.XFree(data)')
-	assert xdnd_reject_body.contains('backend.send_xdnd_finished(requestor, false)')
-	assert xdnd_reject_body.contains('backend.clear_xdnd_state()')
-	assert xdnd_reject_body.contains('return events')
-	assert_source_order(xdnd_selection_body, 'if !valid_payload {',
-		'dropped_files_from_uri_list(payload)')
+	assert xdnd_selection_body.contains('backend.delete_xdnd_property_if_live(drop.requestor, drop.property)')
+	assert xdnd_property_body.contains('property_state != x11_property_new_value')
+	assert xdnd_property_body.contains('requestor != backend.xdnd_drop_state.requestor')
+	assert xdnd_property_body.contains('property != backend.xdnd_drop_state.property')
+	assert xdnd_property_body.contains('X11NativeLong(x11_xdnd_max_payload_units), 0, X11NativeAtom(0)')
+	assert xdnd_property_body.contains('actual_type == backend.text_uri_list')
+	assert xdnd_property_body.contains('actual_format == 8')
+	assert xdnd_property_body.contains('bytes_after == X11NativeULong(0)')
+	assert xdnd_property_body.contains('return backend.finish_xdnd_payload()')
+	assert_source_order(xdnd_property_body,
+		'events := backend.accept_xdnd_incremental_chunk(payload)',
+		'if backend.xdnd_drop_state.active {')
+	assert x11_backend_source.contains('remaining := x11_xdnd_max_payload_bytes - backend.xdnd_drop_state.data.len')
+	assert x11_backend_source.contains('backend.xdnd_drop_state.deadline_ns = vtime.sys_mono_now() + x11_xdnd_timeout_ns')
+	assert !xdnd_property_body.contains('reserved_bytes')
+	xdnd_poll_body :=
+		x11_backend_source.all_after('fn (mut backend X11Backend) poll_queued_events').all_before('fn (backend &X11Backend) input_event_from_record')
+	assert_source_order(xdnd_poll_body, 'events << backend.queued_xdnd_property_events(&event)',
+		'backend.expire_xdnd_drop(vtime.sys_mono_now())')
+	assert x11_backend_source.contains('backend.purge_xdnd_window(id, native_window)')
+	assert x11_backend_source.contains('backend.cancel_xdnd_drop()')
+	xdnd_payload_body :=
+		x11_backend_source.all_after('fn (mut backend X11Backend) finish_xdnd_payload').all_before('fn (mut backend X11Backend) xdnd_format_from_type_list')
+	assert_source_order(xdnd_payload_body, 'backend.delete_xdnd_property_and_sync_if_live',
+		'backend.finish_xdnd_drop_with_cleanup')
+	xdnd_finish_body :=
+		x11_backend_source.all_after('fn (mut backend X11Backend) finish_xdnd_drop_with_cleanup').all_before('fn (mut backend X11Backend) cancel_xdnd_drop')
+	assert_source_order(xdnd_finish_body, 'backend.send_xdnd_finished_to',
+		'backend.delete_xdnd_property_if_live')
 	xdnd_type_list_body :=
 		x11_backend_source.all_after('fn (mut backend X11Backend) xdnd_format_from_type_list').all_before('fn (backend &X11Backend) send_xdnd_status')
 	xdnd_type_list_reject_body :=
@@ -3476,6 +3516,7 @@ fn test_default_x_multiwindow_mock_build_does_not_link_x11_egl_or_gl() {
 	$if linux {
 		output := multiwindow_dump_c_flags('no_x11_deps', '')
 		assert !output.contains('-lX11')
+		assert !output.contains('-lxcb')
 		assert !output.contains('-lEGL')
 		assert !output.contains('-lGL')
 		assert !output.contains('x11_egl_backend_helpers.h')
@@ -3488,6 +3529,7 @@ fn test_x11_enabled_build_links_x11_egl_and_gl() {
 	$if linux && x_multiwindow_x11 ? {
 		output := multiwindow_dump_c_flags('with_x11_deps', '-d x_multiwindow_x11')
 		assert output.contains('-lX11')
+		assert output.contains('-lxcb')
 		assert output.contains('-lEGL')
 		assert output.contains('-lGL')
 	} $else {

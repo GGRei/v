@@ -167,15 +167,15 @@ $publicSurface = @(
     [pscustomobject]@{ Path = 'vlib/gg/multiwindow_d_gg_multiwindow.v'; Known = '7228f1fb113ef1cbd019b25c21fe32d7798cab87e141ed8ddb014a944363ae8f'; Passed = $ExpectedGgFacadeSha256 }
     [pscustomobject]@{ Path = 'vlib/gg/multiwindow_notd_gg_multiwindow.v'; Known = 'ad528c64cf18bce9415dd0e50513fb87d8d0b58c8ac4a99025a5c8955e7d9549'; Passed = $ExpectedGgNoFlagSha256 }
     [pscustomobject]@{ Path = 'vlib/gg/multiwindow_service_types.v'; Known = '6775854b4a1a66e75099e7a390089f6a96f77c4bdd9eed5bccf4a33538e4d5b0'; Passed = $ExpectedGgServiceTypesSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/app.v'; Known = 'e8a01a50a4176edb118b3fddea41472f9c32047d63a73db7ca3a11ad7e499d8f'; Passed = $ExpectedAppSha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/app.v'; Known = 'af32eec55c119907a8bbf544842131018d36d3887347e26486e067a79d78a946'; Passed = $ExpectedAppSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/types.v'; Known = '0a9058ba7928945e24284c867eb6182336ea3b1d41e1337786c71105b1fe93b3'; Passed = $ExpectedTypesSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/backend.v'; Known = 'dcd0f088c235ae030f8bbc9ab63082c38d93f6f1194373e74d8dcb454d100a3f'; Passed = $ExpectedBackendSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_api.v'; Known = '6d2a3f1377f79afbfe95811dc1803e438f7a8241e394a75a6247dd6a4957d39b'; Passed = $ExpectedServiceApiSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_types.v'; Known = '27ea45e8651b050d8c5cf3345c74055935c610675e1404c763aa44c9dcef1409'; Passed = $ExpectedServiceTypesSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_registry.v'; Known = '20d3863dd6e9655d344324bb48803539e461feb0e2025e2939fdc108c31e2394'; Passed = $ExpectedServiceRegistrySha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/event_delivery.v'; Known = '214f89e97e9dd0ba35c74eca73f435edc8025e45bae9576bc4d2f0317ae631a5'; Passed = $ExpectedEventDeliverySha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/event_delivery.v'; Known = '02e70e91abb216783faf5205f0e638f0d98ff470ee5f1e56f7b853d273bcca38'; Passed = $ExpectedEventDeliverySha256 }
 )
-$knownPublicRoutingSurfaceSha256 = 'e4827e78081ec6a25923d7fc713a7398a51d01e2e5346f3a628caf7f3d4f878f'
+$knownPublicRoutingSurfaceSha256 = '0373f21b328505b6c08afab2b87d060d12520fd8fb24081a7a65f23322ed0f5f'
 
 $greenProductionSurface = @(
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_backend.v'; Known = '8515db375427e3b145052567582ead24a18c0b35fb286d15ff7d704d35ae240b'; Passed = $ExpectedServiceBackendSha256 }

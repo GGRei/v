@@ -54,6 +54,81 @@ fn test_x11_focus_capability_defers_to_authoritative_focus_events_and_deduplicat
 	app.stop()!
 }
 
+fn test_x11_position_capability_defers_publication_until_native_observation() {
+	mut backend := Backend{
+		kind: .x11
+		x11:  new_x11_backend()
+	}
+	capability := backend.service_operation_capability(WindowId{}, .position)
+	assert capability.support == .available
+	assert capability.asynchronous
+	assert capability.state_observable
+	assert backend.service_state_publication_is_deferred(WindowId{}, .position)
+}
+
+fn test_x11_configure_observations_publish_move_only_and_preserve_resize_events() {
+	window := WindowId{
+		app_instance: 1
+		slot:         0
+		generation:   1
+	}
+	mut backend := new_x11_backend()
+	backend.windows << X11WindowRecord{
+		id:     window
+		width:  100
+		height: 80
+	}
+	first_state := ServiceWindowState{
+		position: ServicePosition{
+			known: true
+			x:     10
+			y:     20
+		}
+	}
+	first := backend.queued_configure_observation_events(0, 100, 80, first_state, true)
+	assert first.len == 1
+	assert first[0].kind == .service
+	assert first[0].service.operation == .position
+	assert first[0].service.state.position == first_state.position
+	assert backend.queued_configure_observation_events(0, 100, 80, first_state, true).len == 0
+
+	move_state := ServiceWindowState{
+		position: ServicePosition{
+			known: true
+			x:     30
+			y:     40
+		}
+	}
+	move_only := backend.queued_configure_observation_events(0, 100, 80, move_state, true)
+	assert move_only.len == 1
+	assert move_only[0].kind == .service
+	assert move_only[0].service.operation == .position
+	assert move_only[0].service.state.position == move_state.position
+
+	resize_only := backend.queued_configure_observation_events(0, 120, 90, move_state, true)
+	assert resize_only.len == 2
+	assert resize_only[0].kind == .lifecycle
+	assert resize_only[0].lifecycle.kind == .window_resized
+	assert resize_only[1].kind == .input
+	assert resize_only[1].input.kind == .resized
+
+	resize_move_state := ServiceWindowState{
+		position: ServicePosition{
+			known: true
+			x:     50
+			y:     60
+		}
+	}
+	resize_and_move :=
+		backend.queued_configure_observation_events(0, 140, 110, resize_move_state, true)
+	assert resize_and_move.len == 3
+	assert resize_and_move[0].kind == .lifecycle
+	assert resize_and_move[1].kind == .input
+	assert resize_and_move[2].kind == .service
+	assert resize_and_move[2].service.operation == .position
+	assert resize_and_move[2].service.state.position == resize_move_state.position
+}
+
 fn test_x11_native_service_controls_borrow_monitors_and_readback() {
 	$if linux && x_multiwindow_x11 ? {
 		if os.getenv('DISPLAY') == '' {
@@ -656,6 +731,328 @@ fn test_x11_native_readback_rect_preflight_is_subtractive_and_fail_closed() {
 		assert !x11_native_readback_rect_fits(2, 0, 0, 0x1fffffff, 1, 32, 24)
 		assert !x11_native_readback_rect_fits(2, 0x7fffffff, 0, 1, 1, 32, 24)
 		assert !x11_native_readback_rect_fits(2, 0, 0x7fffffff, 1, 1, 32, 24)
+	}
+}
+
+fn test_x11_xdnd_incremental_payload_uses_advertised_size_as_lower_bound() {
+	$if linux && x_multiwindow_x11 ? {
+		window := WindowId{
+			app_instance: 1
+			slot:         0
+			generation:   1
+		}
+		mut record := X11WindowRecord{
+			id: window
+		}
+		record.window = ~record.window
+		mut backend := X11Backend{
+			windows: [record]
+		}
+		backend.text_uri_list = ~backend.text_uri_list
+		backend.xdnd_action_copy = backend.text_uri_list
+		backend.xdnd_drop_state = X11XdndDrop{
+			active:      true
+			source:      record.window
+			requestor:   record.window
+			window:      window
+			property:    backend.text_uri_list
+			target_type: backend.text_uri_list
+			version:     x11_xdnd_version
+		}
+		assert backend.begin_xdnd_incremental(1)
+		first_deadline := backend.xdnd_drop_state.deadline_ns
+		assert first_deadline > 0
+		assert backend.accept_xdnd_incremental_chunk('file:///tmp/'.bytes()).len == 0
+		assert backend.xdnd_drop_state.active
+		assert backend.xdnd_drop_state.deadline_ns >= first_deadline
+		assert backend.accept_xdnd_incremental_chunk('multiwindow.txt\n'.bytes()).len == 0
+		assert backend.xdnd_drop_state.data.len > 1
+		events := backend.accept_xdnd_incremental_chunk([]u8{})
+		assert events.len == 1
+		assert events[0].kind == .input
+		assert events[0].input.kind == .files_dropped
+		assert events[0].input.window_id == window
+		assert events[0].input.dropped_files == ['/tmp/multiwindow.txt']
+		assert !backend.xdnd_drop_state.active
+		assert backend.xdnd_finished_count == 1
+		assert backend.xdnd_last_finished_accepted
+
+		backend.xdnd_drop_state = X11XdndDrop{
+			active:      true
+			incremental: true
+			source:      record.window
+			requestor:   record.window
+			window:      window
+			property:    backend.text_uri_list
+			target_type: backend.text_uri_list
+			version:     x11_xdnd_version
+			data:        []u8{len: x11_xdnd_max_payload_bytes}
+		}
+		assert backend.accept_xdnd_incremental_chunk([u8(1)]).len == 0
+		assert !backend.xdnd_drop_state.active
+		assert backend.xdnd_finished_count == 2
+		assert !backend.xdnd_last_finished_accepted
+
+		backend.xdnd_drop_state = X11XdndDrop{
+			active:      true
+			source:      record.window
+			requestor:   record.window
+			window:      window
+			version:     x11_xdnd_version
+			deadline_ns: 1
+		}
+		backend.expire_xdnd_drop(2)
+		backend.expire_xdnd_drop(3)
+		assert backend.xdnd_finished_count == 3
+		assert !backend.xdnd_drop_state.active
+	}
+}
+
+fn test_x11_xdnd_incr_multipart_is_transactional_and_exactly_once() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		source := app.create_window(title: 'xdnd-incr-source', width: 32, height: 24)!
+		target := app.create_window(title: 'xdnd-incr-target', width: 32, height: 24)!
+		_ = app.drain_queued_events()!
+		app.backend.x11.service_queue_xdnd_incr_start_for_test(source, target, 1, 32, true)!
+		_ = app.poll_events()!
+		initial_events := app.drain_queued_events()!
+		assert !initial_events.any(it.kind == .input && it.input.kind == .files_dropped)
+		active, incremental, bytes, initial_deadline, finished, _ :=
+			app.backend.x11.service_xdnd_state_for_test()
+		assert active
+		assert incremental
+		assert bytes == 0
+		assert initial_deadline > 0
+		assert finished == 0
+		assert !app.backend.x11.service_xdnd_property_exists_for_test()
+
+		app.backend.x11.service_queue_xdnd_chunk_for_test('ignored'.bytes(), false, true, 8)!
+		_ = app.poll_events()!
+		_ = app.drain_queued_events()!
+		stale_active, _, stale_bytes, stale_deadline, stale_finished, _ :=
+			app.backend.x11.service_xdnd_state_for_test()
+		assert stale_active
+		assert stale_bytes == 0
+		assert stale_deadline == initial_deadline
+		assert stale_finished == 0
+
+		app.backend.x11.service_queue_xdnd_chunk_for_test('file:///tmp/'.bytes(), true, true, 8)!
+		_ = app.poll_events()!
+		first_events := app.drain_queued_events()!
+		assert !first_events.any(it.kind == .input && it.input.kind == .files_dropped)
+		first_active, _, first_bytes, first_deadline, first_finished, _ :=
+			app.backend.x11.service_xdnd_state_for_test()
+		assert first_active
+		assert first_bytes == 'file:///tmp/'.len
+		assert first_deadline >= initial_deadline
+		assert first_finished == 0
+		assert !app.backend.x11.service_xdnd_property_exists_for_test()
+
+		app.backend.x11.service_queue_xdnd_chunk_for_test('multiwindow-a\nfile:///tmp/multiwindow-b\n'.bytes(),
+			true, true, 8)!
+		_ = app.poll_events()!
+		second_events := app.drain_queued_events()!
+		assert !second_events.any(it.kind == .input && it.input.kind == .files_dropped)
+		second_active, _, second_bytes, second_deadline, second_finished, _ :=
+			app.backend.x11.service_xdnd_state_for_test()
+		assert second_active
+		assert second_bytes > 1
+		assert second_deadline >= first_deadline
+		assert second_finished == 0
+
+		app.backend.x11.service_queue_xdnd_chunk_for_test([]u8{}, true, true, 8)!
+		_ = app.poll_events()!
+		terminal_events := app.drain_queued_events()!
+		drops := terminal_events.filter(it.kind == .input && it.input.kind == .files_dropped)
+		assert drops.len == 1
+		assert drops[0].input.window_id == target
+		assert drops[0].input.dropped_files == ['/tmp/multiwindow-a', '/tmp/multiwindow-b']
+		terminal_active, _, _, _, terminal_finished, terminal_accepted :=
+			app.backend.x11.service_xdnd_state_for_test()
+		assert !terminal_active
+		assert terminal_finished == 1
+		assert terminal_accepted
+		assert app.backend.x11.service_xdnd_wire_finished_for_test() == 1
+		finished_sequence, property_sequence :=
+			app.backend.x11.service_xdnd_terminal_order_for_test()
+		assert property_sequence < finished_sequence
+		_ = app.poll_events()!
+		assert !app.drain_queued_events()!.any(it.kind == .input && it.input.kind == .files_dropped)
+		_, _, _, _, replay_finished, _ := app.backend.x11.service_xdnd_state_for_test()
+		assert replay_finished == 1
+
+		app.backend.x11.service_queue_xdnd_incr_start_for_test(source, target, 1, 32, true)!
+		_ = app.poll_events()!
+		_ = app.drain_queued_events()!
+		app.backend.x11.service_set_xdnd_property_without_event_for_test('late-timeout'.bytes())!
+		assert app.backend.x11.service_xdnd_property_exists_for_test()
+		app.backend.x11.service_expire_xdnd_for_test()
+		_ = app.poll_events()!
+		_ = app.drain_queued_events()!
+		timeout_active, _, _, _, timeout_finished, timeout_accepted :=
+			app.backend.x11.service_xdnd_state_for_test()
+		assert !timeout_active
+		assert timeout_finished == 2
+		assert !timeout_accepted
+		assert app.backend.x11.service_xdnd_wire_finished_for_test() == 2
+		assert !app.backend.x11.service_xdnd_property_exists_for_test()
+		timeout_finished_sequence, timeout_property_sequence :=
+			app.backend.x11.service_xdnd_terminal_order_for_test()
+		assert timeout_finished_sequence < timeout_property_sequence
+		app.backend.x11.service_queue_stale_xdnd_selection_for_test('stale'.bytes())!
+		assert app.backend.x11.service_xdnd_property_exists_for_test()
+		_ = app.poll_events()!
+		assert !app.drain_queued_events()!.any(it.kind == .input && it.input.kind == .files_dropped)
+		assert !app.backend.x11.service_xdnd_property_exists_for_test()
+		app.backend.x11.service_queue_stale_xdnd_property_for_test('stale-chunk'.bytes())!
+		assert app.backend.x11.service_xdnd_property_exists_for_test()
+		_ = app.poll_events()!
+		assert !app.drain_queued_events()!.any(it.kind == .input && it.input.kind == .files_dropped)
+		assert !app.backend.x11.service_xdnd_property_exists_for_test()
+		_ = app.poll_events()!
+		_, _, _, _, timeout_replay_finished, _ := app.backend.x11.service_xdnd_state_for_test()
+		assert timeout_replay_finished == 2
+
+		app.backend.x11.service_queue_xdnd_incr_start_for_test(source, target, 1, 32, true)!
+		_ = app.poll_events()!
+		_ = app.drain_queued_events()!
+		app.destroy_window(target)!
+		_ = app.drain_queued_events()!
+		destroy_active, _, _, _, destroy_finished, destroy_accepted :=
+			app.backend.x11.service_xdnd_state_for_test()
+		assert !destroy_active
+		assert destroy_finished == 3
+		assert !destroy_accepted
+		assert app.backend.x11.service_xdnd_wire_finished_for_test() == 3
+		bad_source := app.create_window(title: 'xdnd destroyed source', width: 32, height: 24)!
+		bad_target := app.create_window(title: 'xdnd checked finish target', width: 32, height: 24)!
+		_ = app.drain_queued_events()!
+		app.backend.x11.service_queue_xdnd_incr_start_for_test(bad_source, bad_target, 1, 32, true)!
+		_ = app.poll_events()!
+		_ = app.drain_queued_events()!
+		bad_wire_before := app.backend.x11.service_xdnd_wire_finished_for_test()
+		_, _, _, _, bad_finished_before, _ := app.backend.x11.service_xdnd_state_for_test()
+		app.backend.x11.service_destroy_xdnd_source_then_finish_for_test()!
+		bad_active_after, _, _, _, bad_finished_after, _ :=
+			app.backend.x11.service_xdnd_state_for_test()
+		assert !bad_active_after
+		assert bad_finished_after == bad_finished_before + 1
+		assert app.backend.x11.service_xdnd_wire_finished_for_test() == bad_wire_before
+		_ = app.poll_events()!
+		_ = app.drain_queued_events()!
+		app.stop()!
+
+		mut self_app := new_app(backend: .x11)!
+		self_window := self_app.create_window(
+			title:  'xdnd self source target'
+			width:  32
+			height: 24
+		)!
+		_ = self_app.drain_queued_events()!
+		self_app.backend.x11.service_queue_xdnd_incr_start_for_test(self_window, self_window, 1,
+			32, true)!
+		_ = self_app.poll_events()!
+		_ = self_app.drain_queued_events()!
+		self_active, self_incremental, _, _, self_finished_before, _ :=
+			self_app.backend.x11.service_xdnd_state_for_test()
+		assert self_active
+		assert self_incremental
+		delete_before := self_app.backend.x11.service_xdnd_property_delete_count_for_test()
+		wire_before := self_app.backend.x11.service_xdnd_wire_finished_for_test()
+		self_app.destroy_window(self_window)!
+		_ = self_app.drain_queued_events()!
+		self_active_after, _, _, _, self_finished_after, _ :=
+			self_app.backend.x11.service_xdnd_state_for_test()
+		assert !self_active_after
+		assert self_finished_after == self_finished_before
+		assert self_app.backend.x11.service_xdnd_property_delete_count_for_test() == delete_before
+		assert self_app.backend.x11.service_xdnd_wire_finished_for_test() == wire_before
+		self_app.stop()!
+	}
+}
+
+fn test_x11_xdnd_invalid_incr_is_terminal_after_validation() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		source := app.create_window(title: 'xdnd-invalid-source', width: 32, height: 24)!
+		target := app.create_window(title: 'xdnd-invalid-target', width: 32, height: 24)!
+		_ = app.drain_queued_events()!
+
+		app.backend.x11.service_queue_xdnd_incr_start_for_test(source, target,
+
+			u64(x11_xdnd_max_payload_bytes) + 1, 32, true)!
+		_ = app.poll_events()!
+		assert !app.drain_queued_events()!.any(it.kind == .input && it.input.kind == .files_dropped)
+		active_after_oversize, _, _, _, finished_after_oversize, accepted_after_oversize :=
+			app.backend.x11.service_xdnd_state_for_test()
+		assert !active_after_oversize
+		assert finished_after_oversize == 1
+		assert !accepted_after_oversize
+		assert app.backend.x11.service_xdnd_wire_finished_for_test() == 1
+		assert !app.backend.x11.service_xdnd_property_exists_for_test()
+		oversize_finished_sequence, oversize_property_sequence :=
+			app.backend.x11.service_xdnd_terminal_order_for_test()
+		assert oversize_finished_sequence < oversize_property_sequence
+
+		app.backend.x11.service_queue_xdnd_incr_start_for_test(source, target, 1, 8, true)!
+		_ = app.poll_events()!
+		_ = app.drain_queued_events()!
+		active_after_header, _, _, _, finished_after_header, accepted_after_header :=
+			app.backend.x11.service_xdnd_state_for_test()
+		assert !active_after_header
+		assert finished_after_header == 2
+		assert !accepted_after_header
+		assert app.backend.x11.service_xdnd_wire_finished_for_test() == 2
+		assert !app.backend.x11.service_xdnd_property_exists_for_test()
+		header_finished_sequence, header_property_sequence :=
+			app.backend.x11.service_xdnd_terminal_order_for_test()
+		assert header_finished_sequence < header_property_sequence
+
+		app.backend.x11.service_queue_xdnd_incr_start_for_test(source, target, 1, 32, true)!
+		_ = app.poll_events()!
+		_ = app.drain_queued_events()!
+		app.backend.x11.service_queue_xdnd_chunk_for_test('invalid'.bytes(), true, false, 8)!
+		_ = app.poll_events()!
+		assert !app.drain_queued_events()!.any(it.kind == .input && it.input.kind == .files_dropped)
+		active_after_type, _, _, _, finished_after_type, accepted_after_type :=
+			app.backend.x11.service_xdnd_state_for_test()
+		assert !active_after_type
+		assert finished_after_type == 3
+		assert !accepted_after_type
+		assert app.backend.x11.service_xdnd_wire_finished_for_test() == 3
+		assert !app.backend.x11.service_xdnd_property_exists_for_test()
+		type_finished_sequence, type_property_sequence :=
+			app.backend.x11.service_xdnd_terminal_order_for_test()
+		assert type_finished_sequence < type_property_sequence
+
+		app.backend.x11.service_queue_xdnd_incr_start_for_test(source, target, 1, 32, true)!
+		_ = app.poll_events()!
+		_ = app.drain_queued_events()!
+		app.backend.x11.service_queue_xdnd_chunk_for_test([]u8{}, true, true, 32)!
+		_ = app.poll_events()!
+		_ = app.drain_queued_events()!
+		active_after_format, _, _, _, finished_after_format, accepted_after_format :=
+			app.backend.x11.service_xdnd_state_for_test()
+		assert !active_after_format
+		assert finished_after_format == 4
+		assert !accepted_after_format
+		assert app.backend.x11.service_xdnd_wire_finished_for_test() == 4
+		assert !app.backend.x11.service_xdnd_property_exists_for_test()
+		format_finished_sequence, format_property_sequence :=
+			app.backend.x11.service_xdnd_terminal_order_for_test()
+		assert format_finished_sequence < format_property_sequence
+		_ = app.poll_events()!
+		assert app.drain_queued_events()!.len == 0
+		_, _, _, _, replay_finished, _ := app.backend.x11.service_xdnd_state_for_test()
+		assert replay_finished == 4
+		app.stop()!
 	}
 }
 

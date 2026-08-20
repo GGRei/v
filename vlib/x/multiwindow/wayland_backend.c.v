@@ -6784,6 +6784,8 @@ fn (mut backend WaylandBackend) drain_clipboard_send() {
 			attempts++
 			n := backend.clipboard_write_once(backend.clipboard_sends[index].fd, ptr, usize(chunk))
 			if n > 0 {
+				backend.clipboard_sends[index].deadline_ns = vtime.sys_mono_now() +
+					wayland_clipboard_timeout_ns
 				backend.clipboard_sends[index].offset += int(n)
 				if backend.clipboard_sends[index].offset >= backend.clipboard_sends[index].payload.len {
 					backend.close_clipboard_send_at(index)
@@ -6873,6 +6875,8 @@ fn (mut backend WaylandBackend) drain_clipboard_read() {
 				n := backend.clipboard_read_once(backend.clipboard_read.fd, unsafe { &probe[0] },
 					usize(1))
 				if n > 0 {
+					backend.clipboard_read.deadline_ns = vtime.sys_mono_now() +
+						wayland_clipboard_timeout_ns
 					backend.finish_clipboard_read(.failed, '', err_clipboard_capacity)
 					return
 				}
@@ -6904,6 +6908,8 @@ fn (mut backend WaylandBackend) drain_clipboard_read() {
 			n := backend.clipboard_read_once(backend.clipboard_read.fd, unsafe { &chunk[0] },
 				usize(read_size))
 			if n > 0 {
+				backend.clipboard_read.deadline_ns = vtime.sys_mono_now() +
+					wayland_clipboard_timeout_ns
 				for index in 0 .. int(n) {
 					backend.clipboard_read.buffer << chunk[index]
 				}

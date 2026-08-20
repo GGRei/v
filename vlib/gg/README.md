@@ -203,7 +203,10 @@ backends that clone dropped file paths into `WindowInputEvent.dropped_files`;
 `WM_TOUCH` began/moved/ended states; AppKit also reports cancelled touches from
 `touchesCancelledWithEvent:`. Clipboard paste is reported as an event signal;
 clipboard contents are not carried by `WindowInputEvent`. X11 text uses
-XIM/XIC with `Xutf8LookupString`, and X11 file drops use XDND `text/uri-list`.
+XIM/XIC with `Xutf8LookupString`. X11 file drops accept inline or bounded
+1 MiB ICCCM INCR XDND `text/uri-list` transfers, refresh their timeout only on
+progress, never publish a partial drop, and safely finish even if the source
+window disappears.
 Wayland text uses xkb keymap/state for key-press characters, and Wayland file
 drops use `wl_data_device`/`wl_data_offer` `text/uri-list`; neither Linux text
 path implements full IME/composed text yet.
@@ -278,7 +281,7 @@ Runtime support differs by backend:
 | Backend | Service summary |
 | --- | --- |
 | Mock | Deterministic state, monitors, clipboard, portal, and readback for tests; native borrow is unsupported. |
-| X11 | Native state/monitors, clipboard, portal (`x11:`), scoped borrow, and native window capture; focus is available only when the live server advertises EWMH `_NET_ACTIVE_WINDOW`, its request is asynchronous, and authoritative state comes from `FocusIn`/`FocusOut`. Other EWMH, mouse-lock, and rendered-image support also depend on the live server/renderer. |
+| X11 | Native state/monitors, clipboard, portal (`x11:`), scoped borrow, and native window capture; focus is available only when the live server advertises EWMH `_NET_ACTIVE_WINDOW`, its request is asynchronous, and authoritative state comes from `FocusIn`/`FocusOut`. Position requests are also asynchronous; root-coordinate observations triggered by `ConfigureNotify` are authoritative. Other EWMH, mouse-lock, and rendered-image support also depend on the live server/renderer. |
 | Wayland | Runtime-global-driven state/monitors, clipboard, portal (`wayland:`), scoped borrow, and mouse lock; focus/raise/position are unsupported. Hide/show remapping preserves configured metadata, ownership, constraints, decorations, and maximize/fullscreen intent; show fails hidden and retryable when no fresh compositor configure is available. Show/minimize/maximize/restore/fullscreen/mouse-lock are asynchronous, but minimize is not state-observable, so callers are not guaranteed a resulting minimized-state observation. Rendered readback requires the active GL path. |
 | AppKit | Native state/monitors, scoped borrow, clipboard, window operations, and titlebar appearance as reported by the live bridge; portal is unsupported and readback requires active Metal. |
 | Win32 | Native state/monitors, scoped borrow, clipboard, and standard window operations; focus/mouse lock are conditional, maximize depends on window configuration, and portal/readback are currently unsupported. |

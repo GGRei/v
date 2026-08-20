@@ -125,6 +125,14 @@ pub fn (mut app App) create_window(config WindowConfig) !WindowId {
 		app.state_mutex.unlock()
 		return err
 	}
+	if owner := config.owner {
+		owner_slot := app.windows[owner.slot]
+		if owner_slot.id != owner || owner_slot.status != .alive
+			|| owner_slot.destroy_stage != .none {
+			app.state_mutex.unlock()
+			return error(err_stale_window)
+		}
+	}
 	if app.render_bridge != unsafe { nil } && config.sample_count != 1 {
 		app.state_mutex.unlock()
 		return error(err_render_sample_count_unsupported)
@@ -842,25 +850,26 @@ pub fn (mut app App) stop() ! {
 		return
 	}
 	mut errors := []string{}
-	for destroy_ticket in app.prepared_window_tickets_for_stop() {
-		app.seal_window_destroy(destroy_ticket) or {
-			errors << err.msg()
-			app.rollback_window_destroy(destroy_ticket) or { errors << err.msg() }
-			continue
-		}
-		app.finish_window_destroy(destroy_ticket, []string{}) or { errors << err.msg() }
-	}
-	for destroy_ticket in app.sealed_window_tickets_for_stop() {
-		app.finish_window_destroy(destroy_ticket, []string{}) or { errors << err.msg() }
-	}
-	ids := app.live_window_ids_for_stop() or {
+	ids := app.window_ids_for_ordered_stop() or {
 		errors << err.msg()
 		[]WindowId{}
 	}
 	for id in ids {
-		mut destroy_ticket := app.prepare_window_destroy_for_stop(id) or {
+		stage, existing_ticket := app.window_destroy_state_for_stop(id) or {
 			errors << err.msg()
 			continue
+		}
+		if stage == .sealed {
+			app.finish_window_destroy(existing_ticket, []string{}) or { errors << err.msg() }
+			continue
+		}
+		mut destroy_ticket := if stage == .prepared {
+			existing_ticket
+		} else {
+			app.prepare_window_destroy_for_stop(id) or {
+				errors << err.msg()
+				continue
+			}
 		}
 		mut sealed := false
 		for attempt in 0 .. 2 {

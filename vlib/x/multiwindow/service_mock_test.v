@@ -921,6 +921,521 @@ fn test_native_backend_close_cancels_pending_readback_once_before_finish() {
 	assert app.drain_queued_events()!.len == 0
 }
 
+fn exercise_native_owner_teardown_permutation(root_first bool) ! {
+	mut app := new_app()!
+	owner := app.create_window(title: 'native cascade owner')!
+	child := app.create_window(WindowConfig{
+		title: 'native cascade child'
+		owner: owner
+	})!
+	grandchild := app.create_window(WindowConfig{
+		title: 'native cascade grandchild'
+		owner: child
+	})!
+	sibling := app.create_window(WindowConfig{
+		title: 'native cascade sibling'
+		owner: owner
+	})!
+	order := [grandchild, child, sibling, owner]
+	_ = app.drain_queued_events()!
+	for window in order {
+		clipboard := app.services.take_request_id()!
+		portal := app.services.take_request_id()!
+		readback := app.services.take_readback_id(window)!
+		app.services.pending << PendingServiceRequest{
+			id:     clipboard
+			window: window
+			kind:   .clipboard_read
+		}
+		app.services.pending << PendingServiceRequest{
+			id:     portal
+			window: window
+			kind:   .portal_parent
+		}
+		app.services.readbacks << PendingReadbackRequest{
+			id: readback
+		}
+		app.services.portal_leases << ServicePortalLease{
+			id:     ServicePortalLeaseId{
+				app_instance: app.instance_id
+				serial:       portal.serial
+			}
+			window: window
+		}
+	}
+	backend_events := if root_first {
+		[
+			queued_lifecycle_event(Event{
+				kind:      .window_destroyed
+				window_id: owner
+			}),
+			queued_lifecycle_event(Event{
+				kind:      .window_destroyed
+				window_id: child
+			}),
+			queued_lifecycle_event(Event{
+				kind:      .window_destroyed
+				window_id: owner
+			}),
+		]
+	} else {
+		[
+			queued_lifecycle_event(Event{
+				kind:      .window_destroyed
+				window_id: child
+			}),
+			queued_lifecycle_event(Event{
+				kind:      .window_destroyed
+				window_id: owner
+			}),
+			queued_lifecycle_event(Event{
+				kind:      .window_destroyed
+				window_id: child
+			}),
+		]
+	}
+	acceptance := app.accept_backend_event_batch(backend_events, 1)!
+	assert acceptance.accepted == if root_first {
+		1
+	} else {
+		2
+	}
+	assert app.services.pending.all(it.terminal)
+	assert app.services.readbacks.all(it.terminal)
+	assert app.services.portal_leases.len == 0
+	assert app.windows[grandchild.slot].destroy_stage == .sealed
+	assert app.windows[child.slot].destroy_stage == .sealed
+	assert app.windows[sibling.slot].destroy_stage == .sealed
+	assert app.windows[owner.slot].destroy_stage == .sealed
+	assert !app.windows[grandchild.slot].backend_destroyed
+	assert app.windows[child.slot].backend_destroyed
+	assert !app.windows[sibling.slot].backend_destroyed
+	assert app.windows[owner.slot].backend_destroyed
+
+	notices := app.drain_render_teardown_notices()!
+	assert notices.map(it.window) == order
+	mut owner_rejected := false
+	app.finish_window_destroy(notices[3].ticket, []string{}) or {
+		assert err.msg() == err_owner_relation_invalid
+		owner_rejected = true
+	}
+	assert owner_rejected
+	for notice in notices {
+		app.finish_window_destroy(notice.ticket, []string{})!
+	}
+	events := app.drain_queued_events()!
+	assert events.len == order.len * 4
+	for index, window in order {
+		offset := index * 4
+		assert events[offset].kind == .service
+		assert events[offset].service.kind == .clipboard
+		assert events[offset].service.clipboard.window == window
+		assert events[offset].service.clipboard.status == .cancelled
+		assert events[offset + 1].kind == .service
+		assert events[offset + 1].service.kind == .portal_parent
+		assert events[offset + 1].service.portal_parent.window == window
+		assert events[offset + 1].service.portal_parent.status == .cancelled
+		assert events[offset + 2].kind == .readback
+		assert events[offset + 2].readback.window == window
+		assert events[offset + 2].readback.status == .cancelled
+		assert events[offset + 3].kind == .lifecycle
+		assert events[offset + 3].lifecycle.kind == .window_destroyed
+		assert events[offset + 3].lifecycle.window_id == window
+	}
+	for index in 1 .. events.len {
+		assert events[index - 1].sequence < events[index].sequence
+	}
+	assert app.services.pending.len == 0
+	assert app.services.readbacks.len == 0
+	assert app.services.windows.len == 0
+	app.stop()!
+}
+
+fn test_native_owner_teardown_is_atomic_child_first_and_deduplicated() {
+	exercise_native_owner_teardown_permutation(true)!
+	exercise_native_owner_teardown_permutation(false)!
+}
+
+fn test_native_owner_teardown_delivery_exhaustion_is_atomic_and_retryable() {
+	mut app := new_app()!
+	owner := app.create_window(title: 'native exhaustion owner')!
+	child := app.create_window(WindowConfig{
+		title: 'native exhaustion child'
+		owner: owner
+	})!
+	_ = app.drain_queued_events()!
+	clipboard := app.services.take_request_id()!
+	app.services.pending << PendingServiceRequest{
+		id:     clipboard
+		window: child
+		kind:   .clipboard_read
+	}
+	saved_delivery_token := app.next_event_delivery_token
+	frame_before := app.frame_count
+	app.next_event_delivery_token = ~u64(0)
+	mut rejected := false
+	app.accept_backend_event_batch([
+		queued_lifecycle_event(Event{
+			kind:      .window_destroyed
+			window_id: owner
+		}),
+	], 1) or {
+		assert err.msg() == err_event_delivery_exhausted
+		rejected = true
+	}
+	assert rejected
+	assert app.next_event_delivery_token == ~u64(0)
+	assert app.windows[child.slot].destroy_stage == .none
+	assert app.windows[owner.slot].destroy_stage == .none
+	assert !app.windows[child.slot].services_cancelled
+	assert !app.windows[owner.slot].services_cancelled
+	assert app.services.pending.len == 1
+	assert !app.services.pending[0].terminal
+	assert app.teardown_acceptance_order.len == 0
+	assert app.frame_count == frame_before
+	assert app.drain_queued_events()!.len == 0
+
+	app.next_event_delivery_token = saved_delivery_token
+	acceptance := app.accept_backend_event_batch([
+		queued_lifecycle_event(Event{
+			kind:      .window_destroyed
+			window_id: owner
+		}),
+	], 2)!
+	assert acceptance.accepted == 1
+	notices := app.drain_render_teardown_notices()!
+	assert notices.map(it.window) == [child, owner]
+	for notice in notices {
+		app.finish_window_destroy(notice.ticket, []string{})!
+	}
+	events := app.drain_queued_events()!
+	assert events.filter(it.kind == .readback).len == 0
+	assert events.filter(it.kind == .service).len == 1
+	assert events.filter(it.kind == .service)[0].service.clipboard.id == clipboard
+	assert events.filter(it.kind == .lifecycle).map(it.lifecycle.window_id) == [child, owner]
+	app.stop()!
+}
+
+fn test_native_owner_teardown_recollects_cancellation_after_earlier_batch_terminal() {
+	mut app := new_app()!
+	owner := app.create_window(title: 'native ready owner')!
+	child := app.create_window(WindowConfig{
+		title: 'native ready child'
+		owner: owner
+	})!
+	_ = app.drain_queued_events()!
+	readback := app.service_begin_window_readback(child)!
+	acceptance := app.accept_backend_event_batch([
+		queued_readback_event(ServiceReadbackResult{
+			id:              readback
+			window:          child
+			status:          .ready
+			submitted_frame: 1
+			width:           1
+			height:          1
+			stride:          4
+			pixels_rgba8:    [u8(1), 2, 3, 4]
+		}),
+		queued_lifecycle_event(Event{
+			kind:      .window_destroyed
+			window_id: owner
+		}),
+	], 1)!
+	assert acceptance.accepted == 2
+	notices := app.drain_render_teardown_notices()!
+	assert notices.map(it.window) == [child, owner]
+	for notice in notices {
+		app.finish_window_destroy(notice.ticket, []string{})!
+	}
+	events := app.drain_queued_events()!
+	assert events.map(it.kind) == [.readback, .lifecycle, .lifecycle]
+	assert events[0].readback.id == readback
+	assert events[0].readback.status == .ready
+	assert events.filter(it.kind == .readback).len == 1
+	assert app.services.readbacks.len == 0
+	app.stop()!
+
+	mut after := new_app()!
+	after_owner := after.create_window(title: 'native cancelled owner')!
+	after_child := after.create_window(WindowConfig{
+		title: 'native cancelled child'
+		owner: after_owner
+	})!
+	_ = after.drain_queued_events()!
+	after_readback := after.service_begin_window_readback(after_child)!
+	after_acceptance := after.accept_backend_event_batch([
+		queued_lifecycle_event(Event{
+			kind:      .window_destroyed
+			window_id: after_owner
+		}),
+		queued_readback_event(ServiceReadbackResult{
+			id:              after_readback
+			window:          after_child
+			status:          .ready
+			submitted_frame: 1
+			width:           1
+			height:          1
+			stride:          4
+			pixels_rgba8:    [u8(1), 2, 3, 4]
+		}),
+	], 1)!
+	assert after_acceptance.accepted == 1
+	after_notices := after.drain_render_teardown_notices()!
+	for notice in after_notices {
+		after.finish_window_destroy(notice.ticket, []string{})!
+	}
+	after_events := after.drain_queued_events()!
+	assert after_events.filter(it.kind == .readback).len == 1
+	assert after_events.filter(it.kind == .readback)[0].readback.id == after_readback
+	assert after_events.filter(it.kind == .readback)[0].readback.status == .cancelled
+	after.stop()!
+}
+
+fn test_rejected_readback_keeps_its_reserved_batch_position() {
+	mut app := new_app()!
+	window := app.create_window(title: 'readback token gap')!
+	_ = app.drain_queued_events()!
+	first_token := app.next_event_delivery_token
+	acceptance := app.accept_backend_event_batch([
+		queued_readback_event(ServiceReadbackResult{
+			id:     ServiceReadbackId{
+				app_instance: app.instance_id
+				serial:       0x1234
+				window:       window
+			}
+			window: window
+			status: .failed
+			error:  err_readback_invalid
+		}),
+		queued_lifecycle_event(Event{
+			kind:      .window_close_requested
+			window_id: window
+		}),
+	], 1)!
+	assert acceptance.accepted == 1
+	assert acceptance.barrier_token == first_token + 1
+	assert app.next_event_delivery_token == first_token + 2
+	events := app.drain_queued_events()!
+	assert events.len == 1
+	assert events[0].kind == .lifecycle
+	assert events[0].lifecycle.kind == .window_close_requested
+	assert events[0].sequence == first_token + 1
+	app.destroy_window(window)!
+	app.stop()!
+}
+
+fn test_native_owner_teardown_descendant_borrow_is_retryable() {
+	mut app := new_app()!
+	owner := app.create_window(title: 'native borrow owner')!
+	child := app.create_window(WindowConfig{
+		title: 'native borrow child'
+		owner: owner
+	})!
+	_ = app.drain_queued_events()!
+	app_ptr := unsafe { voidptr(app) }
+	callback := fn [app_ptr, owner, child] (_ NativeWindowBorrow) ! {
+		mut borrowed_app := unsafe { &App(app_ptr) }
+		acceptance := borrowed_app.accept_backend_event_batch([
+			queued_lifecycle_event(Event{
+				kind:      .window_destroyed
+				window_id: owner
+			}),
+		], 1)!
+		assert acceptance.accepted == 1
+		notices := borrowed_app.drain_render_teardown_notices()!
+		assert notices.map(it.window) == [child, owner]
+		mut child_rejected := false
+		borrowed_app.finish_window_destroy(notices[0].ticket, []string{}) or {
+			assert err.msg() == err_native_borrow_active
+			child_rejected = true
+		}
+		assert child_rejected
+		mut owner_rejected := false
+		borrowed_app.finish_window_destroy(notices[1].ticket, []string{}) or {
+			assert err.msg() == err_owner_relation_invalid
+			owner_rejected = true
+		}
+		assert owner_rejected
+		assert borrowed_app.services.window_index(child)! >= 0
+		assert borrowed_app.services.window_index(owner)! >= 0
+	}
+	app.with_native_window_borrow_for_test(child, callback)!
+	notices := app.drain_render_teardown_notices()!
+	for notice in notices {
+		app.finish_window_destroy(notice.ticket, []string{})!
+	}
+	assert app.drain_queued_events()!.filter(it.kind == .lifecycle).map(it.lifecycle.window_id) == [
+		child,
+		owner,
+	]
+	app.stop()!
+}
+
+fn test_native_teardown_adopts_presealed_root_and_descendant_tickets() {
+	mut root_app := new_app()!
+	root := root_app.create_window(title: 'native presealed root')!
+	_ = root_app.drain_queued_events()!
+	root_request := root_app.service_request_clipboard_text(root)!
+	root_ticket := root_app.prepare_window_destroy(root)!
+	root_app.seal_window_destroy(root_ticket)!
+	root_acceptance := root_app.accept_backend_event_batch([
+		queued_lifecycle_event(Event{
+			kind:      .window_destroyed
+			window_id: root
+		}),
+	], 1)!
+	assert root_acceptance.accepted == 1
+	root_notices := root_app.drain_render_teardown_notices()!
+	assert root_notices.len == 1
+	assert root_notices[0].ticket == root_ticket
+	assert root_app.windows[root.slot].backend_destroyed
+	root_app.finish_window_destroy(root_ticket, []string{})!
+	root_events := root_app.drain_queued_events()!
+	assert root_events.filter(it.kind == .service && it.service.clipboard.id == root_request).len == 1
+	assert root_events.filter(it.kind == .lifecycle).map(it.lifecycle.window_id) == [
+		root,
+	]
+	root_app.stop()!
+
+	mut app := new_app()!
+	owner := app.create_window(title: 'native owner with presealed child')!
+	child := app.create_window(WindowConfig{
+		title: 'native presealed child'
+		owner: owner
+	})!
+	_ = app.drain_queued_events()!
+	child_request := app.service_request_clipboard_text(child)!
+	child_ticket := app.prepare_window_destroy(child)!
+	app.seal_window_destroy(child_ticket)!
+	acceptance := app.accept_backend_event_batch([
+		queued_lifecycle_event(Event{
+			kind:      .window_destroyed
+			window_id: owner
+		}),
+	], 1)!
+	assert acceptance.accepted == 1
+	notices := app.drain_render_teardown_notices()!
+	assert notices.map(it.window) == [child, owner]
+	assert notices[0].ticket == child_ticket
+	assert !app.windows[child.slot].backend_destroyed
+	assert app.windows[owner.slot].backend_destroyed
+	for notice in notices {
+		app.finish_window_destroy(notice.ticket, []string{})!
+	}
+	events := app.drain_queued_events()!
+	assert events.filter(it.kind == .service && it.service.clipboard.id == child_request).len == 1
+	assert events.filter(it.kind == .lifecycle).map(it.lifecycle.window_id) == [child, owner]
+	app.stop()!
+}
+
+fn test_stop_finishes_pending_native_owner_cascade_child_first_without_errors() {
+	mut app := new_app()!
+	owner := app.create_window(title: 'native pending stop owner')!
+	child := app.create_window(WindowConfig{
+		title: 'native pending stop child'
+		owner: owner
+	})!
+	_ = app.drain_queued_events()!
+	acceptance := app.accept_backend_event_batch([
+		queued_lifecycle_event(Event{
+			kind:      .window_destroyed
+			window_id: owner
+		}),
+	], 1)!
+	assert acceptance.accepted == 1
+	assert app.teardown_acceptance_order == [child, owner]
+	app.stop()!
+	assert app.status == .stopped
+	assert app.services.windows.len == 0
+	assert app.backend.mock.windows.len == 0
+	assert app.windows[child.slot].destroy_stage == .finished
+	assert app.windows[owner.slot].destroy_stage == .finished
+}
+
+fn test_stop_finishes_mixed_owner_destroy_stages_in_global_child_first_order() {
+	for seal_owner in [false, true] {
+		mut app := new_app()!
+		owner := app.create_window(title: 'mixed stop owner')!
+		child := app.create_window(WindowConfig{
+			title: 'mixed stop child'
+			owner: owner
+		})!
+		_ = app.drain_queued_events()!
+		owner_ticket := app.prepare_window_destroy(owner)!
+		if seal_owner {
+			app.seal_window_destroy(owner_ticket)!
+		}
+		app.stop()!
+		assert app.status == .stopped
+		assert app.services.windows.len == 0
+		assert app.backend.mock.windows.len == 0
+		assert app.windows[child.slot].destroy_stage == .finished
+		assert app.windows[owner.slot].destroy_stage == .finished
+	}
+}
+
+fn test_create_window_rejects_prepared_or_native_sealed_owner_before_side_effects() {
+	mut app := new_app()!
+	owner := app.create_window(title: 'closing owner admission')!
+	_ = app.drain_queued_events()!
+	prepared := app.prepare_window_destroy(owner)!
+	windows_before := app.windows.len
+	backend_before := app.backend.mock.windows.len
+	token_before := app.next_event_delivery_token
+	mut prepared_rejected := false
+	app.create_window(WindowConfig{
+		title: 'prepared child rejected'
+		owner: owner
+	}) or {
+		assert err.msg() == err_stale_window
+		prepared_rejected = true
+	}
+	assert prepared_rejected
+	assert app.windows.len == windows_before
+	assert app.backend.mock.windows.len == backend_before
+	assert app.next_event_delivery_token == token_before
+	assert app.drain_queued_events()!.len == 0
+	app.rollback_window_destroy(prepared)!
+	child := app.create_window(WindowConfig{
+		title: 'child after owner rollback'
+		owner: owner
+	})!
+	_ = app.drain_queued_events()!
+
+	acceptance := app.accept_backend_event_batch([
+		queued_lifecycle_event(Event{
+			kind:      .window_destroyed
+			window_id: owner
+		}),
+	], 1)!
+	assert acceptance.accepted == 1
+	sealed_windows_before := app.windows.len
+	sealed_backend_before := app.backend.mock.windows.len
+	sealed_token_before := app.next_event_delivery_token
+	mut sealed_rejected := false
+	app.create_window(WindowConfig{
+		title: 'sealed child rejected'
+		owner: owner
+	}) or {
+		assert err.msg() == err_stale_window
+		sealed_rejected = true
+	}
+	assert sealed_rejected
+	assert app.windows.len == sealed_windows_before
+	assert app.backend.mock.windows.len == sealed_backend_before
+	assert app.next_event_delivery_token == sealed_token_before
+	notices := app.drain_render_teardown_notices()!
+	assert notices.map(it.window) == [child, owner]
+	for notice in notices {
+		app.finish_window_destroy(notice.ticket, []string{})!
+	}
+	assert app.drain_queued_events()!.filter(it.kind == .lifecycle).map(it.lifecycle.window_id) == [
+		child,
+		owner,
+	]
+	app.stop()!
+}
+
 fn test_destroy_window_replays_remembered_terminal_before_live_validation() {
 	mut app := new_app()!
 	window := app.create_window()!
