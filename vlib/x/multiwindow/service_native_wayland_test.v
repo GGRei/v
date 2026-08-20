@@ -194,7 +194,7 @@ fn test_wayland_shm_layout_rejects_stride_and_size_narrowing_before_protocol_use
 	}
 }
 
-fn test_wayland_hide_barrier_ignores_configure_without_discarding_initial_hidden_configure() {
+fn test_wayland_hide_barrier_and_hidden_state_ignore_configure_without_publishing() {
 	$if linux && sokol_wayland ? {
 		mut hidden := &WaylandWindowRecord{
 			width:                       80
@@ -225,8 +225,10 @@ fn test_wayland_hide_barrier_ignores_configure_without_discarding_initial_hidden
 			requested_visible: false
 		}
 		wayland_xdg_surface_configure(initial_hidden.listener_data(), unsafe { nil }, 8)
-		assert initial_hidden.configured
-		assert initial_hidden.frame_ready
+		assert !initial_hidden.configured
+		assert !initial_hidden.frame_ready
+		assert !initial_hidden.pending_service_state_valid
+		assert initial_hidden.pending_events.len == 0
 	}
 }
 
@@ -234,7 +236,8 @@ fn test_wayland_remap_replays_persisted_toplevel_attributes_before_commit_and_pa
 	$if linux && sokol_wayland ? {
 		mut backend := &WaylandBackend{
 			toplevel_replay_test: WaylandToplevelReplayTestSeam{
-				active: true
+				active:                  true
+				show_handshake_override: true
 			}
 		}
 		owner_id := WindowId{
@@ -274,9 +277,17 @@ fn test_wayland_remap_replays_persisted_toplevel_attributes_before_commit_and_pa
 		backend.windows << owner
 		backend.windows << child
 
-		backend.replay_window_toplevel_attributes_and_commit(1)
+		backend.replay_window_toplevel_attributes(1)
+		backend.commit_window_show_handshake(1)
 		assert backend.toplevel_replay_test.operations == ['title', 'app_id', 'parent', 'min_size',
 			'max_size', 'decoration', 'maximize', 'fullscreen', 'commit']
+		backend.toplevel_replay_test.operations.clear()
+		backend.windows[1].requested_maximized = false
+		backend.windows[1].requested_fullscreen = false
+		backend.replay_window_toplevel_attributes(1)
+		backend.commit_window_show_handshake(1)
+		assert backend.toplevel_replay_test.operations == ['title', 'app_id', 'parent', 'min_size',
+			'max_size', 'decoration', 'unmaximize', 'unfullscreen', 'commit']
 		backend.toplevel_replay_test.operations.clear()
 		backend.reapply_parent_to_live_children_on_first_map(owner_id, true)
 		assert backend.toplevel_replay_test.operations.len == 0
@@ -335,6 +346,449 @@ fn test_wayland_hide_barrier_failure_preserves_visible_window_state() {
 	}
 }
 
+fn new_wayland_show_handshake_test_backend(observations []WaylandShowHandshakeTestObservation, requested_maximized bool, requested_fullscreen bool, baseline_maximized bool, baseline_fullscreen bool) (&WaylandBackend, WindowId) {
+	mut backend := &WaylandBackend{
+		display:              voidptr(usize(0xd1))
+		toplevel_replay_test: WaylandToplevelReplayTestSeam{
+			active:                  true
+			show_handshake_override: true
+			show_observations:       observations.clone()
+		}
+	}
+	window := WindowId{
+		app_instance: 1
+		slot:         0
+		generation:   1
+	}
+	backend.windows << &WaylandWindowRecord{
+		id:                           window
+		owner:                        backend
+		title:                        'handshake'
+		app_id:                       'org.vlang.handshake'
+		surface:                      voidptr(usize(0xd2))
+		xdg_surface:                  voidptr(usize(0xd3))
+		xdg_toplevel:                 voidptr(usize(0xd4))
+		wl_egl_window:                voidptr(usize(0xd5))
+		width:                        360
+		height:                       260
+		min_width:                    1
+		min_height:                   1
+		requested_maximized:          requested_maximized
+		requested_fullscreen:         requested_fullscreen
+		observed_service_state_valid: true
+		observed_maximized:           baseline_maximized
+		observed_fullscreen:          baseline_fullscreen
+		render_target_generation:     7
+	}
+	return backend, window
+}
+
+fn assert_wayland_show_failure_left_hidden(backend &WaylandBackend, window WindowId) {
+	index := backend.window_record_index(window) or {
+		assert false, 'Wayland handshake test record disappeared'
+		return
+	}
+	record := backend.windows[index]
+	assert !record.requested_visible
+	assert !record.publish_show_on_map
+	assert !record.mapped
+	assert !record.configured
+	assert !record.frame_ready
+	assert !record.show_handshake_active
+	assert record.show_configure_serial == 0
+	assert record.pending_events.len == 0
+}
+
+fn test_wayland_show_handshake_defers_ack_until_final_intents_and_uses_latest_configure() {
+	$if linux && sokol_wayland ? {
+		mut backend, window := new_wayland_show_handshake_test_backend([
+			WaylandShowHandshakeTestObservation{
+				present:   true
+				serial:    11
+				width:     1024
+				height:    568
+				maximized: true
+			},
+			WaylandShowHandshakeTestObservation{
+				present: true
+				serial:  12
+				width:   480
+				height:  320
+			},
+		], false, false, false, false)
+
+		state := backend.service_show_window(window)!
+		assert state.mapping == .unmapped
+		record := backend.windows[0]
+		assert record.requested_visible
+		assert record.publish_show_on_map
+		assert record.configured
+		assert record.frame_ready
+		assert !record.mapped
+		assert record.width == 480
+		assert record.height == 320
+		assert record.pending_egl_resize
+		assert record.render_target_generation == 8
+		assert record.pending_events.len == 0
+		operations := backend.toplevel_replay_test.operations
+		assert operations.count(it == 'commit') == 1
+		assert operations.count(it == 'configure') == 2
+		assert operations.count(it == 'ack') == 1
+		assert operations.count(it == 'ack_cleanup') == 0
+		assert operations.index('configure') < operations.index('final_unmaximize')
+		assert operations.index('final_unfullscreen') < operations.index('ack')
+		assert operations.last() == 'ack_flush'
+		assert backend.toplevel_replay_test.show_acked_serials == [u32(12)]
+		assert backend.toplevel_replay_test.show_flush_count == 2
+		assert backend.toplevel_replay_test.show_roundtrip_count == 2
+	}
+}
+
+fn test_wayland_show_handshake_accepts_c1_after_final_sync_without_c2() {
+	$if linux && sokol_wayland ? {
+		mut backend, window := new_wayland_show_handshake_test_backend([
+			WaylandShowHandshakeTestObservation{
+				present: true
+				serial:  21
+				width:   360
+				height:  260
+			},
+		], false, false, false, false)
+		backend.windows[0].pending_egl_resize = true
+
+		backend.service_show_window(window)!
+		operations := backend.toplevel_replay_test.operations
+		assert operations.count(it == 'commit') == 1
+		assert operations.count(it == 'configure') == 1
+		assert operations.index('configure') < operations.index('final_unmaximize')
+		assert operations.index('final_unfullscreen') < operations.index('ack')
+		assert backend.toplevel_replay_test.show_acked_serials == [u32(21)]
+		assert backend.windows[0].pending_events.len == 0
+		assert backend.windows[0].pending_egl_resize
+	}
+}
+
+fn test_wayland_show_handshake_accepts_and_acks_wrapped_serial_zero() {
+	$if linux && sokol_wayland ? {
+		mut backend, window := new_wayland_show_handshake_test_backend([
+			WaylandShowHandshakeTestObservation{
+				present:    true
+				serial_set: true
+				serial:     0
+			},
+		], false, false, false, false)
+
+		backend.service_show_window(window)!
+		assert backend.toplevel_replay_test.show_acked_serials == [u32(0)]
+		assert backend.toplevel_replay_test.operations.count(it == 'ack') == 1
+		assert !backend.windows[0].show_configure_received
+		assert backend.windows[0].requested_visible
+		assert backend.windows[0].configured
+	}
+}
+
+fn test_wayland_show_handshake_uses_bounded_second_probe_and_fullscreen_axis() {
+	$if linux && sokol_wayland ? {
+		mut fallback_backend, fallback_window := new_wayland_show_handshake_test_backend([
+			WaylandShowHandshakeTestObservation{},
+			WaylandShowHandshakeTestObservation{
+				present:    true
+				serial:     31
+				fullscreen: true
+			},
+		], false, false, false, false)
+		fallback_backend.service_show_window(fallback_window)!
+		fallback_operations := fallback_backend.toplevel_replay_test.operations
+		assert fallback_operations.count(it == 'commit') == 1
+		assert fallback_operations.count(it == 'probe_maximize') == 1
+		assert fallback_operations.count(it == 'probe_fullscreen') == 1
+		assert fallback_operations.count(it == 'flush') == 3
+		assert fallback_operations.count(it == 'roundtrip') == 3
+		assert fallback_backend.toplevel_replay_test.show_acked_serials == [u32(31)]
+
+		mut fullscreen_backend, fullscreen_window := new_wayland_show_handshake_test_backend([
+			WaylandShowHandshakeTestObservation{
+				present: true
+				serial:  41
+			},
+		], false, true, false, true)
+		fullscreen_backend.service_show_window(fullscreen_window)!
+		fullscreen_operations := fullscreen_backend.toplevel_replay_test.operations
+		assert fullscreen_operations.count(it == 'probe_unfullscreen') == 1
+		assert fullscreen_operations.count(it == 'probe_maximize') == 0
+		assert fullscreen_operations.count(it == 'commit') == 1
+		assert fullscreen_backend.toplevel_replay_test.show_acked_serials == [u32(41)]
+	}
+}
+
+fn test_wayland_show_handshake_zero_c1_and_transport_failures_are_hidden_and_retryable() {
+	$if linux && sokol_wayland ? {
+		mut missing_backend, missing_window := new_wayland_show_handshake_test_backend([], false,
+			false, false, false)
+		missing_backend.windows[0].pending_egl_resize = true
+		mut missing_error := ''
+		missing_backend.service_show_window(missing_window) or { missing_error = err.msg() }
+		assert missing_error == err_wayland_show_configure_failed
+		assert missing_backend.toplevel_replay_test.operations.count(it == 'commit') == 1
+		assert missing_backend.toplevel_replay_test.show_roundtrip_count == 2
+		assert_wayland_show_failure_left_hidden(missing_backend, missing_window)
+		assert missing_backend.windows[0].pending_egl_resize
+		missing_backend.toplevel_replay_test.operations.clear()
+		missing_backend.toplevel_replay_test.show_flush_count = 0
+		missing_backend.toplevel_replay_test.show_roundtrip_count = 0
+		missing_backend.toplevel_replay_test.show_observations = [
+			WaylandShowHandshakeTestObservation{
+				present: true
+				serial:  51
+			},
+		]
+		missing_backend.service_show_window(missing_window)!
+		assert missing_backend.toplevel_replay_test.show_acked_serials == [u32(51)]
+		assert missing_backend.windows[0].pending_egl_resize
+
+		mut drain_backend, drain_window := new_wayland_show_handshake_test_backend([], false,
+			false, false, false)
+		drain_backend.toplevel_replay_test.show_hidden_drain_failure = true
+		mut drain_error := ''
+		drain_backend.service_show_window(drain_window) or { drain_error = err.msg() }
+		assert drain_error == err_wayland_dispatch_failed
+		assert drain_backend.toplevel_replay_test.operations == ['hidden_drain']
+		assert drain_backend.toplevel_replay_test.show_acked_serials.len == 0
+		assert_wayland_show_failure_left_hidden(drain_backend, drain_window)
+
+		mut flush_backend, flush_window := new_wayland_show_handshake_test_backend([], false,
+			false, false, false)
+		flush_backend.toplevel_replay_test.show_flush_failure_boundary = 1
+		mut flush_error := ''
+		flush_backend.service_show_window(flush_window) or { flush_error = err.msg() }
+		assert flush_error == err_wayland_flush_failed
+		assert_wayland_show_failure_left_hidden(flush_backend, flush_window)
+
+		mut roundtrip_backend, roundtrip_window := new_wayland_show_handshake_test_backend([],
+			false, false, false, false)
+		roundtrip_backend.toplevel_replay_test.show_roundtrip_failure_boundary = 1
+		mut roundtrip_error := ''
+		roundtrip_backend.service_show_window(roundtrip_window) or { roundtrip_error = err.msg() }
+		assert roundtrip_error == err_wayland_dispatch_failed
+		assert_wayland_show_failure_left_hidden(roundtrip_backend, roundtrip_window)
+
+		mut final_backend, final_window := new_wayland_show_handshake_test_backend([
+			WaylandShowHandshakeTestObservation{
+				present: true
+				serial:  61
+			},
+		], false, false, false, false)
+		final_backend.toplevel_replay_test.show_flush_failure_boundary = 2
+		mut final_error := ''
+		final_backend.service_show_window(final_window) or { final_error = err.msg() }
+		assert final_error == err_wayland_flush_failed
+		assert final_backend.toplevel_replay_test.operations.count(it == 'ack_cleanup') == 1
+		assert final_backend.toplevel_replay_test.show_acked_serials == [u32(61)]
+		assert_wayland_show_failure_left_hidden(final_backend, final_window)
+
+		mut final_roundtrip_backend, final_roundtrip_window := new_wayland_show_handshake_test_backend([
+			WaylandShowHandshakeTestObservation{
+				present: true
+				serial:  62
+			},
+		], false, false, false, false)
+		final_roundtrip_backend.toplevel_replay_test.show_roundtrip_failure_boundary = 2
+		mut final_roundtrip_error := ''
+		final_roundtrip_backend.service_show_window(final_roundtrip_window) or {
+			final_roundtrip_error = err.msg()
+		}
+		assert final_roundtrip_error == err_wayland_dispatch_failed
+		assert final_roundtrip_backend.toplevel_replay_test.operations.count(it == 'ack_cleanup') == 1
+		assert final_roundtrip_backend.toplevel_replay_test.show_acked_serials == [
+			u32(62),
+		]
+		assert_wayland_show_failure_left_hidden(final_roundtrip_backend, final_roundtrip_window)
+
+		mut ack_backend, ack_window := new_wayland_show_handshake_test_backend([
+			WaylandShowHandshakeTestObservation{
+				present: true
+				serial:  71
+			},
+		], false, false, false, false)
+		ack_backend.toplevel_replay_test.show_ack_flush_failure = true
+		mut ack_error := ''
+		ack_backend.service_show_window(ack_window) or { ack_error = err.msg() }
+		assert ack_error == err_wayland_flush_failed
+		assert ack_backend.toplevel_replay_test.operations.count(it == 'ack') == 1
+		assert ack_backend.toplevel_replay_test.operations.count(it == 'ack_cleanup') == 0
+		assert ack_backend.toplevel_replay_test.show_acked_serials == [u32(71)]
+		assert_wayland_show_failure_left_hidden(ack_backend, ack_window)
+	}
+}
+
+fn test_wayland_show_handshake_callback_keeps_latest_configure_without_ack_or_events() {
+	$if linux && sokol_wayland ? {
+		mut backend, _ := new_wayland_show_handshake_test_backend([], false, false, false, false)
+		mut record := backend.windows[0]
+		record.show_handshake_active = true
+		record.show_handshake_boundary = 3
+		record.pending_toplevel_width = 640
+		record.pending_toplevel_height = 360
+		record.pending_service_state_valid = true
+		record.pending_maximized = true
+		wayland_xdg_surface_configure(record.listener_data(), record.xdg_surface, 81)
+		record.pending_toplevel_width = 800
+		record.pending_toplevel_height = 450
+		record.pending_service_state_valid = true
+		record.pending_maximized = false
+		record.pending_fullscreen = true
+		wayland_xdg_surface_configure(record.listener_data(), record.xdg_surface, 82)
+		// A legal xdg_surface.configure without another latched toplevel state
+		// advances the ACK serial but must preserve C1's latest valid snapshot.
+		wayland_xdg_surface_configure(record.listener_data(), record.xdg_surface, 83)
+		assert record.show_configure_serial == 83
+		assert record.show_configure_width == 800
+		assert record.show_configure_height == 450
+		assert !record.show_configure_maximized
+		assert record.show_configure_fullscreen
+		assert backend.toplevel_replay_test.show_acked_serials.len == 0
+		assert record.pending_events.len == 0
+		assert !record.configured
+
+		backend.ack_window_show_configure(0, false)
+		assert backend.toplevel_replay_test.show_acked_serials == [u32(83)]
+		backend.toplevel_replay_test.operations.clear()
+		backend.toplevel_replay_test.show_acked_serials.clear()
+		record.pending_service_state_valid = true
+		wayland_xdg_surface_configure(record.listener_data(), record.xdg_surface, 0)
+		assert record.show_configure_received
+		assert record.show_configure_serial == 0
+		backend.ack_window_show_configure(0, false)
+		backend.ack_window_show_configure(0, false)
+		assert backend.toplevel_replay_test.show_acked_serials == [u32(0)]
+		assert backend.toplevel_replay_test.operations.count(it == 'ack') == 1
+		assert !record.show_configure_received
+	}
+}
+
+fn test_wayland_hide_releases_only_egl_surface_and_invalidates_old_generation_once() {
+	$if linux && sokol_wayland ? {
+		window := WindowId{
+			app_instance: 1
+			slot:         0
+			generation:   1
+		}
+		mut backend := &WaylandBackend{
+			toplevel_replay_test: WaylandToplevelReplayTestSeam{
+				hide_render_target_override: true
+			}
+		}
+		mut record := &WaylandWindowRecord{
+			id:                       window
+			owner:                    backend
+			width:                    80
+			height:                   60
+			frame_ready:              true
+			pending_egl_resize:       true
+			egl_surface:              voidptr(usize(0xe1))
+			egl_surface_ticket:       91
+			wl_egl_window:            voidptr(usize(0xe2))
+			wl_egl_window_ticket:     92
+			render_target_generation: 9
+		}
+		backend.windows << record
+		backend.release_window_render_target_for_hide(0)!
+		assert backend.toplevel_replay_test.operations == ['anchor', 'release_egl_surface']
+		assert record.egl_surface == unsafe { nil }
+		assert record.egl_surface_ticket == 0
+		assert record.wl_egl_window == voidptr(usize(0xe2))
+		assert record.wl_egl_window_ticket == 92
+		assert record.render_target_generation == 10
+		assert record.pending_egl_resize
+
+		$if gg_multiwindow ? || x_multiwindow_render ? {
+			stale := RenderFrame{
+				window_id: window
+				metrics:   RenderMetricsSnapshot{
+					framebuffer_width:  80
+					framebuffer_height: 60
+				}
+				target:    RenderTargetSnapshot{
+					target_identity: 9
+				}
+			}
+			attempt := backend.activate_render_frame(stale)
+			assert !attempt.outcome.succeeded()
+			assert attempt.outcome.disposition == .target_lost
+			assert attempt.outcome.error_text == err_render_target_stale
+		}
+
+		mut anchor_failure, _ := new_wayland_show_handshake_test_backend([], false, false, false,
+			false)
+		anchor_failure.toplevel_replay_test.hide_render_target_override = true
+		anchor_failure.toplevel_replay_test.hide_anchor_failure = true
+		anchor_failure.windows[0].egl_surface = voidptr(usize(0xe3))
+		anchor_failure.windows[0].egl_surface_ticket = 93
+		mut anchor_error := ''
+		anchor_failure.release_window_render_target_for_hide(0) or { anchor_error = err.msg() }
+		assert anchor_error == err_render_native_renderer_unavailable
+		assert anchor_failure.windows[0].egl_surface == voidptr(usize(0xe3))
+		assert anchor_failure.windows[0].egl_surface_ticket == 93
+		assert anchor_failure.windows[0].render_target_generation == 7
+
+		mut release_failure, _ := new_wayland_show_handshake_test_backend([], false, false, false,
+			false)
+		release_failure.toplevel_replay_test.hide_render_target_override = true
+		release_failure.toplevel_replay_test.hide_surface_release_failure = true
+		release_failure.windows[0].egl_surface = voidptr(usize(0xe4))
+		release_failure.windows[0].egl_surface_ticket = 94
+		mut release_error := ''
+		release_failure.release_window_render_target_for_hide(0) or { release_error = err.msg() }
+		assert release_error == err_wayland_egl_surface_failed
+		assert release_failure.windows[0].egl_surface == voidptr(usize(0xe4))
+		assert release_failure.windows[0].egl_surface_ticket == 94
+		assert release_failure.windows[0].render_target_generation == 7
+
+		mut unclaimed_terminal, _ := new_wayland_show_handshake_test_backend([], false, false,
+			false, false)
+		unclaimed_terminal.toplevel_replay_test.hide_render_target_override = true
+		unclaimed_terminal.toplevel_replay_test.hide_surface_unclaimed_terminal = true
+		unclaimed_terminal.windows[0].egl_surface = voidptr(usize(0xe6))
+		unclaimed_terminal.windows[0].egl_surface_ticket = 96
+		mut unclaimed_error := ''
+		unclaimed_terminal.release_window_render_target_for_hide(0) or {
+			unclaimed_error = err.msg()
+		}
+		assert unclaimed_error == err_wayland_egl_surface_failed
+		assert unclaimed_terminal.windows[0].egl_surface == voidptr(usize(0xe6))
+		assert unclaimed_terminal.windows[0].egl_surface_ticket == 96
+		assert unclaimed_terminal.windows[0].render_target_generation == 7
+
+		mut terminal_failure, _ := new_wayland_show_handshake_test_backend([], false, false, false,
+			false)
+		terminal_failure.toplevel_replay_test.hide_render_target_override = true
+		terminal_failure.toplevel_replay_test.hide_surface_terminal_failure = true
+		terminal_failure.windows[0].egl_surface = voidptr(usize(0xe5))
+		terminal_failure.windows[0].egl_surface_ticket = 95
+		mut terminal_error := ''
+		terminal_failure.release_window_render_target_for_hide(0) or { terminal_error = err.msg() }
+		assert terminal_error == err_wayland_egl_surface_failed
+		assert terminal_failure.windows[0].egl_surface == unsafe { nil }
+		assert terminal_failure.windows[0].egl_surface_ticket == 0
+		assert terminal_failure.windows[0].wl_egl_window == voidptr(usize(0xd5))
+		assert terminal_failure.windows[0].render_target_generation == 8
+	}
+}
+
+fn test_wayland_fallback_buffer_is_reused_only_for_the_exact_remap_extent() {
+	$if linux && sokol_wayland ? {
+		buffer := voidptr(usize(0xf1))
+		record := &WaylandWindowRecord{
+			fallback_current_buffer: buffer
+			fallback_buffer_width:   360
+			fallback_buffer_height:  260
+		}
+		assert record.fallback_buffer_for_extent(360, 260) == buffer
+		assert record.fallback_buffer_for_extent(720, 520) == unsafe { nil }
+		assert record.fallback_buffer_for_extent(360, 261) == unsafe { nil }
+	}
+}
+
 fn test_wayland_fractional_scale_requires_both_protocol_objects() {
 	$if linux && sokol_wayland ? {
 		mut backend := &WaylandBackend{}
@@ -365,14 +819,15 @@ fn test_wayland_fractional_scale_requires_both_protocol_objects() {
 fn test_wayland_xdg_configure_states_are_published_after_surface_configure() {
 	$if linux && sokol_wayland ? {
 		mut record := &WaylandWindowRecord{
-			id:        WindowId{
+			id:                WindowId{
 				app_instance: 1
 				slot:         0
 				generation:   1
 			}
-			resizable: true
-			width:     64
-			height:    48
+			resizable:         true
+			width:             64
+			height:            48
+			requested_visible: true
 		}
 		mut active_states := [u32(1), u32(4)]
 		mut active_array := C.wl_array{
@@ -936,9 +1391,6 @@ fn test_wayland_hidden_window_remaps_through_fresh_xdg_configure_cycle() {
 			assert false, 'Wayland initially hidden record disappeared'
 			0
 		}
-		first_roundtrip := app.backend.wayland.attempt_wayland_roundtrip(wayland_window_operation_seed(window,
-			app.backend.wayland.windows[first_index].render_target_generation, .display_transport))
-		assert first_roundtrip.succeeded()
 		assert app.backend.wayland.windows[first_index].configured
 		_ = app.poll_events()!
 		first_show := app.drain_queued_events()!.filter(it.kind == .service
@@ -947,6 +1399,9 @@ fn test_wayland_hidden_window_remaps_through_fresh_xdg_configure_cycle() {
 		assert first_show.len == 1
 		assert first_show[0].service.state.mapping == .mapped
 		assert app.service_window_state(window)!.mapping == .mapped
+		_ = app.poll_events()!
+		assert app.drain_queued_events()!.filter(it.kind == .service && it.service.window == window
+			&& it.service.kind == .state && it.service.operation == .show).len == 0
 		app.service_hide_window(window)!
 		assert app.service_window_state(window)!.mapping == .unmapped
 		index_after_hide := app.backend.wayland.window_record_index(window) or {
@@ -964,10 +1419,6 @@ fn test_wayland_hidden_window_remaps_through_fresh_xdg_configure_cycle() {
 			assert false, 'Wayland remap window record disappeared'
 			0
 		}
-		assert !app.backend.wayland.windows[index].configured
-		second_roundtrip := app.backend.wayland.attempt_wayland_roundtrip(wayland_window_operation_seed(window,
-			app.backend.wayland.windows[index].render_target_generation, .display_transport))
-		assert second_roundtrip.succeeded()
 		assert app.backend.wayland.windows[index].configured
 		_ = app.poll_events()!
 		second_show := app.drain_queued_events()!.filter(it.kind == .service
@@ -976,6 +1427,9 @@ fn test_wayland_hidden_window_remaps_through_fresh_xdg_configure_cycle() {
 		assert second_show.len == 1
 		assert second_show[0].service.state.mapping == .mapped
 		assert app.service_window_state(window)!.mapping == .mapped
+		_ = app.poll_events()!
+		assert app.drain_queued_events()!.filter(it.kind == .service && it.service.window == window
+			&& it.service.kind == .state && it.service.operation == .show).len == 0
 		app.stop()!
 	}
 }

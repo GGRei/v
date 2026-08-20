@@ -143,8 +143,10 @@ Backend notes:
   initially hidden windows through an explicit remap/configure cycle, and
   replays the window title, app id, owner relation, size constraints,
   decoration preference, and requested maximize/fullscreen state when a hidden
-  toplevel is shown again. It currently rejects programmatic resize. Rendering
-  uses Wayland EGL/OpenGL when initialized.
+  toplevel is shown again. If the compositor or transport does not supply a
+  fresh configure for that show request, the request fails and the window stays
+  hidden and retryable. It currently rejects programmatic resize. Rendering uses
+  Wayland EGL/OpenGL when initialized.
 - AppKit is macOS-only. It must start on the main thread and uses Metal when
   rendering is required.
 - Win32 is Windows-only and supports native lifecycle and min-size enforcement.
@@ -352,7 +354,7 @@ Runtime support differs by backend:
 | --- | --- |
 | Mock | Deterministic state, monitors, clipboard, portal, and readback for tests; no native-window borrow. |
 | X11 | Native state/monitors, clipboard, portal (`x11:`), borrow, and native window capture; focus is available only when the live server advertises EWMH `_NET_ACTIVE_WINDOW`, its request is asynchronous, and authoritative state comes from `FocusIn`/`FocusOut`. Other EWMH, mouse-lock, and rendered image support also depend on live runtime support. |
-| Wayland | Runtime-global-driven state/monitors, clipboard, portal (`wayland:`), borrow, and mouse lock; focus/raise/position are unsupported. Show/minimize/maximize/restore/fullscreen/mouse-lock are asynchronous, but minimize is not state-observable, so callers are not guaranteed a resulting minimized-state observation. Rendered readback requires the active gg GL path. |
+| Wayland | Runtime-global-driven state/monitors, clipboard, portal (`wayland:`), borrow, and mouse lock; focus/raise/position are unsupported. Show fails hidden and retryable when no fresh compositor configure is available. Show/minimize/maximize/restore/fullscreen/mouse-lock are asynchronous, but minimize is not state-observable, so callers are not guaranteed a resulting minimized-state observation. Rendered readback requires the active gg GL path. |
 | AppKit | Native state/monitors, borrow, clipboard, window operations, and titlebar appearance as reported by the live bridge; portal export is unsupported and readback requires active Metal. |
 | Win32 | Native state/monitors, borrow, clipboard, and standard window operations; focus and mouse lock are conditional, maximize depends on window configuration, and portal/readback are currently unsupported. |
 

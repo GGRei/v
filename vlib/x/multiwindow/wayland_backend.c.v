@@ -127,6 +127,7 @@ const err_wayland_egl_make_current_failed = 'multiwindow: wayland egl make curre
 const err_wayland_egl_surface_failed = 'multiwindow: wayland egl surface failed'
 const err_wayland_egl_swap_buffers_failed = 'multiwindow: wayland egl swap buffers failed'
 const err_wayland_surface_not_configured = 'multiwindow: wayland surface is not configured'
+const err_wayland_show_configure_failed = 'multiwindow: wayland show did not receive a fresh configure'
 const err_wayland_buffer_failed = 'multiwindow: wayland buffer creation failed'
 const err_wayland_xkb_context_failed = 'multiwindow: wayland xkb context failed'
 
@@ -137,6 +138,11 @@ mut:
 	window_id WindowId
 	x         f32
 	y         f32
+}
+
+enum WaylandShowProbeAxis {
+	maximized
+	fullscreen
 }
 
 @[heap]
@@ -200,6 +206,17 @@ mut:
 	pending_maximized              bool
 	pending_fullscreen             bool
 	pending_active                 bool
+	show_handshake_active          bool
+	show_handshake_boundary        u32
+	show_configure_boundary        u32
+	show_configure_serial          u32
+	show_configure_received        bool
+	show_configure_state_valid     bool
+	show_configure_width           int
+	show_configure_height          int
+	show_configure_maximized       bool
+	show_configure_fullscreen      bool
+	show_configure_active          bool
 	observed_service_state_valid   bool
 	observed_maximized             bool
 	observed_fullscreen            bool
@@ -285,12 +302,37 @@ mut:
 	destroyed_local []bool
 }
 
+struct WaylandShowHandshakeTestObservation {
+	present    bool
+	serial     u32
+	serial_set bool
+	width      int
+	height     int
+	maximized  bool
+	fullscreen bool
+	active     bool
+}
+
 struct WaylandToplevelReplayTestSeam {
 mut:
-	active                bool
-	operations            []string
-	hide_barrier_override bool
-	hide_barrier_succeeds bool
+	active                          bool
+	operations                      []string
+	hide_barrier_override           bool
+	hide_barrier_succeeds           bool
+	show_handshake_override         bool
+	show_observations               []WaylandShowHandshakeTestObservation
+	show_hidden_drain_failure       bool
+	show_ack_flush_failure          bool
+	show_flush_failure_boundary     u32
+	show_roundtrip_failure_boundary u32
+	show_flush_count                u32
+	show_roundtrip_count            u32
+	show_acked_serials              []u32
+	hide_render_target_override     bool
+	hide_anchor_failure             bool
+	hide_surface_release_failure    bool
+	hide_surface_unclaimed_terminal bool
+	hide_surface_terminal_failure   bool
 }
 
 @[heap]
@@ -1565,12 +1607,61 @@ $if linux && sokol_wayland ? {
 			return
 		}
 		mut record := unsafe { &WaylandWindowRecord(data) }
+		if record.show_handshake_active {
+			record.show_configure_boundary = record.show_handshake_boundary
+			record.show_configure_serial = serial
+			record.show_configure_received = true
+			// xdg_surface.configure can advance the serial without a new latched
+			// xdg_toplevel.configure state. Keep the last valid state snapshot while
+			// acknowledging the newest serial in that case.
+			if record.pending_service_state_valid {
+				mut width := if record.pending_toplevel_width > 0 {
+					record.pending_toplevel_width
+				} else {
+					record.width
+				}
+				mut height := if record.pending_toplevel_height > 0 {
+					record.pending_toplevel_height
+				} else {
+					record.height
+				}
+				if width <= 0 {
+					width = 1
+				}
+				if height <= 0 {
+					height = 1
+				}
+				width = window_extent_for_minimum(width, record.min_width)
+				height = window_extent_for_minimum(height, record.min_height)
+				record.show_configure_state_valid = true
+				record.show_configure_width = width
+				record.show_configure_height = height
+				record.show_configure_maximized = record.pending_maximized
+				record.show_configure_fullscreen = record.pending_fullscreen
+				record.show_configure_active = record.pending_active
+			}
+			record.pending_toplevel_width = 0
+			record.pending_toplevel_height = 0
+			record.pending_service_state_valid = false
+			return
+		}
 		if record.hide_barrier_active {
 			if record.owner != unsafe { nil } && record.owner.transport_can_marshal() {
 				C.v_multiwindow_wayland_xdg_surface_ack_configure(unsafe {
 					&C.xdg_surface(xdg_surface)
 				}, serial)
 			}
+			return
+		}
+		if !record.requested_visible {
+			if record.owner != unsafe { nil } && record.owner.transport_can_marshal() {
+				C.v_multiwindow_wayland_xdg_surface_ack_configure(unsafe {
+					&C.xdg_surface(xdg_surface)
+				}, serial)
+			}
+			record.pending_toplevel_width = 0
+			record.pending_toplevel_height = 0
+			record.pending_service_state_valid = false
 			return
 		}
 		mut width := record.width
@@ -1629,12 +1720,30 @@ $if linux && sokol_wayland ? {
 			return
 		}
 		mut record := unsafe { &WaylandWindowRecord(data) }
+		if record.show_handshake_active {
+			record.pending_service_state_valid = true
+			record.pending_maximized = C.v_multiwindow_wayland_toplevel_state_contains(states,
+				wayland_xdg_toplevel_state_maximized) != 0
+			record.pending_fullscreen = C.v_multiwindow_wayland_toplevel_state_contains(states,
+				wayland_xdg_toplevel_state_fullscreen) != 0
+			record.pending_active = C.v_multiwindow_wayland_toplevel_state_contains(states,
+				wayland_xdg_toplevel_state_activated) != 0
+			record.pending_toplevel_width = if width > 0 { width } else { 0 }
+			record.pending_toplevel_height = if height > 0 { height } else { 0 }
+			return
+		}
 		if record.hide_barrier_active {
 			record.requested_maximized = C.v_multiwindow_wayland_toplevel_state_contains(states,
 				wayland_xdg_toplevel_state_maximized) != 0
 			record.requested_fullscreen = C.v_multiwindow_wayland_toplevel_state_contains(states,
 				wayland_xdg_toplevel_state_fullscreen) != 0
 			record.hide_barrier_state_observed = true
+			return
+		}
+		if !record.requested_visible {
+			record.pending_toplevel_width = 0
+			record.pending_toplevel_height = 0
+			record.pending_service_state_valid = false
 			return
 		}
 		record.pending_service_state_valid = true
@@ -2454,9 +2563,13 @@ fn (mut backend WaylandBackend) replay_window_toplevel_attributes(index int) {
 				}
 				if record.requested_maximized {
 					backend.toplevel_replay_test.operations << 'maximize'
+				} else {
+					backend.toplevel_replay_test.operations << 'unmaximize'
 				}
 				if record.requested_fullscreen {
 					backend.toplevel_replay_test.operations << 'fullscreen'
+				} else {
+					backend.toplevel_replay_test.operations << 'unfullscreen'
 				}
 				return
 			}
@@ -2480,18 +2593,102 @@ fn (mut backend WaylandBackend) replay_window_toplevel_attributes(index int) {
 		}
 		if record.requested_maximized {
 			C.v_multiwindow_wayland_xdg_toplevel_set_maximized(toplevel)
+		} else {
+			C.v_multiwindow_wayland_xdg_toplevel_unset_maximized(toplevel)
 		}
 		if record.requested_fullscreen {
 			C.v_multiwindow_wayland_xdg_toplevel_set_fullscreen(toplevel, unsafe { nil })
+		} else {
+			C.v_multiwindow_wayland_xdg_toplevel_unset_fullscreen(toplevel)
 		}
 	}
 }
 
-fn (mut backend WaylandBackend) replay_window_toplevel_attributes_and_commit(index int) {
+fn (mut backend WaylandBackend) request_window_show_probe(index int, axis WaylandShowProbeAxis, enabled bool) {
 	$if linux && sokol_wayland ? {
-		backend.replay_window_toplevel_attributes(index)
+		if index < 0 || index >= backend.windows.len {
+			return
+		}
 		$if test {
-			if backend.toplevel_replay_test.active {
+			if backend.toplevel_replay_test.show_handshake_override {
+				operation := match axis {
+					.maximized {
+						if enabled { 'probe_maximize' } else { 'probe_unmaximize' }
+					}
+					.fullscreen {
+						if enabled { 'probe_fullscreen' } else { 'probe_unfullscreen' }
+					}
+				}
+				backend.toplevel_replay_test.operations << operation
+				return
+			}
+		}
+		record := backend.windows[index]
+		if record.xdg_toplevel == unsafe { nil } {
+			return
+		}
+		toplevel := unsafe { &C.xdg_toplevel(record.xdg_toplevel) }
+		match axis {
+			.maximized {
+				if enabled {
+					C.v_multiwindow_wayland_xdg_toplevel_set_maximized(toplevel)
+				} else {
+					C.v_multiwindow_wayland_xdg_toplevel_unset_maximized(toplevel)
+				}
+			}
+			.fullscreen {
+				if enabled {
+					C.v_multiwindow_wayland_xdg_toplevel_set_fullscreen(toplevel, unsafe { nil })
+				} else {
+					C.v_multiwindow_wayland_xdg_toplevel_unset_fullscreen(toplevel)
+				}
+			}
+		}
+	}
+}
+
+fn (mut backend WaylandBackend) request_window_show_final_intents(index int, maximized bool, fullscreen bool) {
+	$if linux && sokol_wayland ? {
+		if index < 0 || index >= backend.windows.len {
+			return
+		}
+		$if test {
+			if backend.toplevel_replay_test.show_handshake_override {
+				backend.toplevel_replay_test.operations << if maximized {
+					'final_maximize'
+				} else {
+					'final_unmaximize'
+				}
+				backend.toplevel_replay_test.operations << if fullscreen {
+					'final_fullscreen'
+				} else {
+					'final_unfullscreen'
+				}
+				return
+			}
+		}
+		record := backend.windows[index]
+		if record.xdg_toplevel == unsafe { nil } {
+			return
+		}
+		toplevel := unsafe { &C.xdg_toplevel(record.xdg_toplevel) }
+		if maximized {
+			C.v_multiwindow_wayland_xdg_toplevel_set_maximized(toplevel)
+		} else {
+			C.v_multiwindow_wayland_xdg_toplevel_unset_maximized(toplevel)
+		}
+		if fullscreen {
+			C.v_multiwindow_wayland_xdg_toplevel_set_fullscreen(toplevel, unsafe { nil })
+		} else {
+			C.v_multiwindow_wayland_xdg_toplevel_unset_fullscreen(toplevel)
+		}
+	}
+}
+
+fn (mut backend WaylandBackend) commit_window_show_handshake(index int) {
+	$if linux && sokol_wayland ? {
+		$if test {
+			if backend.toplevel_replay_test.show_handshake_override {
 				backend.toplevel_replay_test.operations << 'commit'
 				return
 			}
@@ -2500,6 +2697,291 @@ fn (mut backend WaylandBackend) replay_window_toplevel_attributes_and_commit(ind
 			&& backend.windows[index].surface != unsafe { nil } {
 			C.wl_surface_commit(unsafe { &C.wl_surface(backend.windows[index].surface) })
 		}
+	}
+}
+
+fn (mut backend WaylandBackend) inject_window_show_test_observation(index int, boundary u32) {
+	$if test {
+		if !backend.toplevel_replay_test.show_handshake_override || boundary == 0 {
+			return
+		}
+		observation_index := int(boundary - 1)
+		if observation_index < 0
+			|| observation_index >= backend.toplevel_replay_test.show_observations.len {
+			return
+		}
+		observation := backend.toplevel_replay_test.show_observations[observation_index]
+		if !observation.present || index < 0 || index >= backend.windows.len {
+			return
+		}
+		mut record := backend.windows[index]
+		record.show_configure_boundary = boundary
+		record.show_configure_serial = if observation.serial == 0 && !observation.serial_set {
+			boundary
+		} else {
+			observation.serial
+		}
+		record.show_configure_received = true
+		record.show_configure_state_valid = true
+		record.show_configure_width = if observation.width > 0 {
+			observation.width
+		} else {
+			record.width
+		}
+		record.show_configure_height = if observation.height > 0 {
+			observation.height
+		} else {
+			record.height
+		}
+		record.show_configure_maximized = observation.maximized
+		record.show_configure_fullscreen = observation.fullscreen
+		record.show_configure_active = observation.active
+		backend.toplevel_replay_test.operations << 'configure'
+	} $else {
+		_ = index
+		_ = boundary
+	}
+}
+
+fn (mut backend WaylandBackend) drain_hidden_window_before_show(seed NativeOperationSeed) ! {
+	$if test {
+		if backend.toplevel_replay_test.show_handshake_override {
+			backend.toplevel_replay_test.operations << 'hidden_drain'
+			if backend.toplevel_replay_test.show_hidden_drain_failure {
+				return error(err_wayland_dispatch_failed)
+			}
+			return
+		}
+	}
+	drain := backend.attempt_wayland_roundtrip(seed)
+	if !drain.succeeded() {
+		return error(err_wayland_dispatch_failed)
+	}
+}
+
+fn (mut backend WaylandBackend) run_window_show_handshake_boundary(index int, seed NativeOperationSeed, commit bool) !bool {
+	if index < 0 || index >= backend.windows.len {
+		return error(err_window_not_found)
+	}
+	mut record := backend.windows[index]
+	record.show_handshake_boundary++
+	boundary := record.show_handshake_boundary
+	record.pending_service_state_valid = false
+	if commit {
+		backend.commit_window_show_handshake(index)
+	}
+	$if test {
+		if backend.toplevel_replay_test.show_handshake_override {
+			backend.toplevel_replay_test.show_flush_count++
+			backend.toplevel_replay_test.operations << 'flush'
+			if backend.toplevel_replay_test.show_flush_failure_boundary == boundary {
+				return error(err_wayland_flush_failed)
+			}
+			backend.toplevel_replay_test.show_roundtrip_count++
+			backend.toplevel_replay_test.operations << 'roundtrip'
+			if backend.toplevel_replay_test.show_roundtrip_failure_boundary == boundary {
+				return error(err_wayland_dispatch_failed)
+			}
+			backend.inject_window_show_test_observation(index, boundary)
+			return record.show_configure_boundary == boundary && record.show_configure_received
+				&& record.show_configure_state_valid
+		}
+	}
+	flush := backend.attempt_wayland_flush(seed)
+	if !flush.succeeded() {
+		return error(err_wayland_flush_failed)
+	}
+	roundtrip := backend.attempt_wayland_roundtrip(seed)
+	if !roundtrip.succeeded() {
+		return error(err_wayland_dispatch_failed)
+	}
+	return record.show_configure_boundary == boundary && record.show_configure_received
+		&& record.show_configure_state_valid
+}
+
+fn (mut backend WaylandBackend) ack_window_show_configure(index int, cleanup bool) {
+	if index < 0 || index >= backend.windows.len {
+		return
+	}
+	mut record := backend.windows[index]
+	if !record.show_configure_received {
+		return
+	}
+	$if linux && sokol_wayland ? {
+		$if test {
+			if backend.toplevel_replay_test.show_handshake_override {
+				backend.toplevel_replay_test.show_acked_serials << record.show_configure_serial
+				backend.toplevel_replay_test.operations << if cleanup {
+					'ack_cleanup'
+				} else {
+					'ack'
+				}
+				record.show_configure_serial = 0
+				record.show_configure_received = false
+				return
+			}
+		}
+		if backend.transport_can_marshal() && record.xdg_surface != unsafe { nil } {
+			C.v_multiwindow_wayland_xdg_surface_ack_configure(unsafe {
+				&C.xdg_surface(record.xdg_surface)
+			}, record.show_configure_serial)
+			if record.uses_fractional_scale() && record.show_configure_width > 0
+				&& record.show_configure_height > 0 {
+				C.v_multiwindow_wayland_viewport_set_destination(unsafe {
+					&C.wp_viewport(record.viewport)
+				}, i32(record.show_configure_width), i32(record.show_configure_height))
+			}
+		}
+	}
+	record.show_configure_serial = 0
+	record.show_configure_received = false
+}
+
+fn (mut backend WaylandBackend) abort_window_show_handshake(index int, maximized bool, fullscreen bool) {
+	if index < 0 || index >= backend.windows.len {
+		return
+	}
+	mut record := backend.windows[index]
+	backend.ack_window_show_configure(index, true)
+	record.requested_maximized = maximized
+	record.requested_fullscreen = fullscreen
+	record.requested_visible = false
+	record.publish_show_on_map = false
+	record.mapped = false
+	record.configured = false
+	record.frame_ready = false
+	record.pending_toplevel_width = 0
+	record.pending_toplevel_height = 0
+	record.pending_service_state_valid = false
+	record.show_handshake_active = false
+	record.show_handshake_boundary = 0
+	record.show_configure_boundary = 0
+	record.show_configure_serial = 0
+	record.show_configure_received = false
+	record.show_configure_state_valid = false
+	record.show_configure_width = 0
+	record.show_configure_height = 0
+	record.observed_service_state_valid = false
+}
+
+fn (mut backend WaylandBackend) flush_window_show_ack(seed NativeOperationSeed) ! {
+	$if test {
+		if backend.toplevel_replay_test.show_handshake_override {
+			backend.toplevel_replay_test.operations << 'ack_flush'
+			if backend.toplevel_replay_test.show_ack_flush_failure {
+				return error(err_wayland_flush_failed)
+			}
+			return
+		}
+	}
+	flush := backend.attempt_wayland_flush(seed)
+	if !flush.succeeded() {
+		return error(err_wayland_flush_failed)
+	}
+}
+
+fn (mut backend WaylandBackend) finish_window_show_handshake(index int, seed NativeOperationSeed, maximized bool, fullscreen bool) ! {
+	mut record := backend.windows[index]
+	backend.ack_window_show_configure(index, false)
+	backend.flush_window_show_ack(seed)!
+	if record.show_configure_width > 0 && record.show_configure_height > 0
+		&& (record.width != record.show_configure_width
+		|| record.height != record.show_configure_height) {
+		record.width = record.show_configure_width
+		record.height = record.show_configure_height
+		if record.wl_egl_window != unsafe { nil } {
+			record.pending_egl_resize = true
+			record.render_target_generation =
+				exhaust_backend_target_generation(record.render_target_generation)
+		}
+	}
+	record.requested_maximized = maximized
+	record.requested_fullscreen = fullscreen
+	record.observed_service_state_valid = true
+	record.observed_maximized = record.show_configure_maximized
+	record.observed_fullscreen = record.show_configure_fullscreen
+	record.observed_active = record.show_configure_active
+	record.pending_service_state_valid = false
+	record.show_handshake_active = false
+	record.show_handshake_boundary = 0
+	record.show_configure_boundary = 0
+	record.show_configure_serial = 0
+	record.show_configure_received = false
+	record.show_configure_state_valid = false
+	record.show_configure_width = 0
+	record.show_configure_height = 0
+	record.configured = true
+	record.frame_ready = true
+	record.requested_visible = true
+	record.publish_show_on_map = true
+	record.mapped = false
+}
+
+fn (mut backend WaylandBackend) prepare_window_show_handshake(index int, seed NativeOperationSeed, maximized bool, fullscreen bool, baseline_maximized bool, baseline_fullscreen bool) ! {
+	mut record := backend.windows[index]
+	record.requested_visible = false
+	record.publish_show_on_map = false
+	record.mapped = false
+	record.configured = false
+	record.frame_ready = false
+	record.pending_toplevel_width = 0
+	record.pending_toplevel_height = 0
+	record.pending_service_state_valid = false
+	record.show_handshake_active = true
+	record.show_handshake_boundary = 0
+	record.show_configure_boundary = 0
+	record.show_configure_serial = 0
+	record.show_configure_received = false
+	record.show_configure_state_valid = false
+	record.show_configure_width = 0
+	record.show_configure_height = 0
+
+	// Weston #893 does not emit the spec-required fresh configure for an empty
+	// first commit after unmap. Two state probes provide a bounded, fail-closed
+	// bootstrap without recreating the permanent wl_surface role.
+	backend.replay_window_toplevel_attributes(index)
+	first_axis := if baseline_fullscreen {
+		WaylandShowProbeAxis.fullscreen
+	} else {
+		WaylandShowProbeAxis.maximized
+	}
+	first_enabled := match first_axis {
+		.maximized { !baseline_maximized }
+		.fullscreen { false }
+	}
+	backend.request_window_show_probe(index, first_axis, first_enabled)
+	mut configured := backend.run_window_show_handshake_boundary(index, seed, true) or {
+		backend.abort_window_show_handshake(index, maximized, fullscreen)
+		return err
+	}
+	if !configured {
+		second_axis := if first_axis == .fullscreen {
+			WaylandShowProbeAxis.maximized
+		} else {
+			WaylandShowProbeAxis.fullscreen
+		}
+		second_enabled := match second_axis {
+			.maximized { !baseline_maximized }
+			.fullscreen { !baseline_fullscreen }
+		}
+		backend.request_window_show_probe(index, second_axis, second_enabled)
+		configured = backend.run_window_show_handshake_boundary(index, seed, false) or {
+			backend.abort_window_show_handshake(index, maximized, fullscreen)
+			return err
+		}
+	}
+	if !configured {
+		backend.abort_window_show_handshake(index, maximized, fullscreen)
+		return error(err_wayland_show_configure_failed)
+	}
+	backend.request_window_show_final_intents(index, maximized, fullscreen)
+	_ = backend.run_window_show_handshake_boundary(index, seed, false) or {
+		backend.abort_window_show_handshake(index, maximized, fullscreen)
+		return err
+	}
+	backend.finish_window_show_handshake(index, seed, maximized, fullscreen) or {
+		backend.abort_window_show_handshake(index, maximized, fullscreen)
+		return err
 	}
 }
 
@@ -5439,6 +5921,14 @@ fn (mut backend WaylandBackend) ensure_lifecycle_buffers() ! {
 	return error(err_backend_unsupported)
 }
 
+fn (record &WaylandWindowRecord) fallback_buffer_for_extent(width int, height int) voidptr {
+	if record.fallback_current_buffer == unsafe { nil } || record.fallback_buffer_width != width
+		|| record.fallback_buffer_height != height {
+		return unsafe { nil }
+	}
+	return record.fallback_current_buffer
+}
+
 fn (mut backend WaylandBackend) ensure_lifecycle_buffer(index int) ! {
 	$if linux && sokol_wayland ? {
 		if backend.render_health.blocks_graphics() || backend.wayland_display_unavailable {
@@ -5470,7 +5960,7 @@ fn (mut backend WaylandBackend) ensure_lifecycle_buffer(index int) ! {
 			&& record.fallback_buffer_width == width && record.fallback_buffer_height == height {
 			return
 		}
-		mut buffer := record.fallback_current_buffer
+		mut buffer := record.fallback_buffer_for_extent(width, height)
 		if buffer == unsafe { nil } {
 			if record.fallback_buffers.len >= wayland_max_fallback_buffers {
 				return
@@ -6848,29 +7338,120 @@ fn (mut backend WaylandBackend) service_show_window(id WindowId) !ServiceWindowS
 		if backend.windows[index].requested_visible {
 			return backend.service_window_state(id)!
 		}
-		if !backend.transport_can_marshal() || backend.windows[index].surface == unsafe { nil } {
+		if !backend.transport_can_marshal() || backend.windows[index].surface == unsafe { nil }
+			|| backend.windows[index].xdg_toplevel == unsafe { nil } {
 			return error(err_capability_unsupported)
 		}
-		backend.windows[index].requested_visible = true
-		backend.windows[index].publish_show_on_map = true
-		backend.windows[index].mapped = false
-		if !backend.windows[index].configured {
-			backend.windows[index].frame_ready = false
+		requested_maximized := backend.windows[index].requested_maximized
+		requested_fullscreen := backend.windows[index].requested_fullscreen
+		baseline_maximized := if backend.windows[index].observed_service_state_valid {
+			backend.windows[index].observed_maximized
+		} else {
+			requested_maximized
 		}
-		backend.replay_window_toplevel_attributes_and_commit(index)
+		baseline_fullscreen := if backend.windows[index].observed_service_state_valid {
+			backend.windows[index].observed_fullscreen
+		} else {
+			requested_fullscreen
+		}
 		seed := wayland_window_operation_seed(id, backend.windows[index].render_target_generation,
 			.display_transport)
-		flush := backend.attempt_wayland_flush(seed)
-		if !flush.succeeded() {
-			backend.windows[index].requested_visible = false
-			backend.windows[index].publish_show_on_map = false
-			return error(err_wayland_flush_failed)
-		}
+		backend.drain_hidden_window_before_show(seed)!
+		backend.prepare_window_show_handshake(index, seed, requested_maximized,
+			requested_fullscreen, baseline_maximized, baseline_fullscreen)!
 		return backend.service_window_state(id)!
 	} $else {
 		_ = id
 		return error(err_backend_unsupported)
 	}
+}
+
+fn (mut backend WaylandBackend) release_window_render_target_for_hide(index int) ! {
+	$if linux && sokol_wayland ? {
+		if index < 0 || index >= backend.windows.len {
+			return error(err_window_not_found)
+		}
+		mut record := backend.windows[index]
+		old_surface := record.egl_surface
+		old_generation := record.render_target_generation
+		if old_surface != unsafe { nil } {
+			$if test {
+				if backend.toplevel_replay_test.hide_render_target_override {
+					backend.toplevel_replay_test.operations << 'anchor'
+					if backend.toplevel_replay_test.hide_anchor_failure {
+						return error(err_render_native_renderer_unavailable)
+					}
+				} else {
+					$if gg_multiwindow ? || x_multiwindow_render ? {
+						anchor := backend.make_renderer_anchor_current(.anchor_prepare)
+						if !backend.anchor_binding_proven(anchor) {
+							return native_render_error(anchor)
+						}
+					} $else {
+						return error(err_render_native_renderer_unavailable)
+					}
+				}
+			} $else {
+				$if gg_multiwindow ? || x_multiwindow_render ? {
+					anchor := backend.make_renderer_anchor_current(.anchor_prepare)
+					if !backend.anchor_binding_proven(anchor) {
+						return native_render_error(anchor)
+					}
+				} $else {
+					return error(err_render_native_renderer_unavailable)
+				}
+			}
+		}
+		if record.frame_callback != unsafe { nil } {
+			destroy := backend.destroy_frame_callback_lifetime(mut record)
+			if !destroy.succeeded() {
+				record.frame_ready = true
+				return native_render_error(destroy)
+			}
+		}
+		if old_surface == unsafe { nil } {
+			return
+		}
+		$if test {
+			if backend.toplevel_replay_test.hide_render_target_override {
+				backend.toplevel_replay_test.operations << 'release_egl_surface'
+				if backend.toplevel_replay_test.hide_surface_release_failure
+					|| backend.toplevel_replay_test.hide_surface_unclaimed_terminal {
+					record.frame_ready = true
+					return error(err_wayland_egl_surface_failed)
+				}
+				record.egl_surface = unsafe { nil }
+				record.egl_surface_ticket = 0
+				record.render_target_generation = exhaust_backend_target_generation(old_generation)
+				backend.egl_binding = EglBindingIdentity{}
+				if backend.toplevel_replay_test.hide_surface_terminal_failure {
+					record.frame_ready = true
+					return error(err_wayland_egl_surface_failed)
+				}
+				return
+			}
+		}
+		release := backend.release_egl_surface_ticket(record.egl_surface_ticket, old_surface)
+		if !release.claimed || !release.terminal {
+			record.frame_ready = true
+			return error(err_wayland_egl_surface_failed)
+		}
+		record.egl_surface = unsafe { nil }
+		record.egl_surface_ticket = 0
+		record.render_target_generation = exhaust_backend_target_generation(old_generation)
+		if backend.egl_binding.kind == .window && backend.egl_binding.window == record.id
+			&& backend.egl_binding.target_generation == old_generation
+			&& backend.egl_binding.surface == old_surface {
+			backend.egl_binding = EglBindingIdentity{}
+		}
+		if !release.result.succeeded() {
+			record.frame_ready = true
+			return native_render_error(release.result)
+		}
+		return
+	}
+	_ = index
+	return error(err_backend_unsupported)
 }
 
 fn (mut backend WaylandBackend) service_hide_window(id WindowId) !ServiceWindowState {
@@ -6902,13 +7483,9 @@ fn (mut backend WaylandBackend) service_hide_window(id WindowId) !ServiceWindowS
 			backend.windows[index].requested_fullscreen = backend.windows[index].observed_fullscreen
 		}
 		backend.windows[index].hide_barrier_state_observed = false
+		generation_before_hide := backend.windows[index].render_target_generation
+		backend.release_window_render_target_for_hide(index)!
 		backend.release_window_mouse_lock(index, true)
-		if backend.windows[index].frame_callback != unsafe { nil } {
-			destroy := backend.destroy_frame_callback_lifetime(mut backend.windows[index])
-			if !destroy.succeeded() {
-				return native_render_error(destroy)
-			}
-		}
 		backend.windows[index].requested_visible = false
 		backend.windows[index].publish_show_on_map = false
 		backend.windows[index].mapped = false
@@ -6916,13 +7493,14 @@ fn (mut backend WaylandBackend) service_hide_window(id WindowId) !ServiceWindowS
 		backend.windows[index].frame_ready = false
 		backend.windows[index].pending_toplevel_width = 0
 		backend.windows[index].pending_toplevel_height = 0
-		backend.windows[index].pending_egl_resize = false
 		backend.windows[index].pending_service_state_valid = false
 		backend.windows[index].observed_service_state_valid = false
 		backend.windows[index].toplevel_decoration_configured = false
 		backend.windows[index].toplevel_decoration_mode = 0
-		backend.windows[index].render_target_generation =
-			exhaust_backend_target_generation(backend.windows[index].render_target_generation)
+		if backend.windows[index].render_target_generation == generation_before_hide {
+			backend.windows[index].render_target_generation =
+				exhaust_backend_target_generation(generation_before_hide)
+		}
 		C.v_multiwindow_wayland_unmap_surface(unsafe {
 			&C.wl_surface(backend.windows[index].surface)
 		})
