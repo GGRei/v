@@ -424,7 +424,7 @@ fn test_public_synchronous_portal_completion_exhaustion_rolls_back_and_retries()
 	app.backend.kind = .x11
 	app.backend.x11.windows << X11WindowRecord{
 		id:     window
-		window: X11NativeWindow(0x1234)
+		window: 0x1234
 	}
 	request_before := app.services.next_request
 	saved_delivery_token := app.next_event_delivery_token
