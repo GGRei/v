@@ -121,6 +121,10 @@ cancelled and portal leases are invalidated during sealing, before any teardown
 result can be delivered. Their service cancellations precede readback
 cancellation and the final `window_destroyed` event in the canonical queue;
 teardown replay does not duplicate those terminals.
+After a window generation is sealed, state/capability queries and new service,
+readback, and native-borrow admissions fail as stale. Already admitted work
+follows the terminal or cancellation flow, and queued terminals remain
+deliverable.
 
 `examples/gg/multiwindow_render_runtime.v` is an unattended CI probe, not an
 interactive launch target. Backend lanes compile it with `-d gg_multiwindow`
@@ -225,7 +229,9 @@ terminal `.clipboard` `WindowServiceEvent`. Portal export returns
 with `x11:` and Wayland xdg-foreign-v2 identifiers start with `wayland:`. Treat
 everything after the prefix as opaque. Wayland clipboard uses the seat data
 device, writes require a recent input serial, and portal export requires
-xdg-foreign-v2.
+xdg-foreign-v2. If preparing a replacement Wayland clipboard source fails
+before selection submission, the previously published clipboard value remains
+unchanged.
 
 `with_native_window()` is callback-only. Inside its callback, invoke exactly
 the accessor matching `app.capabilities().backend`:

@@ -917,6 +917,7 @@ fn test_wayland_clipboard_read_timeout_is_terminal_exactly_once() {
 		backend.windows << record
 		mut fds := [-1, -1]!
 		assert C.pipe(&fds[0]) == 0
+		assert C.v_multiwindow_wayland_fd_set_nonblocking(fds[0]) == 1
 		backend.clipboard_read = WaylandClipboardRead{
 			request: ServiceRequestId{
 				app_instance: 1
@@ -940,6 +941,150 @@ fn test_wayland_clipboard_read_timeout_is_terminal_exactly_once() {
 		backend.drain_clipboard_read()
 		assert record.pending_events.len == 1
 	}
+}
+
+fn test_wayland_clipboard_queued_eof_wins_over_expired_deadline_exactly_once() {
+	$if linux && sokol_wayland ? {
+		mut backend := &WaylandBackend{}
+		_, record, fds := wayland_test_begin_clipboard_read(mut backend, 79, []u8{})
+		payload := 'queued-after-deadline'
+		assert C.v_multiwindow_wayland_fd_set_nonblocking(fds[0]) == 1
+		assert C.write(fds[1], payload.str, usize(payload.len)) == payload.len
+		C.close(fds[1])
+		backend.clipboard_read.deadline_ns = 0
+
+		backend.drain_clipboard_read()
+
+		assert !backend.clipboard_read_active
+		assert backend.clipboard_read.fd == -1
+		assert record.pending_events.len == 1
+		result := record.pending_events[0].event.service.clipboard
+		assert result.status == .ready
+		assert result.error == ''
+		assert result.text == payload
+		backend.drain_clipboard_read()
+		assert record.pending_events.len == 1
+	}
+}
+
+fn test_wayland_clipboard_chunk_quota_keeps_progress_active_past_deadline() {
+	$if linux && sokol_wayland ? {
+		path := os.join_path(os.temp_dir(), 'v_wayland_clipboard_quota_${os.getpid()}')
+		payload := 'q'.repeat(
+			wayland_clipboard_io_chunk_size * wayland_clipboard_max_io_chunks_per_poll + 1)
+		os.write_file(path, payload)!
+		defer {
+			os.rm(path) or {}
+		}
+		mut file := os.open(path)!
+		read_fd := os.fd_dup(file.fd)
+		assert read_fd >= 0
+		file.close()
+		mut backend := &WaylandBackend{}
+		window := WindowId{
+			app_instance: 1
+			slot:         0
+			generation:   1
+		}
+		mut record := &WaylandWindowRecord{
+			id:    window
+			owner: backend
+		}
+		backend.windows << record
+		backend.clipboard_read = WaylandClipboardRead{
+			request:     ServiceRequestId{
+				app_instance: 1
+				serial:       78
+			}
+			window:      window
+			fd:          read_fd
+			buffer:      []u8{}
+			deadline_ns: 0
+		}
+		backend.clipboard_read_active = true
+
+		backend.drain_clipboard_read()
+
+		assert backend.clipboard_read_active
+		assert backend.clipboard_read.buffer.len == wayland_clipboard_io_chunk_size * wayland_clipboard_max_io_chunks_per_poll
+		assert record.pending_events.len == 0
+		backend.drain_clipboard_read()
+		assert !backend.clipboard_read_active
+		assert record.pending_events.len == 1
+		result := record.pending_events[0].event.service.clipboard
+		assert result.status == .ready
+		assert result.text == payload
+	}
+}
+
+fn wayland_assert_clipboard_replacement_preflight_failure(fail_listener bool) {
+	$if linux && sokol_wayland ? {
+		mut backend := &WaylandBackend{
+			started:             true
+			display:             voidptr(usize(0x11))
+			data_device_manager: voidptr(usize(0x12))
+			data_device:         voidptr(usize(0x13))
+			seat:                voidptr(usize(0x14))
+			poll_generation:     1
+		}
+		window := WindowId{
+			app_instance: 1
+			slot:         0
+			generation:   1
+		}
+		mut record := &WaylandWindowRecord{
+			id:    window
+			owner: backend
+		}
+		record.store_user_action_serial(19, backend.poll_generation)
+		backend.windows << record
+		old_source := voidptr(usize(0x21))
+		mut new_source := voidptr(unsafe { nil })
+		if fail_listener {
+			new_source = voidptr(usize(0x22))
+		}
+		mut fds := [-1, -1]!
+		assert C.pipe(&fds[0]) == 0
+		backend.clipboard_source = old_source
+		backend.clipboard_text = 'previous clipboard'
+		backend.clipboard_send_fd = fds[1]
+		backend.clipboard_source_test = WaylandClipboardSourceTestSeam{
+			active:          true
+			create_override: true
+			next_source:     new_source
+			fail_listener:   fail_listener
+		}
+		mut failure := ''
+		backend.service_set_clipboard_text(window, ServiceRequestId{
+			app_instance: 1
+			serial:       23
+		}, 'replacement clipboard') or { failure = err.msg() }
+
+		assert failure == err_capability_unsupported
+		assert backend.clipboard_source == old_source
+		assert backend.clipboard_text == 'previous clipboard'
+		assert backend.clipboard_send_fd == fds[1]
+		assert record.pending_events.len == 0
+		if fail_listener {
+			assert backend.clipboard_source_test.destroyed == [usize(new_source)]
+		} else {
+			assert backend.clipboard_source_test.destroyed.len == 0
+		}
+		assert C.write(fds[1], c'x', usize(1)) == 1
+		backend.clipboard_send_fd = -1
+		backend.clipboard_source = unsafe { nil }
+		backend.clipboard_source_test.active = false
+		C.close(fds[1])
+		C.close(fds[0])
+	}
+}
+
+fn test_wayland_clipboard_replacement_create_failure_preserves_previous_source() {
+	wayland_assert_clipboard_replacement_preflight_failure(false)
+}
+
+fn test_wayland_clipboard_replacement_listener_failure_preserves_previous_source() {
+	wayland_assert_clipboard_replacement_preflight_failure(true)
 }
 
 fn test_wayland_clipboard_selection_replacement_cancels_read_exactly_once() {

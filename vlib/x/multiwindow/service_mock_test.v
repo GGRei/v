@@ -422,10 +422,12 @@ fn test_public_synchronous_portal_completion_exhaustion_rolls_back_and_retries()
 	_ = app.drain_queued_events()!
 	original_backend := app.backend.kind
 	app.backend.kind = .x11
-	app.backend.x11.windows << X11WindowRecord{
-		id:     window
-		window: 0x1234
+	mut fake_x11_record := X11WindowRecord{
+		id: window
 	}
+	fake_x11_record.window = ~fake_x11_record.window
+	expected_parent := 'x11:${u64(fake_x11_record.window):x}'
+	app.backend.x11.windows << fake_x11_record
 	request_before := app.services.next_request
 	saved_delivery_token := app.next_event_delivery_token
 	app.state_mutex.lock()
@@ -454,7 +456,7 @@ fn test_public_synchronous_portal_completion_exhaustion_rolls_back_and_retries()
 		assert events[0].kind == .service
 		assert events[0].service.kind == .portal_parent
 		assert events[0].service.portal_parent.id == retry
-		assert events[0].service.portal_parent.identifier == 'x11:1234'
+		assert events[0].service.portal_parent.identifier == expected_parent
 		assert app.services.pending.len == 0
 		app.service_release_portal_parent(events[0].service.portal_parent.lease)!
 		assert app.services.portal_leases.len == 0
@@ -640,6 +642,100 @@ fn test_service_cancellation_is_exactly_once_before_registry_removal() {
 		return
 	}
 	assert false, 'destroyed service record remained registered'
+}
+
+fn test_sealed_window_rejects_all_new_service_admissions_atomically() {
+	mut app := new_app()!
+	window := app.create_window(title: 'sealed service admission')!
+	_ = app.drain_queued_events()!
+	ticket := app.prepare_window_destroy(window)!
+	assert app.service_operation_capability(window, .clipboard_write)!.support == .available
+	prepared_request := app.service_set_clipboard_text(window, 'prepared remains live')!
+	prepared_events := app.drain_queued_events()!
+	assert prepared_events.len == 1
+	assert prepared_events[0].service.clipboard.id == prepared_request
+	assert prepared_events[0].service.clipboard.status == .ready
+	app.seal_window_destroy(ticket)!
+	assert app.services.window_index(window)! >= 0
+	assert app.windows[window.slot].services_cancelled
+	request_before := app.services.next_request
+	borrow_before := app.services.next_borrow_epoch
+	delivery_before := app.next_event_delivery_token
+	clipboard_before := app.services.clipboard_text
+	state_before := app.services.windows[app.services.window_index(window)!].state
+	mut rejected := 0
+
+	_ = app.service_window_state(window) or {
+		assert err.msg() == err_stale_window
+		rejected++
+		ServiceWindowState{}
+	}
+	_ = app.service_operation_capability(window, .show) or {
+		assert err.msg() == err_stale_window
+		rejected++
+		ServiceOperationCapability{}
+	}
+	_ = app.service_cursor_support(window, .default) or {
+		assert err.msg() == err_stale_window
+		rejected++
+		ServiceSupportLevel.unsupported
+	}
+	app.service_show_window(window) or {
+		assert err.msg() == err_stale_window
+		rejected++
+	}
+	_ = app.service_request_clipboard_text(window) or {
+		assert err.msg() == err_stale_window
+		rejected++
+		ServiceRequestId{}
+	}
+	_ = app.service_set_clipboard_text(window, 'must not publish') or {
+		assert err.msg() == err_stale_window
+		rejected++
+		ServiceRequestId{}
+	}
+	_ = app.service_request_portal_parent(window) or {
+		assert err.msg() == err_stale_window
+		rejected++
+		ServiceRequestId{}
+	}
+	_ = app.service_begin_window_readback(window) or {
+		assert err.msg() == err_stale_window
+		rejected++
+		ServiceReadbackId{}
+	}
+	app.service_arm_image_readback_pass_for_gg(window, 1, 1, 1) or {
+		assert err.msg() == err_stale_window
+		rejected++
+	}
+	mut borrow_calls := 0
+	callback := fn [mut borrow_calls] (borrow NativeWindowBorrow) ! {
+		_ = borrow
+		borrow_calls++
+	}
+	app.with_mock_native_window_borrow_for_gg_test(window, callback) or {
+		assert err.msg() == err_stale_window
+		rejected++
+	}
+
+	assert rejected == 10
+	assert borrow_calls == 0
+	assert app.services.next_request == request_before
+	assert app.services.next_borrow_epoch == borrow_before
+	assert app.next_event_delivery_token == delivery_before
+	assert app.services.clipboard_text == clipboard_before
+	assert app.services.pending.len == 0
+	assert app.services.readbacks.len == 0
+	assert app.services.portal_leases.len == 0
+	assert app.services.windows[app.services.window_index(window)!].state == state_before
+	assert app.drain_queued_events()!.len == 0
+
+	app.finish_window_destroy(ticket, []string{})!
+	events := app.drain_queued_events()!
+	assert events.len == 1
+	assert events[0].kind == .lifecycle
+	assert events[0].lifecycle.kind == .window_destroyed
+	app.stop()!
 }
 
 fn test_owner_cascade_cancels_descendant_clipboard_portal_and_leases_exactly_once() {

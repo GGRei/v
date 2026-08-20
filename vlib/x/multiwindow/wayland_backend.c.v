@@ -244,6 +244,15 @@ mut:
 	deadline_ns i64
 }
 
+struct WaylandClipboardSourceTestSeam {
+mut:
+	active          bool
+	create_override bool
+	next_source     voidptr
+	fail_listener   bool
+	destroyed       []usize
+}
+
 @[heap]
 struct WaylandPortalExport {
 	request ServiceRequestId
@@ -313,6 +322,7 @@ mut:
 	selection_offer_has_text      bool
 	clipboard_source              voidptr
 	clipboard_text                string
+	clipboard_source_test         WaylandClipboardSourceTestSeam
 	clipboard_send_fd             int = -1
 	clipboard_send_offset         int
 	clipboard_send_deadline_ns    i64
@@ -5921,18 +5931,62 @@ fn (mut backend WaylandBackend) close_clipboard_send() {
 fn (mut backend WaylandBackend) destroy_clipboard_source(local_only bool) {
 	$if linux && sokol_wayland ? {
 		backend.close_clipboard_send()
-		if backend.clipboard_source != unsafe { nil } {
-			if local_only {
-				backend.destroy_proxy_locally(backend.clipboard_source)
-			} else if !backend.destroy_proxy_locally_if_needed(backend.clipboard_source) {
-				C.v_multiwindow_wayland_data_source_destroy(unsafe {
-					&C.wl_data_source(backend.clipboard_source)
-				})
-			}
-		}
+		backend.destroy_clipboard_source_handle(backend.clipboard_source, local_only)
 	}
 	backend.clipboard_source = unsafe { nil }
 	backend.clipboard_text = ''
+}
+
+fn (mut backend WaylandBackend) destroy_clipboard_source_handle(source voidptr, local_only bool) {
+	$if linux && sokol_wayland ? {
+		if source == unsafe { nil } {
+			return
+		}
+		$if test {
+			if backend.clipboard_source_test.active {
+				backend.clipboard_source_test.destroyed << usize(source)
+				return
+			}
+		}
+		if local_only {
+			backend.destroy_proxy_locally(source)
+		} else if !backend.destroy_proxy_locally_if_needed(source) {
+			C.v_multiwindow_wayland_data_source_destroy(unsafe { &C.wl_data_source(source) })
+		}
+	} $else {
+		_ = source
+		_ = local_only
+	}
+}
+
+fn (mut backend WaylandBackend) create_clipboard_source() voidptr {
+	$if linux && sokol_wayland ? {
+		$if test {
+			if backend.clipboard_source_test.active && backend.clipboard_source_test.create_override {
+				backend.clipboard_source_test.create_override = false
+				return backend.clipboard_source_test.next_source
+			}
+		}
+		return C.v_multiwindow_wayland_data_device_manager_create_data_source(unsafe {
+			&C.wl_data_device_manager(backend.data_device_manager)
+		})
+	}
+	return unsafe { nil }
+}
+
+fn (mut backend WaylandBackend) add_clipboard_source_listener(source voidptr) int {
+	$if linux && sokol_wayland ? {
+		$if test {
+			if backend.clipboard_source_test.active && backend.clipboard_source_test.fail_listener {
+				backend.clipboard_source_test.fail_listener = false
+				return -1
+			}
+		}
+		return C.v_multiwindow_wayland_add_data_source_listener(unsafe { &C.wl_data_source(source) },
+			backend)
+	}
+	_ = source
+	return -1
 }
 
 fn (mut backend WaylandBackend) drain_clipboard_send() {
@@ -6024,10 +6078,6 @@ fn (mut backend WaylandBackend) drain_clipboard_read() {
 		if !backend.clipboard_read_active {
 			return
 		}
-		if vtime.sys_mono_now() >= backend.clipboard_read.deadline_ns {
-			backend.finish_clipboard_read(.failed, '', err_clipboard_timeout)
-			return
-		}
 		mut chunk := [wayland_clipboard_io_chunk_size]u8{}
 		for _ in 0 .. wayland_clipboard_max_io_chunks_per_poll {
 			remaining := wayland_clipboard_max_bytes - backend.clipboard_read.buffer.len
@@ -6046,6 +6096,9 @@ fn (mut backend WaylandBackend) drain_clipboard_read() {
 					return
 				}
 				if C.v_multiwindow_wayland_read_would_block() != 0 {
+					if vtime.sys_mono_now() >= backend.clipboard_read.deadline_ns {
+						backend.finish_clipboard_read(.failed, '', err_clipboard_timeout)
+					}
 					return
 				}
 				backend.finish_clipboard_read(.failed, '', err_capability_unsupported)
@@ -6075,6 +6128,9 @@ fn (mut backend WaylandBackend) drain_clipboard_read() {
 				return
 			}
 			if C.v_multiwindow_wayland_read_would_block() != 0 {
+				if vtime.sys_mono_now() >= backend.clipboard_read.deadline_ns {
+					backend.finish_clipboard_read(.failed, '', err_clipboard_timeout)
+				}
 				return
 			}
 			backend.finish_clipboard_read(.failed, '', err_capability_unsupported)
@@ -6974,27 +7030,26 @@ fn (mut backend WaylandBackend) service_set_clipboard_text(id WindowId, request 
 		serial := backend.windows[index].take_user_action_serial(backend.poll_generation) or {
 			return error(err_capability_unsupported)
 		}
-		backend.destroy_clipboard_source(false)
-		source := C.v_multiwindow_wayland_data_device_manager_create_data_source(unsafe {
-			&C.wl_data_device_manager(backend.data_device_manager)
-		})
-		if source == unsafe { nil } || C.v_multiwindow_wayland_add_data_source_listener(unsafe {
-			&C.wl_data_source(source)
-		}, backend) < 0 {
-			if source != unsafe { nil } {
-				C.v_multiwindow_wayland_data_source_destroy(unsafe { &C.wl_data_source(source) })
-			}
+		source := backend.create_clipboard_source()
+		if source == unsafe { nil } {
 			return error(err_capability_unsupported)
 		}
-		backend.clipboard_source = source
-		backend.clipboard_text = text.clone()
+		if backend.add_clipboard_source_listener(source) < 0 {
+			backend.destroy_clipboard_source_handle(source, false)
+			return error(err_capability_unsupported)
+		}
 		C.v_multiwindow_wayland_data_source_offer(unsafe { &C.wl_data_source(source) },
 			c'text/plain;charset=utf-8')
 		C.v_multiwindow_wayland_data_source_offer(unsafe { &C.wl_data_source(source) },
 			c'text/plain')
+		old_source := backend.clipboard_source
+		backend.clipboard_source = source
+		backend.clipboard_text = text.clone()
 		C.v_multiwindow_wayland_data_device_set_selection(unsafe {
 			&C.wl_data_device(backend.data_device)
 		}, unsafe { &C.wl_data_source(source) }, serial)
+		backend.close_clipboard_send()
+		backend.destroy_clipboard_source_handle(old_source, false)
 		backend.flush_service_request(backend.windows[index]) or {
 			backend.destroy_clipboard_source(false)
 			return err

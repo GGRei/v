@@ -625,6 +625,7 @@ fn test_x11_readback_bounds_accept_exact_edge_and_reject_max_int_without_event()
 		assert edge_results.len == 1
 		assert edge_results[0].readback.status == .ready
 		pending_before := app.services.readbacks.len
+		request_before := app.services.next_request
 
 		mut overflow_error := ''
 		app.service_request_window_readback_region(window, 0x7fffffff, 0, 1, 1, 2) or {
@@ -632,8 +633,29 @@ fn test_x11_readback_bounds_accept_exact_edge_and_reject_max_int_without_event()
 		}
 		assert overflow_error == err_readback_invalid
 		assert app.services.readbacks.len == pending_before
+		assert app.services.next_request == request_before
+		assert app.drain_queued_events()!.len == 0
+
+		mut impractical_error := ''
+		app.service_request_window_readback_region(window, 0, 0, 0x1fffffff, 1, 3) or {
+			impractical_error = err.msg()
+		}
+		assert impractical_error == err_readback_invalid
+		assert app.services.readbacks.len == pending_before
+		assert app.services.next_request == request_before
 		assert app.drain_queued_events()!.len == 0
 		app.stop()!
+	}
+}
+
+fn test_x11_native_readback_rect_preflight_is_subtractive_and_fail_closed() {
+	$if linux && x_multiwindow_x11 ? {
+		assert x11_native_readback_rect_fits(2, 31, 23, 1, 1, 32, 24)
+		assert x11_native_readback_rect_fits(2, 0, 0, 32, 24, 32, 24)
+		assert !x11_native_readback_rect_fits(0, 0, 0, 1, 1, 32, 24)
+		assert !x11_native_readback_rect_fits(2, 0, 0, 0x1fffffff, 1, 32, 24)
+		assert !x11_native_readback_rect_fits(2, 0x7fffffff, 0, 1, 1, 32, 24)
+		assert !x11_native_readback_rect_fits(2, 0, 0x7fffffff, 1, 1, 32, 24)
 	}
 }
 

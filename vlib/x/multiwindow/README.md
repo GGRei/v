@@ -291,6 +291,12 @@ waiting for a state observation. Wayland minimize is asynchronous with
 `state_observable == false`, so no resulting minimized-state observation is
 guaranteed.
 
+A prepared destroy ticket remains live and can still admit service work. Once
+the ticket is sealed, state/capability queries and new service, readback, and
+native-borrow admissions for that window fail as stale. Already admitted work
+follows the terminal or cancellation flow, and queued terminals remain
+deliverable.
+
 Use `service_window_state()` for the latest observed mapping, visibility,
 focus, minimized/maximized/fullscreen, mouse-lock, position, and monitor
 membership state. Unknown fields are explicit. `service_monitor_ids()` returns
@@ -307,6 +313,8 @@ result also owns a `ServicePortalLeaseId`. Keep that lease alive while the
 identifier is used and release it explicitly with
 `service_release_portal_parent()`. X11 identifiers start with `x11:`; Wayland
 xdg-foreign-v2 identifiers start with `wayland:`. Treat the remainder as opaque.
+If preparing a replacement Wayland clipboard source fails before selection
+submission, the previously published clipboard value remains unchanged.
 Destroying an owner processes its descendants child-first. For each destroyed
 window, pending clipboard and portal requests are cancelled and portal leases
 are invalidated during sealing, before teardown results can be delivered.

@@ -1584,6 +1584,12 @@ fn (mut backend X11Backend) start_next_clipboard_read() ! {
 fn (backend &X11Backend) service_window_readback(id WindowId, x int, y int, width int, height int) ![]u8 {
 	$if linux && x_multiwindow_x11 ? {
 		index := backend.window_record_index(id) or { return error(err_window_not_found) }
+		probe := C.v_multiwindow_x11_readback_probe(backend.display, backend.windows[index].window,
+			width, height, 0)
+		if probe.attributes_available == 0
+			|| !x11_native_readback_rect_fits(probe.map_state, x, y, width, height, probe.actual_width, probe.actual_height) {
+			return error(err_readback_invalid)
+		}
 		mut pixels := []u8{len: width * height * 4}
 		if C.v_multiwindow_x11_readback_rgba8(backend.display, backend.windows[index].window, x, y,
 			width, height, pixels.data, pixels.len) == 0 {
@@ -1598,6 +1604,14 @@ fn (backend &X11Backend) service_window_readback(id WindowId, x int, y int, widt
 		_ = height
 		return error(err_backend_unsupported)
 	}
+}
+
+fn x11_native_readback_rect_fits(map_state int, x int, y int, width int, height int, native_width int, native_height int) bool {
+	if map_state != 2 || x < 0 || y < 0 || width <= 0 || height <= 0 || native_width <= 0
+		|| native_height <= 0 || width > native_width || height > native_height {
+		return false
+	}
+	return x <= native_width - width && y <= native_height - height
 }
 
 fn (backend &X11Backend) service_paint_readback_pattern_for_test(id WindowId, x int, y int) ! {

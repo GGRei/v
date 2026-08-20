@@ -8,6 +8,18 @@ fn (app &App) ensure_mock_service_locked() ! {
 	}
 }
 
+// The core window slot is the authority for new service work. The service
+// registry intentionally survives a sealed destroy long enough to publish
+// cancellation terminals, so registry membership alone is not admission.
+fn (app &App) service_window_index_for_admission_locked(id WindowId) !int {
+	service_index := app.services.window_index(id)!
+	index := app.live_window_index(id)!
+	if app.windows[index].services_cancelled {
+		return error(err_stale_window)
+	}
+	return service_index
+}
+
 fn (mut app App) enqueue_service_event_locked(event ServiceEvent) !u64 {
 	token := app.reserve_event_delivery_tokens_locked(1)!
 	app.enqueue_reserved_service_event_locked(event, token)
@@ -97,7 +109,7 @@ pub fn (app &App) service_window_state(id WindowId) !ServiceWindowState {
 		app.state_mutex.unlock()
 	}
 	app.ensure_running_locked()!
-	index := app.services.window_index(id)!
+	index := app.service_window_index_for_admission_locked(id)!
 	state := app.services.windows[index].state
 	if app.backend.kind == .win32 {
 		observed := app.backend.service_window_state(id)!
@@ -156,7 +168,7 @@ pub fn (app &App) service_operation_capability(id WindowId, operation ServiceOpe
 		app.state_mutex.unlock()
 	}
 	app.ensure_running_locked()!
-	app.services.window_index(id)!
+	app.service_window_index_for_admission_locked(id)!
 	return app.backend.service_operation_capability(id, operation)
 }
 
@@ -168,7 +180,7 @@ pub fn (app &App) service_cursor_support(id WindowId, shape CursorShape) !Servic
 		app.state_mutex.unlock()
 	}
 	app.ensure_running_locked()!
-	app.services.window_index(id)!
+	app.service_window_index_for_admission_locked(id)!
 	return app.backend.cursor_support(shape)
 }
 
@@ -199,7 +211,7 @@ fn (mut app App) update_mock_mapping(id WindowId, visible bool, operation Servic
 		app.state_mutex.unlock()
 	}
 	app.ensure_mock_service_locked()!
-	index := app.services.window_index(id)!
+	index := app.service_window_index_for_admission_locked(id)!
 	app.services.windows[index].state = ServiceWindowState{
 		...app.services.windows[index].state
 		mapping:    if visible { .mapped } else { .unmapped }
@@ -221,7 +233,7 @@ pub fn (mut app App) service_request_focus(id WindowId) ! {
 		app.state_mutex.unlock()
 	}
 	app.ensure_mock_service_locked()!
-	index := app.services.window_index(id)!
+	index := app.service_window_index_for_admission_locked(id)!
 	app.publish_mock_focus_locked(index)!
 }
 
@@ -248,7 +260,7 @@ pub fn (mut app App) service_set_position(id WindowId, x int, y int) ! {
 		app.state_mutex.unlock()
 	}
 	app.ensure_mock_service_locked()!
-	index := app.services.window_index(id)!
+	index := app.service_window_index_for_admission_locked(id)!
 	app.services.windows[index].state = ServiceWindowState{
 		...app.services.windows[index].state
 		position: ServicePosition{
@@ -303,7 +315,7 @@ pub fn (mut app App) service_set_fullscreen(id WindowId, enabled bool) ! {
 		app.state_mutex.unlock()
 	}
 	app.ensure_mock_service_locked()!
-	index := app.services.window_index(id)!
+	index := app.service_window_index_for_admission_locked(id)!
 	app.services.windows[index].state = ServiceWindowState{
 		...app.services.windows[index].state
 		fullscreen: if enabled { .on } else { .off }
@@ -320,7 +332,7 @@ fn (mut app App) update_mock_window_mode(id WindowId, operation ServiceOperation
 		app.state_mutex.unlock()
 	}
 	app.ensure_mock_service_locked()!
-	index := app.services.window_index(id)!
+	index := app.service_window_index_for_admission_locked(id)!
 	app.services.windows[index].state = ServiceWindowState{
 		...app.services.windows[index].state
 		minimized:  if operation == .minimize { .on } else { .off }
@@ -339,7 +351,7 @@ fn (mut app App) publish_mock_unchanged_state(id WindowId, operation ServiceOper
 		app.state_mutex.unlock()
 	}
 	app.ensure_mock_service_locked()!
-	index := app.services.window_index(id)!
+	index := app.service_window_index_for_admission_locked(id)!
 	app.publish_mock_state_locked(index, operation)!
 }
 
@@ -356,7 +368,7 @@ pub fn (mut app App) service_set_mouse_lock(id WindowId, enabled bool) ! {
 		app.state_mutex.unlock()
 	}
 	app.ensure_mock_service_locked()!
-	index := app.services.window_index(id)!
+	index := app.service_window_index_for_admission_locked(id)!
 	app.services.windows[index].state = ServiceWindowState{
 		...app.services.windows[index].state
 		mouse_locked: if enabled { .on } else { .off }
@@ -372,7 +384,7 @@ fn (mut app App) service_operation_uses_mock(id WindowId, operation ServiceOpera
 	}
 	app.ensure_running_locked()!
 	app.ensure_event_admission_open_locked()!
-	app.services.window_index(id)!
+	app.service_window_index_for_admission_locked(id)!
 	capability := app.backend.service_operation_capability(id, operation)
 	if capability.support == .unsupported {
 		return error(err_capability_unsupported)
@@ -518,7 +530,7 @@ fn (mut app App) complete_mock_clipboard(id WindowId, write bool, text string) !
 		app.state_mutex.unlock()
 	}
 	app.ensure_mock_service_locked()!
-	app.services.window_index(id)!
+	app.service_window_index_for_admission_locked(id)!
 	if app.services.next_request == 0 {
 		return error(err_service_request_exhausted)
 	}
@@ -556,7 +568,7 @@ fn (mut app App) begin_native_clipboard_request(id WindowId, kind PendingService
 	}
 	app.ensure_running_locked()!
 	app.ensure_event_admission_open_locked()!
-	app.services.window_index(id)!
+	app.service_window_index_for_admission_locked(id)!
 	request := app.services.take_request_id()!
 	app.services.pending << PendingServiceRequest{
 		id:     request
@@ -639,7 +651,7 @@ fn (mut app App) complete_mock_portal_parent(id WindowId) !ServiceRequestId {
 		app.state_mutex.unlock()
 	}
 	app.ensure_mock_service_locked()!
-	app.services.window_index(id)!
+	app.service_window_index_for_admission_locked(id)!
 	if app.services.next_request == 0 {
 		return error(err_service_request_exhausted)
 	}
@@ -682,7 +694,7 @@ fn (mut app App) begin_portal_parent_request(id WindowId) !(ServiceRequestId, Se
 	}
 	app.ensure_running_locked()!
 	app.ensure_event_admission_open_locked()!
-	app.services.window_index(id)!
+	app.service_window_index_for_admission_locked(id)!
 	request := app.services.take_request_id()!
 	lease := ServicePortalLeaseId{
 		app_instance: app.instance_id
@@ -807,7 +819,7 @@ pub fn (mut app App) service_begin_window_readback(id WindowId) !ServiceReadback
 	}
 	app.ensure_running_locked()!
 	app.ensure_event_admission_open_locked()!
-	app.services.window_index(id)!
+	app.service_window_index_for_admission_locked(id)!
 	readback := app.services.take_readback_id(id)!
 	app.services.readbacks << PendingReadbackRequest{
 		id: readback
@@ -893,7 +905,7 @@ pub fn (mut app App) service_arm_image_readback_pass_for_gg(id WindowId, image_i
 		app.state_mutex.unlock()
 		return err
 	}
-	app.services.window_index(id) or {
+	app.service_window_index_for_admission_locked(id) or {
 		app.state_mutex.unlock()
 		return err
 	}
@@ -1040,7 +1052,7 @@ pub fn (mut app App) with_native_window_for_gg(id WindowId, callback NativeWindo
 		app.state_mutex.unlock()
 		return err
 	}
-	app.services.window_index(id) or {
+	app.service_window_index_for_admission_locked(id) or {
 		app.state_mutex.unlock()
 		return err
 	}
@@ -1075,7 +1087,7 @@ fn (mut app App) with_native_window_borrow(id WindowId, backend NativeWindowBack
 		app.state_mutex.unlock()
 		return err
 	}
-	index := app.services.window_index(id) or {
+	index := app.service_window_index_for_admission_locked(id) or {
 		app.state_mutex.unlock()
 		return err
 	}
