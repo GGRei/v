@@ -2880,9 +2880,11 @@ fn test_wayland_hidden_windows_are_created_for_later_mapping() {
 		.all_before('fn (mut backend WaylandBackend) service_minimize_window')
 	assert show_body.contains('backend.drain_hidden_window_before_show(mut transport)!')
 	assert show_body.contains('backend.prepare_window_show_handshake(index, mut transport, requested_maximized,')
-	assert_source_order(show_body,
-		'backend.prepare_service_transport_plan(seed, [.display_roundtrip,',
-		'backend.drain_hidden_window_before_show(mut transport)!')
+	compact_show_body :=
+		show_body.replace_each(['\r', '', '\n', '', '\t', '', ' ', '']).replace(',]', ']')
+	assert_source_order(compact_show_body,
+		'backend.prepare_service_transport_plan(seed,[.display_roundtrip,.display_flush,.display_roundtrip,.display_flush,.display_roundtrip,.display_flush,.display_roundtrip,.display_flush])!',
+		'backend.drain_hidden_window_before_show(muttransport)!')
 	assert_source_order(show_body, 'backend.drain_hidden_window_before_show(mut transport)!',
 		'backend.prepare_window_show_handshake(index, mut transport, requested_maximized,')
 	assert !show_body.contains('requested_visible = true')
