@@ -1423,6 +1423,42 @@ fn (backend &X11Backend) service_native_window_borrow(id WindowId) !BackendNativ
 	}
 }
 
+fn x11_intersect_monitor_work_area(monitor ServiceRect, work_area ServiceRect) ServiceKnownRect {
+	if monitor.width <= 0 || monitor.height <= 0 || work_area.width <= 0 || work_area.height <= 0 {
+		return ServiceKnownRect{}
+	}
+	monitor_left := i64(monitor.x)
+	monitor_top := i64(monitor.y)
+	monitor_right := i64(monitor.x) + i64(monitor.width)
+	monitor_bottom := i64(monitor.y) + i64(monitor.height)
+	work_left := i64(work_area.x)
+	work_top := i64(work_area.y)
+	work_right := i64(work_area.x) + i64(work_area.width)
+	work_bottom := i64(work_area.y) + i64(work_area.height)
+	left := if monitor_left > work_left { monitor_left } else { work_left }
+	top := if monitor_top > work_top { monitor_top } else { work_top }
+	right := if monitor_right < work_right { monitor_right } else { work_right }
+	bottom := if monitor_bottom < work_bottom { monitor_bottom } else { work_bottom }
+	if right <= left || bottom <= top {
+		return ServiceKnownRect{}
+	}
+	width := right - left
+	height := bottom - top
+	if left < i64(-2_147_483_648) || left > i64(2_147_483_647) || top < i64(-2_147_483_648)
+		|| top > i64(2_147_483_647) || width > i64(2_147_483_647) || height > i64(2_147_483_647) {
+		return ServiceKnownRect{}
+	}
+	return ServiceKnownRect{
+		known: true
+		value: ServiceRect{
+			x:      int(left)
+			y:      int(top)
+			width:  int(width)
+			height: int(height)
+		}
+	}
+}
+
 fn (mut backend X11Backend) service_monitor_snapshot(app_instance u64) ![]ServiceMonitorInfo {
 	$if linux && x_multiwindow_x11 ? {
 		if !backend.started || backend.display == unsafe { nil } {
@@ -1467,29 +1503,17 @@ fn (mut backend X11Backend) service_monitor_snapshot(app_instance u64) ![]Servic
 			}
 			mut monitor_work_area := ServiceKnownRect{}
 			if work_area.known != 0 {
-				left := if item.x > work_area.x { item.x } else { work_area.x }
-				top := if item.y > work_area.y { item.y } else { work_area.y }
-				right := if item.x + item.width < work_area.x + work_area.width {
-					item.x + item.width
-				} else {
-					work_area.x + work_area.width
-				}
-				bottom := if item.y + item.height < work_area.y + work_area.height {
-					item.y + item.height
-				} else {
-					work_area.y + work_area.height
-				}
-				if right > left && bottom > top {
-					monitor_work_area = ServiceKnownRect{
-						known: true
-						value: ServiceRect{
-							x:      left
-							y:      top
-							width:  right - left
-							height: bottom - top
-						}
-					}
-				}
+				monitor_work_area = x11_intersect_monitor_work_area(ServiceRect{
+					x:      item.x
+					y:      item.y
+					width:  item.width
+					height: item.height
+				}, ServiceRect{
+					x:      work_area.x
+					y:      work_area.y
+					width:  work_area.width
+					height: work_area.height
+				})
 			}
 			monitors << ServiceMonitorInfo{
 				native_key: ServiceMonitorNativeKey{

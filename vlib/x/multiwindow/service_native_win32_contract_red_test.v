@@ -3267,8 +3267,8 @@ fn win32_w4_clipboard_timeout_case(test_now_ns i64) ![]string {
 			app.poll_events() or {
 				win32_w4_add_infra(mut issues, 'occupied read timeout poll failed: ${err.msg()}')
 			}
-			win32_red_add(mut issues, 'timeout performed an extra native clipboard attempt',
-				C.v_multiwindow_win32_service_test_clipboard_attempts(backend) == attempts_before_timeout)
+			win32_red_add(mut issues, 'timeout did not perform one final native clipboard attempt', C.v_multiwindow_win32_service_test_clipboard_attempts(backend) ==
+				attempts_before_timeout + 1)
 			win32_red_add(mut issues, 'timed-out read remained native-pending',
 				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0)
 			win32_red_add(mut issues, 'timeout did not allocate exactly one sequence',
@@ -3291,8 +3291,8 @@ fn win32_w4_clipboard_timeout_case(test_now_ns i64) ![]string {
 				&& win32_red_clipboard_envelope_matches(timeout_events[0], request, window, .clipboard_read, .failed)
 				&& timeout_events[0].service.clipboard.error == err_clipboard_timeout)
 			late_timeout := win32_w4_poll_collect(mut app, 4, 'timeout late', mut issues)
-			win32_red_add(mut issues, 'timed-out read was attempted again',
-				C.v_multiwindow_win32_service_test_clipboard_attempts(backend) == attempts_before_timeout)
+			win32_red_add(mut issues, 'timed-out read was attempted again', C.v_multiwindow_win32_service_test_clipboard_attempts(backend) ==
+				attempts_before_timeout + 1)
 			win32_red_add(mut issues, 'timeout allocated a duplicate sequence',
 				C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == 1)
 			win32_red_add(mut issues, 'timeout produced a duplicate late terminal', win32_red_clipboard_events(late_timeout,
@@ -3304,6 +3304,129 @@ fn win32_w4_clipboard_timeout_case(test_now_ns i64) ![]string {
 	} $else {
 		_ = test_now_ns
 		return error('Win32 clipboard timeout case is unavailable')
+	}
+}
+
+fn win32_w4_clipboard_late_first_attempt_case(test_now_ns i64) ![]string {
+	$if windows {
+		mut app := new_app(backend: .win32)!
+		defer {
+			app.stop() or {}
+		}
+		window := app.create_window(title: 'Win32 clipboard late first attempt')!
+		_ = app.drain_queued_events()!
+		backend := win32_red_backend_pointer(app)
+		hwnd := win32_red_hwnd(app, window)!
+		defer {
+			C.v_multiwindow_win32_service_test_clipboard_use_real_clock(backend)
+		}
+		mut issues := []string{}
+
+		read_text := 'late first read remains available 🙂'
+		read_wide := read_text.to_wide()
+		if C.v_multiwindow_test_win32_set_clipboard(hwnd, read_wide,
+			win32_red_utf16_units(read_text)) != 1 {
+			win32_w4_add_infra(mut issues,
+				'late first read fixture could not publish clipboard text')
+		} else {
+			C.v_multiwindow_win32_service_test_clipboard_configure(backend, test_now_ns, 0)
+			read_request := app.service_request_clipboard_text(window) or {
+				issues << 'late first read was not admitted: ${err.msg()}'
+				ServiceRequestId{}
+			}
+			if read_request != ServiceRequestId{} {
+				read_deadline :=
+					C.v_multiwindow_win32_service_test_clipboard_pending_deadline_ns(backend, 0)
+				C.v_multiwindow_win32_service_test_clipboard_set_now_ns(backend, read_deadline + 1)
+				app.poll_events() or {
+					win32_w4_add_infra(mut issues, 'late first read poll failed: ${err.msg()}')
+				}
+				win32_red_add(mut issues, 'late available read was not attempted exactly once', C.v_multiwindow_win32_service_test_clipboard_request_attempts(backend,
+					read_request.app_instance, read_request.serial) == 1)
+				read_events := app.drain_queued_events() or {
+					win32_w4_add_infra(mut issues, 'late first read drain failed: ${err.msg()}')
+					[]QueuedEvent{}
+				}
+				read_terminals := win32_red_clipboard_events(read_events, read_request)
+				win32_red_add(mut issues,
+					'late available read did not complete ready exactly once',
+					read_terminals.len == 1
+					&& win32_red_clipboard_envelope_matches(read_terminals[0], read_request, window, .clipboard_read, .ready)
+					&& read_terminals[0].service.clipboard.text == read_text)
+			}
+		}
+
+		write_now_ns := test_now_ns + i64(10_000_000)
+		C.v_multiwindow_win32_service_test_clipboard_configure(backend, write_now_ns, 0)
+		write_text := 'late first write remains available 漢'
+		write_request := app.service_set_clipboard_text(window, write_text) or {
+			issues << 'late first write was not admitted: ${err.msg()}'
+			ServiceRequestId{}
+		}
+		if write_request != ServiceRequestId{} {
+			write_deadline :=
+				C.v_multiwindow_win32_service_test_clipboard_pending_deadline_ns(backend, 0)
+			C.v_multiwindow_win32_service_test_clipboard_set_now_ns(backend, write_deadline + 1)
+			app.poll_events() or {
+				win32_w4_add_infra(mut issues, 'late first write poll failed: ${err.msg()}')
+			}
+			win32_red_add(mut issues, 'late available write was not attempted exactly once', C.v_multiwindow_win32_service_test_clipboard_request_attempts(backend,
+				write_request.app_instance, write_request.serial) == 1)
+			write_events := app.drain_queued_events() or {
+				win32_w4_add_infra(mut issues, 'late first write drain failed: ${err.msg()}')
+				[]QueuedEvent{}
+			}
+			write_terminals := win32_red_clipboard_events(write_events, write_request)
+			write_wide := write_text.to_wide()
+			win32_red_add(mut issues, 'late available write did not complete ready exactly once',
+				write_terminals.len == 1
+				&& win32_red_clipboard_envelope_matches(write_terminals[0], write_request, window, .clipboard_write, .ready))
+			win32_red_add(mut issues, 'late available write lost clipboard payload integrity', C.v_multiwindow_test_win32_clipboard_equals(write_wide,
+				win32_red_utf16_units(write_text)) == 1)
+		}
+
+		retry_now_ns := test_now_ns + i64(20_000_000)
+		C.v_multiwindow_win32_service_test_clipboard_configure(backend, retry_now_ns, 16)
+		first := app.service_set_clipboard_text(window, 'late retry FIFO head') or {
+			issues << 'late retry FIFO head was not admitted: ${err.msg()}'
+			ServiceRequestId{}
+		}
+		second := app.service_set_clipboard_text(window, 'late retry FIFO tail') or {
+			issues << 'late retry FIFO tail was not admitted: ${err.msg()}'
+			ServiceRequestId{}
+		}
+		if first != ServiceRequestId{} && second != ServiceRequestId{} {
+			first_deadline :=
+				C.v_multiwindow_win32_service_test_clipboard_pending_deadline_ns(backend, 0)
+			C.v_multiwindow_win32_service_test_clipboard_set_now_ns(backend, first_deadline)
+			app.poll_events() or {
+				win32_w4_add_infra(mut issues, 'late retry FIFO poll failed: ${err.msg()}')
+			}
+			win32_red_add(mut issues, 'late retry FIFO head was not attempted exactly once', C.v_multiwindow_win32_service_test_clipboard_request_attempts(backend,
+				first.app_instance, first.serial) == 1)
+			win32_red_add(mut issues, 'late retry FIFO tail was attempted in the head poll', C.v_multiwindow_win32_service_test_clipboard_request_attempts(backend,
+				second.app_instance, second.serial) == 0)
+			win32_red_add(mut issues, 'late retry FIFO did not retain exactly the tail natively',
+				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 1)
+			win32_red_add(mut issues, 'late retry FIFO tail deadline did not start at promotion', C.v_multiwindow_win32_service_test_clipboard_pending_deadline_ns(backend,
+				0) == first_deadline + i64(2_000_000_000))
+			first_events := app.drain_queued_events() or {
+				win32_w4_add_infra(mut issues, 'late retry FIFO drain failed: ${err.msg()}')
+				[]QueuedEvent{}
+			}
+			first_terminals := win32_red_clipboard_events(first_events, first)
+			win32_red_add(mut issues, 'late retry FIFO head did not timeout exactly once',
+				first_terminals.len == 1
+				&& win32_red_clipboard_envelope_matches(first_terminals[0], first, window, .clipboard_write, .failed)
+				&& first_terminals[0].service.clipboard.error == err_clipboard_timeout)
+			win32_red_add(mut issues, 'late retry FIFO tail became terminal before an attempt',
+				win32_red_core_pending(app, second).len == 1
+				&& !win32_red_core_pending(app, second)[0].terminal)
+		}
+		return issues
+	} $else {
+		_ = test_now_ns
+		return error('Win32 clipboard late-first-attempt case is unavailable')
 	}
 }
 
@@ -3581,6 +3704,9 @@ fn test_win32_native_clipboard_occupancy_timeout_failure_and_cancel_red() {
 		test_now_ns := i64(20_000_000)
 		mut issues := []string{}
 		for issue in win32_w4_clipboard_timeout_case(test_now_ns)! {
+			issues << issue
+		}
+		for issue in win32_w4_clipboard_late_first_attempt_case(test_now_ns)! {
 			issues << issue
 		}
 		for issue in win32_w4_clipboard_destroy_cancel_case(test_now_ns)! {

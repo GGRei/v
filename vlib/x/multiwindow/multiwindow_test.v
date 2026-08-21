@@ -1643,6 +1643,12 @@ fn test_win32_focus_cleanup_and_zero_window_monitor_refresh_source_guard() {
 	event_delivery_source := multiwindow_source_file('event_delivery.v')
 	native_source := multiwindow_source_file('win32_service_native.h')
 	helper_source := multiwindow_source_file('win32_backend_helpers.h')
+	clipboard_body :=
+		service_source.all_after('fn (mut backend Win32Backend) collect_clipboard_events').all_before('fn (mut backend Win32Backend) purge_clipboard_window')
+	assert_source_order(clipboard_body, 'if status == win32_clipboard_attempt_retry {',
+		'now_ns := backend.clipboard_now_ns()')
+	assert_source_order(clipboard_body, 'now_ns := backend.clipboard_now_ns()',
+		"backend.finish_clipboard_head(.failed, '', err_clipboard_timeout)")
 	kill_focus_body :=
 		helper_source.all_after('case WM_KILLFOCUS:').all_before('case WM_SETCURSOR:')
 	assert_source_order(kill_focus_body, 'v_multiwindow_win32_window_focus_lost(data);',
@@ -2706,6 +2712,12 @@ fn test_x11_clipboard_conversion_and_root_monitor_refresh_source_guard() {
 	assert selection_clear_body.contains('owner != backend.clipboard_owner_window')
 	assert source.contains("backend.net_workarea = C.XInternAtom(display, c'_NET_WORKAREA', 0)")
 	assert source.contains("backend.net_current_desktop = C.XInternAtom(display, c'_NET_CURRENT_DESKTOP', 0)")
+	intersection_body :=
+		source.all_after('fn x11_intersect_monitor_work_area').all_before('fn (mut backend X11Backend) service_monitor_snapshot')
+	assert intersection_body.contains('i64(monitor.x) + i64(monitor.width)')
+	assert intersection_body.contains('i64(work_area.x) + i64(work_area.width)')
+	assert intersection_body.contains('i64(monitor.y) + i64(monitor.height)')
+	assert intersection_body.contains('i64(work_area.y) + i64(work_area.height)')
 	property_body := source.all_after('x11_property_notify {').all_before('x11_selection_clear {')
 	assert property_body.contains('property == backend.net_workarea')
 	assert property_body.contains('property == backend.net_current_desktop')
@@ -3462,8 +3474,28 @@ fn test_wayland_input_support_is_queued_with_xkb_text_and_touch_source_guard() {
 	assert_source_order(poll_body, 'dispatch := backend.dispatch_pending_nonblocking()',
 		'if !dispatch.succeeded()')
 	assert_source_order(poll_body, 'if !dispatch.succeeded()',
-		'deferred_error = dispatch.error_text')
-	assert_source_order(poll_body, 'deferred_error = dispatch.error_text',
+		'deferred_error = backend.cleanup_after_fatal_dispatch(dispatch)')
+	assert_source_order(poll_body,
+		'deferred_error = backend.cleanup_after_fatal_dispatch(dispatch)',
+		'backend.drain_clipboard_read()')
+	dispatch_cleanup_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) cleanup_after_fatal_dispatch').all_before('fn (mut backend WaylandBackend) poll_queued_events')
+	assert dispatch_cleanup_body.contains('backend.render_health.blocks_graphics()')
+	assert dispatch_cleanup_body.contains('backend.transport_can_marshal()')
+	assert dispatch_cleanup_body.contains("backend.finish_clipboard_read(.failed, '', message)")
+	assert dispatch_cleanup_body.contains('backend.fail_nonterminal_portal_exports(message)')
+	assert dispatch_cleanup_body.contains('backend.close_all_clipboard_sends()')
+	assert dispatch_cleanup_body.contains('backend.clear_data_offer(true)')
+	dispatch_message_body :=
+		wayland_source.all_after('fn wayland_dispatch_failure_message').all_before('fn (mut backend WaylandBackend) fail_nonterminal_portal_exports')
+	assert dispatch_message_body.contains('err_wayland_dispatch_failed')
+	portal_failure_body :=
+		wayland_source.all_after('fn (mut backend WaylandBackend) fail_nonterminal_portal_exports').all_before('fn (mut backend WaylandBackend) cleanup_after_fatal_dispatch')
+	assert portal_failure_body.contains('if portal.terminal')
+	assert portal_failure_body.contains('status: .failed')
+	assert portal_failure_body.contains('backend.destroy_portal_export_at(index, !backend.transport_can_marshal())')
+	assert_source_order(poll_body,
+		'deferred_error = backend.cleanup_after_fatal_dispatch(dispatch)',
 		'backend.drain_pending_data_offer_drop()')
 	assert wayland_source.contains('.files_dropped')
 	assert wayland_source.contains('dropped_files_from_uri_list(payload)')

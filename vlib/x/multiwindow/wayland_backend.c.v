@@ -4299,6 +4299,60 @@ fn (mut backend WaylandBackend) begin_window_resize(id WindowId, edge WindowResi
 	}
 }
 
+fn wayland_dispatch_failure_message(dispatch NativeRenderResult) string {
+	return if dispatch.error_text == '' {
+		err_wayland_dispatch_failed
+	} else {
+		dispatch.error_text
+	}
+}
+
+fn (mut backend WaylandBackend) fail_nonterminal_portal_exports(message string) {
+	$if linux && sokol_wayland ? {
+		mut index := 0
+		for index < backend.portal_exports.len {
+			portal := backend.portal_exports[index]
+			if portal.terminal {
+				index++
+				continue
+			}
+			backend.pending_service_events << WaylandNativeQueuedEvent{
+				sequence: C.v_multiwindow_wayland_next_event_sequence()
+				event:    queued_service_event(ServiceEvent{
+					kind:          .portal_parent
+					window:        portal.window
+					operation:     .portal_parent
+					portal_parent: ServicePortalParentResult{
+						id:     portal.request
+						window: portal.window
+						status: .failed
+						lease:  portal.lease
+						error:  message
+					}
+				})
+			}
+			backend.destroy_portal_export_at(index, !backend.transport_can_marshal())
+		}
+	} $else {
+		_ = message
+	}
+}
+
+fn (mut backend WaylandBackend) cleanup_after_fatal_dispatch(dispatch NativeRenderResult) string {
+	message := wayland_dispatch_failure_message(dispatch)
+	if dispatch.succeeded()
+		|| (!backend.render_health.blocks_graphics() && backend.transport_can_marshal()) {
+		return message
+	}
+	if backend.clipboard_read_active {
+		backend.finish_clipboard_read(.failed, '', message)
+	}
+	backend.fail_nonterminal_portal_exports(message)
+	backend.close_all_clipboard_sends()
+	backend.clear_data_offer(true)
+	return message
+}
+
 fn (mut backend WaylandBackend) poll_queued_events() ![]QueuedEvent {
 	mut native_events := []WaylandNativeQueuedEvent{}
 	$if linux && sokol_wayland ? {
@@ -4323,7 +4377,7 @@ fn (mut backend WaylandBackend) poll_queued_events() ![]QueuedEvent {
 		mut deferred_error := ''
 		dispatch := backend.dispatch_pending_nonblocking()
 		if !dispatch.succeeded() {
-			deferred_error = dispatch.error_text
+			deferred_error = backend.cleanup_after_fatal_dispatch(dispatch)
 		}
 		if deferred_error == '' && !backend.renderer_ready()
 			&& !backend.render_health.blocks_graphics() && !backend.wayland_display_unavailable {

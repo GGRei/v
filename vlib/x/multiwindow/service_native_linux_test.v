@@ -73,6 +73,85 @@ fn test_x11_position_capability_defers_publication_until_native_observation() {
 	assert backend.service_state_publication_is_deferred(WindowId{}, .position)
 }
 
+fn test_x11_monitor_work_area_intersection_uses_widened_endpoints() {
+	normal := x11_intersect_monitor_work_area(ServiceRect{
+		x:      0
+		y:      0
+		width:  100
+		height: 80
+	}, ServiceRect{
+		x:      10
+		y:      20
+		width:  50
+		height: 40
+	})
+	assert normal == ServiceKnownRect{
+		known: true
+		value: ServiceRect{
+			x:      10
+			y:      20
+			width:  50
+			height: 40
+		}
+	}
+	assert !x11_intersect_monitor_work_area(ServiceRect{
+		x:      0
+		y:      0
+		width:  10
+		height: 10
+	}, ServiceRect{
+		x:      20
+		y:      20
+		width:  5
+		height: 5
+	}).known
+
+	monitor_endpoint_overflow := x11_intersect_monitor_work_area(ServiceRect{
+		x:      2_147_483_640
+		y:      2_147_483_640
+		width:  32
+		height: 32
+	}, ServiceRect{
+		x:      2_147_483_644
+		y:      2_147_483_644
+		width:  1
+		height: 1
+	})
+	assert monitor_endpoint_overflow.known
+	assert monitor_endpoint_overflow.value == ServiceRect{
+		x:      2_147_483_644
+		y:      2_147_483_644
+		width:  1
+		height: 1
+	}
+
+	work_area_endpoint_overflow := x11_intersect_monitor_work_area(ServiceRect{
+		x:      2_147_483_640
+		y:      2_147_483_640
+		width:  7
+		height: 7
+	}, ServiceRect{
+		x:      2_147_483_644
+		y:      2_147_483_644
+		width:  32
+		height: 32
+	})
+	assert work_area_endpoint_overflow.known
+	assert work_area_endpoint_overflow.value == ServiceRect{
+		x:      2_147_483_644
+		y:      2_147_483_644
+		width:  3
+		height: 3
+	}
+	assert !x11_intersect_monitor_work_area(ServiceRect{
+		width:  0
+		height: 10
+	}, ServiceRect{
+		width:  10
+		height: 10
+	}).known
+}
+
 fn test_x11_window_manager_state_capabilities_defer_to_native_observations() {
 	mut backend := Backend{
 		kind: .x11

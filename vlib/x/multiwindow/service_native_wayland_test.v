@@ -1558,6 +1558,292 @@ fn test_wayland_clipboard_read_timeout_is_terminal_exactly_once() {
 	}
 }
 
+fn test_wayland_fatal_dispatch_terminalizes_active_clipboard_read_exactly_once() {
+	$if linux && sokol_wayland ? {
+		mut backend := &WaylandBackend{
+			display: voidptr(usize(0x11))
+		}
+		_, record, fds := wayland_test_begin_clipboard_read(mut backend, 86, []u8{})
+		request := backend.clipboard_read.request
+		nonfatal := NativeRenderResult{
+			domain:      .wayland
+			operation:   .display_dispatch
+			disposition: .transient
+			error_text:  'renderer-only failure'
+		}
+		backend.cleanup_after_fatal_dispatch(nonfatal)
+		assert backend.clipboard_read_active
+		assert backend.clipboard_read.fd == fds[0]
+		assert record.pending_events.len == 0
+
+		backend.wayland_display_unavailable = true
+		backend.cleanup_after_fatal_dispatch(NativeRenderResult{
+			domain:      .wayland
+			operation:   .display_dispatch
+			disposition: .ok
+		})
+		assert backend.clipboard_read_active
+		assert record.pending_events.len == 0
+
+		fatal := NativeRenderResult{
+			domain:        .wayland
+			operation:     .display_dispatch
+			disposition:   .renderer_unavailable
+			display_error: 32
+			error_text:    'fatal display transport'
+		}
+		backend.cleanup_after_fatal_dispatch(fatal)
+		C.close(fds[1])
+		assert !backend.clipboard_read_active
+		assert backend.clipboard_read.fd == -1
+		wayland_assert_clipboard_failure(record, request, 'fatal display transport')
+		backend.cleanup_after_fatal_dispatch(fatal)
+		assert record.pending_events.len == 1
+
+		mut fallback_backend := &WaylandBackend{
+			display:                     voidptr(usize(0x12))
+			wayland_display_unavailable: true
+		}
+		_, fallback_record, fallback_fds := wayland_test_begin_clipboard_read(mut fallback_backend,
+			87, []u8{})
+		fallback_request := fallback_backend.clipboard_read.request
+		fallback_backend.cleanup_after_fatal_dispatch(NativeRenderResult{
+			domain:        .wayland
+			operation:     .display_dispatch
+			disposition:   .renderer_unavailable
+			display_error: 32
+		})
+		C.close(fallback_fds[1])
+		assert !fallback_backend.clipboard_read_active
+		assert fallback_backend.clipboard_read.fd == -1
+		wayland_assert_clipboard_failure(fallback_record, fallback_request,
+			err_wayland_dispatch_failed)
+		fallback_backend.cleanup_after_fatal_dispatch(fatal)
+		assert fallback_record.pending_events.len == 1
+
+		mut health_backend := &WaylandBackend{
+			display:       voidptr(usize(0x13))
+			render_health: .unavailable
+		}
+		assert health_backend.transport_can_marshal()
+		_, health_record, health_fds := wayland_test_begin_clipboard_read(mut health_backend, 88,
+			[]u8{})
+		health_request := health_backend.clipboard_read.request
+		health_failure := NativeRenderResult{
+			domain:      .wayland
+			operation:   .display_dispatch
+			disposition: .renderer_unavailable
+			error_text:  'fatal renderer health'
+		}
+		health_backend.cleanup_after_fatal_dispatch(health_failure)
+		C.close(health_fds[1])
+		assert !health_backend.clipboard_read_active
+		assert health_backend.clipboard_read.fd == -1
+		wayland_assert_clipboard_failure(health_record, health_request, 'fatal renderer health')
+		health_backend.cleanup_after_fatal_dispatch(health_failure)
+		assert health_record.pending_events.len == 1
+	}
+}
+
+fn test_wayland_fatal_dispatch_cleans_nonterminal_resources_once_and_preserves_ready_portals() {
+	$if linux && sokol_wayland ? {
+		mut backend := &WaylandBackend{
+			display:       voidptr(usize(0x21))
+			render_health: .unavailable
+			io_test:       WaylandIoTestSeam{
+				pending_drop_native_bypass: true
+			}
+		}
+		window, record, read_fds := wayland_test_begin_clipboard_read(mut backend, 89, []u8{})
+		read_request := backend.clipboard_read.request
+		pending_request := ServiceRequestId{
+			app_instance: 1
+			serial:       90
+		}
+		pending_lease := ServicePortalLeaseId{
+			app_instance: 1
+			serial:       90
+		}
+		ready_lease := ServicePortalLeaseId{
+			app_instance: 1
+			serial:       91
+		}
+		backend.portal_exports << &WaylandPortalExport{
+			request: pending_request
+			window:  window
+			lease:   pending_lease
+			owner:   backend
+		}
+		ready_exported := voidptr(usize(0x25))
+		mut ready_portal := &WaylandPortalExport{
+			request:  ServiceRequestId{
+				app_instance: 1
+				serial:       91
+			}
+			window:   window
+			lease:    ready_lease
+			owner:    backend
+			exported: ready_exported
+		}
+		backend.portal_exports << ready_portal
+		wayland_exported_handle(ready_portal.listener_data(), ready_exported,
+			c'ready-before-failure')
+		assert ready_portal.terminal
+		assert backend.pending_service_events.len == 1
+		assert backend.pending_service_events[0].event.service.portal_parent.status == .ready
+		ready_portal.exported = unsafe { nil }
+		mut send_a := [-1, -1]!
+		mut send_b := [-1, -1]!
+		assert C.pipe(&send_a[0]) == 0
+		assert C.pipe(&send_b[0]) == 0
+		backend.clipboard_sends << WaylandClipboardSend{
+			fd:      send_a[1]
+			payload: 'a'
+		}
+		backend.clipboard_sends << WaylandClipboardSend{
+			fd:      send_b[1]
+			payload: 'bc'
+		}
+		backend.clipboard_send_cursor = 1
+		backend.clipboard_send_snapshot_bytes = 3
+		mut drop_fds := [-1, -1]!
+		assert C.pipe(&drop_fds[0]) == 0
+		offer := voidptr(usize(0x22))
+		backend.data_offer = offer
+		backend.data_offer_has_uri_list = true
+		backend.data_offer_window = window
+		backend.data_offer_window_valid = true
+		backend.pending_drop_offer = offer
+		backend.pending_drop_fd = drop_fds[0]
+		backend.pending_drop_window = window
+		backend.pending_drop_window_valid = true
+		backend.pending_drop_source_actions = wayland_dnd_action_copy
+		backend.pending_drop_selected_action = wayland_dnd_action_copy
+		backend.pending_drop_action_received = true
+		backend.pending_drop_poll_cycles = 3
+		backend.pending_drop_buffer = 'file:///tmp/partial'.bytes()
+
+		fatal := NativeRenderResult{
+			domain:      .wayland
+			operation:   .display_dispatch
+			disposition: .renderer_unavailable
+			error_text:  'fatal shared dispatch'
+		}
+		backend.cleanup_after_fatal_dispatch(fatal)
+		C.close(read_fds[1])
+
+		assert !backend.clipboard_read_active
+		assert backend.clipboard_read.fd == -1
+		wayland_assert_clipboard_failure(record, read_request, 'fatal shared dispatch')
+		assert backend.pending_service_events.len == 2
+		ready_event := backend.pending_service_events[0]
+		assert ready_event.event.service.portal_parent.status == .ready
+		assert ready_event.event.service.portal_parent.lease == ready_lease
+		portal_failure := backend.pending_service_events[1]
+		assert ready_event.sequence < portal_failure.sequence
+		portal_event := portal_failure.event.service
+		assert portal_event.kind == .portal_parent
+		assert portal_event.operation == .portal_parent
+		assert portal_event.portal_parent.id == pending_request
+		assert portal_event.portal_parent.window == window
+		assert portal_event.portal_parent.lease == pending_lease
+		assert portal_event.portal_parent.status == .failed
+		assert portal_event.portal_parent.error == 'fatal shared dispatch'
+		assert backend.portal_exports.len == 1
+		assert backend.portal_exports[0].lease == ready_lease
+		assert backend.portal_exports[0].terminal
+		assert backend.portal_exports[0].identifier == 'wayland:ready-before-failure'
+		assert backend.clipboard_sends.len == 0
+		assert backend.clipboard_send_cursor == 0
+		assert backend.clipboard_send_snapshot_bytes == 0
+		assert C.write(send_a[1], c'x', usize(1)) == -1
+		assert C.write(send_b[1], c'x', usize(1)) == -1
+		C.close(send_a[0])
+		C.close(send_b[0])
+		assert backend.data_offer == unsafe { nil }
+		assert !backend.data_offer_has_uri_list
+		assert !backend.data_offer_window_valid
+		assert backend.pending_drop_offer == unsafe { nil }
+		assert backend.pending_drop_fd == -1
+		assert !backend.pending_drop_window_valid
+		assert backend.pending_drop_buffer.len == 0
+		assert C.close(drop_fds[0]) == -1
+		C.close(drop_fds[1])
+		assert record.pending_events.filter(it.event.kind == .input
+			&& it.event.input.kind == .files_dropped).len == 0
+
+		backend.cleanup_after_fatal_dispatch(fatal)
+		assert record.pending_events.len == 1
+		assert backend.pending_service_events.len == 2
+		assert backend.pending_service_events[0].event.service.portal_parent.status == .ready
+		assert backend.pending_service_events[1].event.service.portal_parent.status == .failed
+		assert backend.portal_exports.len == 1
+		backend.service_release_portal_parent(ready_lease)!
+		assert backend.portal_exports.len == 0
+
+		mut nonfatal_backend := &WaylandBackend{
+			display: voidptr(usize(0x23))
+			io_test: WaylandIoTestSeam{
+				pending_drop_native_bypass: true
+			}
+		}
+		nonfatal_window, nonfatal_record, nonfatal_read_fds := wayland_test_begin_clipboard_read(mut nonfatal_backend,
+			92, []u8{})
+		nonfatal_backend.portal_exports << &WaylandPortalExport{
+			request: ServiceRequestId{
+				app_instance: 1
+				serial:       93
+			}
+			window:  nonfatal_window
+			lease:   ServicePortalLeaseId{
+				app_instance: 1
+				serial:       93
+			}
+			owner:   nonfatal_backend
+		}
+		mut nonfatal_send := [-1, -1]!
+		mut nonfatal_drop := [-1, -1]!
+		assert C.pipe(&nonfatal_send[0]) == 0
+		assert C.pipe(&nonfatal_drop[0]) == 0
+		nonfatal_backend.clipboard_sends << WaylandClipboardSend{
+			fd:      nonfatal_send[1]
+			payload: 'retained'
+		}
+		nonfatal_offer := voidptr(usize(0x24))
+		nonfatal_backend.data_offer = nonfatal_offer
+		nonfatal_backend.pending_drop_offer = nonfatal_offer
+		nonfatal_backend.pending_drop_fd = nonfatal_drop[0]
+		nonfatal_backend.pending_drop_buffer = 'retained'.bytes()
+		nonfatal := NativeRenderResult{
+			domain:      .wayland
+			operation:   .display_dispatch
+			disposition: .transient
+			error_text:  'retryable dispatch'
+		}
+		nonfatal_backend.cleanup_after_fatal_dispatch(nonfatal)
+		assert nonfatal_backend.clipboard_read_active
+		assert nonfatal_record.pending_events.len == 0
+		assert nonfatal_backend.portal_exports.len == 1
+		assert nonfatal_backend.clipboard_sends.len == 1
+		assert nonfatal_backend.pending_drop_offer == nonfatal_offer
+		assert nonfatal_backend.pending_drop_fd == nonfatal_drop[0]
+		assert nonfatal_backend.pending_drop_buffer.bytestr() == 'retained'
+		assert wayland_dispatch_failure_message(NativeRenderResult{
+			domain:      .wayland
+			operation:   .display_dispatch
+			disposition: .renderer_unavailable
+		}) == err_wayland_dispatch_failed
+
+		nonfatal_backend.cancel_clipboard_read()
+		C.close(nonfatal_read_fds[1])
+		nonfatal_backend.close_all_clipboard_sends()
+		C.close(nonfatal_send[0])
+		nonfatal_backend.clear_data_offer(true)
+		C.close(nonfatal_drop[1])
+		nonfatal_backend.destroy_all_portal_exports()
+	}
+}
+
 fn test_wayland_clipboard_queued_eof_wins_over_expired_deadline_exactly_once() {
 	$if linux && sokol_wayland ? {
 		mut backend := &WaylandBackend{}

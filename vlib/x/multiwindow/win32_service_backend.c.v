@@ -581,11 +581,6 @@ fn (mut backend Win32Backend) collect_clipboard_events() []Win32NativeQueuedEven
 		if backend.clipboard_pending.len == 0 {
 			return []Win32NativeQueuedEvent{}
 		}
-		now_ns := backend.clipboard_now_ns()
-		if backend.clipboard_pending[0].deadline_ns != 0
-			&& now_ns >= backend.clipboard_pending[0].deadline_ns {
-			return [backend.finish_clipboard_head(.failed, '', err_clipboard_timeout)]
-		}
 		pending := backend.clipboard_pending[0]
 		mut status := win32_clipboard_attempt_failed
 		mut text := ''
@@ -622,6 +617,10 @@ fn (mut backend Win32Backend) collect_clipboard_events() []Win32NativeQueuedEven
 			}
 		}
 		if status == win32_clipboard_attempt_retry {
+			now_ns := backend.clipboard_now_ns()
+			if pending.deadline_ns != 0 && now_ns >= pending.deadline_ns {
+				return [backend.finish_clipboard_head(.failed, '', err_clipboard_timeout)]
+			}
 			return []Win32NativeQueuedEvent{}
 		}
 		if status == win32_clipboard_attempt_ready {
