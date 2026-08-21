@@ -8403,6 +8403,10 @@ fn (mut backend WaylandBackend) service_start_portal_parent(id WindowId, request
 
 fn (mut backend WaylandBackend) service_release_portal_parent(lease ServicePortalLeaseId) ! {
 	index := backend.portal_export_index(lease) or { return error(err_service_request_stale) }
+	if backend.portal_exports[index].exported == unsafe { nil } {
+		backend.destroy_portal_export_at(index, true)
+		return
+	}
 	if !backend.transport_can_marshal() {
 		backend.destroy_portal_export_at(index, true)
 		return
@@ -8427,13 +8431,6 @@ fn (mut backend WaylandBackend) service_set_clipboard_text(id WindowId, request 
 		if text.len > wayland_clipboard_max_bytes {
 			return error(err_clipboard_capacity)
 		}
-		if !backend.service_transport_usable(1) || backend.data_device_manager == unsafe { nil }
-			|| backend.data_device == unsafe { nil } || backend.seat == unsafe { nil } {
-			return error(err_capability_unsupported)
-		}
-		if !backend.windows[index].user_action_serial_available(backend.poll_generation) {
-			return error(err_capability_unsupported)
-		}
 		mut bypass_protocol := false
 		mut exercise_transport_plan := true
 		$if test {
@@ -8441,6 +8438,16 @@ fn (mut backend WaylandBackend) service_set_clipboard_text(id WindowId, request 
 				&& backend.clipboard_source_test.bypass_protocol
 			exercise_transport_plan = !bypass_protocol
 				|| backend.clipboard_source_test.exercise_transport_plan
+		}
+		if !backend.started || !backend.transport_can_marshal()
+			|| (exercise_transport_plan && !backend.service_transport_usable(1))
+			|| backend.data_device_manager == unsafe { nil }
+			|| backend.data_device == unsafe { nil }
+			|| backend.seat == unsafe { nil } {
+			return error(err_capability_unsupported)
+		}
+		if !backend.windows[index].user_action_serial_available(backend.poll_generation) {
+			return error(err_capability_unsupported)
 		}
 		mut transport := WaylandServiceTransportPlan{}
 		mut flush_attempt := WaylandPreparedTransportAttempt{}
