@@ -563,6 +563,10 @@ static BOOL CALLBACK v_multiwindow_win32_service_monitor_snapshot_callback(
 	item->geometry = base->rcMonitor;
 	item->work = base->rcWork;
 	item->dpi = v_multiwindow_win32_service_monitor_dpi(monitor);
+#if defined(V_MULTIWINDOW_WIN32_SERVICE_TEST)
+	item->dpi = v_multiwindow_win32_service_test_monitor_dpi(monitor,
+		item->dpi);
+#endif
 	item->primary = (base->dwFlags & MONITORINFOF_PRIMARY) != 0;
 	wcsncpy(item->name, info.szDevice, CCHDEVICENAME - 1);
 	item->name[CCHDEVICENAME - 1] = L'\0';
@@ -1714,6 +1718,30 @@ static inline int v_multiwindow_win32_service_set_mouse_lock(
 		return v_multiwindow_win32_service_mouse_acquire(state);
 	}
 	return v_multiwindow_win32_service_mouse_cleanup(state, 0, 0);
+}
+
+#if defined(V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_BACKEND_IMPLEMENTATION)
+static volatile LONG v_multiwindow_win32_focus_cleanup_failures_for_test = 0;
+
+static inline void v_multiwindow_win32_service_test_focus_cleanup_failures(
+	int count) {
+	InterlockedExchange(&v_multiwindow_win32_focus_cleanup_failures_for_test,
+		count > 0 ? (LONG)count : 0);
+}
+#endif
+
+static inline int v_multiwindow_win32_service_focus_lost(void *state_ptr) {
+#if defined(V_MULTIWINDOW_WIN32_CLIPBOARD_TEST_BACKEND_IMPLEMENTATION)
+	LONG failures = InterlockedCompareExchange(
+		&v_multiwindow_win32_focus_cleanup_failures_for_test, 0, 0);
+	if (failures > 0) {
+		InterlockedDecrement(
+			&v_multiwindow_win32_focus_cleanup_failures_for_test);
+		return V_MULTIWINDOW_WIN32_SERVICE_UNAVAILABLE;
+	}
+#endif
+	return v_multiwindow_win32_service_mouse_cleanup(
+		(VMultiwindowWin32ServiceState *)state_ptr, 0, 0);
 }
 
 static inline int v_multiwindow_win32_service_mouse_delivery_active(

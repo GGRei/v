@@ -3,6 +3,13 @@ module multiwindow
 import os
 import time
 
+enum X11StaleClipboardReplyKind {
+	inline_reply
+	none_reply
+	incr_reply
+	eof_reply
+}
+
 fn test_x11_service_state_transitions_are_qualified_by_native_property() {
 	assert x11_service_state_transition_operations(true, false, false, true, false, false, false,
 		false) == [.minimize]
@@ -521,6 +528,74 @@ fn test_x11_native_service_controls_borrow_monitors_and_readback() {
 	}
 }
 
+fn test_x11_workarea_property_refreshes_are_coalesced_and_retry_atomically() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		_ = app.create_window(title: 'workarea-refresh-window', width: 32, height: 24)!
+		_ = app.drain_queued_events()!
+		ids := app.service_monitor_ids()!
+		assert ids.len > 0
+		initial_id := ids[0]
+		initial := app.service_monitor_info(initial_id)!
+		assert initial.geometry.known
+		geometry := initial.geometry.value
+		assert geometry.width > 16
+		assert geometry.height > 16
+		first_area := ServiceRect{
+			x:      geometry.x + 2
+			y:      geometry.y + 3
+			width:  geometry.width - 4
+			height: geometry.height - 6
+		}
+		second_area := ServiceRect{
+			x:      geometry.x + 4
+			y:      geometry.y + 5
+			width:  geometry.width - 8
+			height: geometry.height - 10
+		}
+		app.backend.x11.service_set_workareas_for_test(1, [geometry, first_area])!
+		_ = app.poll_events()!
+		first_events := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .monitor)
+		assert first_events.len == 1
+		assert app.service_monitor_ids()![0] == initial_id
+		first := app.service_monitor_info(initial_id)!
+		assert first.work_area.known
+		assert first.work_area.value == first_area
+
+		app.backend.x11.service_fail_monitor_snapshots_for_test(1)
+		app.backend.x11.service_set_workareas_for_test(1, [geometry, second_area])!
+		_ = app.poll_events()!
+		failed_events := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .monitor)
+		assert failed_events.len == 0
+		assert app.backend.x11.service_monitor_snapshot_dirty_for_test()
+		assert app.service_monitor_info(initial_id)!.work_area.value == first_area
+
+		_ = app.poll_events()!
+		retry_events := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .monitor)
+		assert retry_events.len == 1
+		assert !app.backend.x11.service_monitor_snapshot_dirty_for_test()
+		assert app.service_monitor_ids()![0] == initial_id
+		retried := app.service_monitor_info(initial_id)!
+		assert retried.work_area.known
+		assert retried.work_area.value == second_area
+
+		app.backend.x11.service_delete_workarea_for_test()!
+		_ = app.poll_events()!
+		delete_events := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .monitor)
+		assert delete_events.len == 1
+		assert app.service_monitor_ids()![0] == initial_id
+		assert !app.service_monitor_info(initial_id)!.work_area.known
+		app.stop()!
+	}
+}
+
 fn test_x11_clipboard_global_operation_and_byte_limits() {
 	$if linux && x_multiwindow_x11 ? {
 		if os.getenv('DISPLAY') == '' {
@@ -645,6 +720,193 @@ fn test_x11_irrelevant_queued_selection_notify_still_expires_after_drain() {
 		assert results.len == 1
 		assert results[0].service.clipboard.status == .failed
 		assert results[0].service.clipboard.error == err_clipboard_timeout
+		app.stop()!
+	}
+}
+
+fn test_x11_late_selection_notify_does_not_complete_the_next_clipboard_read() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		owner := app.create_window(title: 'late-selection-owner')!
+		reader := app.create_window(title: 'late-selection-reader')!
+		_ = app.drain_queued_events()!
+		app.backend.x11.service_make_clipboard_peer_unresponsive_for_test(owner)!
+		first := app.service_request_clipboard_text(reader)!
+		stale := app.backend.x11.clipboard_reads[0]
+		second := app.service_request_clipboard_text(reader)!
+		app.backend.x11.service_expire_clipboard_for_test()
+		_ = app.poll_events()!
+		first_results := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == first)
+		assert first_results.len == 1
+		assert first_results[0].service.clipboard.status == .failed
+		reads_after_first, _ := app.backend.x11.service_clipboard_pending_counts_for_test()
+		assert reads_after_first == 1
+
+		mut event := C.XEvent{}
+		unsafe {
+			event.xselection.@type = x11_selection_notify
+			event.xselection.display = app.backend.x11.display
+			event.xselection.requestor = stale.requestor
+			event.xselection.selection = app.backend.x11.clipboard
+			event.xselection.target = app.backend.x11.clipboard_utf8
+			event.xselection.property = X11NativeAtom(0)
+		}
+		C.XPutBackEvent(app.backend.x11.display, &event)
+		_ = app.poll_events()!
+		second_results := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == second)
+		assert second_results.len == 0
+		reads_after_stale, _ := app.backend.x11.service_clipboard_pending_counts_for_test()
+		assert reads_after_stale == 1
+		app.stop()!
+	}
+}
+
+fn test_x11_all_late_clipboard_reply_forms_are_isolated_from_the_next_read() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		for reply_kind in [X11StaleClipboardReplyKind.inline_reply, .none_reply, .incr_reply,
+			.eof_reply] {
+			mut app := new_app(backend: .x11)!
+			owner := app.create_window(title: 'stale-reply-owner')!
+			reader := app.create_window(title: 'stale-reply-reader')!
+			_ = app.drain_queued_events()!
+			app.backend.x11.service_make_clipboard_peer_unresponsive_for_test(owner)!
+			first := app.service_request_clipboard_text(reader)!
+			stale := app.backend.x11.clipboard_reads[0]
+			second := app.service_request_clipboard_text(reader)!
+			app.backend.x11.service_expire_clipboard_for_test()
+			_ = app.poll_events()!
+			first_results := app.drain_queued_events()!.filter(it.kind == .service
+				&& it.service.kind == .clipboard && it.service.clipboard.id == first)
+			assert first_results.len == 1
+			assert app.backend.x11.clipboard_reads.len == 1
+			current := app.backend.x11.clipboard_reads[0]
+			assert current.request == second
+			assert current.requestor != X11NativeWindow(0)
+			assert current.requestor != stale.requestor
+
+			mut terminals := []QueuedEvent{}
+			if reply_kind == .eof_reply {
+				app.backend.x11.clipboard_reads[0].incremental = true
+				app.backend.x11.clipboard_reads[0].data = 'current-read'.bytes()
+				app.backend.x11.clipboard_reads[0].reserved_bytes = 'current-read'.len
+				C.XChangeProperty(app.backend.x11.display, current.requestor, current.property,
+					app.backend.x11.clipboard_utf8, 8, x11_prop_mode_replace, unsafe { nil }, 0)
+				mut event := C.XEvent{}
+				unsafe {
+					event.xproperty.@type = x11_property_notify
+					event.xproperty.display = app.backend.x11.display
+					event.xproperty.window = stale.requestor
+					event.xproperty.atom = stale.property
+					event.xproperty.state = x11_property_new_value
+				}
+				terminals = app.backend.x11.queued_clipboard_property_events(&event)
+			} else {
+				if reply_kind == .inline_reply {
+					payload := 'late-inline'.bytes()
+					C.XChangeProperty(app.backend.x11.display, current.requestor, current.property,
+						app.backend.x11.clipboard_utf8, 8, x11_prop_mode_replace, payload.data,
+						payload.len)
+				} else if reply_kind == .incr_reply {
+					advertised := X11NativeULong(1)
+					C.XChangeProperty(app.backend.x11.display, current.requestor, current.property,
+						app.backend.x11.clipboard_incr, 32, x11_prop_mode_replace,
+						unsafe { &u8(&advertised) }, 1)
+				}
+				mut event := C.XEvent{}
+				unsafe {
+					event.xselection.@type = x11_selection_notify
+					event.xselection.display = app.backend.x11.display
+					event.xselection.requestor = stale.requestor
+					event.xselection.selection = app.backend.x11.clipboard
+					event.xselection.target = app.backend.x11.clipboard_utf8
+					event.xselection.property = if reply_kind == .none_reply {
+						X11NativeAtom(0)
+					} else {
+						stale.property
+					}
+				}
+				terminals = app.backend.x11.queued_clipboard_selection_events(&event)
+			}
+			assert terminals.len == 0
+			assert app.backend.x11.clipboard_reads.len == 1
+			assert app.backend.x11.clipboard_reads[0].request == second
+			app.stop()!
+		}
+	}
+}
+
+fn test_x11_start_next_clipboard_failure_terminalizes_the_queued_read_once() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		owner := app.create_window(title: 'start-next-failure-owner')!
+		reader := app.create_window(title: 'start-next-failure-reader')!
+		_ = app.drain_queued_events()!
+		app.backend.x11.service_make_clipboard_peer_unresponsive_for_test(owner)!
+		first := app.service_request_clipboard_text(reader)!
+		second := app.service_request_clipboard_text(reader)!
+		app.backend.x11.clipboard_requestor_create_failures_for_test = 1
+		app.backend.x11.service_expire_clipboard_for_test()
+		_ = app.poll_events()!
+		results := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.operation == .clipboard_read)
+		first_results := results.filter(it.service.clipboard.id == first)
+		second_results := results.filter(it.service.clipboard.id == second)
+		assert first_results.len == 1
+		assert first_results[0].service.clipboard.status == .failed
+		assert first_results[0].service.clipboard.error == err_clipboard_timeout
+		assert second_results.len == 1
+		assert second_results[0].service.clipboard.status == .failed
+		assert second_results[0].service.clipboard.error == err_capability_unsupported
+		reads, _ := app.backend.x11.service_clipboard_pending_counts_for_test()
+		assert reads == 0
+		_ = app.poll_events()!
+		assert app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == second).len == 0
+		app.stop()!
+	}
+}
+
+fn test_x11_purge_active_clipboard_read_terminalizes_a_failed_queued_start_once() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		owner := app.create_window(title: 'purge-start-failure-owner')!
+		first_reader := app.create_window(title: 'purge-start-failure-first')!
+		second_reader := app.create_window(title: 'purge-start-failure-second')!
+		_ = app.drain_queued_events()!
+		app.backend.x11.service_make_clipboard_peer_unresponsive_for_test(owner)!
+		first := app.service_request_clipboard_text(first_reader)!
+		second := app.service_request_clipboard_text(second_reader)!
+		app.backend.x11.clipboard_requestor_create_failures_for_test = 1
+		app.destroy_window(first_reader)!
+		_ = app.poll_events()!
+		results := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.operation == .clipboard_read)
+		first_results := results.filter(it.service.clipboard.id == first)
+		second_results := results.filter(it.service.clipboard.id == second)
+		assert first_results.len == 1
+		assert first_results[0].service.clipboard.status == .cancelled
+		assert second_results.len == 1
+		assert second_results[0].service.clipboard.status == .failed
+		assert second_results[0].service.clipboard.error == err_capability_unsupported
+		reads, _ := app.backend.x11.service_clipboard_pending_counts_for_test()
+		assert reads == 0
+		_ = app.poll_events()!
+		assert app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == second).len == 0
 		app.stop()!
 	}
 }
@@ -1141,6 +1403,29 @@ fn test_x11_selection_clear_destroy_and_stop_purge_clipboard_state() {
 		assert text_after_stop == 0
 		assert reads_after_stop == 0
 		assert transfers_after_stop == 0
+	}
+}
+
+fn test_x11_stale_selection_clear_preserves_reacquired_clipboard() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		owner := app.create_window(title: 'clipboard-reacquire-owner', width: 32, height: 24)!
+		thief := app.create_window(title: 'clipboard-reacquire-thief', width: 32, height: 24)!
+		_ = app.drain_queued_events()!
+		_ = app.service_set_clipboard_text(owner, 'old-generation')!
+		_ = app.drain_queued_events()!
+		app.backend.x11.service_take_clipboard_selection_for_test(thief)!
+		_ = app.service_set_clipboard_text(owner, 'new-generation')!
+		_ = app.drain_queued_events()!
+		_ = app.poll_events()!
+		_ = app.drain_queued_events()!
+		owned, text_len := app.backend.x11.service_clipboard_owner_for_test()
+		assert owned
+		assert text_len == 'new-generation'.len
+		app.stop()!
 	}
 }
 

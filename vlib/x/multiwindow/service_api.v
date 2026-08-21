@@ -112,11 +112,35 @@ pub fn (app &App) service_window_state(id WindowId) !ServiceWindowState {
 	index := app.service_window_index_for_admission_locked(id)!
 	state := app.services.windows[index].state
 	if app.backend.kind == .win32 {
-		observed := app.backend.service_window_state(id)!
+		observed := service_window_state_with_registered_monitor_membership(app.backend.service_window_state(id)!,
+			app.services.monitors)
 		return service_window_state_with_sequence(merge_service_window_state(state, observed),
 			state.sequence)
 	}
 	return service_window_state_with_sequence(state, state.sequence)
+}
+
+fn service_window_state_with_registered_monitor_membership(observed ServiceWindowState, monitors []ServiceMonitorInfo) ServiceWindowState {
+	if !service_window_state_observes_monitor_membership(observed) || observed.monitor_ids.len == 0 {
+		return observed
+	}
+	for id in observed.monitor_ids {
+		mut registered := false
+		for monitor in monitors {
+			if monitor.id == id && monitor.available {
+				registered = true
+				break
+			}
+		}
+		if !registered {
+			return ServiceWindowState{
+				...observed
+				monitor_ids:                 []
+				monitor_membership_observed: false
+			}
+		}
+	}
+	return observed
 }
 
 // service_monitor_ids returns currently available generation-checked monitors.
@@ -406,8 +430,13 @@ fn (mut app App) publish_native_state(id WindowId, operation ServiceOperation, o
 	app.ensure_running_locked()!
 	app.ensure_event_admission_open_locked()!
 	index := app.services.window_index(id)!
+	registered_observed := service_window_state_with_registered_monitor_membership(observed,
+		app.services.monitors)
+	if !service_window_state_has_observation(registered_observed) {
+		return
+	}
 	app.services.windows[index].state = merge_service_window_state(app.services.windows[index].state,
-		observed)
+		registered_observed)
 	app.publish_mock_state_locked(index, operation)!
 }
 

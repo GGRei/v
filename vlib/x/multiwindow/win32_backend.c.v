@@ -24,53 +24,55 @@ struct Win32NativeQueuedEvent {
 struct Win32WindowRecord {
 	id WindowId
 mut:
-	hwnd                       voidptr
-	service_state              voidptr
-	config                     WindowConfig
-	width                      int
-	height                     int
-	framebuffer_width          int
-	framebuffer_height         int
-	destroyed                  bool
-	modal_active               bool
-	modal_child_count          int
-	modal_restore_enabled      bool
-	render_resize_pending      bool
-	suppress_resize_event      bool
-	queued_events              []Win32NativeQueuedEvent
-	mouse_x                    f32
-	mouse_y                    f32
-	mouse_dx                   f32
-	mouse_dy                   f32
-	mouse_pos_valid            bool
-	mouse_lock_generation      u64
-	mouse_raw_generation       u64
-	mouse_raw_x                int
-	mouse_raw_y                int
-	mouse_tail_generation      u64
-	iconified                  bool
-	pending_dropped_files      []string
-	pending_drop_modifiers     u32
-	pending_high_surrogate     u32
-	suppress_control_char      u32
-	raw_input_failed           bool
-	service_monitor_ids        []ServiceMonitorId
-	service_dpi                u32
-	service_refresh_sequence   u64
-	pending_display_refresh    bool
-	pending_dpi_refresh        bool
-	pending_membership_refresh bool
-	swapchain                  voidptr
-	swapchain_ticket           u64
-	pending_backbuffer         voidptr
-	pending_backbuffer_ticket  u64
-	render_view                voidptr
-	render_view_ticket         u64
-	depth_texture              voidptr
-	depth_texture_ticket       u64
-	depth_stencil_view         voidptr
-	depth_stencil_view_ticket  u64
-	render_target_generation   u64 = 1
+	hwnd                         voidptr
+	service_state                voidptr
+	config                       WindowConfig
+	width                        int
+	height                       int
+	framebuffer_width            int
+	framebuffer_height           int
+	destroyed                    bool
+	modal_active                 bool
+	modal_child_count            int
+	modal_restore_enabled        bool
+	render_resize_pending        bool
+	suppress_resize_event        bool
+	queued_events                []Win32NativeQueuedEvent
+	mouse_x                      f32
+	mouse_y                      f32
+	mouse_dx                     f32
+	mouse_dy                     f32
+	mouse_pos_valid              bool
+	mouse_lock_generation        u64
+	mouse_raw_generation         u64
+	mouse_raw_x                  int
+	mouse_raw_y                  int
+	mouse_tail_generation        u64
+	iconified                    bool
+	pending_dropped_files        []string
+	pending_drop_modifiers       u32
+	pending_high_surrogate       u32
+	suppress_control_char        u32
+	raw_input_failed             bool
+	mouse_focus_cleanup_pending  bool
+	mouse_focus_cleanup_reported bool
+	service_monitor_ids          []ServiceMonitorId
+	service_dpi                  u32
+	service_refresh_sequence     u64
+	pending_display_refresh      bool
+	pending_dpi_refresh          bool
+	pending_membership_refresh   bool
+	swapchain                    voidptr
+	swapchain_ticket             u64
+	pending_backbuffer           voidptr
+	pending_backbuffer_ticket    u64
+	render_view                  voidptr
+	render_view_ticket           u64
+	depth_texture                voidptr
+	depth_texture_ticket         u64
+	depth_stencil_view           voidptr
+	depth_stencil_view_ticket    u64
+	render_target_generation     u64 = 1
 }
 
 @[markused]
@@ -123,6 +125,12 @@ mut:
 	event_sequence_terminal          string
 	windows                          []&Win32WindowRecord
 	service_monitors                 []Win32ServiceMonitorRecord
+	service_monitor_raw              []Win32ServiceRawMonitor
+	service_monitor_pending          []ServiceMonitorInfo
+	service_monitor_pending_records  []Win32ServiceMonitorRecord
+	service_monitor_pending_raw      []Win32ServiceRawMonitor
+	service_monitor_pending_sequence u64
+	service_monitor_poll_dirty       bool
 	clipboard_pending                []Win32ClipboardPending
 	clipboard_pending_bytes          usize
 }
@@ -536,6 +544,31 @@ $if windows {
 			return 0
 		}
 		return C.v_multiwindow_win32_service_mouse_delivery_active(record.service_state)
+	}
+
+	@[export: 'v_multiwindow_win32_window_focus_lost']
+	@[markused]
+	fn win32_window_focus_lost(data voidptr) {
+		if data == unsafe { nil } {
+			return
+		}
+		mut record := unsafe { &Win32WindowRecord(data) }
+		if record.service_state == unsafe { nil } || record.mouse_focus_cleanup_pending
+			|| record.mouse_focus_cleanup_reported {
+			return
+		}
+		result := C.v_multiwindow_win32_service_focus_lost(record.service_state)
+		if result == win32_service_ok {
+			record.clear_mouse_lock_legacy_tail()
+			record.mouse_dx = 0
+			record.mouse_dy = 0
+			record.mouse_pos_valid = false
+			record.mouse_focus_cleanup_pending = false
+			record.mouse_focus_cleanup_reported = false
+			return
+		}
+		record.mouse_focus_cleanup_pending = true
+		record.mouse_focus_cleanup_reported = false
 	}
 
 	@[export: 'v_multiwindow_win32_window_raw_mouse_event']
@@ -1000,6 +1033,9 @@ fn (mut backend Win32Backend) create_window(id WindowId, config WindowConfig) !W
 		if !backend.started {
 			return error(err_backend_unsupported)
 		}
+		if backend.windows.len == 0 {
+			backend.refresh_service_monitors_before_first_window()!
+		}
 		mut owner_hwnd := unsafe { nil }
 		if owner := config.owner {
 			owner_index := backend.window_record_index(owner) or {
@@ -1083,7 +1119,13 @@ fn (mut backend Win32Backend) create_window(id WindowId, config WindowConfig) !W
 		record.service_monitor_ids = win32_service_monitor_ids_for_native(backend.service_monitors,
 			native_monitor, app_instance)
 		record.service_dpi = C.v_multiwindow_win32_service_window_dpi(record.hwnd)
-		if native_monitor != 0 && record.service_monitor_ids.len == 0 {
+		staged_monitor_ids := if backend.service_monitor_pending_sequence != 0 {
+			win32_service_monitor_ids_for_native(backend.service_monitor_pending_records,
+				native_monitor, app_instance)
+		} else {
+			[]ServiceMonitorId{}
+		}
+		if native_monitor != 0 && record.service_monitor_ids.len == 0 && staged_monitor_ids.len == 0 {
 			record.pending_display_refresh = true
 			if record.service_refresh_sequence == 0 {
 				record.service_refresh_sequence = C.v_multiwindow_win32_next_event_sequence()
@@ -1248,6 +1290,29 @@ fn (mut backend Win32Backend) poll_queued_events() ![]QueuedEvent {
 			return []QueuedEvent{}
 		}
 		C.v_multiwindow_win32_pump_messages()
+		mut cleanup_index := 0
+		for cleanup_index < backend.windows.len {
+			mut record := backend.windows[cleanup_index]
+			if record.mouse_focus_cleanup_pending && record.service_state != unsafe { nil } {
+				result := C.v_multiwindow_win32_service_focus_lost(record.service_state)
+				if result == win32_service_ok {
+					record.clear_mouse_lock_legacy_tail()
+					record.mouse_dx = 0
+					record.mouse_dy = 0
+					record.mouse_pos_valid = false
+					record.mouse_focus_cleanup_pending = false
+					record.mouse_focus_cleanup_reported = false
+					backend.resolve_native_input_release_error(record.service_state)
+				} else if !record.mouse_focus_cleanup_reported {
+					backend.record_native_input_release_error(record.service_state,
+						err_capability_unsupported)
+					backend.poll_error = merge_backend_errors(backend.poll_error,
+						err_capability_unsupported)
+					record.mouse_focus_cleanup_reported = true
+				}
+			}
+			cleanup_index++
+		}
 		for event in backend.collect_service_refresh_events()! {
 			native_events << event
 		}
@@ -1351,6 +1416,12 @@ fn (mut backend Win32Backend) stop() ! {
 		}
 		backend.started = false
 		backend.service_monitors.clear()
+		backend.service_monitor_raw.clear()
+		backend.service_monitor_pending.clear()
+		backend.service_monitor_pending_records.clear()
+		backend.service_monitor_pending_raw.clear()
+		backend.service_monitor_pending_sequence = 0
+		backend.service_monitor_poll_dirty = false
 		poll_error := backend.poll_error
 		backend.poll_error = ''
 		terminal_error := backend.retained_stop_error(poll_error)

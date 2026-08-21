@@ -1636,6 +1636,128 @@ fn test_win32_input_events_are_queued_and_capability_scoped_source_guard() {
 	assert !win32_helper_source[syskey_up_start..char_start].contains('return 0;')
 }
 
+fn test_win32_focus_cleanup_and_zero_window_monitor_refresh_source_guard() {
+	backend_source := multiwindow_source_file('win32_backend.c.v')
+	service_source := multiwindow_source_file('win32_service_backend.c.v')
+	service_api_source := multiwindow_source_file('service_api.v')
+	event_delivery_source := multiwindow_source_file('event_delivery.v')
+	native_source := multiwindow_source_file('win32_service_native.h')
+	helper_source := multiwindow_source_file('win32_backend_helpers.h')
+	kill_focus_body :=
+		helper_source.all_after('case WM_KILLFOCUS:').all_before('case WM_SETCURSOR:')
+	assert_source_order(kill_focus_body, 'v_multiwindow_win32_window_focus_lost(data);',
+		'V_MULTIWINDOW_WIN32_INPUT_UNFOCUSED')
+	assert backend_source.contains('mouse_focus_cleanup_pending  bool')
+	assert backend_source.contains('mouse_focus_cleanup_reported bool')
+	focus_callback_body :=
+		backend_source.all_after('fn win32_window_focus_lost(data voidptr)').all_before("@[export: 'v_multiwindow_win32_window_raw_mouse_event']")
+	assert focus_callback_body.contains('record.mouse_focus_cleanup_pending')
+	assert focus_callback_body.contains('record.mouse_focus_cleanup_reported')
+	assert_source_order(focus_callback_body, 'record.mouse_focus_cleanup_pending',
+		'C.v_multiwindow_win32_service_focus_lost')
+	focus_retry_body :=
+		backend_source.all_after('if record.mouse_focus_cleanup_pending').all_before('if record.raw_input_failed')
+	assert focus_retry_body.contains('C.v_multiwindow_win32_service_focus_lost')
+	assert focus_retry_body.contains('backend.record_native_input_release_error')
+	assert focus_retry_body.contains('backend.resolve_native_input_release_error')
+	assert native_source.contains('return v_multiwindow_win32_service_mouse_cleanup(')
+	poll_body :=
+		backend_source.all_after('fn (mut backend Win32Backend) poll_queued_events').all_before('fn (mut backend Win32Backend) take_poll_error')
+	assert_source_order(poll_body, 'if record.mouse_focus_cleanup_pending',
+		'backend.collect_service_refresh_events()!')
+
+	repository_dir := os.dir(os.dir(os.dir(@DIR)))
+	w3_runner := os.read_file(os.join_path(repository_dir, '.github', 'workflows',
+		'run_multiwindow_win32_w3_green.ps1')) or { panic(err) }
+	assert w3_runner.count('test_win32_zero_window_monitor_snapshot_equality_uses_all_public_fields') == 1
+	assert w3_runner.contains('schema=package2-win32-w3-green-surface-v1')
+	assert w3_runner.contains('[string]$ExpectedCompositeSha256')
+	assert w3_runner.contains('[string]$ExpectedRunnerSha256')
+
+	create_body :=
+		backend_source.all_after('fn (mut backend Win32Backend) create_window').all_before('fn (mut backend Win32Backend) set_window_title')
+	assert_source_order(create_body, 'if backend.windows.len == 0 {',
+		'backend.windows << &Win32WindowRecord{')
+	assert create_body.contains('backend.refresh_service_monitors_before_first_window()!')
+	assert create_body.contains('backend.service_monitor_pending_records')
+	assert create_body.contains('&& staged_monitor_ids.len == 0')
+	assert service_source.contains('fn win32_service_raw_monitor_snapshots_equal')
+	assert service_source.contains('right_indices[monitor.native_id]')
+	assert service_source.contains('monitor.work_height != other.work_height')
+	assert service_source.contains('monitor.dpi != other.dpi')
+	assert service_source.contains('monitor.primary != other.primary')
+	precreate_refresh_body :=
+		service_source.all_after('fn (mut backend Win32Backend) refresh_service_monitors_before_first_window').all_before('fn win32_service_monitor_ids_equal')
+	assert precreate_refresh_body.contains('backend.service_monitor_pending_records = plan.records.clone()')
+	assert precreate_refresh_body.contains('backend.service_monitor_pending_raw = raw.clone()')
+	assert !precreate_refresh_body.contains('backend.service_monitors = plan.records')
+	assert !precreate_refresh_body.contains('backend.service_monitor_raw = raw.clone()')
+	assert_source_order(precreate_refresh_body,
+		'win32_service_raw_monitor_snapshots_equal(backend.service_monitor_raw, raw)',
+		'backend.service_monitor_pending_sequence != 0')
+	assert_source_order(precreate_refresh_body,
+		'win32_service_raw_monitor_snapshots_equal(backend.service_monitor_raw, raw)',
+		'backend.clear_pending_service_monitor_refresh()')
+	refresh_body :=
+		service_source.all_after('fn (mut backend Win32Backend) collect_service_refresh_events').all_before('fn (mut backend Win32Backend) service_show_window')
+	assert_source_order(refresh_body, 'if backend.service_monitor_pending_sequence != 0 {',
+		'if backend.windows.len == 0 {')
+	pending_body :=
+		refresh_body.all_after('if backend.service_monitor_pending_sequence != 0 {').all_before('if backend.windows.len == 0 {')
+	assert pending_body.contains('return events')
+	pending_net_zero_body :=
+		pending_body.all_after('if win32_service_raw_monitor_snapshots_equal(backend.service_monitor_raw, latest_raw) {').all_before('} else {')
+	assert pending_net_zero_body.contains('suppress_net_zero_monitor = true')
+	assert !pending_net_zero_body.contains('backend.clear_pending_service_monitor_refresh()')
+	assert !pending_net_zero_body.contains('return events')
+	assert_source_order(pending_body,
+		'win32_service_raw_monitor_snapshots_equal(backend.service_monitor_raw, latest_raw)',
+		'backend.clear_pending_service_monitor_refresh()')
+	assert_source_order(pending_body, 'win32_service_monitor_event(app_instance, staged_monitors)',
+		'mut observations := []Win32ServiceRefreshObservation')
+	assert_source_order(pending_body,
+		'backend.service_metrics_observation(index, staged_records) or {',
+		'backend.service_monitors = staged_records')
+	assert_source_order(pending_body, 'backend.service_monitors = staged_records',
+		'record.service_monitor_ids = observation.monitor_ids.clone()')
+	assert_source_order(pending_body, 'latest_raw := win32_service_raw_monitor_snapshot() or {',
+		'backend.service_monitors = staged_records')
+	assert_source_order(pending_body, 'latest_plan := win32_plan_service_monitors',
+		'backend.service_metrics_observation(index, staged_records) or {')
+	pending_commit_tail :=
+		pending_body.all_after('record.service_monitor_ids = observation.monitor_ids.clone()')
+	assert pending_commit_tail.contains('backend.clear_pending_service_monitor_refresh()')
+	display_refresh_body :=
+		refresh_body.all_after('if display_sequence != 0 {').all_before('mut pending_indices := []int{}')
+	assert display_refresh_body.contains('raw_changed := !win32_service_raw_monitor_snapshots_equal')
+	assert display_refresh_body.contains('emit_monitor := raw_changed || !suppress_net_zero_monitor')
+	display_monitor_body :=
+		display_refresh_body.all_after('if emit_monitor {').all_before('mut observations := []Win32ServiceRefreshObservation')
+	assert display_monitor_body.contains('win32_service_monitor_event(app_instance, monitors)')
+	assert_source_order(display_refresh_body,
+		'mut observations := []Win32ServiceRefreshObservation',
+		'backend.service_monitor_poll_dirty = false')
+	assert_source_order(display_refresh_body,
+		'record.service_monitor_ids = observation.monitor_ids.clone()',
+		'backend.clear_pending_service_monitor_refresh()')
+	assert refresh_body.contains('backend.service_monitor_poll_dirty = true')
+	query_body :=
+		service_api_source.all_after('pub fn (app &App) service_window_state').all_before('// service_monitor_ids returns')
+	assert query_body.contains('service_window_state_with_registered_monitor_membership')
+	publish_body :=
+		service_api_source.all_after('fn (mut app App) publish_native_state').all_before('fn service_window_state_has_observation')
+	assert_source_order(publish_body, 'service_window_state_with_registered_monitor_membership',
+		'merge_service_window_state')
+	accept_body :=
+		event_delivery_source.all_after('mut sequenced := service_event_with_sequence').all_before('app.enqueue_reserved_event_locked(queued_service_event(sequenced)')
+	assert accept_body.count('service_window_state_with_registered_monitor_membership') == 2
+	assert_source_order(accept_body, 'if event.kind == .state {',
+		'service_window_state_with_registered_monitor_membership')
+	metrics_body := accept_body.all_after('} else if event.kind == .metrics {')
+	assert_source_order(metrics_body, 'service_window_state_with_registered_monitor_membership',
+		'merge_service_window_state')
+}
+
 fn test_win32_runtime_resize_clamps_to_min_size_when_available() {
 	$if windows {
 		mut app := new_app(backend: .win32)!
@@ -2533,6 +2655,47 @@ fn test_x11_input_support_queues_key_char_and_focus_source_guard() {
 	assert !x11_helper_source.contains('v_multiwindow_x11_utf8_decode_one')
 	assert !x11_helper_source.contains('XLookupString')
 	assert !x11_helper_source.contains('v_multiwindow_x11_keysym_to_unicode')
+}
+
+fn test_x11_clipboard_conversion_and_root_monitor_refresh_source_guard() {
+	source := multiwindow_source_file('x11_backend.c.v')
+	helper := multiwindow_source_file('x11_egl_backend_helpers.h')
+	assert helper.contains('v_multiwindow_x11_create_clipboard_requestor')
+	assert helper.contains('InputOnly, CopyFromParent, CWEventMask, &attributes')
+	start_body :=
+		source.all_after('fn (mut backend X11Backend) start_next_clipboard_read').all_before('fn (backend &X11Backend) service_window_readback')
+	assert_source_order(start_body, 'C.v_multiwindow_x11_create_clipboard_requestor',
+		'C.XConvertSelection')
+	selection_body :=
+		source.all_after('fn (mut backend X11Backend) queued_clipboard_selection_events').all_before('fn (mut backend X11Backend) queued_clipboard_property_events')
+	assert selection_body.contains('selection != backend.clipboard || target != backend.clipboard_utf8')
+	assert selection_body.contains('requestor != read.requestor')
+	assert selection_body.contains('property != read.property')
+	finish_body :=
+		source.all_after('fn (mut backend X11Backend) finish_clipboard_read').all_before('fn (mut backend X11Backend) clear_clipboard_state')
+	assert_source_order(finish_body, 'backend.destroy_clipboard_requestor(read.requestor)',
+		'events << backend.start_queued_clipboard_reads()')
+	assert finish_body.contains("events << backend.clipboard_read_terminal_event(failed, .failed, '', start_error)")
+	purge_body :=
+		source.all_after('fn (mut backend X11Backend) purge_clipboard_window').all_before('fn (mut backend X11Backend) advance_clipboard_transfer')
+	assert purge_body.contains('backend.pending_clipboard_terminal_events << backend.start_queued_clipboard_reads()')
+	assert !purge_body.contains('backend.start_next_clipboard_read() or {}')
+
+	selection_clear_body :=
+		source.all_after('x11_selection_clear {').all_before('x11_selection_notify {')
+	assert selection_clear_body.contains('C.XGetSelectionOwner(backend.display, backend.clipboard)')
+	assert selection_clear_body.contains('owner != backend.clipboard_owner_window')
+	assert source.contains("backend.net_workarea = C.XInternAtom(display, c'_NET_WORKAREA', 0)")
+	assert source.contains("backend.net_current_desktop = C.XInternAtom(display, c'_NET_CURRENT_DESKTOP', 0)")
+	property_body := source.all_after('x11_property_notify {').all_before('x11_selection_clear {')
+	assert property_body.contains('property == backend.net_workarea')
+	assert property_body.contains('property == backend.net_current_desktop')
+	assert property_body.contains('backend.monitor_snapshot_dirty = true')
+	poll_body :=
+		source.all_after('fn (mut backend X11Backend) poll_queued_events').all_before('fn (backend &X11Backend) input_event_from_record')
+	assert_source_order(poll_body, 'if backend.monitor_snapshot_dirty {',
+		'events << backend.expire_clipboard_operations')
+	assert poll_body.contains('backend.queued_randr_monitor_events() or { []QueuedEvent{} }')
 }
 
 fn test_x11_config_hints_are_applied_before_mapping() {
@@ -4148,6 +4311,59 @@ fn test_service_monitor_registry_accepts_sparse_backend_ids_and_replug() {
 		-1
 	}
 	assert stale_rejected
+}
+
+fn test_service_window_state_monitor_membership_is_registered_all_or_nothing() {
+	app_instance := u64(614)
+	available := monitor_registry_test_info(app_instance, ServiceMonitorNativeKey{
+		kind:    .wayland_global
+		numeric: 1001
+	}, 0, 1, true, 'available')
+	unavailable := monitor_registry_test_info(app_instance, ServiceMonitorNativeKey{
+		kind:    .wayland_global
+		numeric: 1002
+	}, 1, 1, false, 'unavailable')
+	current := service_window_state_with_observed_monitor_membership(ServiceWindowState{
+		focused:     .off
+		monitor_ids: [available.id]
+	})
+	mixed := service_window_state_with_registered_monitor_membership(ServiceWindowState{
+		focused:                     .on
+		monitor_ids:                 [available.id, unavailable.id]
+		monitor_membership_observed: true
+	}, [available, unavailable])
+	assert mixed.focused == .on
+	assert mixed.monitor_ids.len == 0
+	assert !service_window_state_observes_monitor_membership(mixed)
+	merged := merge_service_window_state(current, mixed)
+	assert merged.focused == .on
+	assert merged.monitor_ids == current.monitor_ids
+	assert service_window_state_observes_monitor_membership(merged)
+	missing := service_window_state_with_registered_monitor_membership(ServiceWindowState{
+		monitor_ids: [available.id, ServiceMonitorId{
+			app_instance: app_instance
+			slot:         9
+			generation:   1
+		}]
+	}, [available, unavailable])
+	assert missing.monitor_ids.len == 0
+	assert !service_window_state_observes_monitor_membership(missing)
+
+	known_empty := service_window_state_with_registered_monitor_membership(ServiceWindowState{
+		monitor_membership_observed: true
+	}, [available, unavailable])
+	assert service_window_state_observes_monitor_membership(known_empty)
+	assert known_empty.monitor_ids.len == 0
+	valid := service_window_state_with_registered_monitor_membership(ServiceWindowState{
+		monitor_ids: [available.id]
+	}, [available, unavailable])
+	assert valid.monitor_ids == [available.id]
+	assert service_window_state_observes_monitor_membership(valid)
+	unknown := service_window_state_with_registered_monitor_membership(ServiceWindowState{
+		focused: .on
+	}, [available, unavailable])
+	assert unknown.focused == .on
+	assert !service_window_state_observes_monitor_membership(unknown)
 }
 
 fn test_service_monitor_registry_rejects_identity_and_transition_errors_atomically() {

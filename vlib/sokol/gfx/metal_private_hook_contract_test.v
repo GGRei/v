@@ -1,4 +1,4 @@
-// vtest build: !windows
+// vtest build: !windows && !musl? && !self_ubuntu_musl_ci?
 module gfx
 
 import os

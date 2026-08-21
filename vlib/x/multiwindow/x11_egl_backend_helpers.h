@@ -1198,6 +1198,18 @@ static inline int v_multiwindow_x11_has_property_changes(Display *display,
 		(attrs.your_event_mask & PropertyChangeMask) != 0;
 }
 
+static inline unsigned long v_multiwindow_x11_create_clipboard_requestor(
+	Display *display, unsigned long root) {
+	if (display == NULL || root == 0) {
+		return 0;
+	}
+	XSetWindowAttributes attributes;
+	memset(&attributes, 0, sizeof(attributes));
+	attributes.event_mask = PropertyChangeMask;
+	return (unsigned long)XCreateWindow(display, (Window)root, 0, 0, 1, 1, 0, 0,
+		InputOnly, CopyFromParent, CWEventMask, &attributes);
+}
+
 static inline int v_multiwindow_x11_set_mouse_lock(Display *display, unsigned long window, int enabled) {
 	if (display == NULL || window == 0) {
 		return 0;
@@ -1307,25 +1319,24 @@ static inline int v_multiwindow_x11_monitor_snapshot(Display *display, unsigned 
 }
 
 static inline VMultiwindowX11WorkArea v_multiwindow_x11_work_area(
-	Display *display, unsigned long root) {
+	Display *display, unsigned long root, unsigned long current_desktop_atom,
+	unsigned long work_area_atom) {
 	VMultiwindowX11WorkArea result;
 	memset(&result, 0, sizeof(result));
 	if (display == NULL || root == 0) {
 		return result;
 	}
-	Atom current_desktop_atom = XInternAtom(display, "_NET_CURRENT_DESKTOP", True);
-	Atom work_area_atom = XInternAtom(display, "_NET_WORKAREA", True);
-	if (work_area_atom == None) {
+	if ((Atom)work_area_atom == None) {
 		return result;
 	}
 	unsigned long desktop = 0;
-	if (current_desktop_atom != None) {
+	if ((Atom)current_desktop_atom != None) {
 		Atom type = None;
 		int format = 0;
 		unsigned long count = 0;
 		unsigned long after = 0;
 		unsigned char *data = NULL;
-		if (XGetWindowProperty(display, (Window)root, current_desktop_atom, 0, 1,
+		if (XGetWindowProperty(display, (Window)root, (Atom)current_desktop_atom, 0, 1,
 				False, XA_CARDINAL, &type, &format, &count, &after, &data) == Success
 			&& type == XA_CARDINAL && format == 32 && count == 1 && data != NULL) {
 			desktop = ((unsigned long *)data)[0];
@@ -1340,7 +1351,7 @@ static inline VMultiwindowX11WorkArea v_multiwindow_x11_work_area(
 	unsigned long after = 0;
 	unsigned char *data = NULL;
 	long offset = (long)(desktop * 4);
-	if (XGetWindowProperty(display, (Window)root, work_area_atom, offset, 4,
+	if (XGetWindowProperty(display, (Window)root, (Atom)work_area_atom, offset, 4,
 			False, XA_CARDINAL, &type, &format, &count, &after, &data) == Success
 		&& type == XA_CARDINAL && format == 32 && count == 4 && data != NULL) {
 		unsigned long *values = (unsigned long *)data;

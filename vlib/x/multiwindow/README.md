@@ -314,7 +314,13 @@ the observation sequence. A removed monitor can become unavailable and a later
 replacement receives a new generation; monitor names are descriptive and are
 not identities. A full backend observation can authoritatively report an empty
 membership and clears older ids; partial state observations preserve the last
-known membership.
+known membership. X11 refreshes monitor work areas when the root
+`_NET_WORKAREA` or `_NET_CURRENT_DESKTOP` property changes and retains the last
+complete snapshot when refresh fails. Win32 continues observing complete native
+monitor snapshots while no managed windows exist and refreshes that snapshot
+before the next first-window creation. Window membership observations expose
+only ids from the currently available public monitor snapshot; a staged native
+refresh becomes visible atomically with its monitor and metrics events.
 
 Clipboard reads and writes return a `ServiceRequestId`. Completion is a
 terminal `.clipboard` service event with `.ready`, `.cancelled`, or `.failed`.
@@ -328,6 +334,9 @@ submission, the previously published clipboard value remains unchanged.
 Each Wayland clipboard send already accepted by the compositor owns a bounded
 snapshot of the offered text and can finish independently after selection
 replacement or source cancellation.
+Each active X11 clipboard conversion uses an isolated native requestor; late
+inline, failure, or INCR replies from an earlier conversion cannot terminalize
+the next request, and failure to start that next conversion is itself terminal.
 Destroying an owner processes its descendants child-first. For each destroyed
 window, pending clipboard and portal requests are cancelled and portal leases
 are invalidated during sealing, before teardown results can be delivered.
@@ -360,7 +369,7 @@ Runtime support differs by backend:
 | X11 | Native state/monitors, clipboard, portal (`x11:`), borrow, and native window capture; focus is available only when the live server advertises EWMH `_NET_ACTIVE_WINDOW`, its request is asynchronous, and authoritative state comes from `FocusIn`/`FocusOut`. Position requests are also asynchronous; root-coordinate observations triggered by `ConfigureNotify` are authoritative. Other EWMH, mouse-lock, and rendered image support also depend on live runtime support. |
 | Wayland | Runtime-global-driven state/monitors, clipboard, portal (`wayland:`), borrow, and mouse lock; focus/raise/position are unsupported. Show fails hidden and retryable when no fresh compositor configure is available. Show/minimize/maximize/restore/fullscreen/mouse-lock are asynchronous, but minimize is not state-observable, so callers are not guaranteed a resulting minimized-state observation. Rendered readback requires the active gg GL path. |
 | AppKit | Native state/monitors, borrow, clipboard, window operations, and titlebar appearance as reported by the live bridge; portal export is unsupported and readback requires active Metal. |
-| Win32 | Native state/monitors, borrow, clipboard, and standard window operations; focus and mouse lock are conditional, maximize depends on window configuration, and portal/readback are currently unsupported. |
+| Win32 | Native state/monitors (including zero-window observation), borrow, clipboard, and standard window operations; focus and mouse lock are conditional. Focus loss releases mouse lock transactionally, retaining an error and retrying without a false unlocked observation if native cleanup fails. Maximize depends on window configuration, and portal/readback are currently unsupported. |
 
 This table is orientation, not a substitute for the per-window runtime query.
 Optional compositor protocols, EWMH atoms, renderer state, user-action tokens,

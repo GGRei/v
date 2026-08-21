@@ -77,6 +77,7 @@ $if windows {
 	fn C.v_multiwindow_test_win32_monitor_enumeration_capture() int
 	fn C.v_multiwindow_test_win32_monitor_enumeration_use_empty()
 	fn C.v_multiwindow_test_win32_monitor_enumeration_use_replay() int
+	fn C.v_multiwindow_test_win32_monitor_enumeration_use_changed() int
 	fn C.v_multiwindow_test_win32_monitor_enumeration_reset()
 	fn C.v_multiwindow_test_win32_monitor_enumeration_empty_calls() int
 	fn C.v_multiwindow_test_win32_monitor_enumeration_replay_calls() int
@@ -139,6 +140,20 @@ fn win32_red_add(mut issues []string, label string, ok bool) {
 	}
 }
 
+fn win32_red_monitor_membership_is_public(app &App, state ServiceWindowState) bool {
+	public_ids := app.service_monitor_ids() or { return false }
+	for id in state.monitor_ids {
+		if id !in public_ids {
+			return false
+		}
+		info := app.service_monitor_info(id) or { return false }
+		if !info.available {
+			return false
+		}
+	}
+	return true
+}
+
 fn win32_w3_raw_monitor(native_id u64, name string) Win32ServiceRawMonitor {
 	return Win32ServiceRawMonitor{
 		native_id:   native_id
@@ -149,6 +164,85 @@ fn win32_w3_raw_monitor(native_id u64, name string) Win32ServiceRawMonitor {
 		work_height: 100
 		dpi:         96
 	}
+}
+
+fn test_win32_zero_window_monitor_snapshot_equality_uses_all_public_fields() {
+	base := Win32ServiceRawMonitor{
+		native_id:   7
+		name:        'DISPLAY-A'
+		x:           1
+		y:           2
+		width:       300
+		height:      200
+		work_x:      3
+		work_y:      4
+		work_width:  280
+		work_height: 180
+		dpi:         144
+		primary:     1
+	}
+	assert win32_service_raw_monitor_snapshots_equal([base], [base])
+	second := Win32ServiceRawMonitor{
+		...base
+		native_id: 17
+		name:      'DISPLAY-B'
+		primary:   0
+	}
+	assert win32_service_raw_monitor_snapshots_equal([base, second], [second, base])
+	variants := [
+		Win32ServiceRawMonitor{
+			...base
+			native_id: 8
+		},
+		Win32ServiceRawMonitor{
+			...base
+			name: 'DISPLAY-B'
+		},
+		Win32ServiceRawMonitor{
+			...base
+			x: 9
+		},
+		Win32ServiceRawMonitor{
+			...base
+			y: 9
+		},
+		Win32ServiceRawMonitor{
+			...base
+			width: 301
+		},
+		Win32ServiceRawMonitor{
+			...base
+			height: 201
+		},
+		Win32ServiceRawMonitor{
+			...base
+			work_x: 9
+		},
+		Win32ServiceRawMonitor{
+			...base
+			work_y: 9
+		},
+		Win32ServiceRawMonitor{
+			...base
+			work_width: 281
+		},
+		Win32ServiceRawMonitor{
+			...base
+			work_height: 181
+		},
+		Win32ServiceRawMonitor{
+			...base
+			dpi: 192
+		},
+		Win32ServiceRawMonitor{
+			...base
+			primary: 0
+		},
+	]
+	for changed in variants {
+		assert !win32_service_raw_monitor_snapshots_equal([base], [changed])
+	}
+	assert !win32_service_raw_monitor_snapshots_equal([base], [])
 }
 
 fn win32_w3_monitor_candidate(app_instance u64, name string, slot int, generation u32) ServiceMonitorInfo {
@@ -1365,11 +1459,20 @@ fn test_win32_native_monitor_dpi_display_change_and_generation_red() {
 			assert false, 'Win32 cold-start window has no backend record'
 			0
 		}
-		assert app.backend.win32.service_monitors.all(!it.available), 'Win32 window creation made a monitor available before cold-start polling'
+		assert app.backend.win32.service_monitors.all(!it.available), 'Win32 first-window admission published the staged backend monitor snapshot'
 
 		assert app.services.monitors.len == 0, 'public registry changed before cold-start polling'
 
-		assert app.backend.win32.windows[cold_start_index].service_monitor_ids.len == 0, 'Win32 window acquired monitor membership before cold-start polling'
+		assert app.backend.win32.service_monitor_pending_records.any(it.available), 'Win32 first-window admission did not stage the pre-create monitor snapshot'
+
+		assert app.backend.win32.service_monitor_pending_raw.len > 0, 'Win32 first-window admission did not retain the staged raw snapshot'
+
+		assert app.backend.win32.windows[cold_start_index].service_monitor_ids.len == 0, 'Win32 first window exposed unpublished staged monitor membership'
+
+		cold_start_pre_poll_state := app.service_window_state(window)!
+		assert cold_start_pre_poll_state.monitor_ids.len == 0, 'Win32 first-window state exposed unpublished staged monitor ids'
+
+		assert win32_red_monitor_membership_is_public(app, cold_start_pre_poll_state), 'Win32 first-window state referenced an unresolved public monitor before polling'
 
 		win32_red_poll(mut app, 2)!
 		assert app.backend.win32.service_monitors.len > 0, 'Win32 cold-start polling did not populate backend monitors'
@@ -1943,6 +2046,345 @@ fn test_win32_native_monitor_dpi_display_change_and_generation_red() {
 				'GetMonitorInfoW retry changed stable window monitor membership',
 				info_retry_state.monitor_ids == info_failure_state_before.monitor_ids)
 		}
+
+		app.destroy_window(window)!
+		_ = app.drain_queued_events()!
+		win32_red_add(mut issues, 'zero-window fixture retained a backend HWND record',
+			app.backend.win32.windows.len == 0)
+		captured_zero_window := C.v_multiwindow_test_win32_monitor_enumeration_capture()
+		win32_red_add(mut issues, 'zero-window fixture could not capture native monitors',
+			captured_zero_window > 0)
+		zero_ids_before_change := app.service_monitor_ids()!
+		zero_info_before_change := app.service_monitor_info(zero_ids_before_change[0])!
+		assert C.v_multiwindow_test_win32_monitor_enumeration_use_changed() == 1
+		_ = app.poll_events()!
+		zero_changed_delivery := app.drain_queued_events()!
+		zero_changed_monitors := zero_changed_delivery.filter(it.kind == .service
+			&& it.service.kind == .monitor)
+		zero_ids_after_change := app.service_monitor_ids()!
+		zero_info_after_change := app.service_monitor_info(zero_ids_after_change[0])!
+		win32_red_add(mut issues,
+			'zero-window raw geometry/workarea/DPI/primary change did not publish once',
+			zero_changed_monitors.len == 1 && zero_ids_after_change == zero_ids_before_change
+			&& zero_info_after_change.geometry != zero_info_before_change.geometry
+			&& zero_info_after_change.work_area != zero_info_before_change.work_area
+			&& zero_info_after_change.scale != zero_info_before_change.scale
+			&& zero_info_after_change.primary != zero_info_before_change.primary)
+		_ = app.poll_events()!
+		zero_changed_no_spam := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .monitor)
+		win32_red_add(mut issues, 'unchanged zero-window raw snapshot emitted duplicate events',
+			zero_changed_no_spam.len == 0)
+
+		C.v_multiwindow_test_win32_monitor_enumeration_use_empty()
+		_ = app.poll_events()!
+		zero_delivery := app.drain_queued_events()!
+		zero_monitors := zero_delivery.filter(it.kind == .service && it.service.kind == .monitor)
+		win32_red_add(mut issues, 'zero-window polling did not publish one unplug snapshot',
+			zero_monitors.len == 1 && zero_monitors[0].service.monitors.len == 0
+			&& app.service_monitor_ids()!.len == 0)
+		zero_backend_before_failure := app.backend.win32.service_monitors.clone()
+		zero_raw_before_failure := app.backend.win32.service_monitor_raw.clone()
+		zero_registry_before_failure := app.services.monitors.clone()
+		assert C.v_multiwindow_test_win32_monitor_enumeration_use_info_failure() == 1
+		mut zero_snapshot_error := ''
+		app.poll_events() or { zero_snapshot_error = err.msg() }
+		win32_red_add(mut issues, 'zero-window monitor failure was not surfaced',
+			zero_snapshot_error != '')
+		win32_red_add(mut issues, 'zero-window monitor failure consumed dirty retry state',
+			app.backend.win32.service_monitor_poll_dirty)
+		win32_red_add(mut issues, 'zero-window monitor failure mutated backend state',
+			app.backend.win32.service_monitors == zero_backend_before_failure
+			&& win32_service_raw_monitor_snapshots_equal(app.backend.win32.service_monitor_raw, zero_raw_before_failure))
+		win32_red_add(mut issues, 'zero-window monitor failure mutated public state',
+			app.services.monitors == zero_registry_before_failure
+			&& app.service_monitor_ids()!.len == 0)
+
+		assert C.v_multiwindow_test_win32_monitor_enumeration_use_replay() == 1
+		_ = app.poll_events()!
+		zero_retry_delivery := app.drain_queued_events()!
+		zero_retry_monitors := zero_retry_delivery.filter(it.kind == .service
+			&& it.service.kind == .monitor)
+		win32_red_add(mut issues, 'zero-window retry did not publish one complete snapshot',
+			zero_retry_monitors.len == 1 && app.service_monitor_ids()!.len == captured_zero_window
+			&& !app.backend.win32.service_monitor_poll_dirty)
+		_ = app.poll_events()!
+		zero_no_spam := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .monitor)
+		win32_red_add(mut issues, 'unchanged zero-window snapshot emitted duplicate events',
+			zero_no_spam.len == 0)
+
+		C.v_multiwindow_test_win32_monitor_enumeration_use_empty()
+		_ = app.poll_events()!
+		_ = app.drain_queued_events()!
+		assert app.service_monitor_ids()!.len == 0
+		assert C.v_multiwindow_test_win32_monitor_enumeration_use_replay() == 1
+		precreate_backend_before := app.backend.win32.service_monitors.clone()
+		precreate_raw_before := app.backend.win32.service_monitor_raw.clone()
+		app.backend.win32.refresh_service_monitors_before_first_window()!
+		reverted_sequence := app.backend.win32.service_monitor_pending_sequence
+		reverted_pending_raw := app.backend.win32.service_monitor_pending_raw.clone()
+		app.backend.win32.refresh_service_monitors_before_first_window()!
+		win32_red_add(mut issues, 'repeated pre-create refresh replaced the earliest sequence',
+			reverted_sequence != 0
+			&& app.backend.win32.service_monitor_pending_sequence == reverted_sequence
+			&& win32_service_raw_monitor_snapshots_equal(app.backend.win32.service_monitor_pending_raw, reverted_pending_raw))
+		C.v_multiwindow_test_win32_monitor_enumeration_use_empty()
+		app.backend.win32.refresh_service_monitors_before_first_window()!
+		win32_red_add(mut issues, 'pre-create refresh revert retained a duplicate staged plan',
+			app.backend.win32.service_monitor_pending_sequence == 0
+			&& app.backend.win32.service_monitor_pending.len == 0
+			&& app.backend.win32.service_monitor_pending_records.len == 0
+			&& app.backend.win32.service_monitor_pending_raw.len == 0
+			&& app.backend.win32.service_monitors == precreate_backend_before
+			&& win32_service_raw_monitor_snapshots_equal(app.backend.win32.service_monitor_raw, precreate_raw_before)
+			&& !app.backend.win32.service_monitor_poll_dirty)
+		precreate_revert_events := app.drain_queued_events()!.filter(it.kind == .service
+			&& (it.service.kind == .monitor || it.service.kind == .metrics))
+		win32_red_add(mut issues, 'pre-create refresh revert emitted a duplicate event',
+			precreate_revert_events.len == 0)
+		assert C.v_multiwindow_test_win32_monitor_enumeration_use_replay() == 1
+		app.backend.win32.refresh_service_monitors_before_first_window()!
+		precreate_sequence := app.backend.win32.service_monitor_pending_sequence
+		precreate_pending_before := app.backend.win32.service_monitor_pending.clone()
+		precreate_pending_records_before :=
+			app.backend.win32.service_monitor_pending_records.clone()
+		precreate_pending_raw_before := app.backend.win32.service_monitor_pending_raw.clone()
+		app.backend.win32.refresh_service_monitors_before_first_window()!
+		win32_red_add(mut issues, 'restaged pre-create refresh replaced the earliest sequence',
+			precreate_sequence != 0
+			&& app.backend.win32.service_monitor_pending_sequence == precreate_sequence)
+		win32_red_add(mut issues, 'restaged pre-create refresh changed the staged snapshot',
+			app.backend.win32.service_monitor_pending == precreate_pending_before
+			&& app.backend.win32.service_monitor_pending_records == precreate_pending_records_before
+			&& win32_service_raw_monitor_snapshots_equal(app.backend.win32.service_monitor_pending_raw, precreate_pending_raw_before))
+		recreated := app.create_window(title: 'Win32 monitor pre-create refresh')!
+		recreated_index := app.backend.win32.window_record_index(recreated) or {
+			assert false, 'pre-create refresh window has no backend record'
+			0
+		}
+		win32_red_add(mut issues, 'pre-create refresh mutated the published backend snapshot',
+			app.backend.win32.service_monitors == precreate_backend_before
+			&& win32_service_raw_monitor_snapshots_equal(app.backend.win32.service_monitor_raw, precreate_raw_before))
+		win32_red_add(mut issues, 'pre-create refresh did not retain the complete staged plan',
+			app.backend.win32.service_monitor_pending_records.any(it.available)
+			&& app.backend.win32.service_monitor_pending_raw.len > 0)
+		win32_red_add(mut issues, 'pre-create refresh published before native polling',
+			app.service_monitor_ids()!.len == 0
+			&& app.backend.win32.service_monitor_pending_sequence == precreate_sequence)
+		precreate_state := app.service_window_state(recreated)!
+		win32_red_add(mut issues, 'pre-create state exposed unresolved monitor membership',
+			win32_red_monitor_membership_is_public(app, precreate_state)
+			&& precreate_state.monitor_ids.len == 0
+			&& app.backend.win32.windows[recreated_index].service_monitor_ids.len == 0)
+		assert C.v_multiwindow_test_win32_monitor_enumeration_use_info_failure() == 1
+		mut precreate_snapshot_error := ''
+		if _ := app.backend.win32.collect_service_refresh_events() {
+			issues << 'pre-create staged snapshot failure unexpectedly succeeded'
+		} else {
+			precreate_snapshot_error = err.msg()
+		}
+		win32_red_add(mut issues, 'pre-create staged snapshot failure was not surfaced',
+			precreate_snapshot_error != '')
+		win32_red_add(mut issues, 'failed staged snapshot consumed pending retry state',
+			app.backend.win32.service_monitor_pending_sequence == precreate_sequence
+			&& app.backend.win32.service_monitor_pending == precreate_pending_before
+			&& app.backend.win32.service_monitor_pending_records == precreate_pending_records_before
+			&& win32_service_raw_monitor_snapshots_equal(app.backend.win32.service_monitor_pending_raw, precreate_pending_raw_before)
+			&& app.backend.win32.service_monitors == precreate_backend_before
+			&& win32_service_raw_monitor_snapshots_equal(app.backend.win32.service_monitor_raw, precreate_raw_before)
+			&& app.backend.win32.service_monitor_poll_dirty)
+		assert C.v_multiwindow_test_win32_monitor_enumeration_use_replay() == 1
+
+		precreate_record := app.backend.win32.windows[recreated_index]
+		precreate_replacement_data := unsafe { voidptr(&app.backend.win32) }
+		precreate_expected_data := unsafe { voidptr(precreate_record) }
+		precreate_original_data := C.v_multiwindow_test_win32_swap_user_data(precreate_record.hwnd,
+			precreate_replacement_data)
+		mut precreate_observation_error := ''
+		if _ := app.backend.win32.collect_service_refresh_events() {
+			issues << 'pre-create staged observation failure unexpectedly succeeded'
+		} else {
+			precreate_observation_error = err.msg()
+		}
+		precreate_replaced_data := C.v_multiwindow_test_win32_swap_user_data(precreate_record.hwnd,
+			precreate_original_data)
+		win32_red_add(mut issues,
+			'pre-create staged observation fault did not reach native authority',
+			precreate_observation_error != '' && precreate_original_data == precreate_expected_data
+			&& precreate_replaced_data == precreate_replacement_data)
+		win32_red_add(mut issues, 'failed staged observation mutated published backend state',
+			app.backend.win32.service_monitors == precreate_backend_before
+			&& win32_service_raw_monitor_snapshots_equal(app.backend.win32.service_monitor_raw, precreate_raw_before))
+		win32_red_add(mut issues, 'failed staged observation consumed pending retry state',
+			app.backend.win32.service_monitor_pending_sequence == precreate_sequence
+			&& app.backend.win32.service_monitor_pending == precreate_pending_before
+			&& app.backend.win32.service_monitor_pending_records == precreate_pending_records_before
+			&& win32_service_raw_monitor_snapshots_equal(app.backend.win32.service_monitor_pending_raw, precreate_pending_raw_before)
+			&& app.backend.win32.service_monitor_poll_dirty)
+		precreate_state_after_failure := app.service_window_state(recreated)!
+		win32_red_add(mut issues, 'failed staged observation exposed unresolved membership',
+			win32_red_monitor_membership_is_public(app, precreate_state_after_failure)
+			&& precreate_state_after_failure.monitor_ids == precreate_state.monitor_ids)
+		assert C.v_multiwindow_test_win32_monitor_enumeration_use_changed() == 1
+		assert C.v_multiwindow_test_win32_emit_display_change(precreate_record.hwnd) == 1
+		precreate_interleave_sequence := precreate_record.service_refresh_sequence
+		win32_red_add(mut issues, 'post-stage display refresh did not retain a later sequence',
+			precreate_record.pending_display_refresh
+			&& precreate_interleave_sequence > precreate_sequence)
+		_ = app.poll_events()!
+		precreate_delivery := app.drain_queued_events()!
+		precreate_monitors := precreate_delivery.filter(it.kind == .service
+			&& it.service.kind == .monitor)
+		precreate_metrics := precreate_delivery.filter(it.kind == .service
+			&& it.service.kind == .metrics && it.service.window == recreated)
+		mut precreate_monitor_position := -1
+		mut precreate_metrics_position := -1
+		for index, event in precreate_delivery {
+			if event.kind == .service && event.service.kind == .monitor {
+				precreate_monitor_position = index
+			} else if event.kind == .service && event.service.kind == .metrics
+				&& event.service.window == recreated {
+				precreate_metrics_position = index
+			}
+		}
+		win32_red_add(mut issues, 'pre-create refresh did not publish exactly once',
+			precreate_monitors.len == 1 && app.service_monitor_ids()!.len == captured_zero_window
+			&& app.backend.win32.service_monitor_pending_sequence == 0
+			&& app.backend.win32.service_monitor_pending.len == 0
+			&& app.backend.win32.service_monitor_pending_records.len == 0
+			&& app.backend.win32.service_monitor_pending_raw.len == 0)
+		win32_red_add(mut issues, 'pre-create monitor and metrics did not publish atomically',
+			precreate_metrics.len == 1 && precreate_monitor_position >= 0
+			&& precreate_metrics_position > precreate_monitor_position
+			&& precreate_monitors[0].service.sequence < precreate_metrics[0].service.sequence
+			&& precreate_pending_before.len > 0
+			&& precreate_monitors[0].service.monitors.len == precreate_pending_before.len
+			&& precreate_monitors[0].service.monitors[0].geometry != precreate_pending_before[0].geometry)
+		precreate_record_after_stage := app.backend.win32.windows[recreated_index]
+		win32_red_add(mut issues, 'coalesced staged commit retained display refresh debt',
+			!precreate_record_after_stage.pending_display_refresh
+			&& precreate_record_after_stage.service_refresh_sequence == 0)
+		precreate_state_after_poll := app.service_window_state(recreated)!
+		win32_red_add(mut issues, 'pre-create poll did not publish resolvable fresh membership',
+			precreate_state_after_poll.monitor_ids.len > 0
+			&& win32_red_monitor_membership_is_public(app, precreate_state_after_poll)
+			&& precreate_state_after_poll.monitor_ids == app.backend.win32.windows[recreated_index].service_monitor_ids)
+		changed_info := app.service_monitor_info(app.service_monitor_ids()![0])!
+		win32_red_add(mut issues, 'later display refresh was not coalesced into the first batch',
+			precreate_pending_before.len > 0
+			&& changed_info.geometry != precreate_pending_before[0].geometry
+			&& changed_info.work_area != precreate_pending_before[0].work_area
+			&& changed_info.scale != precreate_pending_before[0].scale
+			&& changed_info.primary != precreate_pending_before[0].primary)
+		_ = app.poll_events()!
+		precreate_no_spam := app.drain_queued_events()!.filter(it.kind == .service
+			&& (it.service.kind == .monitor || (it.service.kind == .metrics
+			&& it.service.window == recreated)))
+		win32_red_add(mut issues,
+			'unchanged pre-create snapshot emitted duplicate monitor/metrics events',
+			precreate_no_spam.len == 0)
+
+		app.destroy_window(recreated)!
+		_ = app.drain_queued_events()!
+		win32_red_add(mut issues, 'net-zero fixture retained a backend HWND record',
+			app.backend.win32.windows.len == 0)
+		assert C.v_multiwindow_test_win32_monitor_enumeration_use_replay() == 1
+		app.backend.win32.refresh_service_monitors_before_first_window()!
+		net_zero_sequence := app.backend.win32.service_monitor_pending_sequence
+		net_zero_window := app.create_window(title: 'Win32 staged monitor net-zero')!
+		net_zero_index := app.backend.win32.window_record_index(net_zero_window) or {
+			assert false, 'net-zero monitor window has no backend record'
+			0
+		}
+		_ = app.drain_queued_events()!
+		mut net_zero_record := app.backend.win32.windows[net_zero_index]
+		assert C.v_multiwindow_test_win32_monitor_enumeration_use_changed() == 1
+		assert C.v_multiwindow_test_win32_emit_display_change(net_zero_record.hwnd) == 1
+		net_zero_refresh_sequence := net_zero_record.service_refresh_sequence
+		win32_window_service_refresh(voidptr(net_zero_record), net_zero_refresh_sequence, 2)
+		net_zero_later_sequence := C.v_multiwindow_win32_next_event_sequence()
+		net_zero_record.enqueue_native_event(net_zero_later_sequence, queued_lifecycle_event(Event{
+			kind:      .window_close_requested
+			window_id: net_zero_window
+		}))
+		win32_red_add(mut issues, 'net-zero fixture did not preserve native sequence order',
+			net_zero_sequence != 0 && net_zero_refresh_sequence > net_zero_sequence
+			&& net_zero_later_sequence > net_zero_refresh_sequence
+			&& net_zero_record.pending_display_refresh && net_zero_record.pending_dpi_refresh)
+		net_zero_replacement_data := unsafe { voidptr(&app.backend.win32) }
+		net_zero_expected_data := unsafe { voidptr(net_zero_record) }
+		net_zero_original_data := C.v_multiwindow_test_win32_swap_user_data(net_zero_record.hwnd,
+			net_zero_replacement_data)
+		mut net_zero_observation_error := ''
+		if _ := app.backend.win32.collect_service_refresh_events() {
+			issues << 'net-zero staged observation failure unexpectedly succeeded'
+		} else {
+			net_zero_observation_error = err.msg()
+		}
+		net_zero_replaced_data := C.v_multiwindow_test_win32_swap_user_data(net_zero_record.hwnd,
+			net_zero_original_data)
+		win32_red_add(mut issues, 'net-zero observation fault did not reach native authority',
+			net_zero_observation_error != '' && net_zero_original_data == net_zero_expected_data
+			&& net_zero_replaced_data == net_zero_replacement_data)
+		net_zero_record_after_failure := app.backend.win32.windows[net_zero_index]
+		win32_red_add(mut issues, 'net-zero observation fault consumed retry authority',
+			app.backend.win32.service_monitor_pending_sequence == net_zero_sequence
+			&& app.backend.win32.service_monitor_pending.len > 0
+			&& app.backend.win32.service_monitor_pending_records.len > 0
+			&& app.backend.win32.service_monitor_pending_raw.len > 0
+			&& net_zero_record_after_failure.pending_display_refresh
+			&& net_zero_record_after_failure.pending_dpi_refresh
+			&& net_zero_record_after_failure.service_refresh_sequence == net_zero_refresh_sequence
+			&& app.backend.win32.service_monitor_poll_dirty)
+		net_zero_failure_delivery := app.drain_queued_events()!.filter(it.kind == .service
+			&& (it.service.kind == .monitor || (it.service.kind == .metrics
+			&& it.service.window == net_zero_window)))
+		win32_red_add(mut issues, 'net-zero observation fault published a partial batch',
+			net_zero_failure_delivery.len == 0)
+		_ = app.poll_events()!
+		net_zero_delivery := app.drain_queued_events()!
+		net_zero_monitors := net_zero_delivery.filter(it.kind == .service
+			&& it.service.kind == .monitor)
+		net_zero_metrics := net_zero_delivery.filter(it.kind == .service
+			&& it.service.kind == .metrics && it.service.window == net_zero_window)
+		net_zero_later := net_zero_delivery.filter(it.kind == .lifecycle
+			&& it.lifecycle.kind == .window_close_requested
+			&& it.lifecycle.window_id == net_zero_window)
+		mut net_zero_metrics_position := -1
+		mut net_zero_later_position := -1
+		for index, event in net_zero_delivery {
+			if event.kind == .service && event.service.kind == .metrics
+				&& event.service.window == net_zero_window {
+				net_zero_metrics_position = index
+			} else if event.kind == .lifecycle && event.lifecycle.kind == .window_close_requested
+				&& event.lifecycle.window_id == net_zero_window {
+				net_zero_later_position = index
+			}
+		}
+		win32_red_add(mut issues,
+			'net-zero staged refresh emitted a monitor event or lost the metrics debt',
+			net_zero_monitors.len == 0 && net_zero_metrics.len == 1 && net_zero_later.len == 1
+			&& net_zero_metrics_position >= 0 && net_zero_later_position > net_zero_metrics_position)
+		net_zero_record_after_poll := app.backend.win32.windows[net_zero_index]
+		win32_red_add(mut issues, 'net-zero staged refresh retained native refresh debt',
+			app.backend.win32.service_monitor_pending_sequence == 0
+			&& app.backend.win32.service_monitor_pending.len == 0
+			&& app.backend.win32.service_monitor_pending_records.len == 0
+			&& app.backend.win32.service_monitor_pending_raw.len == 0
+			&& !net_zero_record_after_poll.pending_display_refresh
+			&& !net_zero_record_after_poll.pending_dpi_refresh
+			&& !net_zero_record_after_poll.pending_membership_refresh
+			&& net_zero_record_after_poll.service_refresh_sequence == 0)
+		net_zero_state := app.service_window_state(net_zero_window)!
+		win32_red_add(mut issues, 'net-zero refresh exposed unresolved monitor membership', win32_red_monitor_membership_is_public(app,
+			net_zero_state))
+		_ = app.poll_events()!
+		net_zero_no_spam := app.drain_queued_events()!.filter(it.kind == .service
+			&& (it.service.kind == .monitor || (it.service.kind == .metrics
+			&& it.service.window == net_zero_window)))
+		win32_red_add(mut issues, 'net-zero staged refresh emitted duplicate service events',
+			net_zero_no_spam.len == 0)
 		if issues.len > 0 {
 			eprintln('PACKAGE2_RED_TERMINAL=behavioral_red:monitor_dpi_hotplug')
 		}
@@ -3169,6 +3611,8 @@ fn win32_red_mouse_release_case(cause string) ![]string {
 	first_hwnd := win32_red_hwnd(app, first)!
 	second_hwnd := win32_red_hwnd(app, second)!
 	mut issues := []string{}
+	win32_red_add(mut issues, 'first window could not acquire foreground focus',
+		C.v_multiwindow_test_win32_establish_foreground_focus(first_hwnd) == 1)
 	app.service_set_mouse_lock(first, true) or { issues << 'lock failed: ${err.msg()}' }
 	win32_red_poll(mut app, 3)!
 	win32_red_add(mut issues, 'Raw Input target is not the locked HWND',
@@ -3220,20 +3664,113 @@ fn win32_red_mouse_release_case(cause string) ![]string {
 	return issues
 }
 
-fn test_win32_native_raw_input_clipcursor_release_and_two_window_isolation_red() {
+fn win32_mouse_focus_cleanup_retry_case() ![]string {
+	mut app := new_app(backend: .win32)!
+	defer {
+		app.stop() or {}
+	}
+	first := app.create_window(title: 'Win32 mouse cleanup retry first')!
+	second := app.create_window(title: 'Win32 mouse cleanup retry second')!
+	_ = app.drain_queued_events()!
+	first_hwnd := win32_red_hwnd(app, first)!
+	second_hwnd := win32_red_hwnd(app, second)!
+	mut issues := []string{}
+	monitor_count := C.v_multiwindow_test_win32_monitor_enumeration_capture()
+	win32_red_add(mut issues, 'retry fixture could not capture the monitor snapshot',
+		monitor_count > 0)
+	defer {
+		C.v_multiwindow_test_win32_monitor_enumeration_reset()
+	}
+	win32_red_add(mut issues, 'retry fixture could not focus the first HWND',
+		C.v_multiwindow_test_win32_establish_foreground_focus(first_hwnd) == 1)
+	app.service_set_mouse_lock(first, true) or { issues << 'retry lock failed: ${err.msg()}' }
+	C.v_multiwindow_win32_service_test_focus_cleanup_failures(2)
+	if C.v_multiwindow_test_win32_emit_focus_loss(first_hwnd, second_hwnd) != 1 {
+		return error('retry WM_KILLFOCUS oracle trigger failed')
+	}
+	_ = app.backend.win32.poll_queued_events()!
+	first_index := app.backend.win32.window_record_index(first) or {
+		return error(err_window_not_found)
+	}
+	first_record := app.backend.win32.windows[first_index]
+	win32_red_add(mut issues, 'focus cleanup failure did not remain pending',
+
+		first_record.mouse_focus_cleanup_pending && first_record.mouse_focus_cleanup_reported)
+	win32_red_add(mut issues, 'focus cleanup failure was not retained',
+		app.backend.win32.native_input_release_terminal() == err_capability_unsupported
+		&& app.backend.win32.take_poll_error() == err_capability_unsupported)
+	mut falsely_off := false
+	if failed_state := app.service_window_state(first) {
+		falsely_off = failed_state.mouse_locked == .off
+	} else {
+		win32_red_add(mut issues, 'failed cleanup returned the wrong observation error',
+			err.msg() == err_capability_unsupported)
+	}
+	win32_red_add(mut issues, 'failed focus cleanup falsely published mouse_locked=off',
+		!falsely_off)
+	win32_red_add(mut issues, 'failed focus cleanup partially released native ownership',
+		C.v_multiwindow_test_win32_raw_mouse_registered_for(first_hwnd) == 1
+		&& C.v_multiwindow_test_win32_clip_matches_client(first_hwnd) == 1)
+
+	assert C.v_multiwindow_test_win32_emit_focus_loss(first_hwnd, second_hwnd) == 1
+	win32_red_add(mut issues, 'repeated WM_KILLFOCUS cleared the pending cleanup debt',
+		first_record.mouse_focus_cleanup_pending && first_record.mouse_focus_cleanup_reported
+		&& app.backend.win32.native_input_release_terminal() == err_capability_unsupported)
+	win32_red_add(mut issues, 'repeated WM_KILLFOCUS bypassed the owner-thread retry',
+		C.v_multiwindow_test_win32_raw_mouse_registered_for(first_hwnd) == 1
+		&& C.v_multiwindow_test_win32_clip_matches_client(first_hwnd) == 1)
+	assert C.v_multiwindow_test_win32_monitor_enumeration_use_info_failure() == 1
+	assert C.v_multiwindow_test_win32_emit_display_change(first_hwnd) == 1
+	mut monitor_error := ''
+	if _ := app.backend.win32.poll_queued_events() {
+		issues << 'monitor failure concurrent with focus cleanup unexpectedly succeeded'
+	} else {
+		monitor_error = err.msg()
+	}
+	win32_red_add(mut issues, 'monitor failure did not reach the retry poll', monitor_error != '')
+	win32_red_add(mut issues, 'focus cleanup retry did not resolve the retained error',
+		!first_record.mouse_focus_cleanup_pending
+		&& app.backend.win32.native_input_release_terminal() == '')
+	win32_red_add(mut issues, 'focus cleanup retry left native mouse ownership',
+		C.v_multiwindow_test_win32_raw_mouse_registered_for(first_hwnd) == 0
+		&& C.v_multiwindow_test_win32_clip_is_virtual_screen() == 1)
+	win32_red_add(mut issues, 'focus cleanup retry did not publish mouse_locked=off',
+		app.service_window_state(first)!.mouse_locked == .off)
+	C.v_multiwindow_test_win32_monitor_enumeration_reset()
+	_ = app.backend.win32.poll_queued_events()!
+
+	assert C.v_multiwindow_test_win32_emit_focus_loss(first_hwnd, second_hwnd) == 1
+	_ = app.backend.win32.poll_queued_events()!
+	win32_red_add(mut issues, 'idempotent focus cleanup created a retained error',
+		app.backend.win32.native_input_release_terminal() == ''
+		&& app.backend.win32.take_poll_error() == '')
+	win32_red_add(mut issues, 'retry fixture could not refocus the first HWND',
+		C.v_multiwindow_test_win32_establish_foreground_focus(first_hwnd) == 1)
+	app.service_set_mouse_lock(first, true) or { issues << 'reacquire failed: ${err.msg()}' }
+	win32_red_add(mut issues, 'mouse lock could not be reacquired after cleanup',
+		C.v_multiwindow_test_win32_raw_mouse_registered_for(first_hwnd) == 1
+		&& C.v_multiwindow_test_win32_clip_matches_client(first_hwnd) == 1)
+	assert C.v_multiwindow_test_win32_emit_focus_loss(first_hwnd, second_hwnd) == 1
+	_ = app.backend.win32.poll_queued_events()!
+	win32_red_add(mut issues, 'reacquired mouse lock was not released exactly once',
+		C.v_multiwindow_test_win32_raw_mouse_registered_for(first_hwnd) == 0
+		&& C.v_multiwindow_test_win32_clip_is_virtual_screen() == 1
+		&& app.service_window_state(first)!.mouse_locked == .off)
+	return issues
+}
+
+fn test_win32_native_raw_input_clipcursor_release_and_two_window_isolation() {
 	$if windows {
-		eprintln('PACKAGE2_RED_TEST=test_win32_native_raw_input_clipcursor_release_and_two_window_isolation_red')
-		eprintln('PACKAGE2_RED_FAMILY=mouse_lock_isolation')
 		mut issues := []string{}
 		for cause in ['focus', 'hide', 'destroy', 'stop'] {
 			for issue in win32_red_mouse_release_case(cause)! {
 				issues << '${cause}: ${issue}'
 			}
 		}
-		if issues.len > 0 {
-			eprintln('PACKAGE2_RED_TERMINAL=behavioral_red:mouse_lock_isolation')
+		for issue in win32_mouse_focus_cleanup_retry_case()! {
+			issues << 'focus retry: ${issue}'
 		}
-		assert issues.len == 0, 'Win32 Raw Input/ClipCursor RED:\n${issues.join('\n')}'
+		assert issues.len == 0, 'Win32 Raw Input/ClipCursor isolation:\n${issues.join('\n')}'
 	}
 }
 

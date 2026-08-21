@@ -90,6 +90,7 @@ V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_drop_file(v
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_drop_end(void *data, uint64_t sequence);
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_touch_event(void *data, uint64_t sequence, int kind, uint32_t modifiers, int count, uint64_t *ids, int *xs, int *ys, int *changed);
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE int v_multiwindow_win32_window_mouse_lock_active(void *data);
+V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_focus_lost(void *data);
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_raw_mouse_event(void *data, uint64_t sequence, int mouse_x, int mouse_y, int mouse_dx, int mouse_dy, uint32_t modifiers);
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE int v_multiwindow_win32_window_suppress_legacy_mouse_tail(void *data, int mouse_x, int mouse_y);
 V_MULTIWINDOW_WIN32_CALLBACK_LINKAGE void v_multiwindow_win32_window_raw_input_error(void *data);
@@ -804,6 +805,7 @@ static LRESULT CALLBACK v_multiwindow_win32_wnd_proc(HWND hwnd, UINT msg, WPARAM
 		break;
 	case WM_KILLFOCUS:
 		if (data) {
+			v_multiwindow_win32_window_focus_lost(data);
 			uint64_t sequence = v_multiwindow_win32_next_event_sequence();
 			v_multiwindow_win32_window_input_event(data, sequence, V_MULTIWINDOW_WIN32_INPUT_UNFOCUSED, 0, 0, 0, v_multiwindow_win32_modifiers(), V_MULTIWINDOW_WIN32_MOUSE_BUTTON_INVALID, 0, 0, 0, 0);
 			return 0;

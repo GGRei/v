@@ -13,6 +13,7 @@
 #define V_MULTIWINDOW_WIN32_TEST_MONITOR_REPLAY 2
 #define V_MULTIWINDOW_WIN32_TEST_MONITOR_INFO_FAILURE 3
 #define V_MULTIWINDOW_WIN32_TEST_MONITOR_GROWTH 4
+#define V_MULTIWINDOW_WIN32_TEST_MONITOR_CHANGED 5
 #define V_MULTIWINDOW_WIN32_TEST_MONITOR_INITIAL_CAPACITY 8
 #define V_MULTIWINDOW_WIN32_TEST_MONITOR_MAX_CAPACITY 4096
 #define V_MULTIWINDOW_WIN32_TEST_MONITOR_SYNTHETIC_BASE ((uintptr_t)0x57430000)
@@ -135,8 +136,21 @@ v_multiwindow_win32_service_test_get_monitor_info_w(
 	int synthetic_index =
 		v_multiwindow_win32_service_test_synthetic_monitor_index(monitor);
 	if (synthetic_index < 0) {
-		return v_multiwindow_win32_service_test_real_get_monitor_info_w(
+		BOOL result = v_multiwindow_win32_service_test_real_get_monitor_info_w(
 			monitor, monitor_info);
+		if (result && fixture->mode == V_MULTIWINDOW_WIN32_TEST_MONITOR_CHANGED
+			&& fixture->count > 0 && monitor == fixture->handles[0]) {
+			monitor_info->rcMonitor.left += 13;
+			monitor_info->rcMonitor.top += 17;
+			monitor_info->rcMonitor.right += 50;
+			monitor_info->rcMonitor.bottom += 60;
+			monitor_info->rcWork.left += 5;
+			monitor_info->rcWork.top += 7;
+			monitor_info->rcWork.right -= 11;
+			monitor_info->rcWork.bottom -= 19;
+			monitor_info->dwFlags ^= MONITORINFOF_PRIMARY;
+		}
+		return result;
 	}
 	if (!monitor_info || monitor_info->cbSize < sizeof(MONITORINFO)) {
 		SetLastError(ERROR_INVALID_PARAMETER);
@@ -221,6 +235,27 @@ v_multiwindow_test_win32_monitor_enumeration_use_replay(void) {
 	v_multiwindow_win32_test_monitor_enumeration.mode =
 		V_MULTIWINDOW_WIN32_TEST_MONITOR_REPLAY;
 	return 1;
+}
+
+static inline int
+v_multiwindow_test_win32_monitor_enumeration_use_changed(void) {
+	if (!v_multiwindow_win32_test_monitor_enumeration.captured) {
+		return 0;
+	}
+	v_multiwindow_win32_test_monitor_enumeration.mode =
+		V_MULTIWINDOW_WIN32_TEST_MONITOR_CHANGED;
+	return 1;
+}
+
+static inline UINT
+v_multiwindow_win32_service_test_monitor_dpi(HMONITOR monitor, UINT dpi) {
+	VMultiwindowWin32TestMonitorEnumeration *fixture =
+		&v_multiwindow_win32_test_monitor_enumeration;
+	if (fixture->mode == V_MULTIWINDOW_WIN32_TEST_MONITOR_CHANGED
+		&& fixture->count > 0 && monitor == fixture->handles[0]) {
+		return dpi + 24;
+	}
+	return dpi;
 }
 
 static inline int
@@ -405,7 +440,8 @@ v_multiwindow_win32_service_test_enum_display_monitors(HDC dc,
 		return TRUE;
 	}
 	if ((fixture->mode != V_MULTIWINDOW_WIN32_TEST_MONITOR_REPLAY
-			&& fixture->mode != V_MULTIWINDOW_WIN32_TEST_MONITOR_INFO_FAILURE)
+			&& fixture->mode != V_MULTIWINDOW_WIN32_TEST_MONITOR_INFO_FAILURE
+			&& fixture->mode != V_MULTIWINDOW_WIN32_TEST_MONITOR_CHANGED)
 		|| !fixture->captured) {
 		return FALSE;
 	}

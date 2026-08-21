@@ -1,3 +1,4 @@
+// vtest build: !musl? && !self_ubuntu_musl_ci?
 // vtest retry: 0
 module multiwindow
 

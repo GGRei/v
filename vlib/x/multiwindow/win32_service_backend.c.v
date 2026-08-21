@@ -79,6 +79,7 @@ $if windows {
 	fn C.v_multiwindow_win32_service_release(state voidptr) int
 	fn C.v_multiwindow_win32_service_window_state_with_mouse_lock(state voidptr, out_mapping &int, out_visibility &int, out_active &int, out_focused &int, out_minimized &int, out_maximized &int, out_fullscreen &int, out_mouse_locked &int, out_position_known &int, out_x &int, out_y &int) int
 	fn C.v_multiwindow_win32_service_set_mouse_lock(state voidptr, enabled int) int
+	fn C.v_multiwindow_win32_service_focus_lost(state voidptr) int
 	fn C.v_multiwindow_win32_service_mouse_delivery_active(state voidptr) int
 	fn C.v_multiwindow_win32_service_disable_mouse_delivery(state voidptr) int
 	fn C.v_multiwindow_win32_service_prepare_window_teardown(state voidptr) int
@@ -108,6 +109,7 @@ $if windows {
 	fn C.v_multiwindow_win32_clipboard_text_free(text voidptr)
 
 	$if test {
+		fn C.v_multiwindow_win32_service_test_focus_cleanup_failures(count int)
 		fn C.v_multiwindow_win32_clipboard_now_for_test(backend voidptr, real_now_ns i64) i64
 		fn C.v_multiwindow_win32_clipboard_write_for_test(backend voidptr, request_app u64, request_serial u64, owner voidptr, text &u16, units usize) int
 		fn C.v_multiwindow_win32_clipboard_read_for_test(backend voidptr, request_app u64, request_serial u64, owner voidptr, out_text &voidptr, out_text_bytes &usize) int
@@ -286,6 +288,32 @@ fn win32_service_raw_monitor_snapshot_valid(snapshot []Win32ServiceRawMonitor) b
 			if snapshot[previous].native_id == raw.native_id || snapshot[previous].name == raw.name {
 				return false
 			}
+		}
+	}
+	return true
+}
+
+fn win32_service_raw_monitor_snapshots_equal(left []Win32ServiceRawMonitor, right []Win32ServiceRawMonitor) bool {
+	if left.len != right.len {
+		return false
+	}
+	mut right_indices := map[u64]int{}
+	for index, monitor in right {
+		if monitor.native_id in right_indices {
+			return false
+		}
+		right_indices[monitor.native_id] = index
+	}
+	for monitor in left {
+		other_index := right_indices[monitor.native_id] or { return false }
+		other := right[other_index]
+		if monitor.native_id != other.native_id || monitor.name != other.name
+			|| monitor.x != other.x || monitor.y != other.y || monitor.width != other.width
+			|| monitor.height != other.height || monitor.work_x != other.work_x
+			|| monitor.work_y != other.work_y || monitor.work_width != other.work_width
+			|| monitor.work_height != other.work_height || monitor.dpi != other.dpi
+			|| monitor.primary != other.primary {
+			return false
 		}
 	}
 	return true
@@ -746,11 +774,86 @@ fn (mut backend Win32Backend) service_monitor_snapshot(app_instance u64) ![]Serv
 		raw := win32_service_raw_monitor_snapshot()!
 		plan := win32_plan_service_monitors(backend.service_monitors, raw, app_instance)!
 		backend.service_monitors = plan.records
+		backend.service_monitor_raw = raw.clone()
+		backend.service_monitor_poll_dirty = false
 		return plan.monitors
 	} $else {
 		_ = app_instance
 		return error(err_backend_unsupported)
 	}
+}
+
+fn win32_service_monitor_event(app_instance u64, monitors []ServiceMonitorInfo) QueuedEvent {
+	return queued_service_event(ServiceEvent{
+		kind:     .monitor
+		monitor:  if monitors.len > 0 {
+			monitors[0]
+		} else {
+			ServiceMonitorInfo{
+				id: ServiceMonitorId{
+					app_instance: app_instance
+				}
+			}
+		}
+		monitors: monitors
+	})
+}
+
+fn (backend &Win32Backend) service_app_instance() !u64 {
+	if backend.native_operations == unsafe { nil } || backend.native_operations.app_identity == 0 {
+		return error(err_app_identity_mismatch)
+	}
+	return backend.native_operations.app_identity
+}
+
+fn (mut backend Win32Backend) clear_pending_service_monitor_refresh() {
+	backend.service_monitor_pending.clear()
+	backend.service_monitor_pending_records.clear()
+	backend.service_monitor_pending_raw.clear()
+	backend.service_monitor_pending_sequence = 0
+}
+
+fn (mut backend Win32Backend) refresh_service_monitors_before_first_window() ! {
+	$if windows {
+		if backend.windows.len != 0 {
+			return
+		}
+		app_instance := backend.service_app_instance()!
+		raw := win32_service_raw_monitor_snapshot() or {
+			backend.service_monitor_poll_dirty = true
+			return err
+		}
+		if win32_service_raw_monitor_snapshots_equal(backend.service_monitor_raw, raw) {
+			backend.clear_pending_service_monitor_refresh()
+			backend.service_monitor_poll_dirty = false
+			return
+		}
+		if backend.service_monitor_pending_sequence != 0
+			&& win32_service_raw_monitor_snapshots_equal(backend.service_monitor_pending_raw, raw) {
+			backend.service_monitor_poll_dirty = false
+			return
+		}
+		plan := win32_plan_service_monitors(backend.service_monitors, raw, app_instance) or {
+			backend.service_monitor_poll_dirty = true
+			return err
+		}
+		sequence := if backend.service_monitor_pending_sequence != 0 {
+			backend.service_monitor_pending_sequence
+		} else {
+			C.v_multiwindow_win32_next_event_sequence()
+		}
+		if sequence == 0 {
+			backend.service_monitor_poll_dirty = true
+			return error(err_backend_event_sequence_exhausted)
+		}
+		backend.service_monitor_pending = plan.monitors.clone()
+		backend.service_monitor_pending_records = plan.records.clone()
+		backend.service_monitor_pending_raw = raw.clone()
+		backend.service_monitor_pending_sequence = sequence
+		backend.service_monitor_poll_dirty = false
+		return
+	}
+	return error(err_backend_unsupported)
 }
 
 fn win32_service_monitor_ids_equal(left []ServiceMonitorId, right []ServiceMonitorId) bool {
@@ -818,12 +921,117 @@ fn (backend &Win32Backend) service_metrics_observation(index int, monitors []Win
 
 fn (mut backend Win32Backend) collect_service_refresh_events() ![]Win32NativeQueuedEvent {
 	$if windows {
-		if backend.native_operations == unsafe { nil } {
-			return error(err_app_identity_mismatch)
+		app_instance := backend.service_app_instance()!
+		mut events := []Win32NativeQueuedEvent{}
+		mut suppress_net_zero_monitor := false
+		if backend.service_monitor_pending_sequence != 0 {
+			sequence := backend.service_monitor_pending_sequence
+			mut staged_monitors := backend.service_monitor_pending.clone()
+			mut staged_records := backend.service_monitor_pending_records.clone()
+			mut staged_raw := backend.service_monitor_pending_raw.clone()
+			latest_raw := win32_service_raw_monitor_snapshot() or {
+				backend.service_monitor_poll_dirty = true
+				return err
+			}
+			if win32_service_raw_monitor_snapshots_equal(backend.service_monitor_raw, latest_raw) {
+				backend.service_monitor_poll_dirty = false
+				suppress_net_zero_monitor = true
+			} else {
+				if !win32_service_raw_monitor_snapshots_equal(staged_raw, latest_raw) {
+					latest_plan := win32_plan_service_monitors(backend.service_monitors,
+						latest_raw, app_instance) or {
+						backend.service_monitor_poll_dirty = true
+						return err
+					}
+					staged_monitors = latest_plan.monitors.clone()
+					staged_records = latest_plan.records.clone()
+					staged_raw = latest_raw.clone()
+				}
+				events << Win32NativeQueuedEvent{
+					sequence: sequence
+					event:    win32_service_monitor_event(app_instance, staged_monitors)
+				}
+				mut observations := []Win32ServiceRefreshObservation{cap: backend.windows.len}
+				for index in 0 .. backend.windows.len {
+					record := backend.windows[index]
+					if record.destroyed || record.hwnd == unsafe { nil } {
+						continue
+					}
+					if C.v_multiwindow_win32_service_teardown_prepared(record.service_state) == 1 {
+						continue
+					}
+					observation := backend.service_metrics_observation(index, staged_records) or {
+						backend.service_monitor_poll_dirty = true
+						return err
+					}
+					observations << Win32ServiceRefreshObservation{
+						index:       index
+						sequence:    sequence
+						publish:     true
+						observation: observation
+					}
+				}
+				backend.service_monitors = staged_records
+				backend.service_monitor_raw = staged_raw
+				backend.service_monitor_poll_dirty = false
+				for index in 0 .. backend.windows.len {
+					mut record := backend.windows[index]
+					record.pending_display_refresh = false
+					record.pending_dpi_refresh = false
+					record.pending_membership_refresh = false
+					record.service_refresh_sequence = 0
+				}
+				for staged in observations {
+					mut record := backend.windows[staged.index]
+					observation := staged.observation
+					record.service_monitor_ids = observation.monitor_ids.clone()
+					record.service_dpi = observation.dpi
+					events << Win32NativeQueuedEvent{
+						sequence: staged.sequence
+						event:    observation.event
+					}
+				}
+				backend.clear_pending_service_monitor_refresh()
+				return events
+			}
 		}
-		app_instance := backend.native_operations.app_identity
-		if app_instance == 0 {
-			return error(err_app_identity_mismatch)
+		if backend.windows.len == 0 {
+			raw_monitors := win32_service_raw_monitor_snapshot() or {
+				backend.service_monitor_poll_dirty = true
+				return err
+			}
+			if win32_service_raw_monitor_snapshots_equal(backend.service_monitor_raw, raw_monitors) {
+				backend.service_monitor_poll_dirty = false
+				if suppress_net_zero_monitor {
+					backend.clear_pending_service_monitor_refresh()
+				}
+				return events
+			}
+			plan := win32_plan_service_monitors(backend.service_monitors, raw_monitors,
+				app_instance) or {
+				backend.service_monitor_poll_dirty = true
+				return err
+			}
+			sequence := if suppress_net_zero_monitor {
+				backend.service_monitor_pending_sequence
+			} else {
+				C.v_multiwindow_win32_next_event_sequence()
+			}
+			if sequence == 0 {
+				backend.service_monitor_poll_dirty = true
+				return error(err_backend_event_sequence_exhausted)
+			}
+			backend.service_monitors = plan.records
+			backend.service_monitor_raw = raw_monitors.clone()
+			backend.service_monitor_poll_dirty = false
+			if suppress_net_zero_monitor {
+				backend.clear_pending_service_monitor_refresh()
+			}
+			events << Win32NativeQueuedEvent{
+				sequence: sequence
+				event:    win32_service_monitor_event(app_instance, plan.monitors)
+			}
+			return events
 		}
 		mut display_sequence := u64(0)
 		for record in backend.windows {
@@ -832,28 +1040,27 @@ fn (mut backend Win32Backend) collect_service_refresh_events() ![]Win32NativeQue
 				display_sequence = record.service_refresh_sequence
 			}
 		}
-		mut events := []Win32NativeQueuedEvent{}
 		if display_sequence != 0 {
-			raw_monitors := win32_service_raw_monitor_snapshot()!
-			plan := win32_plan_service_monitors(backend.service_monitors, raw_monitors,
-				app_instance)!
-			staged_records := plan.records
-			monitors := plan.monitors
-			events << Win32NativeQueuedEvent{
-				sequence: display_sequence
-				event:    queued_service_event(ServiceEvent{
-					kind:     .monitor
-					monitor:  if monitors.len > 0 {
-						monitors[0]
-					} else {
-						ServiceMonitorInfo{
-							id: ServiceMonitorId{
-								app_instance: app_instance
-							}
-						}
-					}
-					monitors: monitors
-				})
+			raw_monitors := win32_service_raw_monitor_snapshot() or {
+				backend.service_monitor_poll_dirty = true
+				return err
+			}
+			raw_changed := !win32_service_raw_monitor_snapshots_equal(backend.service_monitor_raw,
+				raw_monitors)
+			emit_monitor := raw_changed || !suppress_net_zero_monitor
+			mut staged_records := backend.service_monitors.clone()
+			if emit_monitor {
+				plan := win32_plan_service_monitors(backend.service_monitors, raw_monitors,
+					app_instance) or {
+					backend.service_monitor_poll_dirty = true
+					return err
+				}
+				staged_records = plan.records.clone()
+				monitors := plan.monitors
+				events << Win32NativeQueuedEvent{
+					sequence: display_sequence
+					event:    win32_service_monitor_event(app_instance, monitors)
+				}
 			}
 			mut observations := []Win32ServiceRefreshObservation{cap: backend.windows.len}
 			for index in 0 .. backend.windows.len {
@@ -864,7 +1071,10 @@ fn (mut backend Win32Backend) collect_service_refresh_events() ![]Win32NativeQue
 				if C.v_multiwindow_win32_service_teardown_prepared(record.service_state) == 1 {
 					continue
 				}
-				observation := backend.service_metrics_observation(index, staged_records)!
+				observation := backend.service_metrics_observation(index, staged_records) or {
+					backend.service_monitor_poll_dirty = true
+					return err
+				}
 				observations << Win32ServiceRefreshObservation{
 					index:       index
 					sequence:    display_sequence
@@ -872,7 +1082,11 @@ fn (mut backend Win32Backend) collect_service_refresh_events() ![]Win32NativeQue
 					observation: observation
 				}
 			}
-			backend.service_monitors = staged_records
+			if emit_monitor {
+				backend.service_monitors = staged_records
+				backend.service_monitor_raw = raw_monitors.clone()
+			}
+			backend.service_monitor_poll_dirty = false
 			for index in 0 .. backend.windows.len {
 				mut record := backend.windows[index]
 				record.pending_display_refresh = false
@@ -889,6 +1103,9 @@ fn (mut backend Win32Backend) collect_service_refresh_events() ![]Win32NativeQue
 					sequence: staged.sequence
 					event:    observation.event
 				}
+			}
+			if suppress_net_zero_monitor {
+				backend.clear_pending_service_monitor_refresh()
 			}
 			return events
 		}
@@ -909,7 +1126,10 @@ fn (mut backend Win32Backend) collect_service_refresh_events() ![]Win32NativeQue
 			if record.destroyed || record.hwnd == unsafe { nil } {
 				continue
 			}
-			observation := backend.service_metrics_observation(index, backend.service_monitors)!
+			observation := backend.service_metrics_observation(index, backend.service_monitors) or {
+				backend.service_monitor_poll_dirty = true
+				return err
+			}
 			membership_changed := !win32_service_monitor_ids_equal(record.service_monitor_ids,
 				observation.monitor_ids)
 			dpi_changed := observation.dpi != record.service_dpi
@@ -937,6 +1157,10 @@ fn (mut backend Win32Backend) collect_service_refresh_events() ![]Win32NativeQue
 					event:    observation.event
 				}
 			}
+		}
+		if suppress_net_zero_monitor {
+			backend.clear_pending_service_monitor_refresh()
+			backend.service_monitor_poll_dirty = false
 		}
 		return events
 	} $else {

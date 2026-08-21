@@ -287,7 +287,9 @@ fn (mut app App) accept_backend_service_event_locked(event ServiceEvent, deliver
 	mut sequenced := service_event_with_sequence(event, delivery_token)
 	if event.kind == .state {
 		index := app.services.window_index(event.window) or { return false }
-		merged := merge_service_window_state(app.services.windows[index].state, event.state)
+		registered_state := service_window_state_with_registered_monitor_membership(event.state,
+			app.services.monitors)
+		merged := merge_service_window_state(app.services.windows[index].state, registered_state)
 		if event.operation == .focus
 			&& service_window_state_observation_equal(app.services.windows[index].state, merged) {
 			return false
@@ -300,7 +302,9 @@ fn (mut app App) accept_backend_service_event_locked(event ServiceEvent, deliver
 		}
 	} else if event.kind == .metrics {
 		index := app.services.window_index(event.window) or { return false }
-		merged := merge_service_window_state(app.services.windows[index].state, event.state)
+		registered_state := service_window_state_with_registered_monitor_membership(event.state,
+			app.services.monitors)
+		merged := merge_service_window_state(app.services.windows[index].state, registered_state)
 		authoritative := service_window_state_with_sequence(merged, delivery_token)
 		metrics := RenderMetricsSnapshot{
 			...event.metrics

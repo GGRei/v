@@ -1,3 +1,4 @@
+// vtest build: gg_multiwindow? && !musl? && !self_ubuntu_musl_ci?
 module gg
 
 #include "@VMODROOT/vlib/gg/testdata/multiwindow_gl_readback_helpers_fake_gl.h"
