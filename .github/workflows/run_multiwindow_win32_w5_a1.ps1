@@ -182,10 +182,10 @@ $greenProductionSurface = @(
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/event_dispatch_d_gg_multiwindow.v'; Known = '7ef6c7cbd34511d6c19c1a3a269b46876db791b9412bb88e3a8d4dcd543bfd4e'; Passed = $ExpectedEventDispatchSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend.c.v'; Known = '9d0b610a3b2a6923d9048836fd16f822ed45a1f5290641508a12766495b99e31'; Passed = $ExpectedWin32BackendSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend_helpers.h'; Known = 'ba0021ce46731b25d540a68bf7c7832c7302a7343a90e1398df91cc5e409754d'; Passed = $ExpectedWin32BackendHelpersSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_backend.c.v'; Known = '9fe8174aae452749d8b0a40a486d5c257d8af719d65ef776487ea72120ad3e30'; Passed = $ExpectedWin32ServiceBackendSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_native.h'; Known = '108025343c676e8ecd4a68c853fe154322a442ad627b793b0fa84680859d84e3'; Passed = $ExpectedWin32ServiceNativeSha256 }
+	[pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_backend.c.v'; Known = 'da6435d85d915f3626f5421c8c3a63d5231f65a7f8431ca7ce9b61b34284d976'; Passed = $ExpectedWin32ServiceBackendSha256 }
+	[pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_native.h'; Known = '2ffc93e245a43c4a557fd7cc66ebcdda8874b9783ec3050ba754657a97efd033'; Passed = $ExpectedWin32ServiceNativeSha256 }
 )
-$knownGreenProductionSurfaceSha256 = '80257a80e7ebece9cb83aaabd753997e3657578e39cef9396c63c50237d1a10e'
+$knownGreenProductionSurfaceSha256 = '10ebe9344976513266c9e9630e8d9b09aaf8875724525e29baeb12b97621ce0c'
 
 $fatalPattern = '(?i)(fatal error|unhandled exception|access violation|STATUS_ACCESS_VIOLATION|0xC0000005|segmentation fault|stack overflow|illegal instruction|abort trap|process crashed|application crashed|V panic:)'
 $compilerDiagnosticPattern = '(?im)(C compilation error|builder error|failed to compile|cannot compile|fatal error|error C[0-9]{4}|warning C[0-9]{4}|warning:|error:|undefined reference|unresolved external symbol|LNK[0-9]{4})'

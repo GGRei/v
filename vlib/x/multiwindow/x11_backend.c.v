@@ -1369,22 +1369,11 @@ fn (mut backend X11Backend) service_set_mouse_lock(id WindowId, enabled bool) !S
 			if C.v_multiwindow_x11_set_mouse_lock(backend.display, backend.windows[index].window, 1) == 0 {
 				return error(err_capability_unsupported)
 			}
-			mut center_x := 0
-			mut center_y := 0
-			if C.v_multiwindow_x11_center_pointer(backend.display, backend.windows[index].window,
-				&center_x, &center_y) == 0 {
-				C.v_multiwindow_x11_set_mouse_lock(backend.display, backend.windows[index].window,
-					0)
+			backend.windows[index].mouse_locked = true
+			if !backend.recenter_locked_pointer(index, true) {
+				backend.release_mouse_lock(index)
 				return error(err_capability_unsupported)
 			}
-			backend.windows[index].mouse_locked = true
-			backend.windows[index].mouse_lock_center_x = center_x
-			backend.windows[index].mouse_lock_center_y = center_y
-			backend.windows[index].mouse_x = f32(center_x)
-			backend.windows[index].mouse_y = f32(center_y)
-			backend.windows[index].mouse_dx = 0
-			backend.windows[index].mouse_dy = 0
-			backend.windows[index].mouse_pos_valid = true
 		} else {
 			backend.release_mouse_lock(index)
 		}
@@ -1395,6 +1384,34 @@ fn (mut backend X11Backend) service_set_mouse_lock(id WindowId, enabled bool) !S
 		_ = enabled
 		return error(err_backend_unsupported)
 	}
+}
+
+fn (mut backend X11Backend) recenter_locked_pointer(index int, clear_delta bool) bool {
+	$if linux && x_multiwindow_x11 ? {
+		if index < 0 || index >= backend.windows.len || !backend.windows[index].mouse_locked
+			|| backend.display == unsafe { nil } {
+			return false
+		}
+		mut center_x := 0
+		mut center_y := 0
+		if C.v_multiwindow_x11_center_pointer(backend.display, backend.windows[index].window,
+			&center_x, &center_y) == 0 {
+			return false
+		}
+		backend.windows[index].mouse_lock_center_x = center_x
+		backend.windows[index].mouse_lock_center_y = center_y
+		backend.windows[index].mouse_x = f32(center_x)
+		backend.windows[index].mouse_y = f32(center_y)
+		backend.windows[index].mouse_pos_valid = true
+		if clear_delta {
+			backend.windows[index].mouse_dx = 0
+			backend.windows[index].mouse_dy = 0
+		}
+		return true
+	}
+	_ = index
+	_ = clear_delta
+	return false
 }
 
 fn (mut backend X11Backend) release_mouse_lock(index int) {
@@ -1623,6 +1640,34 @@ fn (backend &X11Backend) clipboard_can_admit(additional_bytes int) bool {
 fn (backend &X11Backend) clipboard_can_reserve(additional_bytes int) bool {
 	return additional_bytes >= 0
 		&& backend.clipboard_pending_bytes() + u64(additional_bytes) <= u64(x11_clipboard_max_pending_bytes)
+}
+
+fn (backend &X11Backend) clipboard_incremental_reservation_after_chunk(item_count X11NativeULong) !int {
+	if backend.clipboard_reads.len == 0 {
+		return error(err_capability_unsupported)
+	}
+	read := backend.clipboard_reads[0]
+	if read.data.len > x11_clipboard_max_bytes || read.reserved_bytes < 0
+		|| read.reserved_bytes > x11_clipboard_max_bytes
+		|| item_count > X11NativeULong(x11_clipboard_max_bytes - read.data.len) {
+		return error(err_clipboard_capacity)
+	}
+	next_len := read.data.len + int(item_count)
+	charged := if read.reserved_bytes > read.data.len {
+		read.reserved_bytes
+	} else {
+		read.data.len
+	}
+	next_reserved := if read.reserved_bytes > next_len {
+		read.reserved_bytes
+	} else {
+		next_len
+	}
+	additional := next_reserved - charged
+	if additional > 0 && !backend.clipboard_can_reserve(additional) {
+		return error(err_clipboard_capacity)
+	}
+	return next_reserved
 }
 
 fn (mut backend X11Backend) service_set_clipboard_text(id WindowId, request ServiceRequestId, text string) !BackendClipboardStart {
@@ -2001,6 +2046,68 @@ $if test {
 		return error(err_backend_unsupported)
 	}
 
+	fn (mut backend X11Backend) service_queue_clipboard_incr_start_for_test(advertised u64) ! {
+		$if linux && x_multiwindow_x11 ? {
+			if backend.clipboard_reads.len == 0 || advertised > u64(x11_clipboard_max_bytes) {
+				return error(err_capability_unsupported)
+			}
+			read := backend.clipboard_reads[0]
+			value := X11NativeULong(advertised)
+			C.XChangeProperty(backend.display, read.requestor, read.property,
+				backend.clipboard_incr, 32, x11_prop_mode_replace, unsafe { &u8(&value) }, 1)
+			C.XSync(backend.display, 0)
+			for C.XPending(backend.display) > 0 {
+				mut discarded := C.XEvent{}
+				C.XNextEvent(backend.display, &discarded)
+			}
+			mut event := C.XEvent{}
+			unsafe {
+				event.xselection.@type = x11_selection_notify
+				event.xselection.display = backend.display
+				event.xselection.requestor = read.requestor
+				event.xselection.selection = backend.clipboard
+				event.xselection.target = backend.clipboard_utf8
+				event.xselection.property = read.property
+			}
+			C.XPutBackEvent(backend.display, &event)
+			return
+		}
+		_ = advertised
+		return error(err_backend_unsupported)
+	}
+
+	fn (mut backend X11Backend) service_queue_clipboard_incr_chunk_for_test(payload []u8) ! {
+		$if linux && x_multiwindow_x11 ? {
+			if backend.clipboard_reads.len == 0 || !backend.clipboard_reads[0].incremental {
+				return error(err_capability_unsupported)
+			}
+			read := backend.clipboard_reads[0]
+			mut data := &u8(unsafe { nil })
+			if payload.len > 0 {
+				data = payload.data
+			}
+			C.XChangeProperty(backend.display, read.requestor, read.property,
+				backend.clipboard_utf8, 8, x11_prop_mode_replace, data, payload.len)
+			C.XSync(backend.display, 0)
+			for C.XPending(backend.display) > 0 {
+				mut discarded := C.XEvent{}
+				C.XNextEvent(backend.display, &discarded)
+			}
+			mut event := C.XEvent{}
+			unsafe {
+				event.xproperty.@type = x11_property_notify
+				event.xproperty.display = backend.display
+				event.xproperty.window = read.requestor
+				event.xproperty.atom = read.property
+				event.xproperty.state = x11_property_new_value
+			}
+			C.XPutBackEvent(backend.display, &event)
+			return
+		}
+		_ = payload
+		return error(err_backend_unsupported)
+	}
+
 	fn (backend &X11Backend) service_clipboard_pending_counts_for_test() (int, int) {
 		return backend.clipboard_reads.len, backend.clipboard_transfers.len
 	}
@@ -2341,6 +2448,31 @@ $if test {
 		}
 		return error(err_backend_unsupported)
 	}
+
+	fn (backend &X11Backend) service_mouse_lock_center_for_test(id WindowId) !(int, int) {
+		index := backend.window_record_index(id) or { return error(err_window_not_found) }
+		record := backend.windows[index]
+		if !record.mouse_locked {
+			return error(err_capability_unsupported)
+		}
+		return record.mouse_lock_center_x, record.mouse_lock_center_y
+	}
+
+	fn (mut backend X11Backend) service_native_resize_for_test(id WindowId, width int, height int) ! {
+		$if linux && x_multiwindow_x11 ? {
+			index := backend.window_record_index(id) or { return error(err_window_not_found) }
+			if width <= 0 || height <= 0
+				|| C.XResizeWindow(backend.display, backend.windows[index].window, u32(width), u32(height)) == 0
+				|| C.XSync(backend.display, 0) == 0 {
+				return error(err_x11_resize_window_failed)
+			}
+			return
+		}
+		_ = id
+		_ = width
+		_ = height
+		return error(err_backend_unsupported)
+	}
 }
 
 fn (mut backend X11Backend) poll_queued_events() ![]QueuedEvent {
@@ -2389,6 +2521,14 @@ fn (mut backend X11Backend) poll_queued_events() ![]QueuedEvent {
 					index := backend.window_record_index_for_native(native_window) or { continue }
 					width := unsafe { event.xconfigure.width }
 					height := unsafe { event.xconfigure.height }
+					mut mouse_lock_released := false
+					if backend.windows[index].mouse_locked && width > 0 && height > 0
+						&& (backend.windows[index].mouse_lock_center_x != width / 2
+						|| backend.windows[index].mouse_lock_center_y != height / 2)
+						&& !backend.recenter_locked_pointer(index, true) {
+						backend.release_mouse_lock(index)
+						mouse_lock_released = true
+					}
 					mut state := ServiceWindowState{}
 					mut state_valid := false
 					if observed := backend.service_window_state(backend.windows[index].id) {
@@ -2397,6 +2537,9 @@ fn (mut backend X11Backend) poll_queued_events() ![]QueuedEvent {
 					}
 					events << backend.queued_configure_observation_events(index, width, height,
 						state, state_valid)
+					if mouse_lock_released {
+						events << backend.queued_service_state_event(index, .mouse_lock)!
+					}
 				}
 				x11_map_notify {
 					index := backend.window_record_index_for_event(&event) or { continue }
@@ -2749,10 +2892,14 @@ $if linux && x_multiwindow_x11 ? {
 			backend.windows[index].mouse_y = f32(center_y)
 			backend.windows[index].mouse_pos_valid = true
 			if x != center_x || y != center_y {
-				mut ignored_x := 0
-				mut ignored_y := 0
-				C.v_multiwindow_x11_center_pointer(backend.display, backend.windows[index].window,
-					&ignored_x, &ignored_y)
+				if !backend.recenter_locked_pointer(index, false) {
+					input := backend.input_event_with_payload(backend.windows[index], kind, 0,
+						false,
+						u32(C.v_multiwindow_x11_modifiers(C.v_multiwindow_x11_event_state(event))),
+						x11_invalid_mouse_button, 0, 0)
+					backend.release_mouse_lock(index)
+					return queued_input_event(input)
+				}
 			}
 			input := backend.input_event_with_payload(backend.windows[index], kind, 0, false,
 				u32(C.v_multiwindow_x11_modifiers(C.v_multiwindow_x11_event_state(event))),
@@ -2990,11 +3137,7 @@ $if linux && x_multiwindow_x11 ? {
 			}
 			return backend.finish_clipboard_read(.ready, text, '')
 		}
-		next_len := backend.clipboard_reads[0].data.len + int(item_count)
-		reserved := backend.clipboard_reads[0].reserved_bytes
-		if next_len > x11_clipboard_max_bytes
-			|| (reserved > 0 && next_len > reserved)
-			|| (reserved == 0 && !backend.clipboard_can_reserve(int(item_count))) {
+		next_reserved := backend.clipboard_incremental_reservation_after_chunk(item_count) or {
 			if data != unsafe { nil } {
 				C.XFree(data)
 			}
@@ -3003,6 +3146,7 @@ $if linux && x_multiwindow_x11 ? {
 		for index in 0 .. int(item_count) {
 			backend.clipboard_reads[0].data << unsafe { data[index] }
 		}
+		backend.clipboard_reads[0].reserved_bytes = next_reserved
 		backend.clipboard_reads[0].deadline_ns = vtime.sys_mono_now() + x11_clipboard_timeout_ns
 		if data != unsafe { nil } {
 			C.XFree(data)

@@ -2179,6 +2179,13 @@ static inline int v_multiwindow_win32_service_set_fullscreen(void *state_ptr,
 	return V_MULTIWINDOW_WIN32_SERVICE_OK;
 }
 
+static inline int v_multiwindow_win32_service_fullscreen_known(void *state_ptr) {
+	VMultiwindowWin32ServiceState *state =
+		(VMultiwindowWin32ServiceState *)state_ptr;
+	return v_multiwindow_win32_service_authority(state)
+		== V_MULTIWINDOW_WIN32_SERVICE_OK && state->fullscreen_known;
+}
+
 static inline int v_multiwindow_win32_service_restore_window(void *state_ptr) {
 	VMultiwindowWin32ServiceState *state =
 		(VMultiwindowWin32ServiceState *)state_ptr;

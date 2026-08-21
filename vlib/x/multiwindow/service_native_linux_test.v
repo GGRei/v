@@ -429,6 +429,76 @@ fn test_x11_native_service_controls_borrow_monitors_and_readback() {
 		}
 		assert relative_motion, 'X11 locked pointer did not report relative motion'
 		assert app.backend.x11.service_pointer_recentered_for_test(child)!
+		_ = app.poll_events()!
+		settled_motion := app.drain_queued_events()!
+		assert !settled_motion.any(it.kind == .input && it.input.window_id == child
+			&& it.input.kind == .mouse_move && (it.input.mouse_dx != 0 || it.input.mouse_dy != 0))
+
+		app.resize_window(child, 128, 80)!
+		_ = app.drain_queued_events()!
+		mut public_resize_recentered := false
+		mut public_resize_phantom_motion := false
+		for _ in 0 .. 100 {
+			_ = app.poll_events()!
+			resize_events := app.drain_queued_events()!
+			if resize_events.any(it.kind == .input && it.input.window_id == child
+				&& it.input.kind == .mouse_move
+				&& (it.input.mouse_dx != 0 || it.input.mouse_dy != 0))
+			{
+				public_resize_phantom_motion = true
+			}
+			center_x, center_y := app.backend.x11.service_mouse_lock_center_for_test(child)!
+			if center_x == 64 && center_y == 40
+				&& app.backend.x11.service_pointer_recentered_for_test(child)! {
+				public_resize_recentered = true
+				break
+			}
+			time.sleep(time.millisecond)
+		}
+		assert public_resize_recentered, 'X11 public resize left the locked pointer center stale'
+		assert !public_resize_phantom_motion, 'X11 public resize emitted phantom relative motion'
+		_ = app.poll_events()!
+		settled_resize := app.drain_queued_events()!
+		assert !settled_resize.any(it.kind == .input && it.input.window_id == child
+			&& it.input.kind == .mouse_move && (it.input.mouse_dx != 0 || it.input.mouse_dy != 0))
+
+		app.backend.x11.service_native_resize_for_test(child, 180, 120)!
+		mut configure_recentered := false
+		mut configure_phantom_motion := false
+		for _ in 0 .. 100 {
+			_ = app.poll_events()!
+			configure_events := app.drain_queued_events()!
+			if configure_events.any(it.kind == .input && it.input.window_id == child
+				&& it.input.kind == .mouse_move
+				&& (it.input.mouse_dx != 0 || it.input.mouse_dy != 0))
+			{
+				configure_phantom_motion = true
+			}
+			center_x, center_y := app.backend.x11.service_mouse_lock_center_for_test(child)!
+			if center_x == 90 && center_y == 60
+				&& app.backend.x11.service_pointer_recentered_for_test(child)! {
+				configure_recentered = true
+				break
+			}
+			time.sleep(time.millisecond)
+		}
+		assert configure_recentered, 'X11 ConfigureNotify left the locked pointer center stale'
+		assert !configure_phantom_motion, 'X11 ConfigureNotify emitted phantom relative motion'
+		app.backend.x11.service_warp_relative_for_test(child, -4, 3)!
+		mut resized_relative_motion := false
+		for _ in 0 .. 100 {
+			_ = app.poll_events()!
+			motion_events := app.drain_queued_events()!
+			if motion_events.any(it.kind == .input && it.input.window_id == child
+				&& it.input.kind == .mouse_move && it.input.mouse_dx == -4 && it.input.mouse_dy == 3)
+			{
+				resized_relative_motion = true
+				break
+			}
+			time.sleep(time.millisecond)
+		}
+		assert resized_relative_motion, 'X11 locked pointer lost relative motion after resize'
+		assert app.backend.x11.service_pointer_recentered_for_test(child)!
 		app.service_hide_window(child)!
 		_ = app.drain_queued_events()!
 		mut unmap_released_lock := false
@@ -1037,6 +1107,125 @@ fn test_x11_all_late_clipboard_reply_forms_are_isolated_from_the_next_read() {
 			assert app.backend.x11.clipboard_reads[0].request == second
 			app.stop()!
 		}
+	}
+}
+
+fn test_x11_clipboard_incr_advertised_size_is_a_lower_bound() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		defer {
+			app.stop() or {}
+		}
+		owner := app.create_window(title: 'incr-lower-bound-owner')!
+		reader := app.create_window(title: 'incr-lower-bound-reader')!
+		_ = app.drain_queued_events()!
+		app.backend.x11.service_make_clipboard_peer_unresponsive_for_test(owner)!
+		request := app.service_request_clipboard_text(reader)!
+		baseline_bytes := app.backend.x11.service_clipboard_pending_bytes_for_test()
+		assert baseline_bytes == 0
+
+		app.backend.x11.service_queue_clipboard_incr_start_for_test(1)!
+		_ = app.poll_events()!
+		assert app.drain_queued_events()!.len == 0
+		assert app.backend.x11.service_clipboard_pending_bytes_for_test() == 1
+
+		first := 'lower-'.bytes()
+		app.backend.x11.service_queue_clipboard_incr_chunk_for_test(first)!
+		_ = app.poll_events()!
+		assert app.drain_queued_events()!.len == 0
+		assert app.backend.x11.service_clipboard_pending_bytes_for_test() == u64(first.len)
+
+		second := 'bound'.bytes()
+		app.backend.x11.service_queue_clipboard_incr_chunk_for_test(second)!
+		_ = app.poll_events()!
+		assert app.drain_queued_events()!.len == 0
+		assert app.backend.x11.service_clipboard_pending_bytes_for_test() == u64(first.len +
+			second.len)
+
+		app.backend.x11.service_queue_clipboard_incr_chunk_for_test([]u8{})!
+		_ = app.poll_events()!
+		terminals := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == request)
+		assert terminals.len == 1
+		assert terminals[0].service.clipboard.status == .ready
+		assert terminals[0].service.clipboard.text == 'lower-bound'
+		assert app.backend.x11.service_clipboard_pending_bytes_for_test() == baseline_bytes
+		_ = app.poll_events()!
+		assert app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == request).len == 0
+	}
+}
+
+fn test_x11_clipboard_incr_dynamic_reservation_preserves_hard_and_aggregate_caps() {
+	mut lower_bound_backend := X11Backend{
+		clipboard_reads: [X11ClipboardRead{
+			reserved_bytes: 1
+		}]
+	}
+	assert lower_bound_backend.clipboard_incremental_reservation_after_chunk(6)! == 6
+
+	mut hard_cap_backend := X11Backend{
+		clipboard_reads: [X11ClipboardRead{}]
+	}
+	mut hard_cap_error := ''
+	_ = hard_cap_backend.clipboard_incremental_reservation_after_chunk(
+		X11NativeULong(x11_clipboard_max_bytes) + 1) or {
+		hard_cap_error = err.msg()
+		0
+	}
+	assert hard_cap_error == err_clipboard_capacity
+
+	mut aggregate_backend := X11Backend{
+		clipboard_reads: [X11ClipboardRead{}, X11ClipboardRead{
+			reserved_bytes: x11_clipboard_max_pending_bytes - 1
+		}]
+	}
+	assert aggregate_backend.clipboard_incremental_reservation_after_chunk(1)! == 1
+	aggregate_backend.clipboard_reads[0].reserved_bytes = 1
+	mut aggregate_error := ''
+	_ = aggregate_backend.clipboard_incremental_reservation_after_chunk(2) or {
+		aggregate_error = err.msg()
+		0
+	}
+	assert aggregate_error == err_clipboard_capacity
+}
+
+fn test_x11_clipboard_incr_actual_overflow_terminalizes_once_and_releases_bytes() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		defer {
+			app.stop() or {}
+		}
+		owner := app.create_window(title: 'incr-overflow-owner')!
+		reader := app.create_window(title: 'incr-overflow-reader')!
+		_ = app.drain_queued_events()!
+		app.backend.x11.service_make_clipboard_peer_unresponsive_for_test(owner)!
+		request := app.service_request_clipboard_text(reader)!
+		app.backend.x11.clipboard_reads[0].incremental = true
+		app.backend.x11.clipboard_reads[0].data = []u8{len: x11_clipboard_max_bytes}
+		app.backend.x11.clipboard_reads[0].reserved_bytes = x11_clipboard_max_bytes
+		assert app.backend.x11.service_clipboard_pending_bytes_for_test() == u64(x11_clipboard_max_bytes)
+
+		app.backend.x11.service_queue_clipboard_incr_chunk_for_test([u8(1)])!
+		_ = app.poll_events()!
+		terminals := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == request)
+		assert terminals.len == 1
+		assert terminals[0].service.clipboard.status == .failed
+		assert terminals[0].service.clipboard.error == err_clipboard_capacity
+		assert app.backend.x11.service_clipboard_pending_bytes_for_test() == 0
+		reads, transfers := app.backend.x11.service_clipboard_pending_counts_for_test()
+		assert reads == 0
+		assert transfers == 0
+		_ = app.poll_events()!
+		assert app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == request).len == 0
 	}
 }
 

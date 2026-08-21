@@ -337,6 +337,8 @@ replacement or source cancellation.
 Each active X11 clipboard conversion uses an isolated native requestor; late
 inline, failure, or INCR replies from an earlier conversion cannot terminalize
 the next request, and failure to start that next conversion is itself terminal.
+For X11 INCR reads, the advertised length is a lower bound; actual growth is
+accepted only within the per-request and aggregate clipboard byte limits.
 Destroying an owner processes its descendants child-first. For each destroyed
 window, pending clipboard and portal requests are cancelled and portal leases
 are invalidated during sealing, before teardown results can be delivered.
@@ -366,10 +368,10 @@ Runtime support differs by backend:
 | Backend | Service summary |
 | --- | --- |
 | Mock | Deterministic state, monitors, clipboard, portal, and readback for tests; no native-window borrow. |
-| X11 | Native state/monitors, clipboard, portal (`x11:`), borrow, and native window capture; focus is available only when the live server advertises EWMH `_NET_ACTIVE_WINDOW`, its request is asynchronous, and authoritative state comes from `FocusIn`/`FocusOut`. Position and supported window-manager minimize/maximize/fullscreen/restore requests are also asynchronous; root-coordinate observations triggered by `ConfigureNotify` and native WM-state property events are authoritative. Other EWMH, mouse-lock, and rendered image support also depend on live runtime support. |
+| X11 | Native state/monitors, clipboard, portal (`x11:`), borrow, and native window capture; focus is available only when the live server advertises EWMH `_NET_ACTIVE_WINDOW`, its request is asynchronous, and authoritative state comes from `FocusIn`/`FocusOut`. Position and supported window-manager minimize/maximize/fullscreen/restore requests are also asynchronous; root-coordinate observations triggered by `ConfigureNotify` and native WM-state property events are authoritative. Mouse-lock centers are refreshed after resize. Other EWMH, mouse-lock, and rendered image support also depend on live runtime support. |
 | Wayland | Runtime-global-driven state/monitors, clipboard, portal (`wayland:`), borrow, and mouse lock; focus/raise/position are unsupported. Show fails hidden and retryable when no fresh compositor configure is available. Show/minimize/maximize/restore/fullscreen/mouse-lock are asynchronous, but minimize is not state-observable, so callers are not guaranteed a resulting minimized-state observation. Rendered readback requires the active gg GL path. |
 | AppKit | Native state/monitors, borrow, clipboard, window operations, and titlebar appearance as reported by the live bridge; portal export is unsupported and readback requires active Metal. |
-| Win32 | Native state/monitors (including zero-window observation), borrow, clipboard, and standard window operations; focus and mouse lock are conditional. Focus loss releases mouse lock transactionally, retaining an error and retrying without a false unlocked observation if native cleanup fails. Maximize depends on window configuration, and portal/readback are currently unsupported. |
+| Win32 | Native state/monitors (including zero-window observation), borrow, clipboard, and standard window operations; focus and mouse lock are conditional. Focus loss releases mouse lock transactionally, retaining an error and retrying without a false unlocked observation if native cleanup fails. Maximize depends on window configuration; fullscreen and restore become unsupported if the native fullscreen state is unknown. Portal/readback are currently unsupported. |
 
 This table is orientation, not a substitute for the per-window runtime query.
 Optional compositor protocols, EWMH atoms, renderer state, user-action tokens,

@@ -93,6 +93,7 @@ $if windows {
 	fn C.v_multiwindow_win32_service_maximize_window(state voidptr) int
 	fn C.v_multiwindow_win32_service_restore_window(state voidptr) int
 	fn C.v_multiwindow_win32_service_set_fullscreen(state voidptr, enabled int) int
+	fn C.v_multiwindow_win32_service_fullscreen_known(state voidptr) int
 	fn C.v_multiwindow_win32_service_native_window(state voidptr) voidptr
 	fn C.v_multiwindow_win32_service_monitor_snapshot_new() voidptr
 	fn C.v_multiwindow_win32_service_monitor_snapshot_free(snapshot voidptr)
@@ -665,10 +666,20 @@ fn (mut backend Win32Backend) purge_all_clipboard_requests() {
 fn (backend &Win32Backend) service_operation_capability(id WindowId, operation ServiceOperation) ServiceOperationCapability {
 	index := backend.ensure_service_window(id) or { return ServiceOperationCapability{} }
 	record := backend.windows[index]
+	mut fullscreen_known := false
+	$if windows {
+		fullscreen_known = C.v_multiwindow_win32_service_fullscreen_known(record.service_state) != 0
+	}
 	return match operation {
-		.show, .hide, .raise, .position, .minimize, .restore, .fullscreen {
+		.show, .hide, .raise, .position, .minimize {
 			ServiceOperationCapability{
 				support:          .available
+				state_observable: true
+			}
+		}
+		.fullscreen, .restore {
+			ServiceOperationCapability{
+				support:          if fullscreen_known { .available } else { .unsupported }
 				state_observable: true
 			}
 		}

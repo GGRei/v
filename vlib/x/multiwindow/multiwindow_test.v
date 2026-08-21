@@ -1643,6 +1643,15 @@ fn test_win32_focus_cleanup_and_zero_window_monitor_refresh_source_guard() {
 	event_delivery_source := multiwindow_source_file('event_delivery.v')
 	native_source := multiwindow_source_file('win32_service_native.h')
 	helper_source := multiwindow_source_file('win32_backend_helpers.h')
+	capability_body :=
+		service_source.all_after('fn (backend &Win32Backend) service_operation_capability').all_before('fn (backend &Win32Backend) service_window_state')
+	assert capability_body.contains('C.v_multiwindow_win32_service_fullscreen_known')
+	assert capability_body.contains('.fullscreen, .restore')
+	fullscreen_capability_body :=
+		capability_body.all_after('.fullscreen, .restore {').all_before('.maximize {')
+	assert_source_order(fullscreen_capability_body, 'support:', 'if fullscreen_known')
+	assert fullscreen_capability_body.contains('state_observable: true')
+	assert native_source.contains('v_multiwindow_win32_service_fullscreen_known')
 	clipboard_body :=
 		service_source.all_after('fn (mut backend Win32Backend) collect_clipboard_events').all_before('fn (mut backend Win32Backend) purge_clipboard_window')
 	assert_source_order(clipboard_body, 'if status == win32_clipboard_attempt_retry {',
@@ -2696,6 +2705,12 @@ fn test_x11_clipboard_conversion_and_root_monitor_refresh_source_guard() {
 	assert selection_body.contains('selection != backend.clipboard || target != backend.clipboard_utf8')
 	assert selection_body.contains('requestor != read.requestor')
 	assert selection_body.contains('property != read.property')
+	property_read_body :=
+		source.all_after('fn (mut backend X11Backend) queued_clipboard_property_events').all_before('fn (backend &X11Backend) clipboard_read_terminal_event')
+	assert !property_read_body.contains('next_len > reserved')
+	assert property_read_body.contains('clipboard_incremental_reservation_after_chunk')
+	assert_source_order(property_read_body, 'clipboard_incremental_reservation_after_chunk',
+		'backend.clipboard_reads[0].data <<')
 	finish_body :=
 		source.all_after('fn (mut backend X11Backend) finish_clipboard_read').all_before('fn (mut backend X11Backend) clear_clipboard_state')
 	assert_source_order(finish_body, 'backend.destroy_clipboard_requestor(read.requestor)',
@@ -2727,6 +2742,25 @@ fn test_x11_clipboard_conversion_and_root_monitor_refresh_source_guard() {
 	assert_source_order(poll_body, 'if backend.monitor_snapshot_dirty {',
 		'events << backend.expire_clipboard_operations')
 	assert poll_body.contains('backend.queued_randr_monitor_events() or { []QueuedEvent{} }')
+	configure_body := poll_body.all_after('x11_configure_notify {').all_before('x11_map_notify {')
+	assert configure_body.contains('backend.recenter_locked_pointer(index, true)')
+	assert configure_body.contains('mouse_lock_center_x != width / 2')
+	assert configure_body.contains('mouse_lock_center_y != height / 2')
+	assert_source_order(configure_body, '!backend.recenter_locked_pointer(index, true)',
+		'backend.release_mouse_lock(index)')
+	assert_source_order(configure_body, 'backend.release_mouse_lock(index)',
+		'backend.queued_service_state_event(index, .mouse_lock)')
+	motion_body :=
+		source.all_after('fn (mut backend X11Backend) queued_mouse_position_event').all_before('fn (mut backend X11Backend) update_mouse_position')
+	assert motion_body.contains('backend.recenter_locked_pointer(index, false)')
+	assert !motion_body.contains('mut ignored_x := 0')
+	assert_source_order(motion_body, 'backend.recenter_locked_pointer(index, false)',
+		'backend.release_mouse_lock(index)')
+	recenter_body :=
+		source.all_after('fn (mut backend X11Backend) recenter_locked_pointer').all_before('fn (mut backend X11Backend) release_mouse_lock')
+	assert recenter_body.contains('mouse_lock_center_x = center_x')
+	assert recenter_body.contains('mouse_lock_center_y = center_y')
+	assert recenter_body.contains('if clear_delta {')
 }
 
 fn test_x11_config_hints_are_applied_before_mapping() {

@@ -247,6 +247,8 @@ bounded text snapshot and can finish after replacement or source cancellation.
 Each active X11 clipboard read has an isolated native conversion requestor, so
 late inline, failure, or INCR replies cannot complete a later request; failure
 to start a queued conversion is delivered as its terminal failure.
+For X11 INCR reads, the advertised length is a lower bound; actual growth is
+accepted only within the per-request and aggregate clipboard byte limits.
 
 `with_native_window()` is callback-only. Inside its callback, invoke exactly
 the accessor matching `app.capabilities().backend`:
@@ -290,10 +292,10 @@ Runtime support differs by backend:
 | Backend | Service summary |
 | --- | --- |
 | Mock | Deterministic state, monitors, clipboard, portal, and readback for tests; native borrow is unsupported. |
-| X11 | Native state/monitors, clipboard, portal (`x11:`), scoped borrow, and native window capture; focus is available only when the live server advertises EWMH `_NET_ACTIVE_WINDOW`, its request is asynchronous, and authoritative state comes from `FocusIn`/`FocusOut`. Position and supported window-manager minimize/maximize/fullscreen/restore requests are also asynchronous; root-coordinate observations triggered by `ConfigureNotify` and native WM-state property events are authoritative. Other EWMH, mouse-lock, and rendered-image support also depend on the live server/renderer. |
+| X11 | Native state/monitors, clipboard, portal (`x11:`), scoped borrow, and native window capture; focus is available only when the live server advertises EWMH `_NET_ACTIVE_WINDOW`, its request is asynchronous, and authoritative state comes from `FocusIn`/`FocusOut`. Position and supported window-manager minimize/maximize/fullscreen/restore requests are also asynchronous; root-coordinate observations triggered by `ConfigureNotify` and native WM-state property events are authoritative. Mouse-lock centers are refreshed after resize. Other EWMH, mouse-lock, and rendered-image support also depend on the live server/renderer. |
 | Wayland | Runtime-global-driven state/monitors, clipboard, portal (`wayland:`), scoped borrow, and mouse lock; focus/raise/position are unsupported. Hide/show remapping preserves configured metadata, ownership, constraints, decorations, and maximize/fullscreen intent; show fails hidden and retryable when no fresh compositor configure is available. Show/minimize/maximize/restore/fullscreen/mouse-lock are asynchronous, but minimize is not state-observable, so callers are not guaranteed a resulting minimized-state observation. Rendered readback requires the active GL path. |
 | AppKit | Native state/monitors, scoped borrow, clipboard, window operations, and titlebar appearance as reported by the live bridge; portal is unsupported and readback requires active Metal. |
-| Win32 | Native state/monitors (including zero-window observation), scoped borrow, clipboard, and standard window operations; focus/mouse lock are conditional. Focus loss releases mouse lock transactionally, retaining an error and retrying without a false unlocked observation if cleanup fails. Maximize depends on window configuration, and portal/readback are currently unsupported. |
+| Win32 | Native state/monitors (including zero-window observation), scoped borrow, clipboard, and standard window operations; focus/mouse lock are conditional. Focus loss releases mouse lock transactionally, retaining an error and retrying without a false unlocked observation if cleanup fails. Maximize depends on window configuration; fullscreen and restore become unsupported if the native fullscreen state is unknown. Portal/readback are currently unsupported. |
 
 This table is orientation only. Always prefer the live per-window capability
 over backend-name assumptions. Relative mouse lock on Wayland, for example,

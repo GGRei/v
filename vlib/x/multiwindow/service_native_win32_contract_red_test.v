@@ -589,6 +589,8 @@ fn test_win32_w1_native_authority_show_focus_and_fullscreen_contract() {
 		assert win32_red_capability_matches(focus_capability, .conditional, false, true, true)
 		fullscreen_capability := app.backend.win32.service_operation_capability(target, .fullscreen)
 		assert win32_red_capability_matches(fullscreen_capability, .available, false, false, true)
+		restore_capability := app.backend.win32.service_operation_capability(target, .restore)
+		assert win32_red_capability_matches(restore_capability, .available, false, false, true)
 
 		foreground_before_show := C.v_multiwindow_test_win32_foreground()
 		first_show := app.backend.win32.service_show_window(target)!
@@ -706,12 +708,38 @@ fn test_win32_w1_native_authority_show_focus_and_fullscreen_contract() {
 		C.v_multiwindow_win32_service_test_set_fullscreen_exit_failure(0)
 		rollback_attempts := C.v_multiwindow_win32_service_test_fullscreen_rollback_attempts()
 		C.v_multiwindow_win32_service_test_set_fullscreen_rollback_failure(0)
+		poisoned_attempts_before :=
+			C.v_multiwindow_win32_service_test_fullscreen_rollback_attempts()
 		assert rollback_failure_error == err_capability_unsupported
 		assert rollback_attempts == 15
+		assert poisoned_attempts_before == 0
 		unknown_rollback_state := app.backend.win32.service_window_state(rollback_target)!
 		assert unknown_rollback_state.fullscreen == .unknown
 		assert C.v_multiwindow_test_win32_window_snapshot_matches(rollback_fullscreen_snapshot,
 			rollback_hwnd) == 0, 'injected rollback failure unexpectedly restored an exact native snapshot'
+		poisoned_fullscreen := app.backend.win32.service_operation_capability(rollback_target,
+			.fullscreen)
+		poisoned_restore := app.backend.win32.service_operation_capability(rollback_target,
+			.restore)
+		assert win32_red_capability_matches(poisoned_fullscreen, .unsupported, false, false, true)
+		assert win32_red_capability_matches(poisoned_restore, .unsupported, false, false, true)
+		poisoned_snapshot := C.v_multiwindow_test_win32_window_snapshot_new(rollback_hwnd)
+		assert poisoned_snapshot != unsafe { nil }
+		defer {
+			C.v_multiwindow_test_win32_window_snapshot_free(poisoned_snapshot)
+		}
+		mut poisoned_fullscreen_error := ''
+		app.backend.win32.service_set_fullscreen(rollback_target, false) or {
+			poisoned_fullscreen_error = err.msg()
+		}
+		mut poisoned_restore_error := ''
+		app.backend.win32.service_restore_window(rollback_target) or {
+			poisoned_restore_error = err.msg()
+		}
+		assert poisoned_fullscreen_error == err_capability_unsupported
+		assert poisoned_restore_error == err_capability_unsupported
+		assert C.v_multiwindow_win32_service_test_fullscreen_rollback_attempts() == poisoned_attempts_before
+		assert C.v_multiwindow_test_win32_window_snapshot_matches(poisoned_snapshot, rollback_hwnd) == 1, 'poisoned fullscreen capabilities still mutated native state'
 
 		initial_fullscreen := app.create_window(
 			title:      'Win32 W1 initial fullscreen'
