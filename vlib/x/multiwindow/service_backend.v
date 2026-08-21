@@ -8,7 +8,9 @@ struct BackendNativeWindowBorrow {
 
 struct BackendClipboardStart {
 	completed bool
+	status    ServiceStatus
 	text      string
+	error     string
 }
 
 struct BackendPortalStart {
@@ -36,7 +38,7 @@ fn (backend &Backend) service_operation_capability(id WindowId, operation Servic
 			mock_service_operation_capability(operation)
 		}
 		.x11 {
-			backend.x11.service_operation_capability(operation)
+			backend.x11.service_operation_capability(id, operation)
 		}
 		.wayland {
 			backend.wayland.service_operation_capability(operation)
@@ -62,13 +64,13 @@ fn (backend &Backend) service_state_publication_is_deferred(id WindowId, operati
 }
 
 fn mock_service_operation_capability(operation ServiceOperation) ServiceOperationCapability {
-	if operation == .native_borrow {
+	if operation in [.native_borrow, .image_readback] {
 		return ServiceOperationCapability{}
 	}
 	return ServiceOperationCapability{
 		support:          .available
 		asynchronous:     operation in [.clipboard_read, .clipboard_write, .portal_parent,
-			.image_readback, .window_capture]
+			.window_capture]
 		state_observable: operation in [.show, .hide, .focus, .raise, .position, .minimize, .maximize,
 			.restore, .fullscreen, .mouse_lock]
 	}

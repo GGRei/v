@@ -16,6 +16,11 @@ $if darwin {
 	fn C.v_multiwindow_appkit_test_install_release_services_counter(window voidptr) int
 	fn C.v_multiwindow_appkit_test_release_services_count() int
 	fn C.v_multiwindow_appkit_test_restore_release_services_counter()
+	fn C.v_multiwindow_appkit_test_install_clipboard_failure(mode int) int
+	fn C.v_multiwindow_appkit_test_restore_clipboard_failure()
+	fn C.v_multiwindow_appkit_test_seed_multitype_clipboard() int
+	fn C.v_multiwindow_appkit_test_multitype_clipboard_matches_seed() int
+	fn C.v_multiwindow_appkit_test_clipboard_has_external_takeover() int
 }
 
 struct AppKitFinalBorrowProbe {
@@ -53,6 +58,13 @@ fn appkit_final_method_body(source string, signature string) string {
 		}
 	}
 	return ''
+}
+
+fn appkit_final_assert_source_order(source string, first string, second string) {
+	first_index := source.index(first) or { -1 }
+	second_index := source.index(second) or { -1 }
+	assert first_index >= 0, 'missing source marker `${first}`'
+	assert second_index > first_index, '`${second}` must follow `${first}`'
 }
 
 fn appkit_final_runtime_probes_required() bool {
@@ -280,6 +292,102 @@ fn test_appkit_synchronous_clipboard_operations_reserve_terminal_before_native_a
 		assert read_events.len == 1
 		assert read_events[0].service.clipboard.status == .ready
 		assert read_events[0].service.clipboard.text == 'before-exhaustion'
+	}
+}
+
+fn test_appkit_clipboard_replacement_is_bounded_transaction_or_failed_terminal() {
+	native := appkit_final_source('appkit_backend.m')
+	backend := appkit_final_source('appkit_backend.c.v')
+	dispatch := appkit_final_source('service_backend.v')
+	api := appkit_final_source('service_api.v')
+	assert native.contains('v_multiwindow_appkit_snapshot_pasteboard')
+	assert native.contains('v_multiwindow_appkit_restore_pasteboard_snapshot')
+	assert native.contains('V_MULTIWINDOW_APPKIT_SERVICE_CLIPBOARD_SNAPSHOT_MAX_ITEMS')
+	assert native.contains('V_MULTIWINDOW_APPKIT_SERVICE_CLIPBOARD_SNAPSHOT_MAX_TYPES')
+	assert native.contains('V_MULTIWINDOW_APPKIT_SERVICE_RESULT_INDETERMINATE')
+	set_body := appkit_final_method_body(native,
+		'int v_multiwindow_appkit_service_set_clipboard_text(')
+	appkit_final_assert_source_order(set_body, 'v_multiwindow_appkit_snapshot_pasteboard',
+		'[pasteboard clearContents]')
+	appkit_final_assert_source_order(set_body, '@try {',
+		'pasteboard = [NSPasteboard generalPasteboard]')
+	appkit_final_assert_source_order(set_body, 'clear_attempted = YES',
+		'[pasteboard clearContents]')
+	assert set_body.contains('if (!clear_attempted)')
+	assert native.contains('[expected_types isEqualToArray:actual_types]')
+	appkit_final_assert_source_order(set_body, '[pasteboard clearContents]',
+		'[pasteboard setString:')
+	appkit_final_assert_source_order(set_body, '[pasteboard setString:',
+		'v_multiwindow_appkit_restore_pasteboard_snapshot')
+	assert backend.contains('service_appkit_result_indeterminate')
+	assert backend.contains('status:    .failed')
+	assert dispatch.replace(' ', '').contains('statusServiceStatus')
+	assert api.contains('complete_native_clipboard_start(')
+}
+
+fn test_appkit_clipboard_replacement_rolls_back_all_types_or_publishes_failed_terminal() {
+	$if darwin {
+		if !appkit_final_runtime_probes_required() {
+			return
+		}
+		mut app := new_app(backend: .appkit)!
+		defer {
+			C.v_multiwindow_appkit_test_restore_clipboard_failure()
+			app.stop() or {}
+		}
+		window := app.create_window(
+			title:   'AppKit clipboard replacement transaction'
+			visible: false
+		)!
+		_ = app.drain_queued_events()!
+
+		for mode in [5, 1, 2] {
+			assert C.v_multiwindow_appkit_test_seed_multitype_clipboard() == 1
+			assert C.v_multiwindow_appkit_test_install_clipboard_failure(mode) == 1
+			request_before := app.services.next_request
+			mut rejected := false
+			app.service_set_clipboard_text(window, 'replacement') or {
+				assert err.msg() == err_capability_unsupported
+				rejected = true
+				ServiceRequestId{}
+			}
+			C.v_multiwindow_appkit_test_restore_clipboard_failure()
+			assert rejected
+			assert app.services.next_request == request_before + 1
+			assert C.v_multiwindow_appkit_test_multitype_clipboard_matches_seed() == 1
+			assert app.drain_queued_events()!.len == 0
+			retry := app.service_set_clipboard_text(window, 'retry-${mode}')!
+			assert retry.serial > request_before
+			retry_events := app.drain_queued_events()!.filter(it.kind == .service
+				&& it.service.kind == .clipboard && it.service.clipboard.id == retry)
+			assert retry_events.len == 1
+			assert retry_events[0].service.clipboard.status == .ready
+			assert retry_events[0].service.clipboard.text == 'retry-${mode}'
+			assert app.drain_queued_events()!.len == 0
+		}
+
+		for mode in [3, 4] {
+			assert C.v_multiwindow_appkit_test_seed_multitype_clipboard() == 1
+			assert C.v_multiwindow_appkit_test_install_clipboard_failure(mode) == 1
+			request := app.service_set_clipboard_text(window, 'replacement')!
+			C.v_multiwindow_appkit_test_restore_clipboard_failure()
+			events := app.drain_queued_events()!.filter(it.kind == .service
+				&& it.service.kind == .clipboard && it.service.clipboard.id == request)
+			assert events.len == 1
+			assert events[0].service.clipboard.status == .failed
+			assert events[0].service.clipboard.error == err_capability_unsupported
+			assert app.drain_queued_events()!.len == 0
+			if mode == 3 {
+				assert C.v_multiwindow_appkit_test_clipboard_has_external_takeover() == 1
+			}
+		}
+
+		success := app.service_set_clipboard_text(window, 'committed')!
+		events := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == success)
+		assert events.len == 1
+		assert events[0].service.clipboard.status == .ready
+		assert events[0].service.clipboard.text == 'committed'
 	}
 }
 

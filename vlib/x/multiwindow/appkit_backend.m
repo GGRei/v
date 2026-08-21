@@ -3661,6 +3661,109 @@ static int v_multiwindow_appkit_clipboard_utf8_data(
 	return 1;
 }
 
+#define V_MULTIWINDOW_APPKIT_SERVICE_CLIPBOARD_SNAPSHOT_MAX_ITEMS 256U
+#define V_MULTIWINDOW_APPKIT_SERVICE_CLIPBOARD_SNAPSHOT_MAX_TYPES 4096U
+
+static int v_multiwindow_appkit_snapshot_pasteboard(NSPasteboard *pasteboard,
+		NSArray<NSPasteboardItem *> **out_items) {
+	if (pasteboard == nil || out_items == NULL) {
+		return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_FAILED;
+	}
+	NSArray<NSPasteboardItem *> *source_items = pasteboard.pasteboardItems;
+	if (source_items == nil) {
+		if (pasteboard.types.count != 0) {
+			return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_FAILED;
+		}
+		source_items = @[];
+	}
+	if (source_items.count > V_MULTIWINDOW_APPKIT_SERVICE_CLIPBOARD_SNAPSHOT_MAX_ITEMS) {
+		return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_CAPACITY;
+	}
+	NSMutableArray<NSPasteboardItem *> *snapshot =
+		[NSMutableArray arrayWithCapacity:source_items.count];
+	size_t total_bytes = 0;
+	size_t total_types = 0;
+	for (NSPasteboardItem *source in source_items) {
+		NSArray<NSPasteboardType> *types = source.types;
+		if (types == nil || types.count >
+				V_MULTIWINDOW_APPKIT_SERVICE_CLIPBOARD_SNAPSHOT_MAX_TYPES - total_types) {
+			return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_CAPACITY;
+		}
+		total_types += types.count;
+		NSPasteboardItem *copy = [[NSPasteboardItem alloc] init];
+		if (copy == nil) {
+			return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_FAILED;
+		}
+		for (NSPasteboardType type in types) {
+			NSData *data = [source dataForType:type];
+			NSData *type_data = [type dataUsingEncoding:NSUTF8StringEncoding
+				allowLossyConversion:NO];
+			if (data == nil || type_data == nil
+					|| data.length > V_MULTIWINDOW_APPKIT_SERVICE_CLIPBOARD_MAX_BYTES - total_bytes
+					|| type_data.length > V_MULTIWINDOW_APPKIT_SERVICE_CLIPBOARD_MAX_BYTES
+						- total_bytes - data.length) {
+				return data == nil || type_data == nil
+					? V_MULTIWINDOW_APPKIT_SERVICE_RESULT_FAILED
+					: V_MULTIWINDOW_APPKIT_SERVICE_RESULT_CAPACITY;
+			}
+			total_bytes += data.length + type_data.length;
+			if (![copy setData:[data copy] forType:type]) {
+				return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_FAILED;
+			}
+		}
+		[snapshot addObject:copy];
+	}
+	*out_items = [snapshot copy];
+	return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_OK;
+}
+
+static BOOL v_multiwindow_appkit_pasteboard_matches_snapshot(NSPasteboard *pasteboard,
+		NSArray<NSPasteboardItem *> *snapshot) {
+	NSArray<NSPasteboardItem *> *actual = pasteboard.pasteboardItems;
+	if (actual == nil) {
+		actual = @[];
+	}
+	if (actual.count != snapshot.count) {
+		return NO;
+	}
+	for (NSUInteger item_index = 0; item_index < snapshot.count; item_index++) {
+		NSPasteboardItem *expected_item = snapshot[item_index];
+		NSPasteboardItem *actual_item = actual[item_index];
+		NSArray<NSPasteboardType> *expected_types = expected_item.types;
+		NSArray<NSPasteboardType> *actual_types = actual_item.types;
+		if (![expected_types isEqualToArray:actual_types]) {
+			return NO;
+		}
+		for (NSPasteboardType type in expected_types) {
+			NSData *expected_data = [expected_item dataForType:type];
+			NSData *actual_data = [actual_item dataForType:type];
+			if (expected_data == nil || actual_data == nil
+					|| ![expected_data isEqualToData:actual_data]) {
+				return NO;
+			}
+		}
+	}
+	return YES;
+}
+
+static BOOL v_multiwindow_appkit_restore_pasteboard_snapshot(NSPasteboard *pasteboard,
+		NSArray<NSPasteboardItem *> *snapshot, NSInteger expected_change_count) {
+	if (pasteboard == nil || snapshot == nil
+			|| pasteboard.changeCount != expected_change_count) {
+		return NO;
+	}
+	@try {
+		[pasteboard clearContents];
+		if (snapshot.count != 0 && ![pasteboard writeObjects:snapshot]) {
+			return NO;
+		}
+		return v_multiwindow_appkit_pasteboard_matches_snapshot(pasteboard, snapshot);
+	} @catch (NSException *exception) {
+		(void)exception;
+		return NO;
+	}
+}
+
 int v_multiwindow_appkit_service_set_clipboard_text(void *state_ptr,
 		const char *text, size_t text_length) {
 	@autoreleasepool {
@@ -3678,16 +3781,51 @@ int v_multiwindow_appkit_service_set_clipboard_text(void *state_ptr,
 		if (value == nil) {
 			return 0;
 		}
+		NSPasteboard *pasteboard = nil;
+		NSArray<NSPasteboardItem *> *snapshot = nil;
+		int snapshot_status = V_MULTIWINDOW_APPKIT_SERVICE_RESULT_FAILED;
+		NSData *read_snapshot = nil;
+		NSInteger owned_change_count = 0;
+		BOOL clear_attempted = NO;
 		@try {
-			NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
-			[pasteboard clearContents];
+			pasteboard = [NSPasteboard generalPasteboard];
+			if (pasteboard == nil) {
+				return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_FAILED;
+			}
+			read_snapshot = state.serviceClipboardSnapshot;
+			owned_change_count = pasteboard.changeCount;
+			snapshot_status = v_multiwindow_appkit_snapshot_pasteboard(pasteboard, &snapshot);
+			if (snapshot_status != V_MULTIWINDOW_APPKIT_SERVICE_RESULT_OK) {
+				return snapshot_status;
+			}
+			clear_attempted = YES;
+			owned_change_count = [pasteboard clearContents];
+			if ([pasteboard setString:value forType:NSPasteboardTypeString]) {
+				state.serviceClipboardSnapshot = nil;
+				return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_OK;
+			}
+			if (v_multiwindow_appkit_restore_pasteboard_snapshot(pasteboard, snapshot,
+					owned_change_count)) {
+				state.serviceClipboardSnapshot = read_snapshot;
+				return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_FAILED;
+			}
 			state.serviceClipboardSnapshot = nil;
-			return [pasteboard setString:value forType:NSPasteboardTypeString]
-				? V_MULTIWINDOW_APPKIT_SERVICE_RESULT_OK
-				: V_MULTIWINDOW_APPKIT_SERVICE_RESULT_FAILED;
+			return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_INDETERMINATE;
 		} @catch (NSException *exception) {
 			(void)exception;
-			return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_FAILED;
+			if (!clear_attempted) {
+				return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_FAILED;
+			}
+			if (snapshot_status == V_MULTIWINDOW_APPKIT_SERVICE_RESULT_OK
+					&& v_multiwindow_appkit_restore_pasteboard_snapshot(pasteboard, snapshot,
+						owned_change_count)) {
+				state.serviceClipboardSnapshot = read_snapshot;
+				return V_MULTIWINDOW_APPKIT_SERVICE_RESULT_FAILED;
+			}
+			state.serviceClipboardSnapshot = nil;
+			return snapshot_status == V_MULTIWINDOW_APPKIT_SERVICE_RESULT_OK
+				? V_MULTIWINDOW_APPKIT_SERVICE_RESULT_INDETERMINATE
+				: V_MULTIWINDOW_APPKIT_SERVICE_RESULT_FAILED;
 		}
 	}
 }

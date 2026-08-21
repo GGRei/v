@@ -260,6 +260,7 @@ $if linux && x_multiwindow_x11 ? {
 	fn C.XUnmapWindow(display &C.Display, window X11NativeWindow) int
 	fn C.XRaiseWindow(display &C.Display, window X11NativeWindow) int
 	fn C.XMoveWindow(display &C.Display, window X11NativeWindow, x int, y int) int
+	fn C.XReparentWindow(display &C.Display, window X11NativeWindow, parent X11NativeWindow, x int, y int) int
 	fn C.XIconifyWindow(display &C.Display, window X11NativeWindow, screen int) int
 	fn C.XResizeWindow(display &C.Display, window X11NativeWindow, width u32, height u32) int
 	fn C.XDestroyWindow(display &C.Display, window X11NativeWindow) int
@@ -993,7 +994,7 @@ fn (mut backend X11Backend) queued_ewmh_capability_events() []QueuedEvent {
 				kind:       .capability
 				window:     record.id
 				operation:  .focus
-				capability: backend.service_operation_capability(.focus)
+				capability: backend.service_operation_capability(record.id, .focus)
 			})
 		}
 		if old_maximize != backend.ewmh_maximize {
@@ -1001,7 +1002,7 @@ fn (mut backend X11Backend) queued_ewmh_capability_events() []QueuedEvent {
 				kind:       .capability
 				window:     record.id
 				operation:  .maximize
-				capability: backend.service_operation_capability(.maximize)
+				capability: backend.service_operation_capability(record.id, .maximize)
 			})
 		}
 		if old_fullscreen != backend.ewmh_fullscreen {
@@ -1009,7 +1010,7 @@ fn (mut backend X11Backend) queued_ewmh_capability_events() []QueuedEvent {
 				kind:       .capability
 				window:     record.id
 				operation:  .fullscreen
-				capability: backend.service_operation_capability(.fullscreen)
+				capability: backend.service_operation_capability(record.id, .fullscreen)
 			})
 		}
 		if old_maximize != backend.ewmh_maximize || old_fullscreen != backend.ewmh_fullscreen {
@@ -1017,20 +1018,43 @@ fn (mut backend X11Backend) queued_ewmh_capability_events() []QueuedEvent {
 				kind:       .capability
 				window:     record.id
 				operation:  .restore
-				capability: backend.service_operation_capability(.restore)
+				capability: backend.service_operation_capability(record.id, .restore)
 			})
 		}
 	}
 	return events
 }
 
-fn (backend &X11Backend) service_operation_capability(operation ServiceOperation) ServiceOperationCapability {
+fn (backend &X11Backend) service_window_capture_available(id WindowId) bool {
+	$if linux && x_multiwindow_x11 ? {
+		index := backend.window_record_index(id) or { return false }
+		if !backend.started || backend.display == unsafe { nil }
+			|| backend.windows[index].window == X11NativeWindow(0) {
+			return false
+		}
+		probe := C.v_multiwindow_x11_readback_probe(backend.display, backend.windows[index].window,
+			1, 1, 0)
+		return probe.attributes_available != 0 && probe.map_state == 2 && probe.actual_width > 0
+			&& probe.actual_height > 0
+	}
+	_ = id
+	return false
+}
+
+fn (backend &X11Backend) service_operation_capability(id WindowId, operation ServiceOperation) ServiceOperationCapability {
 	return match operation {
-		.show, .hide, .raise, .position, .native_borrow, .portal_parent, .window_capture {
+		.show, .hide, .raise, .position, .native_borrow, .portal_parent {
 			ServiceOperationCapability{
 				support:          .available
-				asynchronous:     operation in [.position, .portal_parent, .window_capture]
+				asynchronous:     operation in [.position, .portal_parent]
 				state_observable: operation in [.show, .hide, .position]
+			}
+		}
+		.window_capture {
+			available := backend.service_window_capture_available(id)
+			ServiceOperationCapability{
+				support:      if available { .available } else { .unsupported }
+				asynchronous: available
 			}
 		}
 		.image_readback {

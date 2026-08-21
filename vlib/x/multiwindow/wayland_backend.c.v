@@ -293,13 +293,34 @@ mut:
 
 struct WaylandClipboardSourceTestSeam {
 mut:
-	active          bool
-	create_override bool
-	next_source     voidptr
-	fail_listener   bool
-	bypass_protocol bool
-	destroyed       []usize
-	destroyed_local []bool
+	active                     bool
+	create_override            bool
+	next_source                voidptr
+	fail_listener              bool
+	bypass_protocol            bool
+	exercise_transport_plan    bool
+	fail_flush_after_selection bool
+	selection_requests         int
+	destroyed                  []usize
+	destroyed_local            []bool
+}
+
+struct WaylandPreparedTransportAttempt {
+	display          voidptr
+	context          NativeOperationContext
+	evidence_context NativeOperationContext
+}
+
+struct WaylandServiceTransportPlan {
+	attempts []WaylandPreparedTransportAttempt
+mut:
+	next int
+}
+
+fn (mut plan WaylandServiceTransportPlan) take() WaylandPreparedTransportAttempt {
+	attempt := plan.attempts[plan.next]
+	plan.next++
+	return attempt
 }
 
 struct WaylandShowHandshakeTestObservation {
@@ -333,6 +354,12 @@ mut:
 	hide_surface_release_failure    bool
 	hide_surface_unclaimed_terminal bool
 	hide_surface_terminal_failure   bool
+	interactive_request_override    bool
+	create_request_override         bool
+	create_requests                 int
+	interactive_move_requests       int
+	interactive_resize_requests     int
+	interactive_transport_finishes  int
 }
 
 @[heap]
@@ -544,6 +571,30 @@ fn (mut record WaylandOutputRecord) publish_output_if_ready() {
 fn (backend &WaylandBackend) transport_can_marshal() bool {
 	return backend.display != unsafe { nil } && !backend.wayland_display_unavailable
 		&& backend.wayland_display_error == 0
+}
+
+fn (backend &WaylandBackend) transport_plan_authority_ready(attempt_count int) bool {
+	if !backend.transport_can_marshal() || backend.native_operations == unsafe { nil }
+		|| attempt_count <= 0 {
+		return false
+	}
+	authority := backend.native_operations
+	if !authority.owner_thread_is_current() || authority.sequence_exhausted
+		|| authority.next_ordinal == 0
+		|| !authority.authority_scope_is_current(.renderer_attempt, authority.renderer_attempt_token) {
+		return false
+	}
+	ordinal_count := u64(attempt_count) * u64(2)
+	return ordinal_count > 0 && ordinal_count - 1 <= ~u64(0) - authority.next_ordinal
+}
+
+fn (backend &WaylandBackend) service_transport_usable(attempt_count int) bool {
+	return backend.started && !backend.render_health.blocks_graphics()
+		&& backend.transport_plan_authority_ready(attempt_count)
+}
+
+fn (backend &WaylandBackend) cleanup_transport_usable(attempt_count int) bool {
+	return backend.transport_plan_authority_ready(attempt_count)
 }
 
 fn (backend &WaylandBackend) retains_native_ownership_except_display() bool {
@@ -1965,7 +2016,7 @@ $if linux && sokol_wayland ? {
 		mut record := backend.windows[index]
 		record.enqueue_native_event(C.v_multiwindow_wayland_next_event_sequence(), queued_input_event(record.input_event(.mouse_leave,
 			backend.event_modifiers())))
-		backend.release_window_mouse_lock(index, true)
+		backend.release_window_mouse_lock(index, true, true)
 		if backend.pointer_focused && backend.pointer_focus == record.id {
 			backend.pointer_focused = false
 			backend.pointer_enter_serial_valid = false
@@ -2485,21 +2536,25 @@ $if linux && sokol_wayland ? {
 			return
 		}
 		mut backend := unsafe { &WaylandBackend(data) }
-		if source != backend.clipboard_source
-			|| (C.strcmp(mime_type, c'text/plain;charset=utf-8') != 0
+		mut payload := ''
+		mut source_known := false
+		if source == backend.clipboard_source {
+			payload = backend.clipboard_text.clone()
+			source_known = true
+		}
+		if !source_known || (C.strcmp(mime_type, c'text/plain;charset=utf-8') != 0
 			&& C.strcmp(mime_type, c'text/plain') != 0)
 			|| C.v_multiwindow_wayland_fd_set_nonblocking(fd) == 0 {
 			C.close(fd)
 			return
 		}
-		payload_bytes := u64(backend.clipboard_text.len)
+		payload_bytes := u64(payload.len)
 		if backend.clipboard_sends.len >= wayland_clipboard_max_outgoing_transfers
 			|| payload_bytes > wayland_clipboard_max_outgoing_snapshot_bytes
 			|| backend.clipboard_send_snapshot_bytes > wayland_clipboard_max_outgoing_snapshot_bytes - payload_bytes {
 			C.close(fd)
 			return
 		}
-		payload := backend.clipboard_text.clone()
 		backend.clipboard_sends << WaylandClipboardSend{
 			fd:          fd
 			payload:     payload
@@ -2743,7 +2798,7 @@ fn (mut backend WaylandBackend) inject_window_show_test_observation(index int, b
 	}
 }
 
-fn (mut backend WaylandBackend) drain_hidden_window_before_show(seed NativeOperationSeed) ! {
+fn (mut backend WaylandBackend) drain_hidden_window_before_show(mut transport WaylandServiceTransportPlan) ! {
 	$if test {
 		if backend.toplevel_replay_test.show_handshake_override {
 			backend.toplevel_replay_test.operations << 'hidden_drain'
@@ -2753,13 +2808,10 @@ fn (mut backend WaylandBackend) drain_hidden_window_before_show(seed NativeOpera
 			return
 		}
 	}
-	drain := backend.attempt_wayland_roundtrip(seed)
-	if !drain.succeeded() {
-		return error(err_wayland_dispatch_failed)
-	}
+	_ = backend.execute_prepared_service_transport(transport.take())!
 }
 
-fn (mut backend WaylandBackend) run_window_show_handshake_boundary(index int, seed NativeOperationSeed, commit bool) !bool {
+fn (mut backend WaylandBackend) run_window_show_handshake_boundary(index int, mut transport WaylandServiceTransportPlan, commit bool) !bool {
 	if index < 0 || index >= backend.windows.len {
 		return error(err_window_not_found)
 	}
@@ -2787,14 +2839,10 @@ fn (mut backend WaylandBackend) run_window_show_handshake_boundary(index int, se
 				&& record.show_configure_state_valid
 		}
 	}
-	flush := backend.attempt_wayland_flush(seed)
-	if !flush.succeeded() {
-		return error(err_wayland_flush_failed)
-	}
-	roundtrip := backend.attempt_wayland_roundtrip(seed)
-	if !roundtrip.succeeded() {
-		return error(err_wayland_dispatch_failed)
-	}
+	flush_attempt := transport.take()
+	roundtrip_attempt := transport.take()
+	_ = backend.execute_prepared_service_transport(flush_attempt)!
+	_ = backend.execute_prepared_service_transport(roundtrip_attempt)!
 	return record.show_configure_boundary == boundary && record.show_configure_received
 		&& record.show_configure_state_valid
 }
@@ -2837,12 +2885,27 @@ fn (mut backend WaylandBackend) ack_window_show_configure(index int, cleanup boo
 	record.show_configure_received = false
 }
 
-fn (mut backend WaylandBackend) abort_window_show_handshake(index int, maximized bool, fullscreen bool) {
+fn (mut backend WaylandBackend) abort_window_show_handshake(index int, mut transport WaylandServiceTransportPlan, maximized bool, fullscreen bool) {
 	if index < 0 || index >= backend.windows.len {
 		return
 	}
 	mut record := backend.windows[index]
+	mut cleanup_attempt := WaylandPreparedTransportAttempt{}
+	mut flush_cleanup := record.show_configure_received && backend.transport_can_marshal()
+	$if test {
+		if backend.toplevel_replay_test.show_handshake_override {
+			flush_cleanup = false
+		}
+	}
+	if flush_cleanup && transport.next < transport.attempts.len {
+		cleanup_attempt = transport.take()
+	} else {
+		flush_cleanup = false
+	}
 	backend.ack_window_show_configure(index, true)
+	if flush_cleanup {
+		backend.consume_prepared_service_cleanup(cleanup_attempt)
+	}
 	record.requested_maximized = maximized
 	record.requested_fullscreen = fullscreen
 	record.requested_visible = false
@@ -2864,7 +2927,7 @@ fn (mut backend WaylandBackend) abort_window_show_handshake(index int, maximized
 	record.observed_service_state_valid = false
 }
 
-fn (mut backend WaylandBackend) flush_window_show_ack(seed NativeOperationSeed) ! {
+fn (mut backend WaylandBackend) flush_window_show_ack(attempt WaylandPreparedTransportAttempt) ! {
 	$if test {
 		if backend.toplevel_replay_test.show_handshake_override {
 			backend.toplevel_replay_test.operations << 'ack_flush'
@@ -2874,16 +2937,21 @@ fn (mut backend WaylandBackend) flush_window_show_ack(seed NativeOperationSeed) 
 			return
 		}
 	}
-	flush := backend.attempt_wayland_flush(seed)
-	if !flush.succeeded() {
-		return error(err_wayland_flush_failed)
-	}
+	_ = backend.execute_prepared_service_transport(attempt)!
 }
 
-fn (mut backend WaylandBackend) finish_window_show_handshake(index int, seed NativeOperationSeed, maximized bool, fullscreen bool) ! {
+fn (mut backend WaylandBackend) finish_window_show_handshake(index int, mut transport WaylandServiceTransportPlan, maximized bool, fullscreen bool) ! {
 	mut record := backend.windows[index]
+	mut flush_attempt := WaylandPreparedTransportAttempt{}
+	mut show_handshake_override := false
+	$if test {
+		show_handshake_override = backend.toplevel_replay_test.show_handshake_override
+	}
+	if !show_handshake_override {
+		flush_attempt = transport.take()
+	}
 	backend.ack_window_show_configure(index, false)
-	backend.flush_window_show_ack(seed)!
+	backend.flush_window_show_ack(flush_attempt)!
 	if record.show_configure_width > 0 && record.show_configure_height > 0
 		&& (record.width != record.show_configure_width
 		|| record.height != record.show_configure_height) {
@@ -2917,7 +2985,7 @@ fn (mut backend WaylandBackend) finish_window_show_handshake(index int, seed Nat
 	record.mapped = false
 }
 
-fn (mut backend WaylandBackend) prepare_window_show_handshake(index int, seed NativeOperationSeed, maximized bool, fullscreen bool, baseline_maximized bool, baseline_fullscreen bool) ! {
+fn (mut backend WaylandBackend) prepare_window_show_handshake(index int, mut transport WaylandServiceTransportPlan, maximized bool, fullscreen bool, baseline_maximized bool, baseline_fullscreen bool) ! {
 	mut record := backend.windows[index]
 	record.requested_visible = false
 	record.publish_show_on_map = false
@@ -2950,8 +3018,8 @@ fn (mut backend WaylandBackend) prepare_window_show_handshake(index int, seed Na
 		.fullscreen { false }
 	}
 	backend.request_window_show_probe(index, first_axis, first_enabled)
-	mut configured := backend.run_window_show_handshake_boundary(index, seed, true) or {
-		backend.abort_window_show_handshake(index, maximized, fullscreen)
+	mut configured := backend.run_window_show_handshake_boundary(index, mut transport, true) or {
+		backend.abort_window_show_handshake(index, mut transport, maximized, fullscreen)
 		return err
 	}
 	if !configured {
@@ -2965,22 +3033,22 @@ fn (mut backend WaylandBackend) prepare_window_show_handshake(index int, seed Na
 			.fullscreen { !baseline_fullscreen }
 		}
 		backend.request_window_show_probe(index, second_axis, second_enabled)
-		configured = backend.run_window_show_handshake_boundary(index, seed, false) or {
-			backend.abort_window_show_handshake(index, maximized, fullscreen)
+		configured = backend.run_window_show_handshake_boundary(index, mut transport, false) or {
+			backend.abort_window_show_handshake(index, mut transport, maximized, fullscreen)
 			return err
 		}
 	}
 	if !configured {
-		backend.abort_window_show_handshake(index, maximized, fullscreen)
+		backend.abort_window_show_handshake(index, mut transport, maximized, fullscreen)
 		return error(err_wayland_show_configure_failed)
 	}
 	backend.request_window_show_final_intents(index, maximized, fullscreen)
-	_ = backend.run_window_show_handshake_boundary(index, seed, false) or {
-		backend.abort_window_show_handshake(index, maximized, fullscreen)
+	_ = backend.run_window_show_handshake_boundary(index, mut transport, false) or {
+		backend.abort_window_show_handshake(index, mut transport, maximized, fullscreen)
 		return err
 	}
-	backend.finish_window_show_handshake(index, seed, maximized, fullscreen) or {
-		backend.abort_window_show_handshake(index, maximized, fullscreen)
+	backend.finish_window_show_handshake(index, mut transport, maximized, fullscreen) or {
+		backend.abort_window_show_handshake(index, mut transport, maximized, fullscreen)
 		return err
 	}
 }
@@ -3769,6 +3837,153 @@ fn wayland_window_operation_seed(id WindowId, target_generation u64, call_site N
 	}
 }
 
+fn (mut backend WaylandBackend) materialize_prepared_wayland_transport(boundary_seed NativeOperationSeed, operation NativeRenderOperation, display voidptr, mut ordinals NativeOrdinalRange) !WaylandPreparedTransportAttempt {
+	seed := NativeOperationSeed{
+		...boundary_seed
+		presence_mask:   boundary_seed.presence_mask | native_context_has_target_identity
+		target_identity: native_identity(display)
+	}
+	context := ordinals.materialize(backend.native_operations, .wayland, operation, seed) or {
+		backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+		return error(err_render_native_renderer_unavailable)
+	}
+	evidence_seed := NativeOperationSeed{
+		call_site:       .display_transport
+		scope:           .renderer
+		presence_mask:   native_context_has_target_identity
+		target_identity: native_identity(display)
+	}
+	evidence_context := ordinals.materialize(backend.native_operations, .wayland,
+		.wayland_display_error_query, evidence_seed) or {
+		backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+		return error(err_render_native_renderer_unavailable)
+	}
+	return WaylandPreparedTransportAttempt{
+		display:          display
+		context:          context
+		evidence_context: evidence_context
+	}
+}
+
+fn (mut backend WaylandBackend) prepare_transport_plan(boundary_seed NativeOperationSeed, operations []NativeRenderOperation, cleanup bool) !WaylandServiceTransportPlan {
+	$if linux && sokol_wayland ? {
+		usable := if cleanup {
+			backend.cleanup_transport_usable(operations.len)
+		} else {
+			backend.service_transport_usable(operations.len)
+		}
+		if !usable {
+			return error(err_render_native_renderer_unavailable)
+		}
+		display := unsafe { &C.wl_display(backend.display) }
+		mut ordinals := backend.native_operations.reserve_ordinals(u64(operations.len) * u64(2)) or {
+			backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+			return error(err_render_native_renderer_unavailable)
+		}
+		mut attempts := []WaylandPreparedTransportAttempt{cap: operations.len}
+		for operation in operations {
+			attempts << backend.materialize_prepared_wayland_transport(boundary_seed, operation,
+				display, mut ordinals)!
+		}
+		return WaylandServiceTransportPlan{
+			attempts: attempts
+		}
+	} $else {
+		_ = boundary_seed
+		_ = operations
+		return error(err_backend_unsupported)
+	}
+}
+
+fn (mut backend WaylandBackend) prepare_service_transport_plan(boundary_seed NativeOperationSeed, operations []NativeRenderOperation) !WaylandServiceTransportPlan {
+	return backend.prepare_transport_plan(boundary_seed, operations, false)
+}
+
+fn (mut backend WaylandBackend) prepare_create_transport_plan(id WindowId, prepare_lifecycle_buffer bool) !WaylandServiceTransportPlan {
+	$if linux && sokol_wayland ? {
+		operation_count := if prepare_lifecycle_buffer { 4 } else { 3 }
+		if !backend.service_transport_usable(operation_count) {
+			return error(err_render_native_renderer_unavailable)
+		}
+		display := unsafe { &C.wl_display(backend.display) }
+		mut ordinals := backend.native_operations.reserve_ordinals(u64(operation_count) * u64(2)) or {
+			backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+			return error(err_render_native_renderer_unavailable)
+		}
+		prepare_seed := wayland_window_operation_seed(id, 1, .window_prepare)
+		mut attempts := []WaylandPreparedTransportAttempt{cap: operation_count}
+		for operation in [NativeRenderOperation.display_flush, .display_roundtrip, .display_flush] {
+			attempts << backend.materialize_prepared_wayland_transport(prepare_seed, operation,
+				display, mut ordinals)!
+		}
+		if prepare_lifecycle_buffer {
+			lifecycle_seed := wayland_window_operation_seed(id, 1, .display_transport)
+			attempts << backend.materialize_prepared_wayland_transport(lifecycle_seed,
+				.display_flush, display, mut ordinals)!
+		}
+		return WaylandServiceTransportPlan{
+			attempts: attempts
+		}
+	} $else {
+		_ = id
+		_ = prepare_lifecycle_buffer
+		return error(err_backend_unsupported)
+	}
+}
+
+fn (mut backend WaylandBackend) prepare_cleanup_transport_plan(boundary_seed NativeOperationSeed, operations []NativeRenderOperation) !WaylandServiceTransportPlan {
+	return backend.prepare_transport_plan(boundary_seed, operations, true)
+}
+
+fn (mut backend WaylandBackend) accept_prepared_wayland_transport(attempt WaylandPreparedTransportAttempt, raw C.VMultiwindowNativePrimitive, validation NativeLocalValidation, error_text string) NativeRenderResult {
+	$if linux && sokol_wayland ? {
+		display := unsafe { &C.wl_display(attempt.display) }
+		primary := backend.native_operations.capture_call(attempt.context, raw)
+		mut evidence_raw := C.VMultiwindowNativePrimitive{}
+		C.v_multiwindow_wayland_display_error(display, &evidence_raw)
+		evidence := backend.native_operations.capture_evidence(attempt.evidence_context,
+			evidence_raw)
+		capture := native_capture_with_wayland_display_error(primary, evidence)
+		mut result := backend.native_operations.accept_wayland(attempt.context, capture,
+			validation, error_text)
+		result = backend.record_wayland_result(result)
+		return result
+	} $else {
+		_ = attempt
+		_ = raw
+		_ = validation
+		return native_wayland_logical_result(.display_flush, .renderer, .renderer_unavailable, 0,
+			error_text)
+	}
+}
+
+fn (mut backend WaylandBackend) execute_prepared_wayland_transport(attempt WaylandPreparedTransportAttempt) NativeRenderResult {
+	$if linux && sokol_wayland ? {
+		display := unsafe { &C.wl_display(attempt.display) }
+		mut raw := C.VMultiwindowNativePrimitive{}
+		match attempt.context.operation {
+			.display_flush {
+				C.v_multiwindow_wayland_flush(display, &raw)
+				return backend.accept_prepared_wayland_transport(attempt, raw, .none,
+					err_wayland_flush_failed)
+			}
+			.display_roundtrip {
+				C.v_multiwindow_wayland_roundtrip(display, &raw)
+				return backend.accept_prepared_wayland_transport(attempt, raw, .none,
+					err_wayland_dispatch_failed)
+			}
+			else {
+				return native_wayland_logical_result(attempt.context.operation, .renderer,
+					.operation_failed, 0, err_render_native_batch_failed)
+			}
+		}
+	} $else {
+		_ = attempt
+		return native_wayland_logical_result(.display_flush, .renderer, .renderer_unavailable, 0,
+			err_backend_unsupported)
+	}
+}
+
 fn (mut backend WaylandBackend) attempt_wayland_flush(boundary_seed NativeOperationSeed) NativeRenderResult {
 	$if linux && sokol_wayland ? {
 		if backend.wayland_display_unavailable || backend.render_health.blocks_graphics() {
@@ -3839,18 +4054,16 @@ fn (mut backend WaylandBackend) attempt_wayland_roundtrip(boundary_seed NativeOp
 	}
 }
 
-fn (mut backend WaylandBackend) attempt_wayland_hide_barrier(boundary_seed NativeOperationSeed) NativeRenderResult {
+fn (mut backend WaylandBackend) execute_prepared_wayland_hide_barrier(attempt WaylandPreparedTransportAttempt) ! {
 	$if test {
 		if backend.toplevel_replay_test.hide_barrier_override {
-			return if backend.toplevel_replay_test.hide_barrier_succeeds {
-				native_render_ok(.wayland, .display_roundtrip, .renderer)
-			} else {
-				native_wayland_logical_result(.display_roundtrip, .renderer, .renderer_unavailable,
-					0, err_wayland_dispatch_failed)
+			if !backend.toplevel_replay_test.hide_barrier_succeeds {
+				return error(err_wayland_dispatch_failed)
 			}
+			return
 		}
 	}
-	return backend.attempt_wayland_roundtrip(boundary_seed)
+	_ = backend.execute_prepared_service_transport(attempt)!
 }
 
 fn (mut backend WaylandBackend) abandon_renderer_ownership() {
@@ -3965,21 +4178,39 @@ fn (mut backend WaylandBackend) create_window(id WindowId, config WindowConfig) 
 			|| backend.wm_base == unsafe { nil } || backend.wm_base_name == 0 {
 			return error(err_wayland_required_globals_missing)
 		}
+		prepare_lifecycle_buffer := config.visible && !backend.renderer_ready()
+		mut transport := backend.prepare_create_transport_plan(id, prepare_lifecycle_buffer)!
+		flush_attempt := transport.take()
+		roundtrip_attempt := transport.take()
+		ack_flush_attempt := transport.take()
+		mut lifecycle_flush_attempt := WaylandPreparedTransportAttempt{}
+		if prepare_lifecycle_buffer {
+			lifecycle_flush_attempt = transport.take()
+		}
+		$if test {
+			if backend.toplevel_replay_test.create_request_override {
+				backend.toplevel_replay_test.create_requests++
+				return error(err_wayland_create_surface_failed)
+			}
+		}
 		compositor := unsafe { &C.wl_compositor(backend.compositor) }
 		wm_base := unsafe { &C.xdg_wm_base(backend.wm_base) }
 		surface := C.wl_compositor_create_surface(compositor)
 		if surface == unsafe { nil } {
+			backend.consume_prepared_service_cleanup(flush_attempt)
 			return error(err_wayland_create_surface_failed)
 		}
 		xdg_surface := C.v_multiwindow_wayland_xdg_wm_base_get_xdg_surface(wm_base, surface)
 		if xdg_surface == unsafe { nil } {
 			C.wl_surface_destroy(surface)
+			backend.consume_prepared_service_cleanup(flush_attempt)
 			return error(err_wayland_create_surface_failed)
 		}
 		xdg_toplevel := C.v_multiwindow_wayland_xdg_surface_get_toplevel(xdg_surface)
 		if xdg_toplevel == unsafe { nil } {
 			C.v_multiwindow_wayland_xdg_surface_destroy(xdg_surface)
 			C.wl_surface_destroy(surface)
+			backend.consume_prepared_service_cleanup(flush_attempt)
 			return error(err_wayland_create_surface_failed)
 		}
 		actual_size := window_size_for_config(config, config.width, config.height)
@@ -4010,14 +4241,17 @@ fn (mut backend WaylandBackend) create_window(id WindowId, config WindowConfig) 
 		}
 		if C.v_multiwindow_wayland_add_surface_listener(surface, record.listener_data()) < 0 {
 			_ = backend.destroy_window_record(mut record)
+			backend.consume_prepared_service_cleanup(flush_attempt)
 			return error(err_wayland_create_surface_failed)
 		}
 		if C.v_multiwindow_wayland_add_xdg_surface_listener(xdg_surface, record.listener_data()) < 0 {
 			_ = backend.destroy_window_record(mut record)
+			backend.consume_prepared_service_cleanup(flush_attempt)
 			return error(err_wayland_create_surface_failed)
 		}
 		if C.v_multiwindow_wayland_add_xdg_toplevel_listener(xdg_toplevel, record.listener_data()) < 0 {
 			_ = backend.destroy_window_record(mut record)
+			backend.consume_prepared_service_cleanup(flush_attempt)
 			return error(err_wayland_create_surface_failed)
 		}
 		C.v_multiwindow_wayland_xdg_toplevel_set_title(xdg_toplevel, &char(record.title.str))
@@ -4025,11 +4259,13 @@ fn (mut backend WaylandBackend) create_window(id WindowId, config WindowConfig) 
 		if owner := config.owner {
 			owner_index := backend.window_record_index(owner) or {
 				_ = backend.destroy_window_record(mut record)
+				backend.consume_prepared_service_cleanup(flush_attempt)
 				return error(err_window_not_found)
 			}
 			owner_toplevel := unsafe { &C.xdg_toplevel(backend.windows[owner_index].xdg_toplevel) }
 			if owner_toplevel == unsafe { nil } {
 				_ = backend.destroy_window_record(mut record)
+				backend.consume_prepared_service_cleanup(flush_attempt)
 				return error(err_window_not_found)
 			}
 			C.v_multiwindow_wayland_xdg_toplevel_set_parent(xdg_toplevel, owner_toplevel)
@@ -4065,24 +4301,28 @@ fn (mut backend WaylandBackend) create_window(id WindowId, config WindowConfig) 
 		index := backend.windows.len - 1
 		_ = backend.attach_fractional_scale_to_record(mut record)
 		C.wl_surface_commit(surface)
-		window_seed := wayland_window_operation_seed(record.id, record.render_target_generation,
-			.window_prepare)
-		flush := backend.attempt_wayland_flush(window_seed)
-		if !flush.succeeded() {
+		backend.finish_prepared_service_request(flush_attempt) or {
 			backend.destroy_window_slot(index)
 			_ = backend.destroy_removed_wm_base_if_unused()
 			return error(err_wayland_flush_failed)
 		}
-		roundtrip := backend.attempt_wayland_roundtrip(window_seed)
-		if !roundtrip.succeeded() {
+		backend.finish_prepared_service_request(roundtrip_attempt) or {
 			backend.destroy_window_slot(index)
 			_ = backend.destroy_removed_wm_base_if_unused()
 			return error(err_wayland_dispatch_failed)
 		}
-		if config.visible && !backend.renderer_ready() {
-			backend.ensure_lifecycle_buffer(index) or {
+		backend.finish_prepared_service_request(ack_flush_attempt) or {
+			backend.destroy_window_slot(index)
+			_ = backend.destroy_removed_wm_base_if_unused()
+			return error(err_wayland_flush_failed)
+		}
+		if prepare_lifecycle_buffer {
+			backend.ensure_lifecycle_buffer_with_prepared_transport(index, lifecycle_flush_attempt) or {
 				backend.destroy_window_slot(index)
 				_ = backend.destroy_removed_wm_base_if_unused()
+				if err.msg() != err_wayland_flush_failed {
+					backend.consume_prepared_service_cleanup(lifecycle_flush_attempt)
+				}
 				return err
 			}
 		} else if !config.visible {
@@ -4138,14 +4378,13 @@ fn (mut backend WaylandBackend) set_window_title(id WindowId, title string) ! {
 		if record.xdg_toplevel == unsafe { nil } {
 			return error(err_window_not_found)
 		}
+		mut transport := backend.prepare_service_transport_plan(wayland_window_operation_seed(record.id,
+			record.render_target_generation, .display_transport), [.display_flush])!
+		flush_attempt := transport.take()
 		C.v_multiwindow_wayland_xdg_toplevel_set_title(unsafe {
 			&C.xdg_toplevel(record.xdg_toplevel)
 		}, &char(title.str))
-		flush := backend.attempt_wayland_flush(wayland_window_operation_seed(record.id,
-			record.render_target_generation, .display_transport))
-		if !flush.succeeded() {
-			return error(err_wayland_flush_failed)
-		}
+		backend.finish_prepared_service_request(flush_attempt)!
 		backend.windows[index].title = title.clone()
 		return
 	} $else {
@@ -4186,14 +4425,15 @@ fn (mut backend WaylandBackend) set_window_cursor(id WindowId, shape CursorShape
 		if cursor_shape == 0 {
 			return error(err_capability_unsupported)
 		}
+		mut transport := backend.prepare_service_transport_plan(wayland_window_operation_seed(backend.windows[index].id,
+			backend.windows[index].render_target_generation, .display_transport), [
+			.display_flush,
+		])!
+		flush_attempt := transport.take()
 		C.v_multiwindow_wayland_cursor_shape_device_set_shape(unsafe {
 			&C.wp_cursor_shape_device_v1(backend.cursor_shape_device)
 		}, backend.pointer_enter_serial, cursor_shape)
-		flush := backend.attempt_wayland_flush(wayland_window_operation_seed(backend.windows[index].id,
-			backend.windows[index].render_target_generation, .display_transport))
-		if !flush.succeeded() {
-			return error(err_wayland_flush_failed)
-		}
+		backend.finish_prepared_service_request(flush_attempt)!
 		return
 	} $else {
 		_ = id
@@ -4244,17 +4484,25 @@ fn (mut backend WaylandBackend) begin_window_move(id WindowId) ! {
 		if backend.windows[index].xdg_toplevel == unsafe { nil } {
 			return error(err_window_not_found)
 		}
+		if !backend.windows[index].user_action_serial_available(backend.poll_generation) {
+			return error(err_capability_unsupported)
+		}
+		mut transport := backend.prepare_service_transport_plan(wayland_window_operation_seed(backend.windows[index].id,
+			backend.windows[index].render_target_generation, .display_transport), [
+			.display_flush,
+		])!
+		flush_attempt := transport.take()
 		serial := backend.windows[index].take_user_action_serial(backend.poll_generation) or {
 			return error(err_capability_unsupported)
 		}
-		C.v_multiwindow_wayland_xdg_toplevel_move(unsafe {
-			&C.xdg_toplevel(backend.windows[index].xdg_toplevel)
-		}, unsafe { &C.wl_seat(backend.seat) }, serial)
-		flush := backend.attempt_wayland_flush(wayland_window_operation_seed(backend.windows[index].id,
-			backend.windows[index].render_target_generation, .display_transport))
-		if !flush.succeeded() {
-			return error(err_wayland_flush_failed)
+		if backend.interactive_request_overridden_for_test(false) {
+			backend.toplevel_replay_test.interactive_move_requests++
+		} else {
+			C.v_multiwindow_wayland_xdg_toplevel_move(unsafe {
+				&C.xdg_toplevel(backend.windows[index].xdg_toplevel)
+			}, unsafe { &C.wl_seat(backend.seat) }, serial)
 		}
+		backend.finish_prepared_service_request(flush_attempt)!
 		return
 	} $else {
 		_ = id
@@ -4280,17 +4528,25 @@ fn (mut backend WaylandBackend) begin_window_resize(id WindowId, edge WindowResi
 		if backend.windows[index].xdg_toplevel == unsafe { nil } {
 			return error(err_window_not_found)
 		}
+		if !backend.windows[index].user_action_serial_available(backend.poll_generation) {
+			return error(err_capability_unsupported)
+		}
+		mut transport := backend.prepare_service_transport_plan(wayland_window_operation_seed(backend.windows[index].id,
+			backend.windows[index].render_target_generation, .display_transport), [
+			.display_flush,
+		])!
+		flush_attempt := transport.take()
 		serial := backend.windows[index].take_user_action_serial(backend.poll_generation) or {
 			return error(err_capability_unsupported)
 		}
-		C.v_multiwindow_wayland_xdg_toplevel_resize(unsafe {
-			&C.xdg_toplevel(backend.windows[index].xdg_toplevel)
-		}, unsafe { &C.wl_seat(backend.seat) }, serial, wayland_resize_edge(edge))
-		flush := backend.attempt_wayland_flush(wayland_window_operation_seed(backend.windows[index].id,
-			backend.windows[index].render_target_generation, .display_transport))
-		if !flush.succeeded() {
-			return error(err_wayland_flush_failed)
+		if backend.interactive_request_overridden_for_test(true) {
+			backend.toplevel_replay_test.interactive_resize_requests++
+		} else {
+			C.v_multiwindow_wayland_xdg_toplevel_resize(unsafe {
+				&C.xdg_toplevel(backend.windows[index].xdg_toplevel)
+			}, unsafe { &C.wl_seat(backend.seat) }, serial, wayland_resize_edge(edge))
 		}
+		backend.finish_prepared_service_request(flush_attempt)!
 		return
 	} $else {
 		_ = id
@@ -4457,6 +4713,10 @@ fn (mut record WaylandWindowRecord) take_user_action_serial(poll_generation u64)
 	serial := record.user_action_serial
 	record.clear_user_action_serial()
 	return serial
+}
+
+fn (record &WaylandWindowRecord) user_action_serial_available(poll_generation u64) bool {
+	return record.user_action_serial_valid && record.user_action_poll == poll_generation
 }
 
 fn (mut backend WaylandBackend) expire_user_action_serials() {
@@ -5462,7 +5722,22 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 						.window_target, .native_window_lost, 0, err_render_native_window_lost))
 				}
 			}
-			mut frame_ordinals := backend.native_operations.reserve_ordinals(5) or {
+			if backend.display == unsafe { nil } {
+				record.frame_ready = true
+				return BackendFinalizeAttempt{
+					status:  .not_presented
+					outcome: backend.record_wayland_result(native_wayland_logical_result(.display_flush,
+						.renderer, .renderer_unavailable, 0, err_wayland_connect_failed))
+				}
+			}
+			mut frame_ordinals := backend.native_operations.reserve_ordinals(9) or {
+				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+				return BackendFinalizeAttempt{
+					status:  .not_presented
+					outcome: backend.blocked_renderer_result(.frame_callback)
+				}
+			}
+			mut submission_ordinals := frame_ordinals.split_tail(4) or {
 				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
 				return BackendFinalizeAttempt{
 					status:  .not_presented
@@ -5495,6 +5770,36 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				}
 			}
 			display := unsafe { &C.wl_display(backend.display) }
+			swap_seed := frame_seed.with_target_identity(native_identity(record.egl_surface))
+			mut swap_ordinals := submission_ordinals
+			mut flush_ordinals := swap_ordinals.split_tail(2) or {
+				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+				backend.native_operations.burn_lifetime_ticket(cleanup_ticket)
+				record.frame_ready = true
+				return BackendFinalizeAttempt{
+					status:  .not_presented
+					outcome: backend.blocked_renderer_result(.display_flush)
+				}
+			}
+			swap_context := swap_ordinals.materialize(backend.native_operations, .egl,
+				.swap_buffers, swap_seed) or {
+				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+				backend.native_operations.burn_lifetime_ticket(cleanup_ticket)
+				record.frame_ready = true
+				return BackendFinalizeAttempt{
+					status:  .not_presented
+					outcome: backend.blocked_renderer_result(.swap_buffers)
+				}
+			}
+			flush_attempt := backend.materialize_prepared_wayland_transport(frame_seed,
+				.display_flush, display, mut flush_ordinals) or {
+				backend.native_operations.burn_lifetime_ticket(cleanup_ticket)
+				record.frame_ready = true
+				return BackendFinalizeAttempt{
+					status:  .not_presented
+					outcome: backend.blocked_renderer_result(.display_flush)
+				}
+			}
 			mut raw := C.VMultiwindowNativePrimitive{}
 			C.v_multiwindow_wayland_surface_frame(unsafe { &C.wl_surface(record.surface) }, &raw)
 			record.frame_callback = native_pointer(raw.handle)
@@ -5513,6 +5818,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				if record.frame_callback != unsafe { nil } {
 					_ = backend.destroy_frame_callback_lifetime(mut record)
 				}
+				_ = backend.execute_prepared_wayland_transport(flush_attempt)
 				record.frame_ready = true
 				return BackendFinalizeAttempt{
 					status:  .not_presented
@@ -5524,6 +5830,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				.frame_callback, listener_seed) or {
 				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
 				_ = backend.destroy_frame_callback_lifetime(mut record)
+				_ = backend.execute_prepared_wayland_transport(flush_attempt)
 				record.frame_ready = true
 				return BackendFinalizeAttempt{
 					status:  .not_presented
@@ -5539,30 +5846,11 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 				display, raw, .none, err_wayland_egl_swap_buffers_failed)
 			if !frame_listener.succeeded() {
 				_ = backend.destroy_frame_callback_lifetime(mut record)
+				_ = backend.execute_prepared_wayland_transport(flush_attempt)
 				record.frame_ready = true
 				return BackendFinalizeAttempt{
 					status:  .not_presented
 					outcome: frame_listener
-				}
-			}
-			swap_seed := frame_seed.with_target_identity(native_identity(record.egl_surface))
-			mut swap_ordinals := backend.native_operations.reserve_ordinals(2) or {
-				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
-				_ = backend.destroy_frame_callback_lifetime(mut record)
-				record.frame_ready = true
-				return BackendFinalizeAttempt{
-					status:  .not_presented
-					outcome: backend.blocked_renderer_result(.swap_buffers)
-				}
-			}
-			swap_context := swap_ordinals.materialize(backend.native_operations, .egl,
-				.swap_buffers, swap_seed) or {
-				backend.render_health = renderer_health_latch_unavailable(backend.render_health)
-				_ = backend.destroy_frame_callback_lifetime(mut record)
-				record.frame_ready = true
-				return BackendFinalizeAttempt{
-					status:  .not_presented
-					outcome: backend.blocked_renderer_result(.swap_buffers)
 				}
 			}
 			C.v_multiwindow_linux_egl_swap_buffers(native_identity(backend.egl_display),
@@ -5575,6 +5863,7 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 					record.egl_surface)
 				outcome := backend.handle_window_egl_failure(index, failure, desired)
 				_ = backend.destroy_frame_callback_lifetime(mut record)
+				_ = backend.execute_prepared_wayland_transport(flush_attempt)
 				record.frame_ready = true
 				return BackendFinalizeAttempt{
 					status:  .not_presented
@@ -5583,23 +5872,15 @@ $if gg_multiwindow ? || x_multiwindow_render ? {
 			}
 			if backend.render_health.blocks_graphics() {
 				_ = backend.destroy_frame_callback_lifetime(mut record)
+				_ = backend.execute_prepared_wayland_transport(flush_attempt)
 				record.frame_ready = true
 				return BackendFinalizeAttempt{
 					status:  .not_presented
 					outcome: swap_result
 				}
 			}
-			if backend.display == unsafe { nil } {
-				_ = backend.destroy_frame_callback_lifetime(mut record)
-				record.frame_ready = true
-				return BackendFinalizeAttempt{
-					status:  .not_presented
-					outcome: backend.record_wayland_result(native_wayland_logical_result(.display_flush,
-						.renderer, .renderer_unavailable, 0, err_wayland_connect_failed))
-				}
-			}
 			backend.reapply_parent_to_live_children_on_first_map(record.id, was_mapped)
-			flush := backend.attempt_wayland_flush(frame_seed)
+			flush := backend.execute_prepared_wayland_transport(flush_attempt)
 			if !flush.succeeded() {
 				_ = backend.destroy_frame_callback_lifetime(mut record)
 				record.frame_ready = true
@@ -5984,6 +6265,14 @@ fn (record &WaylandWindowRecord) fallback_buffer_for_extent(width int, height in
 }
 
 fn (mut backend WaylandBackend) ensure_lifecycle_buffer(index int) ! {
+	backend.ensure_lifecycle_buffer_with_transport(index, WaylandPreparedTransportAttempt{}, false)!
+}
+
+fn (mut backend WaylandBackend) ensure_lifecycle_buffer_with_prepared_transport(index int, flush_attempt WaylandPreparedTransportAttempt) ! {
+	backend.ensure_lifecycle_buffer_with_transport(index, flush_attempt, true)!
+}
+
+fn (mut backend WaylandBackend) ensure_lifecycle_buffer_with_transport(index int, prepared_flush_attempt WaylandPreparedTransportAttempt, transport_prepared bool) ! {
 	$if linux && sokol_wayland ? {
 		if backend.render_health.blocks_graphics() || backend.wayland_display_unavailable {
 			return error(err_render_native_renderer_unavailable)
@@ -6015,18 +6304,30 @@ fn (mut backend WaylandBackend) ensure_lifecycle_buffer(index int) ! {
 			return
 		}
 		mut buffer := record.fallback_buffer_for_extent(width, height)
+		if buffer == unsafe { nil } && record.fallback_buffers.len >= wayland_max_fallback_buffers {
+			return
+		}
+		mut flush_attempt := prepared_flush_attempt
+		if !transport_prepared {
+			mut transport := backend.prepare_service_transport_plan(wayland_window_operation_seed(record.id,
+				record.render_target_generation, .display_transport), [.display_flush])!
+			flush_attempt = transport.take()
+		}
 		if buffer == unsafe { nil } {
-			if record.fallback_buffers.len >= wayland_max_fallback_buffers {
-				return
-			}
 			buffer = C.v_multiwindow_wayland_create_shm_buffer(unsafe { &C.wl_shm(backend.shm) },
 				width, height)
 			if buffer == unsafe { nil } {
+				if !transport_prepared {
+					backend.consume_prepared_service_cleanup(flush_attempt)
+				}
 				return error(err_wayland_buffer_failed)
 			}
 			if C.v_multiwindow_wayland_add_buffer_listener(unsafe { &C.wl_buffer(buffer) },
 				record.listener_data()) != 0 {
 				C.v_multiwindow_wayland_buffer_destroy(unsafe { &C.wl_buffer(buffer) })
+				if !transport_prepared {
+					backend.consume_prepared_service_cleanup(flush_attempt)
+				}
 				return error(err_wayland_buffer_failed)
 			}
 			backend.windows[index].fallback_buffers << buffer
@@ -6037,13 +6338,7 @@ fn (mut backend WaylandBackend) ensure_lifecycle_buffer(index int) ! {
 		backend.windows[index].fallback_buffer_width = width
 		backend.windows[index].fallback_buffer_height = height
 		backend.reapply_parent_to_live_children_on_first_map(record.id, was_mapped)
-		if backend.display != unsafe { nil } {
-			flush := backend.attempt_wayland_flush(wayland_window_operation_seed(record.id,
-				record.render_target_generation, .display_transport))
-			if !flush.succeeded() {
-				return error(err_wayland_flush_failed)
-			}
-		}
+		backend.finish_prepared_service_request(flush_attempt)!
 		backend.observe_window_mapped(index)
 		return
 	}
@@ -6330,11 +6625,13 @@ fn (mut backend WaylandBackend) destroy_cursor_shape_manager() {
 	}
 }
 
-fn (mut backend WaylandBackend) release_record_mouse_lock(mut record &WaylandWindowRecord, publish bool) {
+fn (mut backend WaylandBackend) release_record_mouse_lock(mut record &WaylandWindowRecord, publish bool, local_only bool) {
 	$if linux && sokol_wayland ? {
 		was_locked := record.mouse_locked || record.mouse_lock_requested
 		if record.locked_pointer != unsafe { nil } {
-			if !backend.destroy_proxy_locally_if_needed(record.locked_pointer) {
+			if local_only {
+				backend.destroy_proxy_locally(record.locked_pointer)
+			} else if !backend.destroy_proxy_locally_if_needed(record.locked_pointer) {
 				C.v_multiwindow_wayland_locked_pointer_destroy(unsafe {
 					&C.zwp_locked_pointer_v1(record.locked_pointer)
 				})
@@ -6342,7 +6639,9 @@ fn (mut backend WaylandBackend) release_record_mouse_lock(mut record &WaylandWin
 			record.locked_pointer = unsafe { nil }
 		}
 		if record.relative_pointer != unsafe { nil } {
-			if !backend.destroy_proxy_locally_if_needed(record.relative_pointer) {
+			if local_only {
+				backend.destroy_proxy_locally(record.relative_pointer)
+			} else if !backend.destroy_proxy_locally_if_needed(record.relative_pointer) {
 				C.v_multiwindow_wayland_relative_pointer_destroy(unsafe {
 					&C.zwp_relative_pointer_v1(record.relative_pointer)
 				})
@@ -6360,17 +6659,17 @@ fn (mut backend WaylandBackend) release_record_mouse_lock(mut record &WaylandWin
 	}
 }
 
-fn (mut backend WaylandBackend) release_window_mouse_lock(index int, publish bool) {
+fn (mut backend WaylandBackend) release_window_mouse_lock(index int, publish bool, local_only bool) {
 	if index < 0 || index >= backend.windows.len {
 		return
 	}
 	mut record := backend.windows[index]
-	backend.release_record_mouse_lock(mut record, publish)
+	backend.release_record_mouse_lock(mut record, publish, local_only)
 }
 
 fn (mut backend WaylandBackend) release_all_mouse_locks(publish bool) {
 	for index in 0 .. backend.windows.len {
-		backend.release_window_mouse_lock(index, publish)
+		backend.release_window_mouse_lock(index, publish, true)
 	}
 }
 
@@ -6458,7 +6757,7 @@ fn (mut backend WaylandBackend) destroy_window_record(mut record &WaylandWindowR
 	$if linux && sokol_wayland ? {
 		backend.cancel_clipboard_read_for_window(record.id)
 		backend.destroy_portal_exports_for_window(record.id)
-		backend.release_record_mouse_lock(mut record, false)
+		backend.release_record_mouse_lock(mut record, false, true)
 		if backend.pointer_focused && backend.pointer_focus == record.id {
 			backend.pointer_focused = false
 			backend.pointer_enter_serial_valid = false
@@ -6714,6 +7013,10 @@ fn (mut backend WaylandBackend) destroy_clipboard_source(local_only bool) {
 	}
 	backend.clipboard_source = unsafe { nil }
 	backend.clipboard_text = ''
+}
+
+fn (mut backend WaylandBackend) destroy_all_clipboard_sources(local_only bool) {
+	backend.destroy_clipboard_source(local_only)
 }
 
 fn (mut backend WaylandBackend) destroy_clipboard_source_handle(source voidptr, local_only bool) {
@@ -7262,7 +7565,7 @@ fn (mut backend WaylandBackend) finish_pending_data_offer_drop() {
 fn (mut backend WaylandBackend) destroy_data_device() {
 	$if linux && sokol_wayland ? {
 		backend.cancel_clipboard_read()
-		backend.destroy_clipboard_source(false)
+		backend.destroy_all_clipboard_sources(!backend.transport_can_marshal())
 		backend.clear_selection_offer(true)
 		backend.clear_incoming_offer(true)
 		backend.clear_data_offer(true)
@@ -7296,7 +7599,7 @@ fn (backend &WaylandBackend) service_operation_capability(operation ServiceOpera
 	return match operation {
 		.show {
 			ServiceOperationCapability{
-				support:          if backend.started && backend.transport_can_marshal() {
+				support:          if backend.service_transport_usable(8) {
 					.available
 				} else {
 					.unsupported
@@ -7307,7 +7610,7 @@ fn (backend &WaylandBackend) service_operation_capability(operation ServiceOpera
 		}
 		.hide {
 			ServiceOperationCapability{
-				support:          if backend.started && backend.transport_can_marshal() {
+				support:          if backend.service_transport_usable(2) {
 					.available
 				} else {
 					.unsupported
@@ -7327,8 +7630,7 @@ fn (backend &WaylandBackend) service_operation_capability(operation ServiceOpera
 			ServiceOperationCapability{}
 		}
 		.clipboard_read, .clipboard_write {
-			if backend.started && backend.transport_can_marshal()
-				&& backend.data_device_manager != unsafe { nil }
+			if backend.service_transport_usable(1) && backend.data_device_manager != unsafe { nil }
 				&& backend.data_device != unsafe { nil } && backend.seat != unsafe { nil } {
 				ServiceOperationCapability{
 					support:              .conditional
@@ -7341,7 +7643,7 @@ fn (backend &WaylandBackend) service_operation_capability(operation ServiceOpera
 		}
 		.portal_parent {
 			ServiceOperationCapability{
-				support:      if backend.started && backend.transport_can_marshal()
+				support:      if backend.service_transport_usable(1)
 					&& backend.foreign_exporter != unsafe { nil }
 					&& backend.foreign_exporter_name != 0 {
 					.available
@@ -7353,8 +7655,7 @@ fn (backend &WaylandBackend) service_operation_capability(operation ServiceOpera
 		}
 		.mouse_lock {
 			ServiceOperationCapability{
-				support:          if backend.started && backend.transport_can_marshal()
-					&& backend.pointer != unsafe { nil }
+				support:          if backend.started && backend.pointer != unsafe { nil }
 					&& backend.relative_pointer_manager != unsafe { nil }
 					&& backend.pointer_constraints != unsafe { nil } {
 					.conditional
@@ -7367,7 +7668,7 @@ fn (backend &WaylandBackend) service_operation_capability(operation ServiceOpera
 		}
 		.minimize, .maximize, .fullscreen {
 			ServiceOperationCapability{
-				support:          if backend.started && backend.transport_can_marshal() {
+				support:          if backend.service_transport_usable(1) {
 					.available
 				} else {
 					.unsupported
@@ -7380,7 +7681,7 @@ fn (backend &WaylandBackend) service_operation_capability(operation ServiceOpera
 			// xdg-shell can leave maximized/fullscreen state, but has no explicit
 			// request that restores a compositor-minimized toplevel.
 			ServiceOperationCapability{
-				support:          if backend.started && backend.transport_can_marshal() {
+				support:          if backend.service_transport_usable(1) {
 					.conditional
 				} else {
 					.unsupported
@@ -7406,7 +7707,12 @@ fn (mut backend WaylandBackend) service_show_window(id WindowId) !ServiceWindowS
 		if backend.windows[index].requested_visible {
 			return backend.service_window_state(id)!
 		}
-		if !backend.transport_can_marshal() || backend.windows[index].surface == unsafe { nil }
+		mut show_handshake_override := false
+		$if test {
+			show_handshake_override = backend.toplevel_replay_test.show_handshake_override
+		}
+		if (!show_handshake_override && !backend.service_transport_usable(8))
+			|| backend.windows[index].surface == unsafe { nil }
 			|| backend.windows[index].xdg_toplevel == unsafe { nil } {
 			return error(err_capability_unsupported)
 		}
@@ -7424,8 +7730,21 @@ fn (mut backend WaylandBackend) service_show_window(id WindowId) !ServiceWindowS
 		}
 		seed := wayland_window_operation_seed(id, backend.windows[index].render_target_generation,
 			.display_transport)
-		backend.drain_hidden_window_before_show(seed)!
-		backend.prepare_window_show_handshake(index, seed, requested_maximized,
+		mut transport := WaylandServiceTransportPlan{}
+		if !show_handshake_override {
+			transport = backend.prepare_service_transport_plan(seed, [
+				.display_roundtrip,
+				.display_flush,
+				.display_roundtrip,
+				.display_flush,
+				.display_roundtrip,
+				.display_flush,
+				.display_roundtrip,
+				.display_flush,
+			])!
+		}
+		backend.drain_hidden_window_before_show(mut transport)!
+		backend.prepare_window_show_handshake(index, mut transport, requested_maximized,
 			requested_fullscreen, baseline_maximized, baseline_fullscreen)!
 		return backend.service_window_state(id)!
 	} $else {
@@ -7528,32 +7847,53 @@ fn (mut backend WaylandBackend) service_hide_window(id WindowId) !ServiceWindowS
 		if !backend.windows[index].requested_visible && !backend.windows[index].mapped {
 			return backend.service_window_state(id)!
 		}
-		if !backend.transport_can_marshal() || backend.windows[index].surface == unsafe { nil } {
+		mut hide_barrier_test_override := false
+		$if test {
+			hide_barrier_test_override = backend.toplevel_replay_test.hide_barrier_override
+		}
+		if (!hide_barrier_test_override && !backend.service_transport_usable(2))
+			|| backend.windows[index].surface == unsafe { nil } {
 			return error(err_capability_unsupported)
 		}
 		old_requested_maximized := backend.windows[index].requested_maximized
 		old_requested_fullscreen := backend.windows[index].requested_fullscreen
+		generation_before_hide := backend.windows[index].render_target_generation
+		hidden_generation := exhaust_backend_target_generation(generation_before_hide)
+		seed := wayland_window_operation_seed(id, generation_before_hide, .display_transport)
+		mut barrier_attempt := WaylandPreparedTransportAttempt{}
+		mut flush_attempt := WaylandPreparedTransportAttempt{}
+		if !hide_barrier_test_override {
+			mut barrier_transport := backend.prepare_service_transport_plan(seed, [
+				.display_roundtrip,
+			])!
+			mut flush_transport := backend.prepare_service_transport_plan(wayland_window_operation_seed(id,
+				hidden_generation, .display_transport), [.display_flush])!
+			barrier_attempt = barrier_transport.take()
+			flush_attempt = flush_transport.take()
+		}
 		backend.windows[index].hide_barrier_state_observed = false
 		backend.windows[index].hide_barrier_active = true
-		seed := wayland_window_operation_seed(id, backend.windows[index].render_target_generation,
-			.display_transport)
-		barrier := backend.attempt_wayland_hide_barrier(seed)
-		backend.windows[index].hide_barrier_active = false
-		if !barrier.succeeded() {
+		backend.execute_prepared_wayland_hide_barrier(barrier_attempt) or {
+			backend.windows[index].hide_barrier_active = false
 			backend.windows[index].requested_maximized = old_requested_maximized
 			backend.windows[index].requested_fullscreen = old_requested_fullscreen
 			backend.windows[index].hide_barrier_state_observed = false
 			return error(err_wayland_dispatch_failed)
 		}
+		backend.windows[index].hide_barrier_active = false
 		if !backend.windows[index].hide_barrier_state_observed
 			&& backend.windows[index].observed_service_state_valid {
 			backend.windows[index].requested_maximized = backend.windows[index].observed_maximized
 			backend.windows[index].requested_fullscreen = backend.windows[index].observed_fullscreen
 		}
 		backend.windows[index].hide_barrier_state_observed = false
-		generation_before_hide := backend.windows[index].render_target_generation
-		backend.release_window_render_target_for_hide(index)!
-		backend.release_window_mouse_lock(index, true)
+		backend.release_window_render_target_for_hide(index) or {
+			if !hide_barrier_test_override {
+				backend.consume_prepared_service_cleanup(flush_attempt)
+			}
+			return err
+		}
+		backend.release_window_mouse_lock(index, true, false)
 		backend.windows[index].requested_visible = false
 		backend.windows[index].publish_show_on_map = false
 		backend.windows[index].mapped = false
@@ -7566,18 +7906,12 @@ fn (mut backend WaylandBackend) service_hide_window(id WindowId) !ServiceWindowS
 		backend.windows[index].toplevel_decoration_configured = false
 		backend.windows[index].toplevel_decoration_mode = 0
 		if backend.windows[index].render_target_generation == generation_before_hide {
-			backend.windows[index].render_target_generation =
-				exhaust_backend_target_generation(generation_before_hide)
+			backend.windows[index].render_target_generation = hidden_generation
 		}
 		C.v_multiwindow_wayland_unmap_surface(unsafe {
 			&C.wl_surface(backend.windows[index].surface)
 		})
-		unmap_seed := wayland_window_operation_seed(id,
-			backend.windows[index].render_target_generation, .display_transport)
-		flush := backend.attempt_wayland_flush(unmap_seed)
-		if !flush.succeeded() {
-			return error(err_wayland_flush_failed)
-		}
+		backend.finish_prepared_service_request(flush_attempt)!
 		return backend.service_window_state(id)!
 	} $else {
 		_ = id
@@ -7588,10 +7922,13 @@ fn (mut backend WaylandBackend) service_hide_window(id WindowId) !ServiceWindowS
 fn (mut backend WaylandBackend) service_minimize_window(id WindowId) !ServiceWindowState {
 	$if linux && sokol_wayland ? {
 		mut record := backend.service_window_record(id)!
+		mut transport := backend.prepare_service_transport_plan(wayland_window_operation_seed(record.id,
+			record.render_target_generation, .display_transport), [.display_flush])!
+		flush_attempt := transport.take()
 		C.v_multiwindow_wayland_xdg_toplevel_set_minimized(unsafe {
 			&C.xdg_toplevel(record.xdg_toplevel)
 		})
-		backend.flush_service_request(record)!
+		backend.finish_prepared_service_request(flush_attempt)!
 		return backend.service_window_state(id)!
 	} $else {
 		_ = id
@@ -7602,10 +7939,13 @@ fn (mut backend WaylandBackend) service_minimize_window(id WindowId) !ServiceWin
 fn (mut backend WaylandBackend) service_maximize_window(id WindowId) !ServiceWindowState {
 	$if linux && sokol_wayland ? {
 		mut record := backend.service_window_record(id)!
+		mut transport := backend.prepare_service_transport_plan(wayland_window_operation_seed(record.id,
+			record.render_target_generation, .display_transport), [.display_flush])!
+		flush_attempt := transport.take()
 		C.v_multiwindow_wayland_xdg_toplevel_set_maximized(unsafe {
 			&C.xdg_toplevel(record.xdg_toplevel)
 		})
-		backend.flush_service_request(record)!
+		backend.finish_prepared_service_request(flush_attempt)!
 		record.requested_maximized = true
 		return backend.service_window_state(id)!
 	} $else {
@@ -7617,13 +7957,16 @@ fn (mut backend WaylandBackend) service_maximize_window(id WindowId) !ServiceWin
 fn (mut backend WaylandBackend) service_restore_window(id WindowId) !ServiceWindowState {
 	$if linux && sokol_wayland ? {
 		mut record := backend.service_window_record(id)!
+		mut transport := backend.prepare_service_transport_plan(wayland_window_operation_seed(record.id,
+			record.render_target_generation, .display_transport), [.display_flush])!
+		flush_attempt := transport.take()
 		C.v_multiwindow_wayland_xdg_toplevel_unset_maximized(unsafe {
 			&C.xdg_toplevel(record.xdg_toplevel)
 		})
 		C.v_multiwindow_wayland_xdg_toplevel_unset_fullscreen(unsafe {
 			&C.xdg_toplevel(record.xdg_toplevel)
 		})
-		backend.flush_service_request(record)!
+		backend.finish_prepared_service_request(flush_attempt)!
 		record.requested_maximized = false
 		record.requested_fullscreen = false
 		return backend.service_window_state(id)!
@@ -7636,6 +7979,9 @@ fn (mut backend WaylandBackend) service_restore_window(id WindowId) !ServiceWind
 fn (mut backend WaylandBackend) service_set_fullscreen(id WindowId, enabled bool) !ServiceWindowState {
 	$if linux && sokol_wayland ? {
 		mut record := backend.service_window_record(id)!
+		mut transport := backend.prepare_service_transport_plan(wayland_window_operation_seed(record.id,
+			record.render_target_generation, .display_transport), [.display_flush])!
+		flush_attempt := transport.take()
 		if enabled {
 			C.v_multiwindow_wayland_xdg_toplevel_set_fullscreen(unsafe {
 				&C.xdg_toplevel(record.xdg_toplevel)
@@ -7645,7 +7991,7 @@ fn (mut backend WaylandBackend) service_set_fullscreen(id WindowId, enabled bool
 				&C.xdg_toplevel(record.xdg_toplevel)
 			})
 		}
-		backend.flush_service_request(record)!
+		backend.finish_prepared_service_request(flush_attempt)!
 		record.requested_fullscreen = enabled
 		return backend.service_window_state(id)!
 	} $else {
@@ -7659,7 +8005,21 @@ fn (mut backend WaylandBackend) service_set_mouse_lock(id WindowId, enabled bool
 	$if linux && sokol_wayland ? {
 		index := backend.window_record_index(id) or { return error(err_window_not_found) }
 		if !enabled {
-			backend.release_window_mouse_lock(index, true)
+			has_native_lock := backend.windows[index].locked_pointer != unsafe { nil }
+				|| backend.windows[index].relative_pointer != unsafe { nil }
+			if !has_native_lock || !backend.transport_can_marshal() {
+				backend.release_window_mouse_lock(index, true, true)
+				return backend.service_window_state(id)!
+			}
+			mut transport := backend.prepare_cleanup_transport_plan(wayland_window_operation_seed(id,
+				backend.windows[index].render_target_generation, .display_transport), [
+				.display_flush,
+			])!
+			flush_attempt := transport.take()
+			backend.release_window_mouse_lock(index, true, false)
+			backend.finish_prepared_service_request(flush_attempt) or {
+				return backend.service_window_state(id)!
+			}
 			return backend.service_window_state(id)!
 		}
 		if backend.service_operation_capability(.mouse_lock).support == .unsupported
@@ -7669,6 +8029,14 @@ fn (mut backend WaylandBackend) service_set_mouse_lock(id WindowId, enabled bool
 		if backend.windows[index].mouse_lock_requested {
 			return backend.service_window_state(id)!
 		}
+		if !backend.service_transport_usable(1) {
+			return error(err_capability_unsupported)
+		}
+		mut transport := backend.prepare_service_transport_plan(wayland_window_operation_seed(id,
+			backend.windows[index].render_target_generation, .display_transport), [
+			.display_flush,
+		])!
+		flush_attempt := transport.take()
 		relative_pointer := C.v_multiwindow_wayland_get_relative_pointer(unsafe {
 			&C.zwp_relative_pointer_manager_v1(backend.relative_pointer_manager)
 		}, unsafe { &C.wl_pointer(backend.pointer) })
@@ -7680,6 +8048,7 @@ fn (mut backend WaylandBackend) service_set_mouse_lock(id WindowId, enabled bool
 					&C.zwp_relative_pointer_v1(relative_pointer)
 				})
 			}
+			backend.consume_prepared_service_cleanup(flush_attempt)
 			return error(err_capability_unsupported)
 		}
 		locked_pointer := C.v_multiwindow_wayland_lock_pointer(unsafe {
@@ -7698,13 +8067,14 @@ fn (mut backend WaylandBackend) service_set_mouse_lock(id WindowId, enabled bool
 			C.v_multiwindow_wayland_relative_pointer_destroy(unsafe {
 				&C.zwp_relative_pointer_v1(relative_pointer)
 			})
+			backend.consume_prepared_service_cleanup(flush_attempt)
 			return error(err_capability_unsupported)
 		}
 		backend.windows[index].relative_pointer = relative_pointer
 		backend.windows[index].locked_pointer = locked_pointer
 		backend.windows[index].mouse_lock_requested = true
-		backend.flush_service_request(backend.windows[index]) or {
-			backend.release_window_mouse_lock(index, false)
+		backend.finish_prepared_service_request(flush_attempt) or {
+			backend.release_window_mouse_lock(index, false, true)
 			return err
 		}
 		return backend.service_window_state(id)!
@@ -7986,15 +8356,18 @@ fn (mut backend WaylandBackend) service_start_portal_parent(id WindowId, request
 	$if linux && sokol_wayland ? {
 		index := backend.window_record_index(id) or { return error(err_window_not_found) }
 		record := backend.windows[index]
-		if !backend.started || !backend.transport_can_marshal()
-			|| backend.foreign_exporter == unsafe { nil } || backend.foreign_exporter_name == 0
-			|| record.surface == unsafe { nil } {
+		if !backend.service_transport_usable(1) || backend.foreign_exporter == unsafe { nil }
+			|| backend.foreign_exporter_name == 0 || record.surface == unsafe { nil } {
 			return error(err_capability_unsupported)
 		}
+		mut transport := backend.prepare_service_transport_plan(wayland_window_operation_seed(id,
+			record.render_target_generation, .display_transport), [.display_flush])!
+		flush_attempt := transport.take()
 		exported := C.v_multiwindow_wayland_export_toplevel(unsafe {
 			&C.zxdg_exporter_v2(backend.foreign_exporter)
 		}, unsafe { &C.wl_surface(record.surface) })
 		if exported == unsafe { nil } {
+			backend.consume_prepared_service_cleanup(flush_attempt)
 			return error(err_capability_unsupported)
 		}
 		mut portal := &WaylandPortalExport{
@@ -8010,10 +8383,11 @@ fn (mut backend WaylandBackend) service_start_portal_parent(id WindowId, request
 			C.v_multiwindow_wayland_exported_destroy(unsafe { &C.zxdg_exported_v2(exported) })
 			portal.exported = unsafe { nil }
 			portal.owner = unsafe { nil }
+			backend.consume_prepared_service_cleanup(flush_attempt)
 			return error(err_capability_unsupported)
 		}
 		backend.portal_exports << portal
-		backend.flush_service_request(record) or {
+		backend.finish_prepared_service_request(flush_attempt) or {
 			portal_index := backend.portal_export_index(lease) or { return err }
 			backend.destroy_portal_export_at(portal_index, !backend.transport_can_marshal())
 			return err
@@ -8029,7 +8403,21 @@ fn (mut backend WaylandBackend) service_start_portal_parent(id WindowId, request
 
 fn (mut backend WaylandBackend) service_release_portal_parent(lease ServicePortalLeaseId) ! {
 	index := backend.portal_export_index(lease) or { return error(err_service_request_stale) }
-	backend.destroy_portal_export_at(index, !backend.transport_can_marshal())
+	if !backend.transport_can_marshal() {
+		backend.destroy_portal_export_at(index, true)
+		return
+	}
+	portal := backend.portal_exports[index]
+	window_index := backend.window_record_index(portal.window) or {
+		return error(err_service_request_stale)
+	}
+	mut transport := backend.prepare_cleanup_transport_plan(wayland_window_operation_seed(portal.window,
+		backend.windows[window_index].render_target_generation, .display_transport), [
+		.display_flush,
+	])!
+	flush_attempt := transport.take()
+	backend.destroy_portal_export_at(index, false)
+	backend.finish_prepared_service_request(flush_attempt) or { return }
 }
 
 fn (mut backend WaylandBackend) service_set_clipboard_text(id WindowId, request ServiceRequestId, text string) !BackendClipboardStart {
@@ -8039,26 +8427,50 @@ fn (mut backend WaylandBackend) service_set_clipboard_text(id WindowId, request 
 		if text.len > wayland_clipboard_max_bytes {
 			return error(err_clipboard_capacity)
 		}
-		if !backend.started || !backend.transport_can_marshal()
-			|| backend.data_device_manager == unsafe { nil }
+		if !backend.service_transport_usable(1) || backend.data_device_manager == unsafe { nil }
 			|| backend.data_device == unsafe { nil } || backend.seat == unsafe { nil } {
 			return error(err_capability_unsupported)
 		}
-		serial := backend.windows[index].take_user_action_serial(backend.poll_generation) or {
+		if !backend.windows[index].user_action_serial_available(backend.poll_generation) {
 			return error(err_capability_unsupported)
+		}
+		mut bypass_protocol := false
+		mut exercise_transport_plan := true
+		$if test {
+			bypass_protocol = backend.clipboard_source_test.active
+				&& backend.clipboard_source_test.bypass_protocol
+			exercise_transport_plan = !bypass_protocol
+				|| backend.clipboard_source_test.exercise_transport_plan
+		}
+		mut transport := WaylandServiceTransportPlan{}
+		mut flush_attempt := WaylandPreparedTransportAttempt{}
+		if exercise_transport_plan {
+			transport = backend.prepare_service_transport_plan(wayland_window_operation_seed(id,
+				backend.windows[index].render_target_generation, .display_transport), [
+				.display_flush,
+			])!
+			flush_attempt = transport.take()
 		}
 		source := backend.create_clipboard_source()
 		if source == unsafe { nil } {
+			if exercise_transport_plan {
+				backend.consume_prepared_service_cleanup(flush_attempt)
+			}
 			return error(err_capability_unsupported)
 		}
 		if backend.add_clipboard_source_listener(source) < 0 {
 			backend.destroy_clipboard_source_handle(source, false)
+			if exercise_transport_plan {
+				backend.consume_prepared_service_cleanup(flush_attempt)
+			}
 			return error(err_capability_unsupported)
 		}
-		mut bypass_protocol := false
-		$if test {
-			bypass_protocol = backend.clipboard_source_test.active
-				&& backend.clipboard_source_test.bypass_protocol
+		serial := backend.windows[index].take_user_action_serial(backend.poll_generation) or {
+			backend.destroy_clipboard_source_handle(source, false)
+			if exercise_transport_plan {
+				backend.consume_prepared_service_cleanup(flush_attempt)
+			}
+			return error(err_capability_unsupported)
 		}
 		if !bypass_protocol {
 			C.v_multiwindow_wayland_data_source_offer(unsafe { &C.wl_data_source(source) },
@@ -8066,21 +8478,51 @@ fn (mut backend WaylandBackend) service_set_clipboard_text(id WindowId, request 
 			C.v_multiwindow_wayland_data_source_offer(unsafe { &C.wl_data_source(source) },
 				c'text/plain')
 		}
-		old_source := backend.clipboard_source
-		backend.clipboard_source = source
-		backend.clipboard_text = text.clone()
 		if !bypass_protocol {
 			C.v_multiwindow_wayland_data_device_set_selection(unsafe {
 				&C.wl_data_device(backend.data_device)
 			}, unsafe { &C.wl_data_source(source) }, serial)
 		}
-		backend.destroy_clipboard_source_handle(old_source, false)
-		if !bypass_protocol {
-			backend.flush_service_request(backend.windows[index]) or {
-				backend.destroy_clipboard_source(false)
-				return err
+		$if test {
+			if bypass_protocol && backend.clipboard_source_test.active {
+				backend.clipboard_source_test.selection_requests++
 			}
 		}
+		mut flush_succeeded := true
+		mut flush_error := ''
+		if exercise_transport_plan {
+			$if test {
+				if backend.clipboard_source_test.active
+					&& backend.clipboard_source_test.fail_flush_after_selection {
+					flush_succeeded = false
+					flush_error = err_wayland_flush_failed
+					backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+					backend.wayland_display_unavailable = true
+				} else {
+					backend.finish_prepared_service_request(flush_attempt) or {
+						flush_succeeded = false
+						flush_error = err.msg()
+					}
+				}
+			} $else {
+				backend.finish_prepared_service_request(flush_attempt) or {
+					flush_succeeded = false
+					flush_error = err.msg()
+				}
+			}
+		}
+		if !flush_succeeded {
+			backend.destroy_clipboard_source_handle(source, true)
+			return BackendClipboardStart{
+				completed: true
+				status:    .failed
+				error:     if flush_error == '' { err_wayland_flush_failed } else { flush_error }
+			}
+		}
+		old_source := backend.clipboard_source
+		backend.clipboard_source = source
+		backend.clipboard_text = text.clone()
+		backend.destroy_clipboard_source_handle(old_source, false)
 		return BackendClipboardStart{
 			completed: true
 			text:      text.clone()
@@ -8096,7 +8538,7 @@ fn (mut backend WaylandBackend) service_set_clipboard_text(id WindowId, request 
 fn (mut backend WaylandBackend) service_request_clipboard_text(id WindowId, request ServiceRequestId) !BackendClipboardStart {
 	$if linux && sokol_wayland ? {
 		index := backend.window_record_index(id) or { return error(err_window_not_found) }
-		if !backend.started || !backend.transport_can_marshal()
+		if !backend.service_transport_usable(1)
 			|| backend.data_device == unsafe { nil }
 			|| backend.selection_offer == unsafe { nil }
 			|| (!backend.selection_offer_has_utf8 && !backend.selection_offer_has_text) {
@@ -8114,6 +8556,15 @@ fn (mut backend WaylandBackend) service_request_clipboard_text(id WindowId, requ
 			C.close(fds[1])
 			return error(err_capability_unsupported)
 		}
+		mut transport := backend.prepare_service_transport_plan(wayland_window_operation_seed(id,
+			backend.windows[index].render_target_generation, .display_transport), [
+			.display_flush,
+		]) or {
+			C.close(fds[0])
+			C.close(fds[1])
+			return err
+		}
+		flush_attempt := transport.take()
 		mime_type := if backend.selection_offer_has_utf8 {
 			c'text/plain;charset=utf-8'
 		} else {
@@ -8131,7 +8582,7 @@ fn (mut backend WaylandBackend) service_request_clipboard_text(id WindowId, requ
 			deadline_ns: vtime.sys_mono_now() + wayland_clipboard_timeout_ns
 		}
 		backend.clipboard_read_active = true
-		backend.flush_service_request(backend.windows[index]) or {
+		backend.finish_prepared_service_request(flush_attempt) or {
 			backend.cancel_clipboard_read()
 			return err
 		}
@@ -8161,12 +8612,44 @@ fn (backend &WaylandBackend) service_window_record(id WindowId) !&WaylandWindowR
 	return record
 }
 
-fn (mut backend WaylandBackend) flush_service_request(record &WaylandWindowRecord) ! {
-	flush := backend.attempt_wayland_flush(wayland_window_operation_seed(record.id,
-		record.render_target_generation, .display_transport))
-	if !flush.succeeded() {
-		return error(err_wayland_flush_failed)
+fn (mut backend WaylandBackend) execute_prepared_service_transport(attempt WaylandPreparedTransportAttempt) !NativeRenderResult {
+	result := backend.execute_prepared_wayland_transport(attempt)
+	if !result.succeeded() {
+		backend.render_health = renderer_health_latch_unavailable(backend.render_health)
+		backend.wayland_display_unavailable = true
+		message := if attempt.context.operation == .display_roundtrip {
+			err_wayland_dispatch_failed
+		} else {
+			err_wayland_flush_failed
+		}
+		return error(message)
 	}
+	return result
+}
+
+fn (mut backend WaylandBackend) finish_prepared_service_request(attempt WaylandPreparedTransportAttempt) ! {
+	$if test {
+		if backend.toplevel_replay_test.interactive_request_override
+			&& attempt.context.operation == .display_flush {
+			backend.toplevel_replay_test.interactive_transport_finishes++
+			return
+		}
+	}
+	_ = backend.execute_prepared_service_transport(attempt)!
+}
+
+fn (backend &WaylandBackend) interactive_request_overridden_for_test(resize bool) bool {
+	$if test {
+		_ = resize
+		return backend.toplevel_replay_test.interactive_request_override
+	} $else {
+		_ = resize
+		return false
+	}
+}
+
+fn (mut backend WaylandBackend) consume_prepared_service_cleanup(attempt WaylandPreparedTransportAttempt) {
+	backend.finish_prepared_service_request(attempt) or {}
 }
 
 fn (backend &WaylandBackend) window_record_index(id WindowId) ?int {

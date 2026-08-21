@@ -358,6 +358,21 @@ fn test_x11_native_service_controls_borrow_monitors_and_readback() {
 			time.sleep(time.millisecond)
 		}
 		assert mapped_before_hide, 'X11 service test window was not mapped before hide'
+		app.state_mutex.lock()
+		saved_delivery_token := app.next_event_delivery_token
+		app.next_event_delivery_token = 0
+		app.state_mutex.unlock()
+		mut exhausted_hide_rejected := false
+		app.service_hide_window(child) or {
+			assert err.msg() == err_event_delivery_exhausted
+			exhausted_hide_rejected = true
+		}
+		assert exhausted_hide_rejected
+		assert app.backend.x11.service_window_state(child)!.mapping == .mapped
+		assert app.drain_queued_events()!.len == 0
+		app.state_mutex.lock()
+		app.next_event_delivery_token = saved_delivery_token
+		app.state_mutex.unlock()
 		app.service_hide_window(child)!
 		_ = app.drain_queued_events()!
 		mut native_hidden := false
@@ -720,6 +735,72 @@ fn test_x11_native_service_controls_borrow_monitors_and_readback() {
 		assert results.len == 1
 		assert results[0].readback.status == .ready
 		assert results[0].readback.pixels_rgba8.len == 32 * 24 * 4
+		app.stop()!
+	}
+}
+
+fn test_x11_window_capture_capability_tracks_native_viewability() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		window := app.create_window(title: 'x11 capture viewability', width: 48, height: 32)!
+		_ = app.drain_queued_events()!
+		assert app.service_operation_capability(window, .window_capture)!.support == .available
+
+		app.service_hide_window(window)!
+		hide_events := app.drain_queued_events()!
+		assert hide_events.any(it.kind == .service && it.service.kind == .state
+			&& it.service.window == window && it.service.operation == .hide)
+		assert app.service_operation_capability(window, .window_capture)!.support == .unsupported
+		readbacks_before := app.services.readbacks.len
+		app.service_request_window_readback(window, 1, 1, 1) or {
+			assert err.msg() == err_capability_unsupported
+			assert app.services.readbacks.len == readbacks_before
+			assert app.drain_readback_events()!.len == 0
+		}
+
+		app.service_show_window(window)!
+		show_events := app.drain_queued_events()!
+		assert show_events.any(it.kind == .service && it.service.kind == .state
+			&& it.service.window == window && it.service.operation == .show)
+		assert app.service_operation_capability(window, .window_capture)!.support == .available
+		index := app.backend.x11.window_record_index(window) or { panic(err_window_not_found) }
+		C.XUnmapWindow(app.backend.x11.display, app.backend.x11.windows[index].window)
+		C.XSync(app.backend.x11.display, 0)
+		assert app.service_operation_capability(window, .window_capture)!.support == .unsupported
+		C.XMapWindow(app.backend.x11.display, app.backend.x11.windows[index].window)
+		C.XSync(app.backend.x11.display, 0)
+		assert app.service_operation_capability(window, .window_capture)!.support == .available
+
+		parent := C.XCreateSimpleWindow(app.backend.x11.display, app.backend.x11.root, 0, 0, 64,
+			48, 0, 0, 0)
+		assert parent != X11NativeWindow(0)
+		C.XMapWindow(app.backend.x11.display, parent)
+		C.XReparentWindow(app.backend.x11.display, app.backend.x11.windows[index].window, parent,
+			0, 0)
+		C.XMapWindow(app.backend.x11.display, app.backend.x11.windows[index].window)
+		C.XSync(app.backend.x11.display, 0)
+		C.XUnmapWindow(app.backend.x11.display, parent)
+		C.XSync(app.backend.x11.display, 0)
+		assert app.service_operation_capability(window, .window_capture)!.support == .unsupported
+		C.XMapWindow(app.backend.x11.display, parent)
+		C.XSync(app.backend.x11.display, 0)
+		assert app.service_operation_capability(window, .window_capture)!.support == .available
+		remapped_capture := app.service_request_window_readback_region(window, 0, 0, 1, 1, 2)!
+		remapped_events := app.drain_readback_events()!
+		remapped_results := remapped_events.filter(it.id == remapped_capture)
+		assert remapped_results.len == 1
+		assert remapped_results[0].status == .ready
+		assert remapped_results[0].width == 1
+		assert remapped_results[0].height == 1
+		assert remapped_results[0].stride == 4
+		assert remapped_results[0].pixels_rgba8.len == 4
+		C.XReparentWindow(app.backend.x11.display, app.backend.x11.windows[index].window,
+			app.backend.x11.root, 0, 0)
+		C.XDestroyWindow(app.backend.x11.display, parent)
+		C.XSync(app.backend.x11.display, 0)
 		app.stop()!
 	}
 }

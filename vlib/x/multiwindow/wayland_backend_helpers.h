@@ -102,7 +102,10 @@ static inline void v_multiwindow_wayland_flush(struct wl_display *display,
 		return;
 	}
 	errno = 0;
-	int result = wl_display_flush(display);
+	int result;
+	do {
+		result = wl_display_flush(display);
+	} while (result < 0 && errno == EINTR);
 	int native_errno = result < 0 ? errno : 0;
 	v_multiwindow_wayland_result(out_result, result, native_errno);
 }

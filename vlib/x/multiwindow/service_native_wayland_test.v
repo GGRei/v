@@ -861,9 +861,13 @@ fn test_wayland_xdg_configure_states_are_published_after_surface_configure() {
 
 fn test_wayland_state_operations_are_deferred_by_capability_until_observation() {
 	$if linux && sokol_wayland ? {
+		mut native_operations := &NativeOperationAuthority{}
+		native_operations.bind_app_lifetime(1, 1)!
+		native_operations.advance_renderer_attempt(1, 2)!
 		mut backend := &WaylandBackend{
 			started:                  true
 			display:                  voidptr(usize(1))
+			native_operations:        native_operations
 			pointer:                  voidptr(usize(2))
 			relative_pointer_manager: voidptr(usize(3))
 			pointer_constraints:      voidptr(usize(4))
@@ -892,6 +896,15 @@ fn test_wayland_state_operations_are_deferred_by_capability_until_observation() 
 		assert state_operations.map(backend.service_operation_capability(it).support) == expected_dead_support
 		backend.wayland_display_error = 0
 		assert state_operations.map(backend.service_operation_capability(it).support) == expected_live_support
+		backend.render_health = .unavailable
+		assert state_operations.map(backend.service_operation_capability(it).support) == expected_dead_support
+		assert backend.service_operation_capability(.show).support == .unsupported
+		assert backend.service_operation_capability(.hide).support == .unsupported
+		backend.render_health = .ready
+		assert state_operations.map(backend.service_operation_capability(it).support) == expected_live_support
+		native_operations.next_ordinal = ~u64(0)
+		assert state_operations.map(backend.service_operation_capability(it).support) == expected_dead_support
+		native_operations.next_ordinal = 1
 
 		mut app := new_app()!
 		window := app.create_window(title: 'wayland-deferred-publication')!
@@ -1989,6 +2002,7 @@ fn wayland_assert_clipboard_replacement_preflight_failure(fail_listener bool) {
 			create_override: true
 			next_source:     new_source
 			fail_listener:   fail_listener
+			bypass_protocol: true
 		}
 		mut failure := ''
 		backend.service_set_clipboard_text(window, ServiceRequestId{
@@ -2022,6 +2036,269 @@ fn test_wayland_clipboard_replacement_create_failure_preserves_previous_source()
 
 fn test_wayland_clipboard_replacement_listener_failure_preserves_previous_source() {
 	wayland_assert_clipboard_replacement_preflight_failure(true)
+}
+
+fn test_wayland_clipboard_transport_plan_exhaustion_has_no_ghost_and_flush_failure_is_terminal() {
+	$if linux && sokol_wayland ? {
+		mut native_operations := &NativeOperationAuthority{}
+		native_operations.bind_app_lifetime(1, 1)!
+		native_operations.advance_renderer_attempt(1, 2)!
+		old_source := voidptr(usize(0x31))
+		new_source := voidptr(usize(0x32))
+		mut backend := &WaylandBackend{
+			started:               true
+			display:               voidptr(usize(0x33))
+			data_device_manager:   voidptr(usize(0x34))
+			data_device:           voidptr(usize(0x35))
+			seat:                  voidptr(usize(0x36))
+			poll_generation:       1
+			native_operations:     native_operations
+			clipboard_source:      old_source
+			clipboard_text:        'old clipboard'
+			clipboard_source_test: WaylandClipboardSourceTestSeam{
+				active:                  true
+				create_override:         true
+				next_source:             new_source
+				bypass_protocol:         true
+				exercise_transport_plan: true
+			}
+		}
+		window := WindowId{
+			app_instance: 1
+			slot:         0
+			generation:   1
+		}
+		mut record := &WaylandWindowRecord{
+			id:    window
+			owner: backend
+		}
+		record.store_user_action_serial(41, backend.poll_generation)
+		backend.windows << record
+		mut fds := [-1, -1]!
+		assert C.pipe(&fds[0]) == 0
+		backend.clipboard_sends << WaylandClipboardSend{
+			fd:          fds[1]
+			payload:     'old clipboard'
+			deadline_ns: i64(0x7fffffffffffffff)
+		}
+		backend.clipboard_send_snapshot_bytes = u64('old clipboard'.len)
+
+		native_operations.next_ordinal = ~u64(0)
+		mut exhausted_error := ''
+		backend.service_set_clipboard_text(window, ServiceRequestId{
+			app_instance: 1
+			serial:       51
+		}, 'new clipboard') or { exhausted_error = err.msg() }
+		assert exhausted_error == err_capability_unsupported
+		assert record.user_action_serial_valid
+		assert record.user_action_serial == 41
+		assert backend.clipboard_source_test.selection_requests == 0
+		assert backend.clipboard_source_test.destroyed.len == 0
+		assert backend.clipboard_source == old_source
+		assert backend.clipboard_text == 'old clipboard'
+		assert backend.clipboard_sends.len == 1
+
+		native_operations.next_ordinal = 1
+		backend.clipboard_source_test.fail_flush_after_selection = true
+		result := backend.service_set_clipboard_text(window, ServiceRequestId{
+			app_instance: 1
+			serial:       52
+		}, 'new clipboard')!
+		assert result.completed
+		assert result.status == .failed
+		assert result.error == err_wayland_flush_failed
+		assert !record.user_action_serial_valid
+		assert backend.clipboard_source_test.selection_requests == 1
+		assert backend.clipboard_source_test.destroyed == [usize(new_source)]
+		assert backend.clipboard_source_test.destroyed_local == [true]
+		assert backend.clipboard_source == old_source
+		assert backend.clipboard_text == 'old clipboard'
+		assert backend.clipboard_sends.len == 1
+		assert backend.render_health.blocks_graphics()
+		assert backend.wayland_display_unavailable
+
+		mut retry_error := ''
+		backend.service_set_clipboard_text(window, ServiceRequestId{
+			app_instance: 1
+			serial:       53
+		}, 'retry') or { retry_error = err.msg() }
+		assert retry_error == err_capability_unsupported
+		assert backend.clipboard_source_test.selection_requests == 1
+		assert backend.clipboard_source_test.destroyed.len == 1
+		backend.clipboard_source = unsafe { nil }
+		backend.clipboard_source_test.active = false
+		backend.close_all_clipboard_sends()
+		C.close(fds[0])
+	}
+}
+
+fn test_wayland_interactive_move_resize_preflight_preserves_serial_and_ordinals() {
+	$if linux && sokol_wayland ? {
+		mut native_operations := &NativeOperationAuthority{}
+		native_operations.bind_app_lifetime(1, 1)!
+		native_operations.advance_renderer_attempt(1, 2)!
+		mut backend := &WaylandBackend{
+			started:              true
+			display:              voidptr(usize(0x41))
+			seat:                 voidptr(usize(0x42))
+			poll_generation:      1
+			native_operations:    native_operations
+			toplevel_replay_test: WaylandToplevelReplayTestSeam{
+				interactive_request_override: true
+			}
+		}
+		window := WindowId{
+			app_instance: 1
+			slot:         0
+			generation:   1
+		}
+		mut record := &WaylandWindowRecord{
+			id:           window
+			owner:        backend
+			resizable:    true
+			xdg_toplevel: voidptr(usize(0x43))
+		}
+		backend.windows << record
+
+		ordinal_without_serial := native_operations.next_ordinal
+		for resize in [false, true] {
+			mut failure := ''
+			if resize {
+				backend.begin_window_resize(window, .bottom_right) or { failure = err.msg() }
+			} else {
+				backend.begin_window_move(window) or { failure = err.msg() }
+			}
+			assert failure == err_capability_unsupported
+			assert native_operations.next_ordinal == ordinal_without_serial
+		}
+
+		record.store_user_action_serial(61, backend.poll_generation)
+		native_operations.next_ordinal = ~u64(0)
+		mut exhausted_move := ''
+		backend.begin_window_move(window) or { exhausted_move = err.msg() }
+		assert exhausted_move == err_render_native_renderer_unavailable
+		assert record.user_action_serial_valid
+		assert record.user_action_serial == 61
+		assert backend.toplevel_replay_test.interactive_move_requests == 0
+
+		native_operations.next_ordinal = 1
+		backend.begin_window_move(window)!
+		assert !record.user_action_serial_valid
+		assert native_operations.next_ordinal == 3
+		assert backend.toplevel_replay_test.interactive_move_requests == 1
+		assert backend.toplevel_replay_test.interactive_transport_finishes == 1
+
+		record.store_user_action_serial(62, backend.poll_generation)
+		native_operations.next_ordinal = ~u64(0)
+		mut exhausted_resize := ''
+		backend.begin_window_resize(window, .bottom_right) or { exhausted_resize = err.msg() }
+		assert exhausted_resize == err_render_native_renderer_unavailable
+		assert record.user_action_serial_valid
+		assert record.user_action_serial == 62
+		assert backend.toplevel_replay_test.interactive_resize_requests == 0
+
+		native_operations.next_ordinal = 1
+		backend.begin_window_resize(window, .bottom_right)!
+		assert !record.user_action_serial_valid
+		assert native_operations.next_ordinal == 3
+		assert backend.toplevel_replay_test.interactive_resize_requests == 1
+		assert backend.toplevel_replay_test.interactive_transport_finishes == 2
+	}
+}
+
+fn test_wayland_visible_create_preplans_lifecycle_transport_before_native_creation() {
+	$if linux && sokol_wayland ? {
+		mut native_operations := &NativeOperationAuthority{}
+		native_operations.bind_app_lifetime(1, 1)!
+		native_operations.advance_renderer_attempt(1, 2)!
+		// Six ordinals can cover F/R/F, but not the lifecycle F required by a visible
+		// window while the renderer is unavailable.
+		native_operations.next_ordinal = ~u64(0) - 5
+		mut backend := &WaylandBackend{
+			started:              true
+			display:              voidptr(usize(0x61))
+			compositor:           voidptr(usize(0x62))
+			compositor_name:      1
+			wm_base:              voidptr(usize(0x63))
+			wm_base_name:         2
+			native_operations:    native_operations
+			toplevel_replay_test: WaylandToplevelReplayTestSeam{
+				create_request_override: true
+			}
+		}
+		window := WindowId{
+			app_instance: 1
+			slot:         0
+			generation:   1
+		}
+		ordinal_before := native_operations.next_ordinal
+		mut failure := ''
+		backend.create_window(window, WindowConfig{
+			title:   'preplanned lifecycle'
+			visible: true
+		}) or { failure = err.msg() }
+		assert failure == err_render_native_renderer_unavailable
+		assert native_operations.next_ordinal == ordinal_before
+		assert backend.toplevel_replay_test.create_requests == 0
+		assert backend.windows.len == 0
+	}
+}
+
+fn test_wayland_live_cleanup_plan_exhaustion_preserves_mouse_and_portal_handles() {
+	$if linux && sokol_wayland ? {
+		mut native_operations := &NativeOperationAuthority{}
+		native_operations.bind_app_lifetime(1, 1)!
+		native_operations.advance_renderer_attempt(1, 2)!
+		native_operations.next_ordinal = ~u64(0)
+		mut backend := &WaylandBackend{
+			started:           true
+			display:           voidptr(usize(0x51))
+			native_operations: native_operations
+		}
+		window := WindowId{
+			app_instance: 1
+			slot:         0
+			generation:   1
+		}
+		locked := voidptr(usize(0x52))
+		relative := voidptr(usize(0x53))
+		mut record := &WaylandWindowRecord{
+			id:                   window
+			owner:                backend
+			locked_pointer:       locked
+			relative_pointer:     relative
+			mouse_lock_requested: true
+			mouse_locked:         true
+		}
+		backend.windows << record
+		lease := ServicePortalLeaseId{
+			app_instance: 1
+			serial:       7
+		}
+		exported := voidptr(usize(0x54))
+		backend.portal_exports << &WaylandPortalExport{
+			window:   window
+			lease:    lease
+			owner:    backend
+			exported: exported
+		}
+
+		mut mouse_error := ''
+		backend.service_set_mouse_lock(window, false) or { mouse_error = err.msg() }
+		assert mouse_error == err_render_native_renderer_unavailable
+		assert record.locked_pointer == locked
+		assert record.relative_pointer == relative
+		assert record.mouse_lock_requested
+		assert record.mouse_locked
+		assert record.pending_events.len == 0
+
+		mut portal_error := ''
+		backend.service_release_portal_parent(lease) or { portal_error = err.msg() }
+		assert portal_error == err_render_native_renderer_unavailable
+		assert backend.portal_exports.len == 1
+		assert backend.portal_exports[0].exported == exported
+		assert backend.portal_exports[0].owner == backend
+	}
 }
 
 fn test_wayland_clipboard_selection_replacement_cancels_read_exactly_once() {

@@ -54,6 +54,126 @@ fn test_mock_native_borrow_is_not_advertised_or_exposed() {
 	assert false, 'mock backend exposed a native window borrow'
 }
 
+fn test_mock_image_readback_is_not_advertised_but_window_capture_remains_available() {
+	mut app := new_app()!
+	window := app.create_window()!
+	_ = app.drain_queued_events()!
+	image := app.service_operation_capability(window, .image_readback)!
+	capture := app.service_operation_capability(window, .window_capture)!
+	assert image.support == .unsupported
+	assert !image.asynchronous
+	assert capture.support == .available
+	assert capture.asynchronous
+	capture_id := app.service_request_window_readback_region(window, 0, 0, 2, 1, 1)!
+	capture_events := app.drain_queued_events()!
+	capture_results := capture_events.filter(it.kind == .readback && it.readback.id == capture_id)
+	assert capture_results.len == 1
+	assert capture_results[0].readback.status == .ready
+	assert capture_results[0].readback.width == 2
+	assert capture_results[0].readback.height == 1
+	assert capture_results[0].readback.stride == 8
+	assert capture_results[0].readback.pixels_rgba8 == []u8{len: 8}
+	assert app.services.readbacks.len == 0
+	readbacks_before := app.services.readbacks.len
+	app.service_arm_image_readback_pass_for_gg(window, 1, 1, 1) or {
+		assert err.msg() == err_capability_unsupported
+		assert app.services.readbacks.len == readbacks_before
+		assert app.drain_queued_events()!.len == 0
+		app.stop()!
+		return
+	}
+	assert false, 'mock backend advertised or armed unsupported image readback'
+}
+
+fn invoke_mock_state_operation(mut app App, window WindowId, operation ServiceOperation) ! {
+	match operation {
+		.show { app.service_show_window(window)! }
+		.hide { app.service_hide_window(window)! }
+		.position { app.service_set_position(window, 37, 41)! }
+		.minimize { app.service_minimize_window(window)! }
+		.maximize { app.service_maximize_window(window)! }
+		.restore { app.service_restore_window(window)! }
+		.fullscreen { app.service_set_fullscreen(window, true)! }
+		.mouse_lock { app.service_set_mouse_lock(window, true)! }
+		else { return error(err_capability_unsupported) }
+	}
+}
+
+fn test_mock_state_mutations_reserve_delivery_before_commit_and_retry_exactly_once() {
+	for operation in [ServiceOperation.show, .hide, .position, .minimize, .maximize, .restore,
+		.fullscreen, .mouse_lock] {
+		mut app := new_app()!
+		window := app.create_window(
+			title:   'mock state delivery preflight ${operation}'
+			visible: operation != .show
+		)!
+		_ = app.drain_queued_events()!
+		if operation == .restore {
+			app.service_maximize_window(window)!
+			_ = app.drain_queued_events()!
+		}
+		before := app.service_window_state(window)!
+		saved_delivery_token := app.next_event_delivery_token
+		app.state_mutex.lock()
+		app.next_event_delivery_token = 0
+		app.state_mutex.unlock()
+		mut rejected := false
+		invoke_mock_state_operation(mut app, window, operation) or {
+			assert err.msg() == err_event_delivery_exhausted
+			rejected = true
+		}
+		assert rejected
+		assert app.service_window_state(window)! == before
+		assert app.drain_queued_events()!.len == 0
+
+		app.state_mutex.lock()
+		app.next_event_delivery_token = saved_delivery_token
+		app.state_mutex.unlock()
+		invoke_mock_state_operation(mut app, window, operation)!
+		events := app.drain_queued_events()!
+		assert events.len == 1
+		assert events[0].kind == .service
+		assert events[0].service.operation == operation
+		assert app.service_window_state(window)!.sequence == events[0].sequence
+		app.stop()!
+	}
+}
+
+fn test_native_state_publication_reserves_delivery_before_core_registry_commit() {
+	mut app := new_app()!
+	window := app.create_window()!
+	_ = app.drain_queued_events()!
+	before := app.service_window_state(window)!
+	saved_delivery_token := app.next_event_delivery_token
+	app.state_mutex.lock()
+	app.next_event_delivery_token = 0
+	app.state_mutex.unlock()
+	mut rejected := false
+	app.publish_native_state(window, .show, ServiceWindowState{
+		mapping:    .mapped
+		visibility: .visible
+	}) or {
+		assert err.msg() == err_event_delivery_exhausted
+		rejected = true
+	}
+	assert rejected
+	assert app.service_window_state(window)! == before
+	assert app.drain_queued_events()!.len == 0
+
+	app.state_mutex.lock()
+	app.next_event_delivery_token = saved_delivery_token
+	app.state_mutex.unlock()
+	app.publish_native_state(window, .show, ServiceWindowState{
+		mapping:    .mapped
+		visibility: .visible
+	})!
+	events := app.drain_queued_events()!
+	assert events.len == 1
+	assert events[0].service.operation == .show
+	assert app.service_window_state(window)!.sequence == events[0].sequence
+	app.stop()!
+}
+
 fn test_all_specialized_drains_are_strict_prefix_projections() {
 	mut app := new_app()!
 	window := app.create_window()!
@@ -245,8 +365,36 @@ fn test_service_readback_layout_validation_is_overflow_safe_and_atomic() {
 	assert finished[0].readback.stride == 12
 	assert finished[0].readback.pixels_rgba8.len == 24
 	assert app.services.readbacks.len == 0
+	request_before_exhaustion := app.services.next_request
+	app.state_mutex.lock()
+	saved_delivery_token := app.next_event_delivery_token
+	app.next_event_delivery_token = 0
+	app.state_mutex.unlock()
+	app.service_complete_readback(window, 1, 1, 4, []u8{len: 4}, 4) or {
+		assert err.msg() == err_event_delivery_exhausted
+		assert app.services.next_request == request_before_exhaustion
+		assert app.services.readbacks.len == 0
+		assert app.drain_queued_events()!.len == 0
+	}
+	assert app.services.next_request == request_before_exhaustion
+	assert app.services.readbacks.len == 0
+	app.state_mutex.lock()
+	app.next_event_delivery_token = saved_delivery_token
+	saved_request := app.services.next_request
+	app.services.next_request = 0
+	delivery_before_request_exhaustion := app.next_event_delivery_token
+	app.state_mutex.unlock()
+	app.service_complete_readback(window, 1, 1, 4, []u8{len: 4}, 5) or {
+		assert err.msg() == err_service_request_exhausted
+		assert app.services.next_request == 0
+		assert app.next_event_delivery_token == delivery_before_request_exhaustion
+		assert app.services.readbacks.len == 0
+	}
+	app.state_mutex.lock()
+	app.services.next_request = saved_request
+	app.state_mutex.unlock()
 
-	completed := app.service_complete_readback(window, 1, 2, 8, []u8{len: 16}, 4)!
+	completed := app.service_complete_readback(window, 1, 2, 8, []u8{len: 16}, 6)!
 	completed_events := app.drain_queued_events()!
 	assert completed_events.len == 1
 	assert completed_events[0].readback.id == completed

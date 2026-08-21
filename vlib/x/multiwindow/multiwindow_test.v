@@ -2793,6 +2793,17 @@ fn test_x11_config_hints_are_applied_before_mapping() {
 	assert x11_helper_source.contains('_NET_WM_STATE_FULLSCREEN')
 }
 
+fn test_x11_window_capture_capability_requires_a_positive_viewable_native_extent() {
+	source := multiwindow_source_file('x11_backend.c.v')
+	body := source.all_after('fn (backend &X11Backend) service_window_capture_available')
+		.all_before('fn (backend &X11Backend) service_operation_capability')
+	assert body.contains('C.v_multiwindow_x11_readback_probe(')
+	assert body.contains('probe.attributes_available != 0')
+	assert body.contains('probe.map_state == 2')
+	assert body.contains('probe.actual_width > 0')
+	assert body.contains('probe.actual_height > 0')
+}
+
 fn test_wayland_capabilities_for_backend_do_not_require_display_on_linux() {
 	$if linux {
 		$if sokol_wayland ? {
@@ -2834,23 +2845,51 @@ fn test_wayland_hidden_windows_are_created_for_later_mapping() {
 	assert wayland_source.contains('fn (mut backend WaylandBackend) service_show_window')
 	assert wayland_source.contains('fn (mut backend WaylandBackend) service_hide_window')
 	assert wayland_source.contains('C.v_multiwindow_wayland_unmap_surface')
+	assert_source_order(create_window_body, 'backend.prepare_create_transport_plan(',
+		'C.wl_compositor_create_surface(compositor)')
+	assert_source_order(create_window_body, 'lifecycle_flush_attempt = transport.take()',
+		'C.wl_compositor_create_surface(compositor)')
+	create_transport_body := wayland_source.all_after('fn (mut backend WaylandBackend) prepare_create_transport_plan')
+		.all_before('fn (mut backend WaylandBackend) prepare_cleanup_transport_plan')
+	assert create_transport_body.contains('operation_count := if prepare_lifecycle_buffer { 4 } else { 3 }')
+	assert_source_order(create_transport_body, 'reserve_ordinals(u64(operation_count) * u64(2))',
+		'materialize_prepared_wayland_transport(prepare_seed')
+	assert_source_order(create_transport_body,
+		'lifecycle_seed := wayland_window_operation_seed(id, 1, .display_transport)',
+		'materialize_prepared_wayland_transport(lifecycle_seed')
 	assert_source_order(create_window_body, 'C.wl_surface_commit(surface)',
-		'backend.attempt_wayland_flush(window_seed)')
-	assert_source_order(create_window_body, 'backend.attempt_wayland_flush(window_seed)',
-		'backend.attempt_wayland_roundtrip(window_seed)')
+		'backend.finish_prepared_service_request(flush_attempt)')
+	assert_source_order(create_window_body,
+		'backend.finish_prepared_service_request(flush_attempt)',
+		'backend.finish_prepared_service_request(roundtrip_attempt)')
+	assert_source_order(create_window_body,
+		'backend.finish_prepared_service_request(roundtrip_attempt)',
+		'backend.finish_prepared_service_request(ack_flush_attempt)')
+	assert_source_order(create_window_body,
+		'backend.finish_prepared_service_request(ack_flush_attempt)',
+		'backend.ensure_lifecycle_buffer_with_prepared_transport(index, lifecycle_flush_attempt)')
+	lifecycle_error_body :=
+		create_window_body.all_after('backend.ensure_lifecycle_buffer_with_prepared_transport(index, lifecycle_flush_attempt) or {')
+	assert_source_order(lifecycle_error_body, 'backend.destroy_window_slot(index)',
+		'backend.consume_prepared_service_cleanup(lifecycle_flush_attempt)')
+	assert !create_window_body.contains('backend.attempt_wayland_flush(')
+	assert !create_window_body.contains('backend.attempt_wayland_roundtrip(')
 	show_body := wayland_source.all_after('fn (mut backend WaylandBackend) service_show_window')
 		.all_before('fn (mut backend WaylandBackend) service_hide_window')
 	hide_body := wayland_source.all_after('fn (mut backend WaylandBackend) service_hide_window')
 		.all_before('fn (mut backend WaylandBackend) service_minimize_window')
-	assert show_body.contains('backend.drain_hidden_window_before_show(seed)!')
-	assert show_body.contains('backend.prepare_window_show_handshake(index, seed, requested_maximized,')
-	assert_source_order(show_body, 'backend.drain_hidden_window_before_show(seed)!',
-		'backend.prepare_window_show_handshake(index, seed, requested_maximized,')
+	assert show_body.contains('backend.drain_hidden_window_before_show(mut transport)!')
+	assert show_body.contains('backend.prepare_window_show_handshake(index, mut transport, requested_maximized,')
+	assert_source_order(show_body,
+		'backend.prepare_service_transport_plan(seed, [.display_roundtrip,',
+		'backend.drain_hidden_window_before_show(mut transport)!')
+	assert_source_order(show_body, 'backend.drain_hidden_window_before_show(mut transport)!',
+		'backend.prepare_window_show_handshake(index, mut transport, requested_maximized,')
 	assert !show_body.contains('requested_visible = true')
 	show_handshake_body := wayland_source.all_after('fn (mut backend WaylandBackend) prepare_window_show_handshake')
 		.all_before('fn (mut backend WaylandBackend) reapply_parent_to_live_children')
-	assert show_handshake_body.count('run_window_show_handshake_boundary(index, seed, true)') == 1
-	assert show_handshake_body.count('run_window_show_handshake_boundary(index, seed, false)') == 2
+	assert show_handshake_body.count('run_window_show_handshake_boundary(index, mut transport, true)') == 1
+	assert show_handshake_body.count('run_window_show_handshake_boundary(index, mut transport, false)') == 2
 	assert !show_handshake_body.contains('time.sleep')
 	assert !show_handshake_body.contains('\n\tfor ')
 	assert !show_handshake_body.contains('\n\twhile ')
@@ -2859,30 +2898,34 @@ fn test_wayland_hidden_windows_are_created_for_later_mapping() {
 		'backend.request_window_show_probe(index, first_axis, first_enabled)')
 	assert_source_order(show_handshake_body,
 		'backend.request_window_show_probe(index, first_axis, first_enabled)',
-		'backend.run_window_show_handshake_boundary(index, seed, true)')
+		'backend.run_window_show_handshake_boundary(index, mut transport, true)')
 	assert_source_order(show_handshake_body,
-		'backend.run_window_show_handshake_boundary(index, seed, true)',
+		'backend.run_window_show_handshake_boundary(index, mut transport, true)',
 		'backend.request_window_show_final_intents(index, maximized, fullscreen)')
 	final_show_section :=
 		show_handshake_body.all_after('backend.request_window_show_final_intents(index, maximized, fullscreen)')
-	assert final_show_section.count('backend.run_window_show_handshake_boundary(index, seed, false)') == 1
+	assert final_show_section.count('backend.run_window_show_handshake_boundary(index, mut transport, false)') == 1
 	assert_source_order(final_show_section,
-		'backend.run_window_show_handshake_boundary(index, seed, false)',
-		'backend.finish_window_show_handshake(index, seed, maximized, fullscreen)')
+		'backend.run_window_show_handshake_boundary(index, mut transport, false)',
+		'backend.finish_window_show_handshake(index, mut transport, maximized, fullscreen)')
 	show_boundary_body := wayland_source.all_after('fn (mut backend WaylandBackend) run_window_show_handshake_boundary')
 		.all_before('fn (mut backend WaylandBackend) ack_window_show_configure')
 	assert_source_order(show_boundary_body, 'if commit {',
 		'backend.commit_window_show_handshake(index)')
 	assert_source_order(show_boundary_body, 'backend.commit_window_show_handshake(index)',
-		'backend.attempt_wayland_flush(seed)')
-	assert_source_order(show_boundary_body, 'backend.attempt_wayland_flush(seed)',
-		'backend.attempt_wayland_roundtrip(seed)')
+		'backend.execute_prepared_service_transport(flush_attempt)')
+	assert_source_order(show_boundary_body,
+		'backend.execute_prepared_service_transport(flush_attempt)',
+		'backend.execute_prepared_service_transport(roundtrip_attempt)')
+	assert !show_boundary_body.contains('backend.attempt_wayland_')
 	assert show_boundary_body.count('commit_window_show_handshake(index)') == 1
 	finish_show_body := wayland_source.all_after('fn (mut backend WaylandBackend) finish_window_show_handshake')
 		.all_before('fn (mut backend WaylandBackend) prepare_window_show_handshake')
+	assert_source_order(finish_show_body, 'flush_attempt = transport.take()',
+		'backend.ack_window_show_configure(index, false)')
 	assert_source_order(finish_show_body, 'backend.ack_window_show_configure(index, false)',
-		'backend.flush_window_show_ack(seed)!')
-	assert_source_order(finish_show_body, 'backend.flush_window_show_ack(seed)!',
+		'backend.flush_window_show_ack(flush_attempt)!')
+	assert_source_order(finish_show_body, 'backend.flush_window_show_ack(flush_attempt)!',
 		'record.configured = true')
 	assert_source_order(finish_show_body, 'record.configured = true',
 		'record.requested_visible = true')
@@ -2904,16 +2947,20 @@ fn test_wayland_hidden_windows_are_created_for_later_mapping() {
 		'record.show_configure_received = false')
 	hidden_configure_branch := configure_callback_body.all_after('if !record.requested_visible {')
 	assert hidden_configure_branch.contains('xdg_surface_ack_configure')
-	assert hide_body.contains('backend.attempt_wayland_hide_barrier(seed)')
+	assert hide_body.contains('backend.execute_prepared_wayland_hide_barrier(barrier_attempt)')
 	assert !hide_body.contains('attempt_wayland_roundtrip')
-	assert_source_order(hide_body, 'hide_barrier_active = true',
-		'backend.attempt_wayland_hide_barrier(seed)')
-	assert_source_order(hide_body, 'backend.attempt_wayland_hide_barrier(seed)',
-		'backend.release_window_render_target_for_hide(index)!')
-	assert_source_order(hide_body, 'backend.release_window_render_target_for_hide(index)!',
+	assert_source_order(hide_body,
+		'mut barrier_transport := backend.prepare_service_transport_plan(seed,',
+		'hide_barrier_active = true')
+	assert_source_order(hide_body,
+		'backend.execute_prepared_wayland_hide_barrier(barrier_attempt)',
+		'backend.release_window_render_target_for_hide(index)')
+	assert_source_order(hide_body, 'backend.release_window_render_target_for_hide(index)',
 		'requested_visible = false')
 	assert_source_order(hide_body, 'requested_visible = false',
 		'C.v_multiwindow_wayland_unmap_surface')
+	assert_source_order(hide_body, 'C.v_multiwindow_wayland_unmap_surface',
+		'backend.finish_prepared_service_request(flush_attempt)')
 	hide_target_body := wayland_source.all_after('fn (mut backend WaylandBackend) release_window_render_target_for_hide')
 		.all_before('fn (mut backend WaylandBackend) service_hide_window')
 	assert_source_order(hide_target_body, 'backend.make_renderer_anchor_current(.anchor_prepare)',
@@ -2937,9 +2984,9 @@ fn test_wayland_hidden_windows_are_created_for_later_mapping() {
 		.all_before('fn (mut backend WaylandBackend) ensure_window_render_target')
 	assert_source_order(apply_configure_body, 'C.v_multiwindow_wayland_egl_resize_window',
 		'record.pending_egl_resize = false')
-	hide_barrier_body := wayland_source.all_after('fn (mut backend WaylandBackend) attempt_wayland_hide_barrier')
+	hide_barrier_body := wayland_source.all_after('fn (mut backend WaylandBackend) execute_prepared_wayland_hide_barrier')
 		.all_before('fn (mut backend WaylandBackend) abandon_renderer_ownership')
-	assert hide_barrier_body.contains('backend.attempt_wayland_roundtrip(boundary_seed)')
+	assert hide_barrier_body.contains('backend.execute_prepared_service_transport(attempt)')
 	replay_body := wayland_source.all_after('fn (mut backend WaylandBackend) replay_window_toplevel_attributes(index int)')
 		.all_before('fn (mut backend WaylandBackend) request_window_show_probe')
 	for replay_attribute in ['record.title', 'record.app_id', 'record.owner_id', 'record.min_width',
@@ -2970,19 +3017,31 @@ fn test_wayland_hidden_windows_are_created_for_later_mapping() {
 	assert wayland_source.contains('if was_mapped {')
 	end_render_body := wayland_source.all_after('fn (mut backend WaylandBackend) end_render(frame RenderFrame)')
 		.all_before('fn (mut backend WaylandBackend) ensure_lifecycle_buffers()')
+	assert_source_order(end_render_body, 'reserve_ordinals(9)',
+		'C.v_multiwindow_wayland_surface_frame')
+	assert_source_order(end_render_body, 'swap_context := swap_ordinals.materialize',
+		'C.v_multiwindow_wayland_surface_frame')
+	assert_source_order(end_render_body, 'materialize_prepared_wayland_transport(frame_seed',
+		'C.v_multiwindow_wayland_surface_frame')
 	assert_source_order(end_render_body, 'C.v_multiwindow_linux_egl_swap_buffers',
 		'backend.reapply_parent_to_live_children_on_first_map')
-	assert_source_order(end_render_body, 'backend.reapply_parent_to_live_children_on_first_map',
-		'backend.attempt_wayland_flush(frame_seed)')
+	final_end_render :=
+		end_render_body.all_after('backend.reapply_parent_to_live_children_on_first_map')
+	assert final_end_render.contains('backend.execute_prepared_wayland_transport(flush_attempt)')
+	assert !end_render_body.contains('backend.attempt_wayland_flush(frame_seed)')
 	lifecycle_body := wayland_source.all_after('fn (mut backend WaylandBackend) ensure_lifecycle_buffer(index int)')
 		.all_before('fn (mut record WaylandWindowRecord) release_fallback_buffer')
 	assert lifecycle_body.contains('record.fallback_buffer_for_extent(width, height)')
-	assert_source_order(lifecycle_body, 'record.fallback_buffer_for_extent(width, height)',
+	assert_source_order(lifecycle_body,
+		'record.fallback_buffers.len >= wayland_max_fallback_buffers',
+		'backend.prepare_service_transport_plan(')
+	assert_source_order(lifecycle_body, 'backend.prepare_service_transport_plan(',
 		'C.v_multiwindow_wayland_create_shm_buffer')
 	assert_source_order(lifecycle_body, 'C.v_multiwindow_wayland_attach_buffer',
 		'backend.reapply_parent_to_live_children_on_first_map')
 	assert_source_order(lifecycle_body, 'backend.reapply_parent_to_live_children_on_first_map',
-		'backend.attempt_wayland_flush')
+		'backend.finish_prepared_service_request(flush_attempt)')
+	assert !lifecycle_body.contains('backend.attempt_wayland_flush')
 }
 
 fn test_wayland_initial_size_is_clamped_before_mapping() {
@@ -3165,7 +3224,12 @@ fn test_cursor_shape_core_source_guard() {
 	assert wayland_cursor_body.contains('C.v_multiwindow_wayland_cursor_shape_device_set_shape')
 	assert wayland_cursor_body.contains('backend.pointer_enter_serial')
 	assert wayland_cursor_body.contains('wayland_cursor_shape_for_shape(shape)')
-	assert wayland_cursor_body.contains('backend.attempt_wayland_flush(')
+	assert_source_order(wayland_cursor_body, 'backend.prepare_service_transport_plan(',
+		'C.v_multiwindow_wayland_cursor_shape_device_set_shape')
+	assert_source_order(wayland_cursor_body,
+		'C.v_multiwindow_wayland_cursor_shape_device_set_shape',
+		'backend.finish_prepared_service_request(flush_attempt)')
+	assert !wayland_cursor_body.contains('backend.attempt_wayland_flush(')
 	assert wayland_cursor_body.contains('return error(err_capability_unsupported)')
 	assert wayland_cursor_shape_mapping_body.contains('.pointer { wayland_cursor_shape_pointer }')
 	assert wayland_cursor_shape_mapping_body.contains('.move { wayland_cursor_shape_move }')

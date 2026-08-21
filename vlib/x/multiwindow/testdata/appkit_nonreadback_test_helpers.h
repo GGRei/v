@@ -10,6 +10,151 @@ static NSButton *v_multiwindow_appkit_test_accessibility_child;
 static IMP v_multiwindow_appkit_test_release_services_original;
 static Class v_multiwindow_appkit_test_release_services_class;
 static int v_multiwindow_appkit_test_release_services_transitions;
+static IMP v_multiwindow_appkit_test_clipboard_set_string_original;
+static IMP v_multiwindow_appkit_test_clipboard_write_objects_original;
+static IMP v_multiwindow_appkit_test_clipboard_general_original;
+static Class v_multiwindow_appkit_test_clipboard_class;
+static int v_multiwindow_appkit_test_clipboard_failure_mode;
+
+static id v_multiwindow_appkit_test_clipboard_general_failure(id self, SEL command) {
+	(void)self;
+	(void)command;
+	@throw [NSException exceptionWithName:@"VMultiwindowClipboardTestFailure"
+		reason:@"injected generalPasteboard exception" userInfo:nil];
+}
+
+static BOOL v_multiwindow_appkit_test_clipboard_set_string_failure(id self,
+		SEL command, NSString *value, NSPasteboardType type) {
+	(void)value;
+	if (v_multiwindow_appkit_test_clipboard_failure_mode == 2) {
+		@throw [NSException exceptionWithName:@"VMultiwindowClipboardTestFailure"
+			reason:@"injected setString exception" userInfo:nil];
+	}
+	if (v_multiwindow_appkit_test_clipboard_failure_mode == 3) {
+		[(NSPasteboard *)self clearContents];
+		(void)((BOOL (*)(id, SEL, NSString *, NSPasteboardType))
+			v_multiwindow_appkit_test_clipboard_set_string_original)(self, command,
+			@"external-takeover", type);
+		return NO;
+	}
+	return NO;
+}
+
+static BOOL v_multiwindow_appkit_test_clipboard_write_objects_failure(id self,
+		SEL command, NSArray *objects) {
+	(void)self;
+	(void)command;
+	(void)objects;
+	return NO;
+}
+
+static int v_multiwindow_appkit_test_install_clipboard_failure(int mode) {
+	if (mode < 1 || mode > 5 || ![NSThread isMainThread]
+			|| v_multiwindow_appkit_test_clipboard_set_string_original != NULL
+			|| v_multiwindow_appkit_test_clipboard_general_original != NULL) {
+		return 0;
+	}
+	NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+	Class pasteboard_class = [pasteboard class];
+	if (mode == 5) {
+		Method general_method = class_getClassMethod([NSPasteboard class],
+			@selector(generalPasteboard));
+		if (general_method == NULL) {
+			return 0;
+		}
+		v_multiwindow_appkit_test_clipboard_class = pasteboard_class;
+		v_multiwindow_appkit_test_clipboard_failure_mode = mode;
+		v_multiwindow_appkit_test_clipboard_general_original = method_setImplementation(
+			general_method, (IMP)v_multiwindow_appkit_test_clipboard_general_failure);
+		return v_multiwindow_appkit_test_clipboard_general_original != NULL ? 1 : 0;
+	}
+	Method set_method = class_getInstanceMethod(pasteboard_class,
+		@selector(setString:forType:));
+	Method write_method = class_getInstanceMethod(pasteboard_class,
+		@selector(writeObjects:));
+	if (set_method == NULL || write_method == NULL) {
+		return 0;
+	}
+	v_multiwindow_appkit_test_clipboard_class = pasteboard_class;
+	v_multiwindow_appkit_test_clipboard_failure_mode = mode;
+	v_multiwindow_appkit_test_clipboard_set_string_original = method_setImplementation(
+		set_method, (IMP)v_multiwindow_appkit_test_clipboard_set_string_failure);
+	if (mode == 4) {
+		v_multiwindow_appkit_test_clipboard_write_objects_original = method_setImplementation(
+			write_method, (IMP)v_multiwindow_appkit_test_clipboard_write_objects_failure);
+	}
+	return v_multiwindow_appkit_test_clipboard_set_string_original != NULL
+		&& (mode != 4 || v_multiwindow_appkit_test_clipboard_write_objects_original != NULL)
+		? 1 : 0;
+}
+
+static void v_multiwindow_appkit_test_restore_clipboard_failure(void) {
+	if (v_multiwindow_appkit_test_clipboard_class == Nil
+			&& v_multiwindow_appkit_test_clipboard_general_original == NULL) {
+		return;
+	}
+	Method general_method = class_getClassMethod([NSPasteboard class],
+		@selector(generalPasteboard));
+	if (general_method != NULL && v_multiwindow_appkit_test_clipboard_general_original != NULL) {
+		method_setImplementation(general_method,
+			v_multiwindow_appkit_test_clipboard_general_original);
+	}
+	Method set_method = class_getInstanceMethod(v_multiwindow_appkit_test_clipboard_class,
+		@selector(setString:forType:));
+	if (set_method != NULL && v_multiwindow_appkit_test_clipboard_set_string_original != NULL) {
+		method_setImplementation(set_method,
+			v_multiwindow_appkit_test_clipboard_set_string_original);
+	}
+	Method write_method = class_getInstanceMethod(v_multiwindow_appkit_test_clipboard_class,
+		@selector(writeObjects:));
+	if (write_method != NULL && v_multiwindow_appkit_test_clipboard_write_objects_original != NULL) {
+		method_setImplementation(write_method,
+			v_multiwindow_appkit_test_clipboard_write_objects_original);
+	}
+	v_multiwindow_appkit_test_clipboard_set_string_original = NULL;
+	v_multiwindow_appkit_test_clipboard_write_objects_original = NULL;
+	v_multiwindow_appkit_test_clipboard_general_original = NULL;
+	v_multiwindow_appkit_test_clipboard_class = Nil;
+	v_multiwindow_appkit_test_clipboard_failure_mode = 0;
+}
+
+static int v_multiwindow_appkit_test_seed_multitype_clipboard(void) {
+	if (![NSThread isMainThread]) {
+		return 0;
+	}
+	NSPasteboardItem *first = [[NSPasteboardItem alloc] init];
+	NSPasteboardItem *second = [[NSPasteboardItem alloc] init];
+	NSData *binary = [NSData dataWithBytes:(const unsigned char[]){0, 1, 2, 0xff}
+		length:4];
+	if (first == nil || second == nil
+			|| ![first setString:@"original-text" forType:NSPasteboardTypeString]
+			|| ![first setData:binary forType:@"org.vlang.multiwindow.binary"]
+			|| ![second setString:@"second-item" forType:@"org.vlang.multiwindow.second"]) {
+		return 0;
+	}
+	NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+	[pasteboard clearContents];
+	return [pasteboard writeObjects:@[ first, second ]] ? 1 : 0;
+}
+
+static int v_multiwindow_appkit_test_multitype_clipboard_matches_seed(void) {
+	NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+	NSArray<NSPasteboardItem *> *items = pasteboard.pasteboardItems;
+	if (items.count != 2) {
+		return 0;
+	}
+	NSData *binary = [NSData dataWithBytes:(const unsigned char[]){0, 1, 2, 0xff}
+		length:4];
+	return [[items[0] stringForType:NSPasteboardTypeString] isEqualToString:@"original-text"]
+		&& [[items[0] dataForType:@"org.vlang.multiwindow.binary"] isEqualToData:binary]
+		&& [[items[1] stringForType:@"org.vlang.multiwindow.second"]
+			isEqualToString:@"second-item"] ? 1 : 0;
+}
+
+static int v_multiwindow_appkit_test_clipboard_has_external_takeover(void) {
+	return [[[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString]
+		isEqualToString:@"external-takeover"] ? 1 : 0;
+}
 
 static BOOL v_multiwindow_appkit_test_release_mouse_lock_failure(id self, SEL command) {
 	(void)self;

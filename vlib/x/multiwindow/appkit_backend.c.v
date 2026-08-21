@@ -12,6 +12,7 @@ const service_appkit_result_ok = 1
 const service_appkit_result_unavailable = 0
 const service_appkit_result_failed = -1
 const service_appkit_result_capacity = -2
+const service_appkit_result_indeterminate = -3
 const service_appkit_readback_ready = 1
 const service_appkit_readback_failed = 3
 
@@ -169,7 +170,8 @@ $if darwin {
 	// Package-2 AppKit service ABI v1. All calls are made on the AppKit main
 	// thread. General return values are 1 success/data, 0 unavailable/no data,
 	// and negative native failure. Clipboard operations additionally return -2
-	// for capacity. Capability returns 0 unsupported, 1 available, or 2 conditional.
+	// for capacity and -3 when a replacement cannot be rolled back. Capability
+	// returns 0 unsupported, 1 available, or 2 conditional.
 	// Operation is 0..16 in ServiceOperation declaration order.
 	// State ordinals are mapping 0 unknown/1 unmapped/2 mapped; visibility
 	// 0 unknown/1 hidden/2 visible/3 occluded; observed bool 0 unknown/1 off/2 on.
@@ -1049,6 +1051,13 @@ fn (mut backend AppKitBackend) service_set_clipboard_text(id WindowId, request S
 	$if darwin {
 		status := C.v_multiwindow_appkit_service_set_clipboard_text(backend.windows[index].state,
 			&char(text.str), usize(text.len))
+		if status == service_appkit_result_indeterminate {
+			return BackendClipboardStart{
+				completed: true
+				status:    .failed
+				error:     err_capability_unsupported
+			}
+		}
 		appkit_require_clipboard_result(status)!
 	}
 	return BackendClipboardStart{

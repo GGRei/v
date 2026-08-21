@@ -38,9 +38,16 @@ fn (mut app App) enqueue_readback_event_locked(result ServiceReadbackResult) !u6
 }
 
 fn (mut app App) publish_mock_state_locked(index int, operation ServiceOperation) ! {
-	state := app.services.windows[index].state
+	app.publish_state_candidate_locked(index, operation, app.services.windows[index].state)!
+}
+
+fn (mut app App) publish_state_candidate_locked(index int, operation ServiceOperation, candidate ServiceWindowState) ! {
 	token := app.reserve_event_delivery_tokens_locked(1)!
-	sequenced_state := service_window_state_with_sequence(state, token)
+	app.publish_reserved_state_candidate_locked(index, operation, candidate, token)
+}
+
+fn (mut app App) publish_reserved_state_candidate_locked(index int, operation ServiceOperation, candidate ServiceWindowState, token u64) {
+	sequenced_state := service_window_state_with_sequence(candidate, token)
 	app.services.windows[index].state = sequenced_state
 	app.enqueue_reserved_event_locked(queued_service_event(ServiceEvent{
 		kind:      .state
@@ -49,6 +56,12 @@ fn (mut app App) publish_mock_state_locked(index int, operation ServiceOperation
 		state:     sequenced_state
 		operation: operation
 	}), token)
+}
+
+struct NativeStateOperationAdmission {
+	uses_mock            bool
+	publication_deferred bool
+	reserved_token       u64
 }
 
 fn (mut app App) publish_mock_focus_locked(index int) ! {
@@ -210,22 +223,24 @@ pub fn (app &App) service_cursor_support(id WindowId, shape CursorShape) !Servic
 
 // service_show_window requests that a live window become mapped and visible.
 pub fn (mut app App) service_show_window(id WindowId) ! {
-	if app.service_operation_uses_mock(id, .show)! {
+	admission := app.begin_native_state_operation(id, .show)!
+	if admission.uses_mock {
 		app.update_mock_mapping(id, true, .show)!
 		return
 	}
 	state := app.backend.service_show_window(id)!
-	app.publish_native_state(id, .show, state)!
+	app.publish_admitted_native_state(id, .show, state, admission)!
 }
 
 // service_hide_window requests that a live window become hidden or unmapped.
 pub fn (mut app App) service_hide_window(id WindowId) ! {
-	if app.service_operation_uses_mock(id, .hide)! {
+	admission := app.begin_native_state_operation(id, .hide)!
+	if admission.uses_mock {
 		app.update_mock_mapping(id, false, .hide)!
 		return
 	}
 	state := app.backend.service_hide_window(id)!
-	app.publish_native_state(id, .hide, state)!
+	app.publish_admitted_native_state(id, .hide, state, admission)!
 }
 
 fn (mut app App) update_mock_mapping(id WindowId, visible bool, operation ServiceOperation) ! {
@@ -236,19 +251,20 @@ fn (mut app App) update_mock_mapping(id WindowId, visible bool, operation Servic
 	}
 	app.ensure_mock_service_locked()!
 	index := app.service_window_index_for_admission_locked(id)!
-	app.services.windows[index].state = ServiceWindowState{
+	candidate := ServiceWindowState{
 		...app.services.windows[index].state
 		mapping:    if visible { .mapped } else { .unmapped }
 		visibility: if visible { .visible } else { .hidden }
 	}
-	app.publish_mock_state_locked(index, operation)!
+	app.publish_state_candidate_locked(index, operation, candidate)!
 }
 
 // service_request_focus asks the native platform to focus a live window.
 pub fn (mut app App) service_request_focus(id WindowId) ! {
-	if !app.service_operation_uses_mock(id, .focus)! {
+	admission := app.begin_native_state_operation(id, .focus)!
+	if !admission.uses_mock {
 		state := app.backend.service_focus_window(id)!
-		app.publish_native_state(id, .focus, state)!
+		app.publish_admitted_native_state(id, .focus, state, admission)!
 		return
 	}
 	app.assert_owner_thread()!
@@ -263,19 +279,21 @@ pub fn (mut app App) service_request_focus(id WindowId) ! {
 
 // service_raise_window asks the native platform to raise a live window.
 pub fn (mut app App) service_raise_window(id WindowId) ! {
-	if app.service_operation_uses_mock(id, .raise)! {
+	admission := app.begin_native_state_operation(id, .raise)!
+	if admission.uses_mock {
 		app.publish_mock_unchanged_state(id, .raise)!
 		return
 	}
 	state := app.backend.service_raise_window(id)!
-	app.publish_native_state(id, .raise, state)!
+	app.publish_admitted_native_state(id, .raise, state, admission)!
 }
 
 // service_set_position requests a native top-level position when supported.
 pub fn (mut app App) service_set_position(id WindowId, x int, y int) ! {
-	if !app.service_operation_uses_mock(id, .position)! {
+	admission := app.begin_native_state_operation(id, .position)!
+	if !admission.uses_mock {
 		state := app.backend.service_set_window_position(id, x, y)!
-		app.publish_native_state(id, .position, state)!
+		app.publish_admitted_native_state(id, .position, state, admission)!
 		return
 	}
 	app.assert_owner_thread()!
@@ -285,7 +303,7 @@ pub fn (mut app App) service_set_position(id WindowId, x int, y int) ! {
 	}
 	app.ensure_mock_service_locked()!
 	index := app.service_window_index_for_admission_locked(id)!
-	app.services.windows[index].state = ServiceWindowState{
+	candidate := ServiceWindowState{
 		...app.services.windows[index].state
 		position: ServicePosition{
 			known: true
@@ -293,44 +311,48 @@ pub fn (mut app App) service_set_position(id WindowId, x int, y int) ! {
 			y:     y
 		}
 	}
-	app.publish_mock_state_locked(index, .position)!
+	app.publish_state_candidate_locked(index, .position, candidate)!
 }
 
 // service_minimize_window requests native minimization.
 pub fn (mut app App) service_minimize_window(id WindowId) ! {
-	if app.service_operation_uses_mock(id, .minimize)! {
+	admission := app.begin_native_state_operation(id, .minimize)!
+	if admission.uses_mock {
 		app.update_mock_window_mode(id, .minimize)!
 		return
 	}
 	state := app.backend.service_minimize_window(id)!
-	app.publish_native_state(id, .minimize, state)!
+	app.publish_admitted_native_state(id, .minimize, state, admission)!
 }
 
 // service_maximize_window requests native maximization.
 pub fn (mut app App) service_maximize_window(id WindowId) ! {
-	if app.service_operation_uses_mock(id, .maximize)! {
+	admission := app.begin_native_state_operation(id, .maximize)!
+	if admission.uses_mock {
 		app.update_mock_window_mode(id, .maximize)!
 		return
 	}
 	state := app.backend.service_maximize_window(id)!
-	app.publish_native_state(id, .maximize, state)!
+	app.publish_admitted_native_state(id, .maximize, state, admission)!
 }
 
 // service_restore_window leaves a supported minimized/maximized/fullscreen state.
 pub fn (mut app App) service_restore_window(id WindowId) ! {
-	if app.service_operation_uses_mock(id, .restore)! {
+	admission := app.begin_native_state_operation(id, .restore)!
+	if admission.uses_mock {
 		app.update_mock_window_mode(id, .restore)!
 		return
 	}
 	state := app.backend.service_restore_window(id)!
-	app.publish_native_state(id, .restore, state)!
+	app.publish_admitted_native_state(id, .restore, state, admission)!
 }
 
 // service_set_fullscreen requests or leaves native fullscreen state.
 pub fn (mut app App) service_set_fullscreen(id WindowId, enabled bool) ! {
-	if !app.service_operation_uses_mock(id, .fullscreen)! {
+	admission := app.begin_native_state_operation(id, .fullscreen)!
+	if !admission.uses_mock {
 		state := app.backend.service_set_fullscreen(id, enabled)!
-		app.publish_native_state(id, .fullscreen, state)!
+		app.publish_admitted_native_state(id, .fullscreen, state, admission)!
 		return
 	}
 	app.assert_owner_thread()!
@@ -340,13 +362,13 @@ pub fn (mut app App) service_set_fullscreen(id WindowId, enabled bool) ! {
 	}
 	app.ensure_mock_service_locked()!
 	index := app.service_window_index_for_admission_locked(id)!
-	app.services.windows[index].state = ServiceWindowState{
+	candidate := ServiceWindowState{
 		...app.services.windows[index].state
 		fullscreen: if enabled { .on } else { .off }
 		minimized:  .off
 		maximized:  .off
 	}
-	app.publish_mock_state_locked(index, .fullscreen)!
+	app.publish_state_candidate_locked(index, .fullscreen, candidate)!
 }
 
 fn (mut app App) update_mock_window_mode(id WindowId, operation ServiceOperation) ! {
@@ -357,7 +379,7 @@ fn (mut app App) update_mock_window_mode(id WindowId, operation ServiceOperation
 	}
 	app.ensure_mock_service_locked()!
 	index := app.service_window_index_for_admission_locked(id)!
-	app.services.windows[index].state = ServiceWindowState{
+	candidate := ServiceWindowState{
 		...app.services.windows[index].state
 		minimized:  if operation == .minimize { .on } else { .off }
 		maximized:  if operation == .maximize { .on } else { .off }
@@ -365,7 +387,7 @@ fn (mut app App) update_mock_window_mode(id WindowId, operation ServiceOperation
 		visibility: .visible
 		mapping:    .mapped
 	}
-	app.publish_mock_state_locked(index, operation)!
+	app.publish_state_candidate_locked(index, operation, candidate)!
 }
 
 fn (mut app App) publish_mock_unchanged_state(id WindowId, operation ServiceOperation) ! {
@@ -381,9 +403,10 @@ fn (mut app App) publish_mock_unchanged_state(id WindowId, operation ServiceOper
 
 // service_set_mouse_lock requests or releases relative pointer confinement.
 pub fn (mut app App) service_set_mouse_lock(id WindowId, enabled bool) ! {
-	if !app.service_operation_uses_mock(id, .mouse_lock)! {
+	admission := app.begin_native_state_operation(id, .mouse_lock)!
+	if !admission.uses_mock {
 		state := app.backend.service_set_mouse_lock(id, enabled)!
-		app.publish_native_state(id, .mouse_lock, state)!
+		app.publish_admitted_native_state(id, .mouse_lock, state, admission)!
 		return
 	}
 	app.assert_owner_thread()!
@@ -393,11 +416,11 @@ pub fn (mut app App) service_set_mouse_lock(id WindowId, enabled bool) ! {
 	}
 	app.ensure_mock_service_locked()!
 	index := app.service_window_index_for_admission_locked(id)!
-	app.services.windows[index].state = ServiceWindowState{
+	candidate := ServiceWindowState{
 		...app.services.windows[index].state
 		mouse_locked: if enabled { .on } else { .off }
 	}
-	app.publish_mock_state_locked(index, .mouse_lock)!
+	app.publish_state_candidate_locked(index, .mouse_lock, candidate)!
 }
 
 fn (mut app App) service_operation_uses_mock(id WindowId, operation ServiceOperation) !bool {
@@ -416,8 +439,44 @@ fn (mut app App) service_operation_uses_mock(id WindowId, operation ServiceOpera
 	return app.backend.kind == .mock
 }
 
+fn (mut app App) begin_native_state_operation(id WindowId, operation ServiceOperation) !NativeStateOperationAdmission {
+	app.assert_owner_thread()!
+	app.state_mutex.lock()
+	defer {
+		app.state_mutex.unlock()
+	}
+	app.ensure_running_locked()!
+	app.ensure_event_admission_open_locked()!
+	app.service_window_index_for_admission_locked(id)!
+	capability := app.backend.service_operation_capability(id, operation)
+	if capability.support == .unsupported {
+		return error(err_capability_unsupported)
+	}
+	uses_mock := app.backend.kind == .mock
+	reserved_token := if !uses_mock && !capability.asynchronous {
+		app.reserve_event_delivery_tokens_locked(1)!
+	} else {
+		u64(0)
+	}
+	return NativeStateOperationAdmission{
+		uses_mock:            uses_mock
+		publication_deferred: capability.asynchronous
+		reserved_token:       reserved_token
+	}
+}
+
 fn (mut app App) publish_native_state(id WindowId, operation ServiceOperation, observed ServiceWindowState) ! {
-	if app.backend.service_state_publication_is_deferred(id, operation) {
+	app.publish_reserved_native_state(id, operation, observed, 0, app.backend.service_state_publication_is_deferred(id,
+		operation))!
+}
+
+fn (mut app App) publish_admitted_native_state(id WindowId, operation ServiceOperation, observed ServiceWindowState, admission NativeStateOperationAdmission) ! {
+	app.publish_reserved_native_state(id, operation, observed, admission.reserved_token,
+		admission.publication_deferred)!
+}
+
+fn (mut app App) publish_reserved_native_state(id WindowId, operation ServiceOperation, observed ServiceWindowState, reserved_token u64, publication_deferred bool) ! {
+	if publication_deferred {
 		return
 	}
 	if !service_window_state_has_observation(observed) {
@@ -435,9 +494,12 @@ fn (mut app App) publish_native_state(id WindowId, operation ServiceOperation, o
 	if !service_window_state_has_observation(registered_observed) {
 		return
 	}
-	app.services.windows[index].state = merge_service_window_state(app.services.windows[index].state,
-		registered_observed)
-	app.publish_mock_state_locked(index, operation)!
+	candidate := merge_service_window_state(app.services.windows[index].state, registered_observed)
+	if reserved_token == 0 {
+		app.publish_state_candidate_locked(index, operation, candidate)!
+	} else {
+		app.publish_reserved_state_candidate_locked(index, operation, candidate, reserved_token)
+	}
 }
 
 fn service_window_state_has_observation(state ServiceWindowState) bool {
@@ -547,7 +609,7 @@ pub fn (mut app App) service_request_clipboard_text(id WindowId) !ServiceRequest
 		return err
 	}
 	if start.completed {
-		app.complete_native_clipboard_request(request, id, .clipboard_read, start.text,
+		app.complete_native_clipboard_start(request, id, .clipboard_read, start,
 			admission.reserved_terminal) or {
 			app.rollback_native_service_request(request, admission.reserved_terminal)
 			return err
@@ -570,7 +632,7 @@ pub fn (mut app App) service_set_clipboard_text(id WindowId, text string) !Servi
 		return err
 	}
 	if start.completed {
-		app.complete_native_clipboard_request(request, id, .clipboard_write, start.text,
+		app.complete_native_clipboard_start(request, id, .clipboard_write, start,
 			admission.reserved_terminal) or {
 			app.rollback_native_service_request(request, admission.reserved_terminal)
 			return err
@@ -683,6 +745,22 @@ fn (mut app App) rollback_native_service_request(id ServiceRequestId, reserved_t
 }
 
 fn (mut app App) complete_native_clipboard_request(id ServiceRequestId, window WindowId, operation ServiceOperation, text string, reserved_terminal u64) ! {
+	app.complete_native_clipboard_terminal(id, window, operation, .ready, text, '',
+		reserved_terminal)!
+}
+
+fn (mut app App) complete_native_clipboard_start(id ServiceRequestId, window WindowId, operation ServiceOperation, start BackendClipboardStart, reserved_terminal u64) ! {
+	status := if start.status == .failed { ServiceStatus.failed } else { ServiceStatus.ready }
+	error_text := if status == .failed && start.error == '' {
+		err_capability_unsupported
+	} else {
+		start.error
+	}
+	app.complete_native_clipboard_terminal(id, window, operation, status, start.text, error_text,
+		reserved_terminal)!
+}
+
+fn (mut app App) complete_native_clipboard_terminal(id ServiceRequestId, window WindowId, operation ServiceOperation, status ServiceStatus, text string, error_text string, reserved_terminal u64) ! {
 	app.state_mutex.lock()
 	defer {
 		app.state_mutex.unlock()
@@ -713,8 +791,9 @@ fn (mut app App) complete_native_clipboard_request(id ServiceRequestId, window W
 		clipboard: ServiceClipboardResult{
 			id:     id
 			window: window
-			status: .ready
+			status: status
 			text:   text.clone()
+			error:  error_text
 		}
 	}, token)
 }
@@ -1131,8 +1210,33 @@ pub fn (mut app App) service_request_window_readback_region(id WindowId, x int, 
 // service_complete_readback creates and immediately publishes one ready RGBA8 result.
 pub fn (mut app App) service_complete_readback(id WindowId, width int, height int, stride int, pixels []u8, submitted_frame u64) !ServiceReadbackId {
 	validate_service_readback_rgba8_layout(width, height, stride, pixels.len)!
-	readback := app.service_begin_window_readback(id)!
-	app.service_finish_window_readback(readback, width, height, stride, pixels, submitted_frame)!
+	app.assert_owner_thread()!
+	app.state_mutex.lock()
+	defer {
+		app.state_mutex.unlock()
+	}
+	app.ensure_running_locked()!
+	app.ensure_event_admission_open_locked()!
+	app.service_window_index_for_admission_locked(id)!
+	if app.services.next_request == 0 {
+		return error(err_service_request_exhausted)
+	}
+	token := app.reserve_event_delivery_tokens_locked(1)!
+	readback := app.services.take_readback_id(id)!
+	app.services.readbacks << PendingReadbackRequest{
+		id:       readback
+		terminal: true
+	}
+	app.enqueue_reserved_event_locked(queued_readback_event(ServiceReadbackResult{
+		id:              readback
+		window:          id
+		status:          .ready
+		submitted_frame: submitted_frame
+		width:           width
+		height:          height
+		stride:          stride
+		pixels_rgba8:    pixels.clone()
+	}), token)
 	return readback
 }
 
