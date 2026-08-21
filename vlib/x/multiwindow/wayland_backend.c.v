@@ -7679,7 +7679,8 @@ fn (backend &WaylandBackend) service_operation_capability(operation ServiceOpera
 		}
 		.mouse_lock {
 			ServiceOperationCapability{
-				support:          if backend.started && backend.pointer != unsafe { nil }
+				support:          if backend.service_transport_usable(1)
+					&& backend.pointer != unsafe { nil }
 					&& backend.relative_pointer_manager != unsafe { nil }
 					&& backend.pointer_constraints != unsafe { nil } {
 					.conditional
@@ -8023,6 +8024,14 @@ fn (mut backend WaylandBackend) service_set_fullscreen(id WindowId, enabled bool
 		_ = enabled
 		return error(err_backend_unsupported)
 	}
+}
+
+fn (backend &WaylandBackend) can_release_mouse_lock_after_capability_loss(id WindowId) bool {
+	index := backend.window_record_index(id) or { return false }
+	record := backend.windows[index]
+	has_lock := record.mouse_lock_requested || record.mouse_locked
+		|| record.locked_pointer != unsafe { nil } || record.relative_pointer != unsafe { nil }
+	return has_lock
 }
 
 fn (mut backend WaylandBackend) service_set_mouse_lock(id WindowId, enabled bool) !ServiceWindowState {

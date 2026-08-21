@@ -2,6 +2,7 @@
 #define V_MULTIWINDOW_X11_EGL_BACKEND_HELPERS_H
 
 #include <stdint.h>
+#include <limits.h>
 #include <locale.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,103 @@
 #include <X11/Xutil.h>
 #include <xcb/xcb.h>
 #include "linux_egl_native_helpers.h"
+
+typedef struct {
+	int map_state;
+	int width;
+	int height;
+} VMultiwindowX11CheckedWindowSnapshot;
+
+static inline void *v_multiwindow_x11_open_checked_connection(Display *display) {
+	if (display == NULL) {
+		return NULL;
+	}
+	const char *display_name = DisplayString(display);
+	if (display_name == NULL) {
+		return NULL;
+	}
+	xcb_connection_t *connection = xcb_connect(display_name, NULL);
+	if (connection == NULL || xcb_connection_has_error(connection) != 0) {
+		if (connection != NULL) {
+			xcb_disconnect(connection);
+		}
+		return NULL;
+	}
+	return connection;
+}
+
+static inline void v_multiwindow_x11_close_checked_connection(void *raw_connection) {
+	if (raw_connection != NULL) {
+		xcb_disconnect((xcb_connection_t *)raw_connection);
+	}
+}
+
+static inline int v_multiwindow_x11_checked_connection_usable(void *raw_connection) {
+	return raw_connection != NULL
+		&& xcb_connection_has_error((xcb_connection_t *)raw_connection) == 0;
+}
+
+static inline int v_multiwindow_x11_checked_window_snapshot(void *raw_connection,
+		unsigned long window, VMultiwindowX11CheckedWindowSnapshot *out) {
+	if (out == NULL) {
+		return 0;
+	}
+	memset(out, 0, sizeof(*out));
+	if (!v_multiwindow_x11_checked_connection_usable(raw_connection) || window == 0) {
+		return 0;
+	}
+	xcb_connection_t *connection = (xcb_connection_t *)raw_connection;
+	xcb_get_window_attributes_cookie_t attributes_cookie =
+		xcb_get_window_attributes(connection, (xcb_window_t)window);
+	xcb_get_geometry_cookie_t geometry_cookie =
+		xcb_get_geometry(connection, (xcb_drawable_t)window);
+	xcb_generic_error_t *attributes_error = NULL;
+	xcb_generic_error_t *geometry_error = NULL;
+	xcb_get_window_attributes_reply_t *attributes =
+		xcb_get_window_attributes_reply(connection, attributes_cookie, &attributes_error);
+	xcb_get_geometry_reply_t *geometry =
+		xcb_get_geometry_reply(connection, geometry_cookie, &geometry_error);
+	int ok = attributes != NULL && geometry != NULL && attributes_error == NULL
+		&& geometry_error == NULL && xcb_connection_has_error(connection) == 0;
+	if (ok) {
+		out->map_state = attributes->map_state;
+		out->width = geometry->width;
+		out->height = geometry->height;
+	}
+	free(attributes);
+	free(geometry);
+	free(attributes_error);
+	free(geometry_error);
+	if (!ok) {
+		memset(out, 0, sizeof(*out));
+	}
+	return ok;
+}
+
+static inline int v_multiwindow_x11_checked_wm_state(void *raw_connection,
+		unsigned long window, unsigned long wm_state, int *out_state) {
+	if (out_state == NULL) {
+		return 0;
+	}
+	*out_state = NormalState;
+	if (!v_multiwindow_x11_checked_connection_usable(raw_connection)
+			|| window == 0 || wm_state == 0) {
+		return 0;
+	}
+	xcb_connection_t *connection = (xcb_connection_t *)raw_connection;
+	xcb_get_property_cookie_t cookie = xcb_get_property(connection, 0,
+		(xcb_window_t)window, (xcb_atom_t)wm_state, (xcb_atom_t)wm_state, 0, 2);
+	xcb_generic_error_t *error = NULL;
+	xcb_get_property_reply_t *reply = xcb_get_property_reply(connection, cookie, &error);
+	int ok = reply != NULL && error == NULL && xcb_connection_has_error(connection) == 0;
+	if (ok && reply->type == (xcb_atom_t)wm_state && reply->format == 32
+			&& xcb_get_property_value_length(reply) >= (int)(2U * sizeof(uint32_t))) {
+		*out_state = (int)((uint32_t *)xcb_get_property_value(reply))[0];
+	}
+	free(reply);
+	free(error);
+	return ok;
+}
 
 static inline int v_multiwindow_x11_send_event_checked(Display *display, unsigned long window,
 	XEvent *event) {
@@ -1064,52 +1162,96 @@ static inline int v_multiwindow_x11_root_supports_atom(Display *display,
 		&& v_multiwindow_x11_property_has_atom(display, (Window)root, supported, (Atom)atom);
 }
 
-static inline int v_multiwindow_x11_query_service_state(Display *display, unsigned long root, unsigned long window, VMultiwindowX11ServiceState *out) {
-	if (display == NULL || window == 0 || out == NULL) {
+static inline int v_multiwindow_x11_query_service_state(void *raw_connection,
+		unsigned long root, unsigned long window, unsigned long wm_state,
+		unsigned long net_state, unsigned long max_h, unsigned long max_v,
+		unsigned long fullscreen, VMultiwindowX11ServiceState *out) {
+	if (out == NULL) {
 		return 0;
 	}
 	memset(out, 0, sizeof(*out));
-	XWindowAttributes attrs;
-	if (!XGetWindowAttributes(display, (Window)window, &attrs)) {
+	VMultiwindowX11CheckedWindowSnapshot snapshot;
+	if (!v_multiwindow_x11_checked_window_snapshot(raw_connection, window, &snapshot)) {
 		return 0;
 	}
-	out->mapped = attrs.map_state != IsUnmapped;
-	Window focus = None;
-	int revert_to = 0;
-	XGetInputFocus(display, &focus, &revert_to);
-	out->focused = focus == (Window)window;
-	Window child = None;
-	int root_x = 0;
-	int root_y = 0;
-	if (root != 0 && XTranslateCoordinates(display, (Window)window, (Window)root, 0, 0,
-			&root_x, &root_y, &child)) {
-		out->position_known = 1;
-		out->x = root_x;
-		out->y = root_y;
+	xcb_connection_t *connection = (xcb_connection_t *)raw_connection;
+	xcb_get_input_focus_cookie_t focus_cookie = xcb_get_input_focus(connection);
+	int translate_requested = root != 0;
+	xcb_translate_coordinates_cookie_t translate_cookie;
+	memset(&translate_cookie, 0, sizeof(translate_cookie));
+	if (translate_requested) {
+		translate_cookie = xcb_translate_coordinates(connection, (xcb_window_t)window,
+			(xcb_window_t)root, 0, 0);
 	}
-	Atom wm_state = XInternAtom(display, "WM_STATE", False);
-	Atom actual_type = None;
-	int actual_format = 0;
-	unsigned long item_count = 0;
-	unsigned long bytes_after = 0;
-	unsigned char *state_data = NULL;
-	if (wm_state != None && XGetWindowProperty(display, (Window)window, wm_state, 0, 2, False,
-			wm_state, &actual_type, &actual_format, &item_count, &bytes_after, &state_data) == Success
-		&& actual_type == wm_state && actual_format == 32 && item_count >= 1 && state_data != NULL) {
-		long state = ((long *)state_data)[0];
-		out->minimized = state == IconicState;
+	int wm_requested = wm_state != 0;
+	xcb_get_property_cookie_t wm_cookie;
+	memset(&wm_cookie, 0, sizeof(wm_cookie));
+	if (wm_requested) {
+		wm_cookie = xcb_get_property(connection, 0, (xcb_window_t)window,
+			(xcb_atom_t)wm_state, (xcb_atom_t)wm_state, 0, 2);
 	}
-	if (state_data != NULL) {
-		XFree(state_data);
+	int net_requested = net_state != 0;
+	xcb_get_property_cookie_t net_cookie;
+	memset(&net_cookie, 0, sizeof(net_cookie));
+	if (net_requested) {
+		net_cookie = xcb_get_property(connection, 0, (xcb_window_t)window,
+			(xcb_atom_t)net_state, XCB_ATOM_ATOM, 0, 1024);
 	}
-	Atom net_state = XInternAtom(display, "_NET_WM_STATE", False);
-	Atom max_h = XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
-	Atom max_v = XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_VERT", False);
-	Atom fullscreen = XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", False);
-	out->maximized = v_multiwindow_x11_property_has_atom(display, (Window)window, net_state, max_h)
-		&& v_multiwindow_x11_property_has_atom(display, (Window)window, net_state, max_v);
-	out->fullscreen = v_multiwindow_x11_property_has_atom(display, (Window)window, net_state, fullscreen);
-	return 1;
+
+	xcb_generic_error_t *focus_error = NULL;
+	xcb_generic_error_t *translate_error = NULL;
+	xcb_generic_error_t *wm_error = NULL;
+	xcb_generic_error_t *net_error = NULL;
+	xcb_get_input_focus_reply_t *focus_reply =
+		xcb_get_input_focus_reply(connection, focus_cookie, &focus_error);
+	xcb_translate_coordinates_reply_t *translate_reply = translate_requested
+		? xcb_translate_coordinates_reply(connection, translate_cookie, &translate_error) : NULL;
+	xcb_get_property_reply_t *wm_reply = wm_requested
+		? xcb_get_property_reply(connection, wm_cookie, &wm_error) : NULL;
+	xcb_get_property_reply_t *net_reply = net_requested
+		? xcb_get_property_reply(connection, net_cookie, &net_error) : NULL;
+	int ok = focus_reply != NULL && focus_error == NULL
+		&& (!translate_requested || (translate_reply != NULL && translate_error == NULL))
+		&& (!wm_requested || (wm_reply != NULL && wm_error == NULL))
+		&& (!net_requested || (net_reply != NULL && net_error == NULL))
+		&& xcb_connection_has_error(connection) == 0;
+	if (ok) {
+		out->mapped = snapshot.map_state != XCB_MAP_STATE_UNMAPPED;
+		out->focused = focus_reply->focus == (xcb_window_t)window;
+		if (translate_requested && translate_reply->same_screen) {
+			out->position_known = 1;
+			out->x = translate_reply->dst_x;
+			out->y = translate_reply->dst_y;
+		}
+		if (wm_reply != NULL && wm_reply->type == (xcb_atom_t)wm_state
+				&& wm_reply->format == 32 && xcb_get_property_value_length(wm_reply) >= 4) {
+			out->minimized = ((uint32_t *)xcb_get_property_value(wm_reply))[0] == IconicState;
+		}
+		if (net_reply != NULL && net_reply->type == XCB_ATOM_ATOM && net_reply->format == 32) {
+			int count = xcb_get_property_value_length(net_reply) / (int)sizeof(xcb_atom_t);
+			xcb_atom_t *atoms = (xcb_atom_t *)xcb_get_property_value(net_reply);
+			int found_h = 0;
+			int found_v = 0;
+			for (int i = 0; i < count; ++i) {
+				found_h = found_h || atoms[i] == (xcb_atom_t)max_h;
+				found_v = found_v || atoms[i] == (xcb_atom_t)max_v;
+				out->fullscreen = out->fullscreen || atoms[i] == (xcb_atom_t)fullscreen;
+			}
+			out->maximized = found_h && found_v;
+		}
+	}
+	free(focus_reply);
+	free(translate_reply);
+	free(wm_reply);
+	free(net_reply);
+	free(focus_error);
+	free(translate_error);
+	free(wm_error);
+	free(net_error);
+	if (!ok) {
+		memset(out, 0, sizeof(*out));
+	}
+	return ok;
 }
 
 static inline int v_multiwindow_x11_send_net_wm_state(Display *display, unsigned long root, unsigned long window, int action, const char *first_name, const char *second_name) {
@@ -1408,38 +1550,105 @@ static inline unsigned char v_multiwindow_x11_scale_mask(unsigned long pixel, un
 	return (unsigned char)((value * 255UL + max_value / 2UL) / max_value);
 }
 
-static inline int v_multiwindow_x11_readback_rgba8(Display *display, unsigned long window,
-		int x, int y, int width, int height, unsigned char *pixels, size_t pixels_len) {
-	if (display == NULL || window == 0 || x < 0 || y < 0 || width <= 0 || height <= 0 || pixels == NULL
-		|| pixels_len != (size_t)width * (size_t)height * 4U) {
+static inline int v_multiwindow_x11_image_format(const xcb_setup_t *setup, uint8_t depth,
+		uint8_t *bits_per_pixel, uint8_t *scanline_pad) {
+	if (setup == NULL || bits_per_pixel == NULL || scanline_pad == NULL) {
 		return 0;
 	}
-	XWindowAttributes attrs;
-	if (!XGetWindowAttributes(display, (Window)window, &attrs) || attrs.map_state != IsViewable
-		|| width > attrs.width || height > attrs.height || x > attrs.width - width
-		|| y > attrs.height - height) {
-		return 0;
-	}
-	XImage *image = XGetImage(display, (Drawable)window, x, y, (unsigned int)width,
-		(unsigned int)height, AllPlanes, ZPixmap);
-	if (image == NULL) {
-		return 0;
-	}
-	for (int y = 0; y < height; y++) {
-		for (int x = 0; x < width; x++) {
-			unsigned long pixel = XGetPixel(image, x, y);
-			size_t offset = ((size_t)y * (size_t)width + (size_t)x) * 4U;
-			pixels[offset] = v_multiwindow_x11_scale_mask(pixel, image->red_mask);
-			pixels[offset + 1] = v_multiwindow_x11_scale_mask(pixel, image->green_mask);
-			pixels[offset + 2] = v_multiwindow_x11_scale_mask(pixel, image->blue_mask);
-			pixels[offset + 3] = 255;
+	for (xcb_format_iterator_t formats = xcb_setup_pixmap_formats_iterator(setup);
+			formats.rem != 0; xcb_format_next(&formats)) {
+		if (formats.data->depth == depth) {
+			*bits_per_pixel = formats.data->bits_per_pixel;
+			*scanline_pad = formats.data->scanline_pad;
+			return *bits_per_pixel != 0 && (*bits_per_pixel % 8U) == 0
+				&& *bits_per_pixel <= 32 && *scanline_pad != 0;
 		}
 	}
-	XDestroyImage(image);
-	return 1;
+	return 0;
+}
+
+static inline int v_multiwindow_x11_readback_rgba8(Display *display, void *raw_connection,
+		unsigned long window, int x, int y, int width, int height, unsigned char *pixels,
+		size_t pixels_len) {
+	if (display == NULL || !v_multiwindow_x11_checked_connection_usable(raw_connection)
+			|| window == 0
+			|| x < 0 || y < 0 || x > INT16_MAX || y > INT16_MAX || width <= 0 || height <= 0
+			|| width > (int)UINT16_MAX || height > (int)UINT16_MAX || pixels == NULL) {
+		return 0;
+	}
+	uint64_t expected_pixels_len = (uint64_t)(unsigned int)width
+		* (uint64_t)(unsigned int)height * 4U;
+	if (expected_pixels_len > SIZE_MAX || pixels_len != (size_t)expected_pixels_len) {
+		return 0;
+	}
+	xcb_connection_t *connection = (xcb_connection_t *)raw_connection;
+	xcb_get_image_cookie_t cookie = xcb_get_image(connection, XCB_IMAGE_FORMAT_Z_PIXMAP,
+		(xcb_drawable_t)window, (int16_t)x, (int16_t)y, (uint16_t)width, (uint16_t)height,
+		UINT32_MAX);
+	xcb_generic_error_t *error = NULL;
+	xcb_get_image_reply_t *reply = xcb_get_image_reply(connection, cookie, &error);
+	const xcb_setup_t *setup = xcb_get_setup(connection);
+	uint8_t bits_per_pixel = 0;
+	uint8_t scanline_pad = 0;
+	int ok = reply != NULL && error == NULL && setup != NULL
+		&& xcb_connection_has_error(connection) == 0
+		&& v_multiwindow_x11_image_format(setup, reply != NULL ? reply->depth : 0,
+			&bits_per_pixel, &scanline_pad);
+	XVisualInfo visual_template;
+	memset(&visual_template, 0, sizeof(visual_template));
+	visual_template.visualid = ok ? reply->visual : 0;
+	int visual_count = 0;
+	XVisualInfo *visual_info = ok
+		? XGetVisualInfo(display, VisualIDMask, &visual_template, &visual_count) : NULL;
+	XImage *image = visual_info != NULL && visual_count > 0
+		? XCreateImage(display, visual_info[0].visual, reply->depth, ZPixmap, 0,
+			(char *)xcb_get_image_data(reply), (unsigned int)width, (unsigned int)height,
+			scanline_pad, 0) : NULL;
+	int data_len = reply != NULL ? xcb_get_image_data_length(reply) : 0;
+	uint64_t image_bytes = image != NULL && image->bytes_per_line > 0
+		? (uint64_t)(unsigned int)image->bytes_per_line * (uint64_t)(unsigned int)height : 0;
+	ok = ok && image != NULL && image->bits_per_pixel == bits_per_pixel
+		&& image->red_mask != 0 && image->green_mask != 0 && image->blue_mask != 0
+		&& data_len >= 0 && image_bytes <= (uint64_t)INT_MAX
+		&& image_bytes <= (uint64_t)data_len;
+	if (ok) {
+		for (int row = 0; row < height; ++row) {
+			for (int column = 0; column < width; ++column) {
+				unsigned long pixel = XGetPixel(image, column, row);
+				size_t target = ((size_t)row * (size_t)width + (size_t)column) * 4U;
+				pixels[target] = v_multiwindow_x11_scale_mask(pixel, image->red_mask);
+				pixels[target + 1] = v_multiwindow_x11_scale_mask(pixel, image->green_mask);
+				pixels[target + 2] = v_multiwindow_x11_scale_mask(pixel, image->blue_mask);
+				pixels[target + 3] = 255;
+			}
+		}
+	}
+	if (image != NULL) {
+		image->data = NULL;
+		XDestroyImage(image);
+	}
+	if (visual_info != NULL) {
+		XFree(visual_info);
+	}
+	free(reply);
+	free(error);
+	return ok;
 }
 
 #ifdef V_MULTIWINDOW_NATIVE_PROOF_TEST
+static inline int v_multiwindow_x11_queue_wm_state_then_destroy_for_test(Display *display,
+		unsigned long window, unsigned long wm_state) {
+	if (display == NULL || window == 0 || wm_state == 0) {
+		return 0;
+	}
+	long state[2] = { NormalState, None };
+	XChangeProperty(display, (Window)window, (Atom)wm_state, (Atom)wm_state, 32,
+		PropModeReplace, (const unsigned char *)state, 2);
+	XDestroyWindow(display, (Window)window);
+	XSync(display, False);
+	return 1;
+}
+
 static inline int v_multiwindow_x11_paint_rgba8_test_pattern(Display *display,
 	unsigned long window, int x, int y) {
 	if (display == NULL || window == 0 || x < 0 || y < 0) {
@@ -1478,7 +1687,7 @@ static inline int v_multiwindow_x11_paint_rgba8_test_pattern(Display *display,
 }
 #endif
 
-static inline VMultiwindowX11ReadbackProbe v_multiwindow_x11_readback_probe(Display *display,
+static inline VMultiwindowX11ReadbackProbe v_multiwindow_x11_readback_probe(void *raw_connection,
 	unsigned long window, int width, int height, size_t pixels_len) {
 	VMultiwindowX11ReadbackProbe probe;
 	memset(&probe, 0, sizeof(probe));
@@ -1488,12 +1697,12 @@ static inline VMultiwindowX11ReadbackProbe v_multiwindow_x11_readback_probe(Disp
 	if (width > 0 && height > 0) {
 		probe.expected_pixels_length = (size_t)width * (size_t)height * 4U;
 	}
-	XWindowAttributes attrs;
-	if (display != NULL && window != 0 && XGetWindowAttributes(display, (Window)window, &attrs)) {
+	VMultiwindowX11CheckedWindowSnapshot snapshot;
+	if (v_multiwindow_x11_checked_window_snapshot(raw_connection, window, &snapshot)) {
 		probe.attributes_available = 1;
-		probe.map_state = attrs.map_state;
-		probe.actual_width = attrs.width;
-		probe.actual_height = attrs.height;
+		probe.map_state = snapshot.map_state;
+		probe.actual_width = snapshot.width;
+		probe.actual_height = snapshot.height;
 	}
 	return probe;
 }
@@ -1514,17 +1723,20 @@ static inline int v_multiwindow_x11_owner_modal_matches(Display *display, unsign
 	return 1;
 }
 
-static inline int v_multiwindow_x11_get_window_size(Display *display, unsigned long window, int *out_width, int *out_height) {
-	XWindowAttributes attrs;
-	memset(&attrs, 0, sizeof(attrs));
-	if (!XGetWindowAttributes(display, (Window)window, &attrs)) {
+static inline int v_multiwindow_x11_get_window_size(void *raw_connection,
+		unsigned long window, int *out_width, int *out_height) {
+	if (out_width == NULL || out_height == NULL) {
 		return 0;
 	}
-	if (attrs.width <= 0 || attrs.height <= 0) {
+	*out_width = 0;
+	*out_height = 0;
+	VMultiwindowX11CheckedWindowSnapshot snapshot;
+	if (!v_multiwindow_x11_checked_window_snapshot(raw_connection, window, &snapshot)
+			|| snapshot.width <= 0 || snapshot.height <= 0) {
 		return 0;
 	}
-	*out_width = attrs.width;
-	*out_height = attrs.height;
+	*out_width = snapshot.width;
+	*out_height = snapshot.height;
 	return 1;
 }
 
@@ -1561,15 +1773,21 @@ static inline unsigned long v_multiwindow_x11_create_egl_window(Display *display
 	return window;
 }
 
-static inline int v_multiwindow_x11_render_snapshot(Display *display, unsigned long window, int *out_width, int *out_height, int *out_viewable) {
-	XWindowAttributes attrs;
-	memset(&attrs, 0, sizeof(attrs));
-	if (display == NULL || !XGetWindowAttributes(display, (Window)window, &attrs)) {
+static inline int v_multiwindow_x11_render_snapshot(void *raw_connection,
+		unsigned long window, int *out_width, int *out_height, int *out_viewable) {
+	if (out_width == NULL || out_height == NULL || out_viewable == NULL) {
 		return 0;
 	}
-	*out_width = attrs.width;
-	*out_height = attrs.height;
-	*out_viewable = attrs.map_state == IsViewable ? 1 : 0;
+	*out_width = 0;
+	*out_height = 0;
+	*out_viewable = 0;
+	VMultiwindowX11CheckedWindowSnapshot snapshot;
+	if (!v_multiwindow_x11_checked_window_snapshot(raw_connection, window, &snapshot)) {
+		return 0;
+	}
+	*out_width = snapshot.width;
+	*out_height = snapshot.height;
+	*out_viewable = snapshot.map_state == XCB_MAP_STATE_VIEWABLE ? 1 : 0;
 	return 1;
 }
 

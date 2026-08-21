@@ -403,7 +403,7 @@ fn (mut app App) publish_mock_unchanged_state(id WindowId, operation ServiceOper
 
 // service_set_mouse_lock requests or releases relative pointer confinement.
 pub fn (mut app App) service_set_mouse_lock(id WindowId, enabled bool) ! {
-	admission := app.begin_native_state_operation(id, .mouse_lock)!
+	admission := app.begin_native_mouse_lock_operation(id, enabled)!
 	if !admission.uses_mock {
 		state := app.backend.service_set_mouse_lock(id, enabled)!
 		app.publish_admitted_native_state(id, .mouse_lock, state, admission)!
@@ -421,6 +421,40 @@ pub fn (mut app App) service_set_mouse_lock(id WindowId, enabled bool) ! {
 		mouse_locked: if enabled { .on } else { .off }
 	}
 	app.publish_state_candidate_locked(index, .mouse_lock, candidate)!
+}
+
+fn (mut app App) begin_native_mouse_lock_operation(id WindowId, enabled bool) !NativeStateOperationAdmission {
+	if enabled {
+		return app.begin_native_state_operation(id, .mouse_lock)
+	}
+	app.assert_owner_thread()!
+	app.state_mutex.lock()
+	defer {
+		app.state_mutex.unlock()
+	}
+	app.ensure_running_locked()!
+	app.ensure_event_admission_open_locked()!
+	app.service_window_index_for_admission_locked(id)!
+	capability := app.backend.service_operation_capability(id, .mouse_lock)
+	if capability.support == .unsupported {
+		if !app.backend.can_release_mouse_lock_after_capability_loss(id) {
+			return error(err_capability_unsupported)
+		}
+		return NativeStateOperationAdmission{
+			publication_deferred: true
+		}
+	}
+	uses_mock := app.backend.kind == .mock
+	reserved_token := if !uses_mock && !capability.asynchronous {
+		app.reserve_event_delivery_tokens_locked(1)!
+	} else {
+		u64(0)
+	}
+	return NativeStateOperationAdmission{
+		uses_mock:            uses_mock
+		publication_deferred: capability.asynchronous
+		reserved_token:       reserved_token
+	}
 }
 
 fn (mut app App) service_operation_uses_mock(id WindowId, operation ServiceOperation) !bool {

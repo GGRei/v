@@ -2629,20 +2629,20 @@ fn test_x11_input_support_queues_key_char_and_focus_source_guard() {
 	assert x11_backend_source.contains('.iconified')
 	assert x11_backend_source.contains('x11_normal_state')
 	assert x11_backend_source.contains('.restored')
-	assert x11_backend_source.contains('fn (backend &X11Backend) window_state(window X11NativeWindow) int')
-	assert x11_backend_source.contains('C.XGetWindowProperty')
-	assert x11_backend_source.contains('C.XFree')
+	assert x11_backend_source.contains('fn (backend &X11Backend) window_state(window X11NativeWindow) ?int')
 	window_state_body :=
-		x11_backend_source.all_after('fn (backend &X11Backend) window_state(window X11NativeWindow) int').all_before('fn (mut backend X11Backend) announce_xdnd_for_window')
-	assert window_state_body.contains('mut state := &X11NativeLong(unsafe { nil })')
-	assert window_state_body.contains('status := C.XGetWindowProperty')
-	assert window_state_body.contains('status == x11_success')
-	assert window_state_body.contains('actual_type == backend.wm_state')
-	assert window_state_body.contains('actual_format == 32')
-	assert window_state_body.contains('item_count >= X11NativeULong(2)')
-	assert window_state_body.contains('state != unsafe { nil }')
-	assert window_state_body.contains('state_value := unsafe { state[0] }')
-	assert !window_state_body.contains('*(&u32(state))')
+		x11_backend_source.all_after('fn (backend &X11Backend) window_state(window X11NativeWindow) ?int').all_before('fn (mut backend X11Backend) announce_xdnd_for_window')
+	assert window_state_body.contains('C.v_multiwindow_x11_checked_wm_state')
+	assert window_state_body.contains('return none')
+	assert !window_state_body.contains('C.XGetWindowProperty')
+	checked_wm_state_body :=
+		x11_helper_source.all_after('static inline int v_multiwindow_x11_checked_wm_state').all_before('static inline int v_multiwindow_x11_send_event_checked')
+	for required in ['xcb_get_property_reply', 'xcb_generic_error_t', 'xcb_connection_has_error',
+		'reply->type == (xcb_atom_t)wm_state', 'reply->format == 32', '2U * sizeof(uint32_t)',
+		'free(reply)', 'free(error)'] {
+		assert checked_wm_state_body.contains(required), 'missing checked WM_STATE invariant `${required}`'
+	}
+	assert !checked_wm_state_body.contains('XGetWindowProperty')
 
 	for required_mask in ['StructureNotifyMask', 'KeyPressMask', 'KeyReleaseMask',
 		'PointerMotionMask', 'ButtonPressMask', 'ButtonReleaseMask', 'FocusChangeMask',
@@ -2793,6 +2793,72 @@ fn test_x11_config_hints_are_applied_before_mapping() {
 	assert x11_helper_source.contains('_NET_WM_STATE_FULLSCREEN')
 }
 
+fn test_x11_stale_window_snapshots_use_only_checked_xcb_requests() {
+	helpers := multiwindow_source_file('x11_egl_backend_helpers.h')
+	snapshot :=
+		helpers.all_after('v_multiwindow_x11_checked_window_snapshot').all_before('static inline int v_multiwindow_x11_send_event_checked')
+	for required in ['xcb_get_window_attributes_reply', 'xcb_get_geometry_reply',
+		'xcb_generic_error_t', 'xcb_connection_has_error'] {
+		assert snapshot.contains(required), 'missing checked XCB window snapshot `${required}`'
+	}
+	query :=
+		helpers.all_after('v_multiwindow_x11_query_service_state').all_before('static inline int v_multiwindow_x11_send_net_wm_state')
+	for required in ['v_multiwindow_x11_checked_window_snapshot', 'xcb_get_input_focus_reply',
+		'xcb_translate_coordinates_reply', 'xcb_get_property_reply', 'xcb_generic_error_t',
+		'xcb_connection_has_error'] {
+		assert query.contains(required), 'missing checked XCB service-state query `${required}`'
+	}
+	for forbidden in ['XGetWindowAttributes', 'XGetInputFocus', 'XTranslateCoordinates',
+		'XGetWindowProperty', 'XInternAtom', 'XSetErrorHandler'] {
+		assert !query.contains(forbidden), 'unsafe Xlib call `${forbidden}` remains in service-state query'
+	}
+	wm_state :=
+		helpers.all_after('v_multiwindow_x11_checked_wm_state').all_before('static inline int v_multiwindow_x11_send_event_checked')
+	for required in ['xcb_get_property_reply', 'xcb_generic_error_t', 'xcb_connection_has_error'] {
+		assert wm_state.contains(required), 'missing checked XCB WM_STATE query `${required}`'
+	}
+	assert !wm_state.contains('XGetWindowProperty')
+	readback :=
+		helpers.all_after('v_multiwindow_x11_readback_rgba8').all_before('#ifdef V_MULTIWINDOW_NATIVE_PROOF_TEST')
+	for required in ['xcb_get_image_reply', 'xcb_generic_error_t', 'xcb_connection_has_error',
+		'XGetVisualInfo', 'XCreateImage', 'XGetPixel', 'image->data = NULL', 'XDestroyImage'] {
+		assert readback.contains(required), 'missing checked XCB readback `${required}`'
+	}
+	for forbidden in ['XGetWindowAttributes', 'XGetImage', 'XSetErrorHandler'] {
+		assert !readback.contains(forbidden), 'unsafe Xlib call `${forbidden}` remains in readback'
+	}
+	probe :=
+		helpers.all_after('v_multiwindow_x11_readback_probe').all_before('static inline int v_multiwindow_x11_owner_modal_matches')
+	size :=
+		helpers.all_after('v_multiwindow_x11_get_window_size').all_before('static inline unsigned long v_multiwindow_x11_create_egl_window')
+	render := helpers.all_after('v_multiwindow_x11_render_snapshot').all_before('#endif')
+	for body in [probe, size, render] {
+		assert body.contains('v_multiwindow_x11_checked_window_snapshot')
+		assert !body.contains('XGetWindowAttributes')
+	}
+	x11_backend := multiwindow_source_file('x11_backend.c.v')
+	window_state :=
+		x11_backend.all_after('fn (backend &X11Backend) window_state').all_before('fn (mut backend X11Backend) announce_xdnd_for_window')
+	assert window_state.contains('v_multiwindow_x11_checked_wm_state')
+	assert !window_state.contains('XGetWindowProperty')
+	property_notify :=
+		x11_backend.all_after('x11_property_notify {').all_before('x11_selection_request {')
+	compact_property_notify := property_notify.replace_each(['\n', '', '\r', '', '\t', '', ' ',
+		''])
+	assert compact_property_notify.contains('backend.window_state(backend.windows[index].window)or{continue}')
+	assert compact_property_notify.contains('backend.queued_observed_state_transitions(index,property)or{continue}')
+	unmap_notify := x11_backend.all_after('x11_unmap_notify {').all_before('x11_destroy_notify {')
+	compact_unmap_notify := unmap_notify.replace_each(['\n', '', '\r', '', '\t', '', ' ', ''])
+	assert compact_unmap_notify.contains('backend.queued_service_state_event(index,.hide)or{continue}')
+	poll_body :=
+		x11_backend.all_after('fn (mut backend X11Backend) poll_queued_events').all_before('fn (backend &X11Backend) input_event_from_record')
+	compact_poll_body := poll_body.replace_each(['\n', '', '\r', '', '\t', '', ' ', ''])
+	for operation in ['.mouse_lock', '.show', '.hide'] {
+		assert compact_poll_body.contains('backend.queued_service_state_event(index,${operation})or{continue}'), 'missing fail-closed event-loop observation `${operation}`'
+	}
+	assert compact_poll_body.count('backend.queued_service_state_event(index,.focus)or{continue}') == 2
+}
+
 fn test_x11_window_capture_capability_requires_a_positive_viewable_native_extent() {
 	source := multiwindow_source_file('x11_backend.c.v')
 	body := source.all_after('fn (backend &X11Backend) service_window_capture_available')
@@ -2885,6 +2951,92 @@ fn test_win32_clipboard_retained_storage_hooks_wrap_backend_acceptance_and_deliv
 		'fn (mut app App) complete_queued_delivery_locked',
 		'app.event_deliveries.delete(event.delivery_token)',
 		'app.backend.release_delivered_service_event_storage(event.service)')
+}
+
+fn test_x11_clipboard_retained_storage_hooks_are_window_exact_and_idempotent() {
+	request := ServiceRequestId{
+		app_instance: 1
+		serial:       9
+	}
+	window := WindowId{
+		app_instance: 1
+		slot:         2
+		generation:   3
+	}
+	other_window := WindowId{
+		...window
+		slot: 4
+	}
+	event := ServiceEvent{
+		kind:      .clipboard
+		window:    window
+		operation: .clipboard_read
+		clipboard: ServiceClipboardResult{
+			id:     request
+			window: window
+			status: .ready
+			text:   'retained'
+		}
+	}
+	mut backend := Backend{
+		kind: .x11
+		x11:  X11Backend{
+			clipboard_retained: [
+				X11ClipboardRetainedCharge{
+					request: request
+					window:  window
+					bytes:   x11_clipboard_max_pending_bytes
+				},
+			]
+		}
+	}
+	assert backend.x11.clipboard_pending_bytes() == u64(x11_clipboard_max_pending_bytes)
+	assert backend.x11.clipboard_can_reserve(0)
+	assert !backend.x11.clipboard_can_reserve(1)
+	backend.claim_service_event_storage(ServiceEvent{
+		...event
+		clipboard: ServiceClipboardResult{
+			...event.clipboard
+			window: other_window
+		}
+	})
+	assert !backend.x11.clipboard_retained[0].claimed_by_app
+	backend.claim_service_event_storage(event)
+	assert backend.x11.clipboard_retained[0].claimed_by_app
+	backend.discard_unaccepted_service_event_storage(event)
+	assert backend.x11.clipboard_retained.len == 1
+	backend.release_delivered_service_event_storage(event)
+	assert backend.x11.clipboard_retained.len == 0
+	backend.release_delivered_service_event_storage(event)
+	assert backend.x11.clipboard_retained.len == 0
+
+	backend.x11.clipboard_retained << X11ClipboardRetainedCharge{
+		request: request
+		window:  window
+		bytes:   7
+	}
+	backend.discard_unaccepted_service_event_storage(ServiceEvent{
+		...event
+		window: other_window
+	})
+	assert backend.x11.clipboard_retained.len == 1
+	backend.discard_unaccepted_service_event_storage(event)
+	assert backend.x11.clipboard_retained.len == 0
+	backend.discard_unaccepted_service_event_storage(event)
+	assert backend.x11.clipboard_retained.len == 0
+}
+
+fn test_x11_clipboard_ready_storage_replacement_is_subtractive_and_bounded() {
+	maximum := x11_clipboard_max_pending_bytes
+	assert x11_clipboard_ready_storage_fits(u64(maximum), maximum, maximum)
+	assert x11_clipboard_ready_storage_fits(u64(maximum), 1, 1)
+	assert x11_clipboard_ready_storage_fits(u64(maximum), 0, 0)
+	assert !x11_clipboard_ready_storage_fits(0, 1, 0)
+	assert !x11_clipboard_ready_storage_fits(u64(maximum) + 1, 0, 0)
+	assert !x11_clipboard_ready_storage_fits(u64(maximum), 0, 1)
+	assert !x11_clipboard_ready_storage_fits(u64(maximum), maximum, maximum + 1)
+	assert !x11_clipboard_ready_storage_fits(u64(maximum), -1, 0)
+	assert !x11_clipboard_ready_storage_fits(u64(maximum), 0, -1)
 }
 
 fn test_gg_unbound_capture_reconciliation_is_terminal_before_facade_removal() {

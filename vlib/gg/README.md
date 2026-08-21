@@ -249,6 +249,8 @@ late inline, failure, or INCR replies cannot complete a later request; failure
 to start a queued conversion is delivered as its terminal failure.
 For X11 INCR reads, the advertised length is a lower bound; actual growth is
 accepted only within the per-request and aggregate clipboard byte limits.
+A ready X11 read remains charged against the aggregate byte limit until its
+terminal service event is delivered or discarded.
 
 `with_native_window()` is callback-only. Inside its callback, invoke exactly
 the accessor matching `app.capabilities().backend`:

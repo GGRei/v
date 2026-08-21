@@ -339,6 +339,8 @@ inline, failure, or INCR replies from an earlier conversion cannot terminalize
 the next request, and failure to start that next conversion is itself terminal.
 For X11 INCR reads, the advertised length is a lower bound; actual growth is
 accepted only within the per-request and aggregate clipboard byte limits.
+A ready X11 read remains charged against the aggregate byte limit until its
+terminal service event is delivered or discarded.
 Destroying an owner processes its descendants child-first. For each destroyed
 window, pending clipboard and portal requests are cancelled and portal leases
 are invalidated during sealing, before teardown results can be delivered.

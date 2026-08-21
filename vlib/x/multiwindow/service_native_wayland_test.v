@@ -1038,10 +1038,11 @@ fn test_wayland_state_operations_are_deferred_by_capability_until_observation() 
 			assert backend.service_operation_capability(operation).asynchronous
 		}
 		assert !backend.service_operation_capability(.hide).asynchronous
-		state_operations := [ServiceOperation.minimize, .maximize, .fullscreen, .restore]
-		expected_live_support := [ServiceSupportLevel.available, .available, .available, .conditional]
+		state_operations := [ServiceOperation.minimize, .maximize, .fullscreen, .restore, .mouse_lock]
+		expected_live_support := [ServiceSupportLevel.available, .available, .available, .conditional,
+			.conditional]
 		expected_dead_support := [ServiceSupportLevel.unsupported, .unsupported, .unsupported,
-			.unsupported]
+			.unsupported, .unsupported]
 		assert state_operations.map(backend.service_operation_capability(it).support) == expected_live_support
 
 		backend.started = false
@@ -1093,6 +1094,57 @@ fn test_wayland_state_operations_are_deferred_by_capability_until_observation() 
 		events := app.drain_queued_events()!
 		assert events.filter(it.kind == .service && it.service.operation == .maximize).len == 1
 		app.backend.kind = .mock
+		app.stop()!
+	}
+}
+
+fn test_wayland_existing_mouse_lock_can_be_released_after_capability_loss() {
+	$if linux && sokol_wayland ? {
+		mut app := new_app()!
+		window := app.create_window(title: 'wayland dead-transport mouse unlock')!
+		_ = app.drain_queued_events()!
+		original_backend := app.backend.kind
+		app.backend.kind = .wayland
+		app.backend.wayland = WaylandBackend{
+			started:                     true
+			display:                     voidptr(usize(1))
+			wayland_display_unavailable: true
+			relative_pointer_manager:    voidptr(usize(2))
+			pointer_constraints:         voidptr(usize(3))
+		}
+		mut record := &WaylandWindowRecord{
+			id:    window
+			owner: &app.backend.wayland
+		}
+		app.backend.wayland.windows << record
+		assert app.service_operation_capability(window, .mouse_lock)!.support == .unsupported
+		mut enable_error := ''
+		app.service_set_mouse_lock(window, true) or { enable_error = err.msg() }
+		assert enable_error == err_capability_unsupported
+		assert !record.mouse_lock_requested
+		assert !record.mouse_locked
+		assert record.locked_pointer == unsafe { nil }
+		assert record.relative_pointer == unsafe { nil }
+		assert record.pending_events.len == 0
+
+		record.mouse_lock_requested = true
+		record.mouse_locked = true
+		app.service_set_mouse_lock(window, false)!
+		assert !record.mouse_lock_requested
+		assert !record.mouse_locked
+		state_events := record.pending_events.filter(it.event.kind == .service
+			&& it.event.service.kind == .state && it.event.service.operation == .mouse_lock)
+		assert state_events.len == 1
+		assert state_events[0].event.service.state.mouse_locked == .off
+
+		mut duplicate_error := ''
+		app.service_set_mouse_lock(window, false) or { duplicate_error = err.msg() }
+		assert duplicate_error == err_capability_unsupported
+		assert record.pending_events.filter(it.event.kind == .service
+			&& it.event.service.kind == .state && it.event.service.operation == .mouse_lock).len == 1
+
+		app.backend.wayland.windows.clear()
+		app.backend.kind = original_backend
 		app.stop()!
 	}
 }

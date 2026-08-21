@@ -3,6 +3,21 @@ module multiwindow
 import os
 import time
 
+const x11_stale_xid_child_marker = 'V_MULTIWINDOW_X11_STALE_XID_CHILD'
+
+fn before_each() {
+	$if linux && x_multiwindow_x11 ? {
+		mode := os.getenv(x11_stale_xid_child_marker)
+		if mode != '' {
+			x11_run_stale_xid_child_for_test(mode) or {
+				eprintln(err.msg())
+				exit(90)
+			}
+			exit(0)
+		}
+	}
+}
+
 enum X11StaleClipboardReplyKind {
 	inline_reply
 	none_reply
@@ -23,6 +38,128 @@ fn test_x11_service_state_transitions_are_qualified_by_native_property() {
 		true) == [.fullscreen]
 	assert x11_service_state_transition_operations(false, true, false, false, true, false, true,
 		false) == [.restore]
+}
+
+fn x11_run_stale_xid_child_for_test(mode string) ! {
+	$if linux && x_multiwindow_x11 ? {
+		mut app := new_app(backend: .x11)!
+		window := app.create_window(title: 'x11 checked expired xid', width: 32, height: 24)!
+		live_window := app.create_window(title: 'x11 checked live peer', width: 32, height: 24)!
+		_ = app.drain_queued_events()!
+		index := app.backend.x11.window_record_index(window) or {
+			return error(err_window_not_found)
+		}
+		native := app.backend.x11.windows[index].window
+		if mode == 'property' {
+			app.backend.x11.service_queue_wm_state_then_destroy_for_test(window)!
+		} else if mode != 'readback' {
+			app.backend.x11.service_destroy_native_window_retaining_record_for_test(window)!
+		}
+		retained_index := app.backend.x11.window_record_index(window) or {
+			return error(err_window_not_found)
+		}
+		assert retained_index == index
+		assert app.backend.x11.windows[index].window == native
+		assert !app.backend.x11.windows[index].native_destroyed
+
+		mut already_polled := false
+		match mode {
+			'state' {
+				mut state_error := ''
+				app.backend.x11.service_window_state(window) or { state_error = err.msg() }
+				assert state_error == err_capability_unsupported
+			}
+			'probe' {
+				probe := app.backend.x11.service_readback_probe_for_test(window, 1, 1)!
+				assert probe.attributes_available == 0
+				assert app.service_operation_capability(window, .window_capture)!.support == .unsupported
+			}
+			'size' {
+				assert !app.backend.x11.service_window_size_available_for_test(window)!
+			}
+			'readback' {
+				app.backend.x11.service_destroy_readback_after_probe_for_test()
+				mut readback_error := ''
+				app.backend.x11.service_window_readback(window, 0, 0, 1, 1) or {
+					readback_error = err.msg()
+				}
+				assert readback_error == err_readback_invalid
+			}
+			'property' {
+				_ = app.poll_events()!
+				already_polled = true
+			}
+			'render' {
+				$if gg_multiwindow ? || x_multiwindow_render ? {
+					updates := app.backend.x11.collect_render_updates()!
+					window_updates := updates.filter(it.window == window)
+					assert window_updates.len == 1
+					assert window_updates[0].block_reason == .backend_unavailable
+				} $else {
+					return error('X11 render snapshot child requires a render build')
+				}
+			}
+			else {
+				return error('unknown X11 stale-XID child mode `${mode}`')
+			}
+		}
+		assert app.backend.x11.service_checked_connection_usable_for_test()
+		_ = app.backend.x11.service_window_state(live_window)!
+		assert app.service_operation_capability(live_window, .window_capture)!.support == .available
+		if !already_polled {
+			_ = app.poll_events()!
+		}
+		events := app.drain_queued_events()!
+		assert events.filter(it.kind == .lifecycle && it.lifecycle.kind == .window_destroyed
+			&& it.lifecycle.window_id == window).len == 1
+		assert events.filter(it.kind == .service && it.service.window == window
+			&& it.service.kind == .state).len == 0
+		app.stop()!
+	} $else {
+		_ = mode
+	}
+}
+
+fn test_x11_checked_queries_survive_retained_destroyed_window() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut modes := ['state', 'probe', 'size', 'readback', 'property']
+		$if gg_multiwindow ? || x_multiwindow_render ? {
+			modes << 'render'
+		}
+		for mode in modes {
+			command := 'env ${x11_stale_xid_child_marker}=${mode} ${os.quoted_path(os.executable())}'
+			result := os.execute(command)
+			assert result.exit_code == 0, 'X11 stale-XID ${mode} child failed with exit ${result.exit_code}:\n${result.output}'
+			assert result.output.trim_space() == '', 'X11 stale-XID ${mode} child emitted diagnostics:\n${result.output}'
+		}
+	}
+}
+
+fn test_x11_checked_query_connection_lifecycle_is_fail_closed() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		window := app.create_window(
+			title:  'x11 checked connection lifecycle'
+			width:  32
+			height: 24
+		)!
+		_ = app.drain_queued_events()!
+		assert app.backend.x11.service_checked_connection_usable_for_test()
+		app.backend.x11.service_close_checked_connection_for_test()
+		assert !app.backend.x11.service_checked_connection_usable_for_test()
+		mut state_error := ''
+		app.backend.x11.service_window_state(window) or { state_error = err.msg() }
+		assert state_error == err_capability_unsupported
+		assert app.service_operation_capability(window, .window_capture)!.support == .unsupported
+		app.stop()!
+		assert app.backend.x11.checked_connection == unsafe { nil }
+	}
 }
 
 fn test_x11_focus_capability_defers_to_authoritative_focus_events_and_deduplicates() {
@@ -952,6 +1089,70 @@ fn test_x11_clipboard_global_operation_and_byte_limits() {
 		assert transfers_after_overflow == 1
 		assert transfer_app.backend.x11.service_clipboard_pending_bytes_for_test() == first_bytes
 		transfer_app.stop()!
+	}
+}
+
+fn test_x11_clipboard_ready_payload_remains_charged_until_core_delivery() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		defer {
+			app.stop() or {}
+		}
+		owner := app.create_window(title: 'clipboard-retained-owner', width: 32, height: 24)!
+		reader := app.create_window(title: 'clipboard-retained-reader', width: 32, height: 24)!
+		_ = app.drain_queued_events()!
+		payload := 'retained until core delivery'
+		_ = app.service_set_clipboard_text(owner, payload)!
+		_ = app.drain_queued_events()!
+		request := app.service_request_clipboard_text(reader)!
+		mut accepted := false
+		for _ in 0 .. 100 {
+			_ = app.poll_events()!
+			if app.services.pending.any(it.id == request && it.terminal) {
+				accepted = true
+				break
+			}
+			time.sleep(time.millisecond)
+		}
+		assert accepted
+		reads, transfers := app.backend.x11.service_clipboard_pending_counts_for_test()
+		assert reads == 0
+		assert transfers == 0
+		assert app.backend.x11.service_clipboard_pending_bytes_for_test() == u64(payload.len)
+		assert app.backend.x11.clipboard_retained.len == 1
+		assert app.backend.x11.clipboard_retained[0].claimed_by_app
+		app.destroy_window(reader)!
+		assert app.backend.x11.service_clipboard_pending_bytes_for_test() == u64(payload.len)
+		results := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == request)
+		assert results.len == 1
+		assert results[0].service.clipboard.status == .ready
+		assert results[0].service.clipboard.text == payload
+		assert app.backend.x11.service_clipboard_pending_bytes_for_test() == 0
+
+		retry_reader := app.create_window(title: 'clipboard-retained-retry', width: 32, height: 24)!
+		_ = app.drain_queued_events()!
+		retry := app.service_request_clipboard_text(retry_reader)!
+		mut retry_accepted := false
+		for _ in 0 .. 100 {
+			_ = app.poll_events()!
+			if app.services.pending.any(it.id == retry && it.terminal) {
+				retry_accepted = true
+				break
+			}
+			time.sleep(time.millisecond)
+		}
+		assert retry_accepted
+		assert app.backend.x11.service_clipboard_pending_bytes_for_test() == u64(payload.len)
+		retry_results := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == retry)
+		assert retry_results.len == 1
+		assert retry_results[0].service.clipboard.status == .ready
+		assert retry_results[0].service.clipboard.text == payload
+		assert app.backend.x11.service_clipboard_pending_bytes_for_test() == 0
 	}
 }
 
