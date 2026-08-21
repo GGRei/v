@@ -194,6 +194,46 @@ fn managed_window_capture_has_producer(producer MultiWindowCaptureProducer, snap
 	return !capture_block_reason_prevents_future_frame(snapshot.block_reason)
 }
 
+fn unbound_managed_window_capture_is_permanently_blocked(producer MultiWindowCaptureProducer, snapshot multiwindow.RenderWindowSnapshot) bool {
+	if producer.frame_active {
+		return false
+	}
+	return !producer.frame_fn_configured
+		|| capture_block_reason_prevents_future_frame(snapshot.block_reason)
+}
+
+fn (mut app App) reconcile_unbound_managed_window_captures() ! {
+	if app.pending_window_captures.len == 0 {
+		return
+	}
+	mut index := 0
+	for index < app.pending_window_captures.len {
+		capture := app.pending_window_captures[index]
+		if capture.attempt_batch_epoch != 0 || !app.window_exists(capture.window) {
+			index++
+			continue
+		}
+		snapshot := app.core.render_window_snapshot(capture.window.core) or {
+			app.core.service_fail_window_readback(capture.id,
+				err_multiwindow_render_capture_cancelled)!
+			app.pending_window_captures.delete(index)
+			continue
+		}
+		producer := app.render_runtime.window_capture_producer(capture.window) or {
+			app.core.service_fail_window_readback(capture.id,
+				err_multiwindow_render_capture_cancelled)!
+			app.pending_window_captures.delete(index)
+			continue
+		}
+		if !unbound_managed_window_capture_is_permanently_blocked(producer, snapshot) {
+			index++
+			continue
+		}
+		app.core.service_fail_window_readback(capture.id, err_multiwindow_render_capture_cancelled)!
+		app.pending_window_captures.delete(index)
+	}
+}
+
 fn (mut app App) request_window_capture_redraw(id WindowId) ! {
 	if message := app.render_runtime.take_internal_fault(.capture_request_redraw) {
 		return error(message)

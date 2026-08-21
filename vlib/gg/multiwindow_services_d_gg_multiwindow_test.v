@@ -592,6 +592,134 @@ fn test_managed_window_capture_producer_distinguishes_init_and_resource_only_win
 	app.stop()!
 }
 
+fn configure_managed_window_capture_producer_for_test(mut app App, window WindowId) ! {
+	app.render_runtime.mutex.lock()
+	index := app.render_runtime.window_index_locked(window) or {
+		app.render_runtime.mutex.unlock()
+		return err
+	}
+	app.render_runtime.windows[index].frame_fn = fn (mut context WindowContext) ! {
+		_ = context
+	}
+	app.render_runtime.mutex.unlock()
+}
+
+fn seed_unbound_managed_window_capture_for_test(mut app App, window WindowId) !multiwindow.ServiceReadbackId {
+	readback := app.core.service_begin_window_readback(window.core)!
+	app.pending_window_captures << MultiWindowPendingWindowCapture{
+		id:                     readback
+		window:                 window
+		rect:                   WindowPixelRect{
+			width:  2
+			height: 2
+		}
+		target_submitted_frame: 1
+	}
+	return readback
+}
+
+fn set_managed_window_capture_snapshot_for_test(mut app App, window WindowId, reason multiwindow.RenderBlockReason, submitted_frame u64) ! {
+	app.core.set_render_window_snapshot_for_gg_test(window.core, reason, true, 2, 2, 1,
+		submitted_frame)!
+}
+
+fn test_unbound_managed_window_capture_permanent_blockers_terminalize_exactly_once() {
+	mut app := new_app(backend: .mock)!
+	window := app.create_window(title: 'capture permanent blockers')!
+	_ = app.drain_window_queued_events()!
+	configure_managed_window_capture_producer_for_test(mut app, window)!
+
+	for reason in [multiwindow.RenderBlockReason.no_workload, .not_configured, .hidden, .minimized,
+		.occluded, .unmapped, .not_viewable, .zero_sized, .backend_unavailable, .renderer_failed] {
+		set_managed_window_capture_snapshot_for_test(mut app, window, reason, 0)!
+		readback := seed_unbound_managed_window_capture_for_test(mut app, window)!
+		assert app.poll_events()! == 0
+		results := app.core.drain_readback_events()!
+		assert results.len == 1
+		assert results[0].id == readback
+		assert results[0].status == .failed
+		assert results[0].pixels_rgba8.len == 0
+		assert results[0].error == err_multiwindow_render_capture_cancelled
+		assert app.pending_window_captures.len == 0
+		assert app.poll_events()! == 0
+		assert app.core.drain_readback_events()!.len == 0
+	}
+	app.stop()!
+}
+
+fn test_unbound_managed_window_capture_preserves_transient_render_blockers() {
+	mut app := new_app(backend: .mock)!
+	window := app.create_window(title: 'capture transient blockers')!
+	_ = app.drain_window_queued_events()!
+	configure_managed_window_capture_producer_for_test(mut app, window)!
+
+	for reason in [multiwindow.RenderBlockReason.frame_callback_pending, .resize_pending,
+		.drawable_unavailable] {
+		set_managed_window_capture_snapshot_for_test(mut app, window, reason, 0)!
+		readback := seed_unbound_managed_window_capture_for_test(mut app, window)!
+		assert app.poll_events()! == 0
+		assert app.pending_window_captures.len == 1
+		assert app.pending_window_captures[0].id == readback
+		assert app.core.drain_readback_events()!.len == 0
+
+		set_managed_window_capture_snapshot_for_test(mut app, window, .hidden, 0)!
+		assert app.poll_events()! == 0
+		results := app.core.drain_readback_events()!
+		assert results.len == 1
+		assert results[0].id == readback
+		assert results[0].status == .failed
+		assert app.pending_window_captures.len == 0
+	}
+	app.stop()!
+}
+
+fn test_unbound_managed_window_capture_hide_retries_terminal_admission_and_does_not_poison_next_capture() {
+	mut app := new_app(backend: .mock)!
+	window := app.create_window(title: 'capture hide reconciliation')!
+	_ = app.drain_window_queued_events()!
+	configure_managed_window_capture_producer_for_test(mut app, window)!
+	set_managed_window_capture_snapshot_for_test(mut app, window, .none, 0)!
+	readback := seed_unbound_managed_window_capture_for_test(mut app, window)!
+
+	app.hide_window(window)!
+	_ = app.drain_window_queued_events()!
+	set_managed_window_capture_snapshot_for_test(mut app, window, .hidden, 0)!
+	saved_token := app.core.swap_event_delivery_token_for_gg_test(0)
+	mut failed := false
+	app.poll_events() or {
+		assert err.msg() == 'multiwindow: event delivery sequence exhausted'
+		failed = true
+	}
+	assert failed
+	assert app.pending_window_captures.len == 1
+	assert app.pending_window_captures[0].id == readback
+	assert app.core.drain_readback_events()!.len == 0
+	_ = app.core.swap_event_delivery_token_for_gg_test(saved_token)
+
+	assert app.poll_events()! == 0
+	failed_results := app.core.drain_readback_events()!
+	assert failed_results.len == 1
+	assert failed_results[0].id == readback
+	assert failed_results[0].status == .failed
+	assert app.pending_window_captures.len == 0
+
+	app.show_window(window)!
+	_ = app.drain_window_queued_events()!
+	set_managed_window_capture_snapshot_for_test(mut app, window, .none, 1)!
+	retry := seed_managed_window_capture_for_test(mut app, window, 9)!
+	app.finish_managed_window_captures(multiwindow.RenderBatchOutcome{
+		batch_epoch: 9
+		committed:   true
+	})!
+	ready := app.core.drain_readback_events()!
+	assert ready.len == 1
+	assert ready[0].id == retry
+	assert ready[0].status == .ready
+	assert ready[0].pixels_rgba8.len == 16
+	assert app.pending_window_captures.len == 0
+	app.stop()!
+}
+
 fn test_managed_window_capture_redraw_failure_precedes_pending_admission() {
 	mut app := new_app(backend: .mock)!
 	window := app.create_window(title: 'capture redraw failure')!

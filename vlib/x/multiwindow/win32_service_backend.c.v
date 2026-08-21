@@ -26,6 +26,14 @@ mut:
 	deadline_ns i64
 }
 
+struct Win32ClipboardRetainedCharge {
+	request ServiceRequestId
+	window  WindowId
+	bytes   usize
+mut:
+	claimed_by_app bool
+}
+
 struct Win32ServiceRawMonitor {
 	native_id   u64
 	name        string
@@ -512,6 +520,56 @@ fn (backend &Win32Backend) clipboard_can_admit(reserved_bytes usize) bool {
 		&& backend.clipboard_pending_bytes <= usize(win32_clipboard_max_pending_bytes) - reserved_bytes
 }
 
+fn (mut backend Win32Backend) release_clipboard_bytes(bytes usize) {
+	if bytes <= backend.clipboard_pending_bytes {
+		backend.clipboard_pending_bytes -= bytes
+	}
+}
+
+fn (mut backend Win32Backend) claim_clipboard_terminal_storage(event ServiceEvent) {
+	if event.kind != .clipboard || event.operation != .clipboard_read
+		|| event.clipboard.status != .ready {
+		return
+	}
+	for index, charge in backend.clipboard_retained {
+		if charge.request == event.clipboard.id && charge.window == event.window
+			&& charge.window == event.clipboard.window && !charge.claimed_by_app {
+			backend.clipboard_retained[index].claimed_by_app = true
+			return
+		}
+	}
+}
+
+fn (mut backend Win32Backend) discard_unclaimed_clipboard_terminal_storage(event ServiceEvent) {
+	if event.kind != .clipboard || event.operation != .clipboard_read
+		|| event.clipboard.status != .ready {
+		return
+	}
+	for index, charge in backend.clipboard_retained {
+		if charge.request == event.clipboard.id && charge.window == event.window
+			&& charge.window == event.clipboard.window && !charge.claimed_by_app {
+			backend.release_clipboard_bytes(charge.bytes)
+			backend.clipboard_retained.delete(index)
+			return
+		}
+	}
+}
+
+fn (mut backend Win32Backend) release_claimed_clipboard_terminal_storage(event ServiceEvent) {
+	if event.kind != .clipboard || event.operation != .clipboard_read
+		|| event.clipboard.status != .ready {
+		return
+	}
+	for index, charge in backend.clipboard_retained {
+		if charge.request == event.clipboard.id && charge.window == event.window
+			&& charge.window == event.clipboard.window && charge.claimed_by_app {
+			backend.release_clipboard_bytes(charge.bytes)
+			backend.clipboard_retained.delete(index)
+			return
+		}
+	}
+}
+
 fn (mut backend Win32Backend) admit_clipboard_request(request ServiceRequestId, window WindowId, hwnd voidptr, operation ServiceOperation, write_utf16 []u16) ! {
 	if operation !in [.clipboard_read, .clipboard_write] {
 		return error(err_capability_unsupported)
@@ -519,7 +577,7 @@ fn (mut backend Win32Backend) admit_clipboard_request(request ServiceRequestId, 
 	reserved_bytes := if operation == .clipboard_write {
 		usize(write_utf16.len) * usize(2)
 	} else {
-		usize(0)
+		usize(win32_clipboard_max_pending_bytes)
 	}
 	if !backend.clipboard_can_admit(reserved_bytes) {
 		return error(err_clipboard_capacity)
@@ -543,12 +601,27 @@ fn (mut backend Win32Backend) admit_clipboard_request(request ServiceRequestId, 
 
 fn (mut backend Win32Backend) finish_clipboard_head(status ServiceStatus, text string, message string) Win32NativeQueuedEvent {
 	pending := backend.clipboard_pending[0]
-	if pending.reserved_bytes <= backend.clipboard_pending_bytes {
-		backend.clipboard_pending_bytes -= pending.reserved_bytes
-	} else {
-		backend.clipboard_pending_bytes = 0
-	}
+	backend.release_clipboard_bytes(pending.reserved_bytes)
 	backend.clipboard_pending.delete(0)
+	mut terminal_status := status
+	mut terminal_text := text
+	mut terminal_message := message
+	if status == .ready && pending.operation == .clipboard_read {
+		read_charge := usize(text.len) + usize(1)
+		if read_charge <= usize(win32_clipboard_max_pending_bytes)
+			&& backend.clipboard_can_admit(read_charge) {
+			backend.clipboard_retained << Win32ClipboardRetainedCharge{
+				request: pending.request
+				window:  pending.window
+				bytes:   read_charge
+			}
+			backend.clipboard_pending_bytes += read_charge
+		} else {
+			terminal_status = .failed
+			terminal_text = ''
+			terminal_message = err_clipboard_capacity
+		}
+	}
 	if backend.clipboard_pending.len > 0 {
 		backend.clipboard_pending[0].deadline_ns =
 			win32_clipboard_deadline(backend.clipboard_now_ns())
@@ -569,9 +642,9 @@ fn (mut backend Win32Backend) finish_clipboard_head(status ServiceStatus, text s
 			clipboard: ServiceClipboardResult{
 				id:     pending.request
 				window: pending.window
-				status: status
-				text:   text.clone()
-				error:  message
+				status: terminal_status
+				text:   terminal_text.clone()
+				error:  terminal_message
 			}
 		})
 	}
@@ -642,16 +715,16 @@ fn (mut backend Win32Backend) purge_clipboard_window(id WindowId) {
 	}
 	head_removed := backend.clipboard_pending[0].window == id
 	mut retained := []Win32ClipboardPending{cap: backend.clipboard_pending.len}
-	mut retained_bytes := usize(0)
+	mut removed_bytes := usize(0)
 	for pending in backend.clipboard_pending {
 		if pending.window == id {
+			removed_bytes += pending.reserved_bytes
 			continue
 		}
 		retained << pending
-		retained_bytes += pending.reserved_bytes
 	}
 	backend.clipboard_pending = retained
-	backend.clipboard_pending_bytes = retained_bytes
+	backend.release_clipboard_bytes(removed_bytes)
 	if head_removed && backend.clipboard_pending.len > 0 {
 		backend.clipboard_pending[0].deadline_ns =
 			win32_clipboard_deadline(backend.clipboard_now_ns())
@@ -659,8 +732,12 @@ fn (mut backend Win32Backend) purge_clipboard_window(id WindowId) {
 }
 
 fn (mut backend Win32Backend) purge_all_clipboard_requests() {
+	mut removed_bytes := usize(0)
+	for pending in backend.clipboard_pending {
+		removed_bytes += pending.reserved_bytes
+	}
 	backend.clipboard_pending.clear()
-	backend.clipboard_pending_bytes = 0
+	backend.release_clipboard_bytes(removed_bytes)
 }
 
 fn (backend &Win32Backend) service_operation_capability(id WindowId, operation ServiceOperation) ServiceOperationCapability {

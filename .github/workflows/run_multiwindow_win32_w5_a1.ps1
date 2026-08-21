@@ -164,7 +164,7 @@ $a0Markers = @(
 )
 
 $publicSurface = @(
-    [pscustomobject]@{ Path = 'vlib/gg/multiwindow_d_gg_multiwindow.v'; Known = '7228f1fb113ef1cbd019b25c21fe32d7798cab87e141ed8ddb014a944363ae8f'; Passed = $ExpectedGgFacadeSha256 }
+    [pscustomobject]@{ Path = 'vlib/gg/multiwindow_d_gg_multiwindow.v'; Known = 'e694668d903f180ffa8ab0c33ea64a0ee60fdddd792dbdc3e606a6084fcf2a44'; Passed = $ExpectedGgFacadeSha256 }
     [pscustomobject]@{ Path = 'vlib/gg/multiwindow_notd_gg_multiwindow.v'; Known = 'ad528c64cf18bce9415dd0e50513fb87d8d0b58c8ac4a99025a5c8955e7d9549'; Passed = $ExpectedGgNoFlagSha256 }
     [pscustomobject]@{ Path = 'vlib/gg/multiwindow_service_types.v'; Known = '6775854b4a1a66e75099e7a390089f6a96f77c4bdd9eed5bccf4a33538e4d5b0'; Passed = $ExpectedGgServiceTypesSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/app.v'; Known = 'af32eec55c119907a8bbf544842131018d36d3887347e26486e067a79d78a946'; Passed = $ExpectedAppSha256 }
@@ -173,19 +173,19 @@ $publicSurface = @(
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_api.v'; Known = 'a9bc7a8d0060fcf3bb5d0422464a49acec50a1c00b1595460893086e34cb9ea2'; Passed = $ExpectedServiceApiSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_types.v'; Known = '27ea45e8651b050d8c5cf3345c74055935c610675e1404c763aa44c9dcef1409'; Passed = $ExpectedServiceTypesSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_registry.v'; Known = '20d3863dd6e9655d344324bb48803539e461feb0e2025e2939fdc108c31e2394'; Passed = $ExpectedServiceRegistrySha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/event_delivery.v'; Known = 'b4b5551def3d0037769db3339ac8e0e55f2ff150e4954a40183909e2f8f0244b'; Passed = $ExpectedEventDeliverySha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/event_delivery.v'; Known = '049ec52a35a8cb041f128132ce8ea4c055cfc6d1ed52ff2b222a6a50bb51584d'; Passed = $ExpectedEventDeliverySha256 }
 )
-$knownPublicRoutingSurfaceSha256 = '19b529e7c9db1f9a87c401194c99bd7d3ff4f65858d8ac412d04d6ce9c87b95a'
+$knownPublicRoutingSurfaceSha256 = '3b0d77aa7fc3368b6071a9ceaee8a1c4768fcce3f68a45ba0c20496703fee0b5'
 
 $greenProductionSurface = @(
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_backend.v'; Known = '163bc7bb16d38b82079c1ee604cefe58179684fcd9689ad3076a4a6ffc7e9751'; Passed = $ExpectedServiceBackendSha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/service_backend.v'; Known = 'c0a2ce2320276c8437721170a975aec1bf851b2a8b267b4960eb3e080c8f5fe3'; Passed = $ExpectedServiceBackendSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/event_dispatch_d_gg_multiwindow.v'; Known = '7ef6c7cbd34511d6c19c1a3a269b46876db791b9412bb88e3a8d4dcd543bfd4e'; Passed = $ExpectedEventDispatchSha256 }
-    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend.c.v'; Known = '9d0b610a3b2a6923d9048836fd16f822ed45a1f5290641508a12766495b99e31'; Passed = $ExpectedWin32BackendSha256 }
+    [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend.c.v'; Known = '57b7e02241fb3624ffde0619cf99441b0ae91cc112734cffb29433adbfe7b191'; Passed = $ExpectedWin32BackendSha256 }
     [pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_backend_helpers.h'; Known = 'ba0021ce46731b25d540a68bf7c7832c7302a7343a90e1398df91cc5e409754d'; Passed = $ExpectedWin32BackendHelpersSha256 }
-	[pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_backend.c.v'; Known = 'da6435d85d915f3626f5421c8c3a63d5231f65a7f8431ca7ce9b61b34284d976'; Passed = $ExpectedWin32ServiceBackendSha256 }
+	[pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_backend.c.v'; Known = 'faaf67be3e0381ea8a0e7a753b477b7965dde6e655f83f220eca036da19c5df6'; Passed = $ExpectedWin32ServiceBackendSha256 }
 	[pscustomobject]@{ Path = 'vlib/x/multiwindow/win32_service_native.h'; Known = '2ffc93e245a43c4a557fd7cc66ebcdda8874b9783ec3050ba754657a97efd033'; Passed = $ExpectedWin32ServiceNativeSha256 }
 )
-$knownGreenProductionSurfaceSha256 = '655f91287c17b7280f27ea2c7f6a4a76da1d62b6e86d0ae433456a79d14a4fd6'
+$knownGreenProductionSurfaceSha256 = 'ea3abd89f0fcf91e1194d4b8bfe7adc879df874d355e690650ddbac2fe6ec111'
 
 $fatalPattern = '(?i)(fatal error|unhandled exception|access violation|STATUS_ACCESS_VIOLATION|0xC0000005|segmentation fault|stack overflow|illegal instruction|abort trap|process crashed|application crashed|V panic:)'
 $compilerDiagnosticPattern = '(?im)(C compilation error|builder error|failed to compile|cannot compile|fatal error|error C[0-9]{4}|warning C[0-9]{4}|warning:|error:|undefined reference|unresolved external symbol|LNK[0-9]{4})'

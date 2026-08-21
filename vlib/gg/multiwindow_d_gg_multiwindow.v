@@ -668,6 +668,7 @@ pub fn (mut app App) poll_events() !int {
 	app.ensure_initialized()!
 	count := app.core.poll_events()!
 	app.consume_backend_teardowns()!
+	app.reconcile_unbound_managed_window_captures()!
 	return count
 }
 

@@ -248,6 +248,7 @@ mut:
 	mode_height       int
 	transform         int
 	scale             int = 1
+	pending_scale     int = 1
 	make              string
 	model             string
 	name              string
@@ -566,6 +567,14 @@ fn (mut record WaylandOutputRecord) publish_output_if_ready() {
 	record.dirty = false
 	mut backend := record.owner
 	backend.enqueue_monitor_snapshot_event()
+}
+
+fn (mut backend WaylandBackend) refresh_windows_for_output_scale(slot int) {
+	for index in 0 .. backend.windows.len {
+		if slot in backend.windows[index].output_slots {
+			backend.refresh_window_output_scale(index)
+		}
+	}
 }
 
 fn (backend &WaylandBackend) transport_can_marshal() bool {
@@ -1280,6 +1289,7 @@ $if linux && sokol_wayland ? {
 			record.mode_height = 0
 			record.transform = 0
 			record.scale = 1
+			record.pending_scale = 1
 			record.make = ''
 			record.model = ''
 			record.name = ''
@@ -1490,7 +1500,19 @@ $if linux && sokol_wayland ? {
 		mut record := unsafe { &WaylandOutputRecord(data) }
 		if record.available && record.proxy == output {
 			record.ready = record.geometry_received && record.mode_received
+			if !record.ready {
+				return
+			}
+			scale_changed := record.pending_scale > 0 && record.scale != record.pending_scale
+			if scale_changed {
+				record.scale = record.pending_scale
+				record.dirty = true
+			}
 			record.publish_output_if_ready()
+			if scale_changed && record.owner != unsafe { nil } {
+				mut backend := record.owner
+				backend.refresh_windows_for_output_scale(record.slot)
+			}
 		}
 	}
 
@@ -1502,8 +1524,10 @@ $if linux && sokol_wayland ? {
 		}
 		mut record := unsafe { &WaylandOutputRecord(data) }
 		if record.available && record.proxy == output && factor > 0 {
-			record.scale = factor
-			record.dirty = true
+			if record.pending_scale != factor {
+				record.pending_scale = factor
+				record.dirty = true
+			}
 		}
 	}
 

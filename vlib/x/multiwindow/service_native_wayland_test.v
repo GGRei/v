@@ -124,6 +124,167 @@ fn test_wayland_output_removal_updates_membership_scale_and_metrics() {
 	}
 }
 
+fn test_wayland_output_scale_commits_at_done_and_refreshes_only_member_windows() {
+	$if linux && sokol_wayland ? {
+		mut native_operations := &NativeOperationAuthority{}
+		native_operations.bind_app_lifetime(1, 1)!
+		native_operations.advance_renderer_attempt(1, 2)!
+		mut backend := &WaylandBackend{
+			started:           true
+			display:           voidptr(usize(0x20))
+			native_operations: native_operations
+		}
+		proxy := voidptr(usize(0x21))
+		output := &WaylandOutputRecord{
+			slot:              0
+			owner:             backend
+			global_name:       7
+			bound_version:     4
+			generation:        3
+			proxy:             proxy
+			mode_width:        1920
+			mode_height:       1080
+			scale:             1
+			geometry_received: true
+			mode_received:     true
+			ready:             true
+			available:         true
+		}
+		larger := &WaylandOutputRecord{
+			slot:              1
+			owner:             backend
+			global_name:       8
+			bound_version:     4
+			generation:        4
+			proxy:             voidptr(usize(0x22))
+			mode_width:        2560
+			mode_height:       1440
+			scale:             3
+			geometry_received: true
+			mode_received:     true
+			ready:             true
+			available:         true
+		}
+		member := &WaylandWindowRecord{
+			id:                       WindowId{
+				app_instance: 1
+				slot:         0
+				generation:   1
+			}
+			owner:                    backend
+			high_dpi:                 true
+			configured:               true
+			width:                    40
+			height:                   30
+			buffer_scale:             1
+			render_scale:             1
+			render_target_generation: 5
+			output_slots:             [0]
+		}
+		nonmember := &WaylandWindowRecord{
+			id:                       WindowId{
+				app_instance: 1
+				slot:         1
+				generation:   1
+			}
+			owner:                    backend
+			high_dpi:                 true
+			configured:               true
+			width:                    50
+			height:                   20
+			buffer_scale:             3
+			render_scale:             3
+			render_target_generation: 7
+			output_slots:             [1]
+		}
+		multi_output := &WaylandWindowRecord{
+			id:                       WindowId{
+				app_instance: 1
+				slot:         2
+				generation:   1
+			}
+			owner:                    backend
+			high_dpi:                 true
+			configured:               true
+			width:                    60
+			height:                   25
+			buffer_scale:             3
+			render_scale:             3
+			render_target_generation: 9
+			output_slots:             [0, 1]
+		}
+		fractional := &WaylandWindowRecord{
+			id:                         WindowId{
+				app_instance: 1
+				slot:         3
+				generation:   1
+			}
+			owner:                      backend
+			high_dpi:                   true
+			configured:                 true
+			width:                      64
+			height:                     48
+			buffer_scale:               1
+			render_scale:               1.5
+			fractional_scale:           voidptr(usize(0x23))
+			fractional_scale_numerator: 180
+			viewport:                   voidptr(usize(0x24))
+			render_target_generation:   11
+			output_slots:               [0]
+		}
+		backend.outputs = [output, larger]
+		backend.windows = [member, nonmember, multi_output, fractional]
+
+		wayland_output_scale(output.listener_data(), proxy, 2)
+		assert output.scale == 1
+		assert member.buffer_scale == 1
+		assert member.pending_events.len == 0
+		assert backend.pending_service_events.len == 0
+
+		wayland_output_done(output.listener_data(), proxy)
+		assert output.scale == 2
+		assert backend.pending_service_events.len == 1
+		monitor_event := backend.pending_service_events[0]
+		assert monitor_event.event.kind == .service
+		assert monitor_event.event.service.kind == .monitor
+		assert monitor_event.event.service.monitors[0].scale.value == f32(2)
+		assert member.buffer_scale == 2
+		assert member.render_scale == f32(2)
+		assert member.pending_egl_resize
+		assert member.render_target_generation == 6
+		assert member.pending_events.len == 1
+		assert member.pending_events[0].event.service.kind == .metrics
+		assert monitor_event.sequence < member.pending_events[0].sequence
+		assert nonmember.buffer_scale == 3
+		assert nonmember.render_target_generation == 7
+		assert nonmember.pending_events.len == 0
+		assert multi_output.buffer_scale == 3
+		assert multi_output.render_target_generation == 9
+		assert multi_output.pending_events.len == 0
+		assert fractional.buffer_scale == 2
+		assert fractional.render_scale == f32(1.5)
+		assert fractional.render_target_generation == 11
+		assert fractional.pending_events.len == 0
+
+		wayland_output_done(output.listener_data(), proxy)
+		assert backend.pending_service_events.len == 1
+		assert member.pending_events.len == 1
+
+		wayland_output_scale(output.listener_data(), proxy, 4)
+		assert output.scale == 2
+		wayland_output_done(output.listener_data(), proxy)
+		assert output.scale == 4
+		assert backend.pending_service_events.len == 2
+		assert member.buffer_scale == 4
+		assert member.render_target_generation == 7
+		assert member.pending_events.len == 2
+		assert multi_output.buffer_scale == 4
+		assert multi_output.render_target_generation == 10
+		assert multi_output.pending_events.len == 1
+		assert nonmember.pending_events.len == 0
+	}
+}
+
 fn test_wayland_fractional_scale_preference_updates_metrics_and_framebuffer() {
 	$if linux && sokol_wayland ? {
 		mut backend := &WaylandBackend{}

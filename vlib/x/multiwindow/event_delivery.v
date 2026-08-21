@@ -188,7 +188,10 @@ fn (mut app App) accept_backend_event_batch(events []QueuedEvent, frame_count u6
 			.service {
 				if generation_valid
 					&& app.accept_backend_service_event_locked(event.service, delivery_token) {
+					app.backend.claim_service_event_storage(event.service)
 					accepted++
+				} else {
+					app.backend.discard_unaccepted_service_event_storage(event.service)
 				}
 			}
 			.readback {
@@ -395,6 +398,9 @@ fn (app &App) validate_queued_delivery_locked(event QueuedEvent) ! {
 
 fn (mut app App) complete_queued_delivery_locked(event QueuedEvent) {
 	app.event_deliveries.delete(event.delivery_token)
+	if event.kind == .service {
+		app.backend.release_delivered_service_event_storage(event.service)
+	}
 	app.release_delivered_service_storage_locked(event)
 }
 

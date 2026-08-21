@@ -29,6 +29,24 @@ struct BackendReadbackResult {
 	error           string
 }
 
+fn (mut backend Backend) claim_service_event_storage(event ServiceEvent) {
+	if backend.kind == .win32 {
+		backend.win32.claim_clipboard_terminal_storage(event)
+	}
+}
+
+fn (mut backend Backend) discard_unaccepted_service_event_storage(event ServiceEvent) {
+	if backend.kind == .win32 {
+		backend.win32.discard_unclaimed_clipboard_terminal_storage(event)
+	}
+}
+
+fn (mut backend Backend) release_delivered_service_event_storage(event ServiceEvent) {
+	if backend.kind == .win32 {
+		backend.win32.release_claimed_clipboard_terminal_storage(event)
+	}
+}
+
 fn (backend &Backend) service_operation_capability(id WindowId, operation ServiceOperation) ServiceOperationCapability {
 	return match backend.kind {
 		.auto {

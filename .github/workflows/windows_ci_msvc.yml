@@ -310,8 +310,8 @@ jobs:
         shell: pwsh
         run: |
           .\.github\workflows\run_multiwindow_win32_w3_green.ps1 -Compiler msvc `
-            -ExpectedCompositeSha256 'cb61cfc2d2210f392722463e05d0b340cf8578d78bb2bfb5d65a020e6b9d64ce' `
-            -ExpectedRunnerSha256 'dac97dd3cf398a9b783704190f7efa9e6aed8b967118e9d112c16ddc62b78ca7'
+            -ExpectedCompositeSha256 '836c1d52c3042f8ec85d0c64489f1b0d1ead8ffafcfdb2a06f567a9b52e2785f' `
+            -ExpectedRunnerSha256 '9326948a5be280164fb5c6706295b2c35facae252b2ea1c11e26c5a9129cf955'
       - name: Package 2 native Win32 RED matrix
         shell: pwsh
         run: .\.github\workflows\run_multiwindow_win32_package2_red.ps1 -Compiler msvc
@@ -324,16 +324,17 @@ jobs:
             -Compiler msvc `
             -Expectation Green `
             -ExpectedOracleSha256 '804e8cbc5f5f7c390e90736d54a60d65d19b649a94afa4915bd9cb4e95c4e04d' `
-            -ExpectedNativeTestSha256 '27ecd8d02916286bc08ddeebbf9757b0a8e8499872e394fe32c0221969d96f3c' `
+            -ExpectedNativeTestSha256 '1796d8221d14f9bc40c74e163d797b50f4eeb09a67aee0c4703834880354ef66' `
             -ExpectedPublicTestSha256 'd08eafb919ae97b185fc480c22f6d990973396152e9a0b3a01035c3e9a30275c' `
             -ExpectedNoOptProbeSha256 '288f148ca15b6694481f117c03be5f80c4045baf76d3b0e90db61b5e0596741c' `
-            -ExpectedServiceBackendSha256 '163bc7bb16d38b82079c1ee604cefe58179684fcd9689ad3076a4a6ffc7e9751' `
-            -ExpectedWin32BackendSha256 '9d0b610a3b2a6923d9048836fd16f822ed45a1f5290641508a12766495b99e31' `
-            -ExpectedWin32ServiceBackendSha256 'da6435d85d915f3626f5421c8c3a63d5231f65a7f8431ca7ce9b61b34284d976' `
+            -ExpectedServiceBackendSha256 'c0a2ce2320276c8437721170a975aec1bf851b2a8b267b4960eb3e080c8f5fe3' `
+            -ExpectedEventDeliverySha256 '049ec52a35a8cb041f128132ce8ea4c055cfc6d1ed52ff2b222a6a50bb51584d' `
+            -ExpectedWin32BackendSha256 '57b7e02241fb3624ffde0619cf99441b0ae91cc112734cffb29433adbfe7b191' `
+            -ExpectedWin32ServiceBackendSha256 'faaf67be3e0381ea8a0e7a753b477b7965dde6e655f83f220eca036da19c5df6' `
             -ExpectedWin32ServiceNativeSha256 '2ffc93e245a43c4a557fd7cc66ebcdda8874b9783ec3050ba754657a97efd033' `
-            -ExpectedRedSurfaceSha256 '04b271a1ece4844a60a338358ec292d1e59448b962f6be7fb9c5765206678a7e' `
-            -ExpectedGreenSurfaceSha256 '71e1ba0be810d63cdcdc3f0fed0e67e43c4cd99b27acb3585cf30107643d6302' `
-            -ExpectedRunnerSha256 '203b7857c5db6e36ec6312dab02e228b46bf892cea1055c6f022cbd9a75ebc3f'
+            -ExpectedRedSurfaceSha256 'fe7fa76370ee25883e4da25e72b339daeba9d1b47ff70b8b56b0ada87a0027c6' `
+            -ExpectedGreenSurfaceSha256 'b8b98509efa32baab31cb969ec73a0419ea32a47f7976a5d639e8f53ee6986bd' `
+            -ExpectedRunnerSha256 '58868875519edbb5a2e4c2a3749c42c384aa08d0ca55b4a02c6cd3f703c446f7'
       - name: Win32 W5 raw-input A0 preflight
         shell: pwsh
         run: |
@@ -356,7 +357,7 @@ jobs:
             -ExpectedA0MainSha256 '5f30869ae97f680032e622273ea69986d612cc82cad2adf53e4c3b1415154301' `
             -ExpectedA0TupleSha256 '99ef24bf101dc83543f26f86cb23a80c82607e0f1b35c32e9dbb431368ecc7c4' `
             -ExpectedA0RunnerSha256 'ce4da58e24730899f970a7566dc65d82eb0c07d38f74efcaeeb02c450a011b68' `
-            -ExpectedGgFacadeSha256 '7228f1fb113ef1cbd019b25c21fe32d7798cab87e141ed8ddb014a944363ae8f' `
+            -ExpectedGgFacadeSha256 'e694668d903f180ffa8ab0c33ea64a0ee60fdddd792dbdc3e606a6084fcf2a44' `
             -ExpectedGgNoFlagSha256 'ad528c64cf18bce9415dd0e50513fb87d8d0b58c8ac4a99025a5c8955e7d9549' `
             -ExpectedGgServiceTypesSha256 '6775854b4a1a66e75099e7a390089f6a96f77c4bdd9eed5bccf4a33538e4d5b0' `
             -ExpectedAppSha256 'af32eec55c119907a8bbf544842131018d36d3887347e26486e067a79d78a946' `
@@ -365,16 +366,16 @@ jobs:
             -ExpectedServiceApiSha256 'a9bc7a8d0060fcf3bb5d0422464a49acec50a1c00b1595460893086e34cb9ea2' `
             -ExpectedServiceTypesSha256 '27ea45e8651b050d8c5cf3345c74055935c610675e1404c763aa44c9dcef1409' `
             -ExpectedServiceRegistrySha256 '20d3863dd6e9655d344324bb48803539e461feb0e2025e2939fdc108c31e2394' `
-            -ExpectedEventDeliverySha256 'b4b5551def3d0037769db3339ac8e0e55f2ff150e4954a40183909e2f8f0244b' `
-            -ExpectedPublicRoutingSurfaceSha256 '19b529e7c9db1f9a87c401194c99bd7d3ff4f65858d8ac412d04d6ce9c87b95a' `
-            -ExpectedServiceBackendSha256 '163bc7bb16d38b82079c1ee604cefe58179684fcd9689ad3076a4a6ffc7e9751' `
+            -ExpectedEventDeliverySha256 '049ec52a35a8cb041f128132ce8ea4c055cfc6d1ed52ff2b222a6a50bb51584d' `
+            -ExpectedPublicRoutingSurfaceSha256 '3b0d77aa7fc3368b6071a9ceaee8a1c4768fcce3f68a45ba0c20496703fee0b5' `
+            -ExpectedServiceBackendSha256 'c0a2ce2320276c8437721170a975aec1bf851b2a8b267b4960eb3e080c8f5fe3' `
             -ExpectedEventDispatchSha256 '7ef6c7cbd34511d6c19c1a3a269b46876db791b9412bb88e3a8d4dcd543bfd4e' `
-            -ExpectedWin32BackendSha256 '9d0b610a3b2a6923d9048836fd16f822ed45a1f5290641508a12766495b99e31' `
+            -ExpectedWin32BackendSha256 '57b7e02241fb3624ffde0619cf99441b0ae91cc112734cffb29433adbfe7b191' `
             -ExpectedWin32BackendHelpersSha256 'ba0021ce46731b25d540a68bf7c7832c7302a7343a90e1398df91cc5e409754d' `
-            -ExpectedWin32ServiceBackendSha256 'da6435d85d915f3626f5421c8c3a63d5231f65a7f8431ca7ce9b61b34284d976' `
+            -ExpectedWin32ServiceBackendSha256 'faaf67be3e0381ea8a0e7a753b477b7965dde6e655f83f220eca036da19c5df6' `
             -ExpectedWin32ServiceNativeSha256 '2ffc93e245a43c4a557fd7cc66ebcdda8874b9783ec3050ba754657a97efd033' `
-            -ExpectedGreenProductionSurfaceSha256 '655f91287c17b7280f27ea2c7f6a4a76da1d62b6e86d0ae433456a79d14a4fd6' `
-            -ExpectedRunnerSha256 'c8d144a647c91b5a90d487bdebe0cba70034ccc8b2f50bb9a9eb4ef0eed86992'
+            -ExpectedGreenProductionSurfaceSha256 'ea3abd89f0fcf91e1194d4b8bfe7adc879df874d355e690650ddbac2fe6ec111' `
+            -ExpectedRunnerSha256 '2ca1b808b9f807f8c87f0bb518a7b5ac2f97f74b6d617f6fb9a4e642242a9e38'
       - name: Prepare multiwindow Job Object watchdog
         shell: pwsh
         run: |

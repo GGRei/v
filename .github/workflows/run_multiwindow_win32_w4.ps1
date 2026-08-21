@@ -30,6 +30,10 @@ param(
 
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-fA-F]{64}$')]
+    [string]$ExpectedEventDeliverySha256,
+
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{64}$')]
     [string]$ExpectedWin32BackendSha256,
 
     [Parameter(Mandatory = $true)]
@@ -62,6 +66,7 @@ $publicTest = 'vlib/gg/multiwindow_win32_public_services_contract_windows_test.v
 $noOptProbe = 'vlib/gg/testdata/multiwindow_win32_clipboard_no_optin_probe.v'
 $surfacePaths = @(
     'vlib/x/multiwindow/service_backend.v'
+    'vlib/x/multiwindow/event_delivery.v'
     'vlib/x/multiwindow/win32_backend.c.v'
     'vlib/x/multiwindow/win32_service_backend.c.v'
     'vlib/x/multiwindow/win32_service_native.h'
@@ -691,7 +696,7 @@ foreach ($group in @($cases | Group-Object File)) {
 $testPaths = @($oracle, $nativeTest, $publicTest, $noOptProbe)
 $knownTestFileHashes = @(
     '804e8cbc5f5f7c390e90736d54a60d65d19b649a94afa4915bd9cb4e95c4e04d'
-	'27ecd8d02916286bc08ddeebbf9757b0a8e8499872e394fe32c0221969d96f3c'
+	'1796d8221d14f9bc40c74e163d797b50f4eeb09a67aee0c4703834880354ef66'
     'd08eafb919ae97b185fc480c22f6d990973396152e9a0b3a01035c3e9a30275c'
     '288f148ca15b6694481f117c03be5f80c4045baf76d3b0e90db61b5e0596741c'
 )
@@ -726,7 +731,7 @@ $testTupleRecords += @(
     }
 )
 $testTupleSha256 = Get-W4TextSha256 -Text (($testTupleRecords -join "`n") + "`n")
-$knownTestTupleSha256 = 'f50e3f978e9d3917de75dd39448afea90f98dff814824c6c4f6e192ca1771e90'
+$knownTestTupleSha256 = 'cbd4ce51ef546505fb6b8bec1a1752b2f16bea0fa588cedb3ccc27c7ed1cddee'
 if ($testTupleSha256 -cne $knownTestTupleSha256) {
     throw "W4 frozen ordered test tuple mismatch: expected=$knownTestTupleSha256 actual=$testTupleSha256"
 }
@@ -760,14 +765,16 @@ function Get-W4ProductionSurfaceSha256 {
 $knownSurfaceFiles = @{
     Red = @(
         '507686b3e29d22d9b913da79bb20d435394daf693e166be1c61569bd08b853d6'
+		'b4b5551def3d0037769db3339ac8e0e55f2ff150e4954a40183909e2f8f0244b'
         '2ae1143cd1e069727ac82f4d0ca97866686874562fcdd8d660d8706dfd7e7856'
         '5261f7fd1b9aefe3bb76c298f8eeeabd281f8fa26fe58b15868ceb6415dd8ba1'
         'c113d9361d0f55f5fd127d2a2ae7e05fa6930022350cb717161de07e5eeb0054'
     )
     Green = @(
-        '163bc7bb16d38b82079c1ee604cefe58179684fcd9689ad3076a4a6ffc7e9751'
-        '9d0b610a3b2a6923d9048836fd16f822ed45a1f5290641508a12766495b99e31'
-		'da6435d85d915f3626f5421c8c3a63d5231f65a7f8431ca7ce9b61b34284d976'
+		'c0a2ce2320276c8437721170a975aec1bf851b2a8b267b4960eb3e080c8f5fe3'
+		'049ec52a35a8cb041f128132ce8ea4c055cfc6d1ed52ff2b222a6a50bb51584d'
+		'57b7e02241fb3624ffde0619cf99441b0ae91cc112734cffb29433adbfe7b191'
+		'faaf67be3e0381ea8a0e7a753b477b7965dde6e655f83f220eca036da19c5df6'
 		'2ffc93e245a43c4a557fd7cc66ebcdda8874b9783ec3050ba754657a97efd033'
     )
 }
@@ -787,6 +794,7 @@ foreach ($state in @('Red', 'Green')) {
 
 $passedCurrentSurface = @(
     $ExpectedServiceBackendSha256.ToLowerInvariant()
+	$ExpectedEventDeliverySha256.ToLowerInvariant()
     $ExpectedWin32BackendSha256.ToLowerInvariant()
     $ExpectedWin32ServiceBackendSha256.ToLowerInvariant()
     $ExpectedWin32ServiceNativeSha256.ToLowerInvariant()

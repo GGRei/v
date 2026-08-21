@@ -2804,6 +2804,130 @@ fn test_x11_window_capture_capability_requires_a_positive_viewable_native_extent
 	assert body.contains('probe.actual_height > 0')
 }
 
+fn test_win32_clipboard_read_budget_survives_native_terminal_until_core_delivery() {
+	mut backend := Win32Backend{}
+	request := ServiceRequestId{
+		app_instance: 1
+		serial:       1
+	}
+	window := WindowId{
+		app_instance: 1
+		slot:         0
+		generation:   1
+	}
+	backend.admit_clipboard_request(request, window, voidptr(usize(1)), .clipboard_read, []u16{})!
+	assert backend.clipboard_pending.len == 1
+	assert backend.clipboard_pending_bytes == usize(win32_clipboard_max_pending_bytes)
+
+	event := backend.finish_clipboard_head(.ready, 'tiny read', '')
+	assert backend.clipboard_pending.len == 0
+	assert event.event.service.clipboard.id == request
+	assert event.event.service.clipboard.status == .ready
+	assert backend.clipboard_pending_bytes == usize('tiny read'.len + 1)
+	assert backend.clipboard_retained.len == 1
+	assert !backend.clipboard_retained[0].claimed_by_app
+	mismatched := ServiceEvent{
+		...event.event.service
+		clipboard: ServiceClipboardResult{
+			...event.event.service.clipboard
+			window: WindowId{
+				...window
+				generation: 2
+			}
+		}
+	}
+	backend.claim_clipboard_terminal_storage(mismatched)
+	backend.discard_unclaimed_clipboard_terminal_storage(mismatched)
+	assert backend.clipboard_pending_bytes == usize('tiny read'.len + 1)
+	assert !backend.clipboard_retained[0].claimed_by_app
+
+	backend.claim_clipboard_terminal_storage(event.event.service)
+	assert backend.clipboard_retained.len == 1
+	assert backend.clipboard_retained[0].claimed_by_app
+	backend.purge_clipboard_window(window)
+	assert backend.clipboard_pending_bytes == usize('tiny read'.len + 1)
+	backend.discard_unclaimed_clipboard_terminal_storage(event.event.service)
+	assert backend.clipboard_pending_bytes == usize('tiny read'.len + 1)
+	assert backend.clipboard_retained.len == 1
+	backend.release_claimed_clipboard_terminal_storage(event.event.service)
+	assert backend.clipboard_pending_bytes == 0
+	assert backend.clipboard_retained.len == 0
+	backend.release_claimed_clipboard_terminal_storage(event.event.service)
+	assert backend.clipboard_pending_bytes == 0
+
+	second_request := ServiceRequestId{
+		app_instance: 1
+		serial:       2
+	}
+	backend.admit_clipboard_request(second_request, window, voidptr(usize(1)), .clipboard_read,
+		[]u16{})!
+	rejected := backend.finish_clipboard_head(.ready, 'rejected read', '')
+	assert backend.clipboard_pending_bytes == usize('rejected read'.len + 1)
+	backend.discard_unclaimed_clipboard_terminal_storage(rejected.event.service)
+	assert backend.clipboard_pending_bytes == 0
+	assert backend.clipboard_retained.len == 0
+	backend.discard_unclaimed_clipboard_terminal_storage(rejected.event.service)
+	assert backend.clipboard_pending_bytes == 0
+}
+
+fn test_win32_clipboard_retained_storage_hooks_wrap_backend_acceptance_and_delivery() {
+	backend_source := multiwindow_source_file('service_backend.v')
+	delivery_source := multiwindow_source_file('event_delivery.v')
+	assert backend_source.contains('backend.win32.claim_clipboard_terminal_storage(event)')
+	assert backend_source.contains('backend.win32.discard_unclaimed_clipboard_terminal_storage(event)')
+	assert backend_source.contains('backend.win32.release_claimed_clipboard_terminal_storage(event)')
+	assert_source_order_after_marker(delivery_source, '.service {',
+		'app.accept_backend_service_event_locked(event.service, delivery_token)',
+		'app.backend.claim_service_event_storage(event.service)')
+	assert_source_order_after_marker(delivery_source, '.service {', '} else {',
+		'app.backend.discard_unaccepted_service_event_storage(event.service)')
+	assert_source_order_after_marker(delivery_source,
+		'fn (mut app App) complete_queued_delivery_locked',
+		'app.event_deliveries.delete(event.delivery_token)',
+		'app.backend.release_delivered_service_event_storage(event.service)')
+}
+
+fn test_gg_unbound_capture_reconciliation_is_terminal_before_facade_removal() {
+	vlib_dir := os.dir(os.dir(@DIR))
+	render_source := os.read_file(os.join_path(vlib_dir, 'gg',
+		'multiwindow_render_impl_d_gg_multiwindow.v')) or { panic(err) }
+	gg_source := os.read_file(os.join_path(vlib_dir, 'gg', 'multiwindow_d_gg_multiwindow.v')) or {
+		panic(err)
+	}
+	reconcile_body := render_source.all_after('fn (mut app App) reconcile_unbound_managed_window_captures()')
+		.all_before('fn (mut app App) request_window_capture_redraw')
+	blocked_body := render_source.all_after('fn unbound_managed_window_capture_is_permanently_blocked')
+		.all_before('fn (mut app App) reconcile_unbound_managed_window_captures()')
+	assert reconcile_body.contains('capture.attempt_batch_epoch != 0')
+	assert blocked_body.contains('capture_block_reason_prevents_future_frame(snapshot.block_reason)')
+	assert reconcile_body.contains('unbound_managed_window_capture_is_permanently_blocked(producer, snapshot)')
+	assert_source_order(reconcile_body, 'app.core.service_fail_window_readback(capture.id,',
+		'app.pending_window_captures.delete(index)')
+	poll_body :=
+		gg_source.all_after('pub fn (mut app App) poll_events()').all_before('pub fn (mut app App) drain_input_events()')
+	assert_source_order(poll_body, 'app.core.poll_events()!', 'app.consume_backend_teardowns()!')
+	assert_source_order(poll_body, 'app.consume_backend_teardowns()!',
+		'app.reconcile_unbound_managed_window_captures()!')
+}
+
+fn test_wayland_output_scale_is_staged_until_done_before_member_refresh() {
+	wayland_source := multiwindow_source_file('wayland_backend.c.v')
+	scale_body :=
+		wayland_source.all_after('fn wayland_output_scale(').all_before("@[export: 'v_multiwindow_wayland_output_name']")
+	done_body :=
+		wayland_source.all_after('fn wayland_output_done(').all_before("@[export: 'v_multiwindow_wayland_output_scale']")
+	refresh_body := wayland_source.all_after('fn (mut backend WaylandBackend) refresh_windows_for_output_scale')
+		.all_before('fn (backend &WaylandBackend) transport_can_marshal')
+	assert scale_body.contains('record.pending_scale = factor')
+	assert !scale_body.contains('record.scale = factor')
+	assert_source_order(done_body, 'record.scale = record.pending_scale',
+		'record.publish_output_if_ready()')
+	assert_source_order(done_body, 'record.publish_output_if_ready()',
+		'backend.refresh_windows_for_output_scale(record.slot)')
+	assert refresh_body.contains('slot in backend.windows[index].output_slots')
+	assert refresh_body.contains('backend.refresh_window_output_scale(index)')
+}
+
 fn test_wayland_capabilities_for_backend_do_not_require_display_on_linux() {
 	$if linux {
 		$if sokol_wayland ? {

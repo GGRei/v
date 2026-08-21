@@ -3264,6 +3264,8 @@ fn win32_w4_clipboard_timeout_case(test_now_ns i64) ![]string {
 				core_admitted.len == 1 && !core_admitted[0].terminal)
 			win32_red_add(mut issues, 'occupied read was not native-pending',
 				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 1)
+			win32_red_add(mut issues, 'occupied read did not reserve the aggregate byte limit',
+				app.backend.win32.clipboard_pending_bytes == usize(win32_red_clipboard_max_bytes))
 			deadline := C.v_multiwindow_win32_service_test_clipboard_pending_deadline_ns(backend, 0)
 			win32_red_add(mut issues, 'occupied read deadline was not admission+2s', deadline ==
 				test_now_ns + i64(2_000_000_000))
@@ -3299,6 +3301,8 @@ fn win32_w4_clipboard_timeout_case(test_now_ns i64) ![]string {
 				attempts_before_timeout + 1)
 			win32_red_add(mut issues, 'timed-out read remained native-pending',
 				C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0)
+			win32_red_add(mut issues, 'timed-out read retained byte capacity without a payload',
+				app.backend.win32.clipboard_pending_bytes == 0)
 			win32_red_add(mut issues, 'timeout did not allocate exactly one sequence',
 				C.v_multiwindow_win32_service_test_clipboard_sequence_allocations(backend) == 1)
 			core_timeout := win32_red_core_pending(app, request)
@@ -3332,6 +3336,136 @@ fn win32_w4_clipboard_timeout_case(test_now_ns i64) ![]string {
 	} $else {
 		_ = test_now_ns
 		return error('Win32 clipboard timeout case is unavailable')
+	}
+}
+
+fn win32_w4_clipboard_ready_storage_case(test_now_ns i64) ![]string {
+	$if windows {
+		mut app := new_app(backend: .win32)!
+		defer {
+			app.stop() or {}
+		}
+		read_window := app.create_window(title: 'Win32 clipboard retained ready storage')!
+		queue_window := app.create_window(title: 'Win32 clipboard retained FIFO')!
+		_ = app.drain_queued_events()!
+		backend := win32_red_backend_pointer(app)
+		hwnd := win32_red_hwnd(app, read_window)!
+		defer {
+			C.v_multiwindow_win32_service_test_clipboard_use_real_clock(backend)
+		}
+		mut issues := []string{}
+		read_text := 'retained ready read 🙂'
+		if C.v_multiwindow_test_win32_set_clipboard(hwnd, read_text.to_wide(),
+			win32_red_utf16_units(read_text)) != 1 {
+			win32_w4_add_infra(mut issues,
+				'retained-ready fixture could not publish clipboard text')
+			return issues
+		}
+		C.v_multiwindow_win32_service_test_clipboard_configure(backend, test_now_ns, 0)
+		read := app.service_request_clipboard_text(read_window) or {
+			issues << 'retained-ready read was not admitted: ${err.msg()}'
+			ServiceRequestId{}
+		}
+		if read == ServiceRequestId{} {
+			return issues
+		}
+		win32_red_add(mut issues, 'read admission did not reserve the full aggregate limit',
+			app.backend.win32.clipboard_pending_bytes == usize(win32_red_clipboard_max_bytes))
+		app.poll_events() or {
+			win32_w4_add_infra(mut issues, 'retained-ready read poll failed: ${err.msg()}')
+		}
+		read_charge := usize(read_text.len + 1)
+		win32_red_add(mut issues, 'ready read remained native-pending',
+			C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0)
+		win32_red_add(mut issues, 'ready read did not retain its exact stable payload charge',
+			app.backend.win32.clipboard_pending_bytes == read_charge)
+		read_core := win32_red_core_pending(app, read)
+		win32_red_add(mut issues, 'ready read was not retained core-terminal before delivery',
+
+			read_core.len == 1 && read_core[0].terminal)
+		app.destroy_window(read_window) or {
+			issues << 'ready-read window destroy failed: ${err.msg()}'
+		}
+		win32_red_add(mut issues,
+			'window teardown released an undrained ready-read storage charge',
+			app.backend.win32.clipboard_pending_bytes == read_charge
+			&& win32_red_core_pending(app, read).len == 1)
+
+		request_before_capacity := app.services.next_request
+		token_before_capacity := app.next_event_delivery_token
+		mut second_read_error := ''
+		app.service_request_clipboard_text(queue_window) or { second_read_error = err.msg() }
+		win32_red_add(mut issues, 'undrained ready read admitted another maximum read',
+			second_read_error == err_clipboard_capacity)
+		win32_red_add(mut issues,
+			'capacity rejection rewound its safe request-id gap or mutated delivery authority',
+			app.services.next_request == request_before_capacity + 1
+			&& app.next_event_delivery_token == token_before_capacity)
+		win32_red_add(mut issues, 'capacity rejection changed native/core queue cardinality',
+			C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0
+			&& win32_red_core_pending(app, read).len == 1)
+
+		write_text := 'small FIFO write'
+		write_bytes := win32_red_utf16_units(write_text) * usize(2)
+		write := app.service_set_clipboard_text(queue_window, write_text) or {
+			issues << 'small write was rejected despite retained-read budget: ${err.msg()}'
+			ServiceRequestId{}
+		}
+		if write != ServiceRequestId{} {
+			win32_red_add(mut issues, 'small write did not share the aggregate budget', app.backend.win32.clipboard_pending_bytes ==
+				read_charge + write_bytes)
+			app.poll_events() or {
+				win32_w4_add_infra(mut issues, 'small write poll failed: ${err.msg()}')
+			}
+			win32_red_add(mut issues, 'completed write changed retained ready-read charge',
+				app.backend.win32.clipboard_pending_bytes == read_charge)
+			mut third_read_error := ''
+			app.service_request_clipboard_text(queue_window) or { third_read_error = err.msg() }
+			win32_red_add(mut issues, 'completed undrained FIFO terminals admitted another read',
+				third_read_error == err_clipboard_capacity)
+
+			delivered := app.drain_queued_events() or {
+				win32_w4_add_infra(mut issues, 'retained-ready terminal drain failed: ${err.msg()}')
+				[]QueuedEvent{}
+			}
+			clipboard := delivered.filter(it.kind == .service && it.service.kind == .clipboard)
+			win32_red_add(mut issues, 'retained-ready delivery lost global FIFO order',
+				clipboard.len == 2 && clipboard[0].service.clipboard.id == read
+				&& clipboard[1].service.clipboard.id == write
+				&& clipboard[0].sequence < clipboard[1].sequence)
+			win32_red_add(mut issues, 'core drain did not release retained read capacity',
+				app.backend.win32.clipboard_pending_bytes == 0)
+		}
+
+		retry := app.service_request_clipboard_text(queue_window) or {
+			issues << 'read retry after drain was not admitted: ${err.msg()}'
+			ServiceRequestId{}
+		}
+		if retry != ServiceRequestId{} {
+			win32_red_add(mut issues, 'read retry did not reserve the full aggregate limit',
+				app.backend.win32.clipboard_pending_bytes == usize(win32_red_clipboard_max_bytes))
+			app.destroy_window(queue_window) or {
+				issues << 'destroy-before-read-poll failed: ${err.msg()}'
+			}
+			win32_red_add(mut issues,
+				'destroy-before-poll did not release the native read reservation',
+				app.backend.win32.clipboard_pending_bytes == 0
+				&& C.v_multiwindow_win32_service_test_clipboard_pending_count(backend) == 0)
+			cancellation := win32_red_core_pending(app, retry)
+			win32_red_add(mut issues,
+				'destroy-before-poll did not retain one undrained core cancellation',
+
+				cancellation.len == 1 && cancellation[0].terminal)
+			_ = app.drain_queued_events() or {
+				win32_w4_add_infra(mut issues,
+					'destroy-before-poll terminal drain failed: ${err.msg()}')
+				[]QueuedEvent{}
+			}
+		}
+		return issues
+	} $else {
+		_ = test_now_ns
+		return error('Win32 clipboard retained-ready storage case is unavailable')
 	}
 }
 
@@ -3732,6 +3866,9 @@ fn test_win32_native_clipboard_occupancy_timeout_failure_and_cancel_red() {
 		test_now_ns := i64(20_000_000)
 		mut issues := []string{}
 		for issue in win32_w4_clipboard_timeout_case(test_now_ns)! {
+			issues << issue
+		}
+		for issue in win32_w4_clipboard_ready_storage_case(test_now_ns)! {
 			issues << issue
 		}
 		for issue in win32_w4_clipboard_late_first_attempt_case(test_now_ns)! {
