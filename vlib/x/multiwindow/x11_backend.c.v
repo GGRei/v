@@ -469,6 +469,7 @@ mut:
 	clipboard_transfers                          []X11ClipboardTransfer
 	pending_clipboard_terminal_events            []QueuedEvent
 	clipboard_requestor_create_failures_for_test int
+	clipboard_write_failures_for_test            int
 	xdnd_source                                  X11NativeWindow
 	xdnd_target                                  X11NativeWindow
 	xdnd_format                                  X11NativeAtom
@@ -1041,18 +1042,21 @@ fn (backend &X11Backend) service_operation_capability(operation ServiceOperation
 		.minimize {
 			ServiceOperationCapability{
 				support:          .conditional
+				asynchronous:     true
 				state_observable: true
 			}
 		}
 		.maximize {
 			ServiceOperationCapability{
 				support:          if backend.ewmh_maximize { .available } else { .unsupported }
+				asynchronous:     backend.ewmh_maximize
 				state_observable: backend.ewmh_maximize
 			}
 		}
 		.fullscreen {
 			ServiceOperationCapability{
 				support:          if backend.ewmh_fullscreen { .available } else { .unsupported }
+				asynchronous:     backend.ewmh_fullscreen
 				state_observable: backend.ewmh_fullscreen
 			}
 		}
@@ -1063,6 +1067,7 @@ fn (backend &X11Backend) service_operation_capability(operation ServiceOperation
 				} else {
 					.unsupported
 				}
+				asynchronous:     backend.ewmh_maximize || backend.ewmh_fullscreen
 				state_observable: backend.ewmh_maximize || backend.ewmh_fullscreen
 			}
 		}
@@ -1603,6 +1608,12 @@ fn (mut backend X11Backend) service_set_clipboard_text(id WindowId, request Serv
 		if !backend.started || backend.display == unsafe { nil }
 			|| backend.clipboard == X11NativeAtom(0) || text.len > x11_clipboard_max_bytes {
 			return error(err_capability_unsupported)
+		}
+		$if test {
+			if backend.clipboard_write_failures_for_test > 0 {
+				backend.clipboard_write_failures_for_test--
+				return error(err_capability_unsupported)
+			}
 		}
 		window := backend.windows[index].window
 		C.XSetSelectionOwner(backend.display, backend.clipboard, window, X11NativeULong(0))

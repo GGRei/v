@@ -289,6 +289,7 @@ mut:
 	windows                       []AppKitWindowRecord
 	service_monitor_revision      u64
 	service_monitors              []AppKitServiceMonitorRecord
+	monitor_failures_for_test     int
 	readback_hook_rearm_required  bool
 }
 
@@ -996,6 +997,12 @@ fn (mut backend AppKitBackend) service_monitor_snapshot(app_instance u64) ![]Ser
 	$if darwin {
 		if !backend.service_bridge_ready() {
 			return error(err_capability_unsupported)
+		}
+		$if test {
+			if backend.monitor_failures_for_test > 0 {
+				backend.monitor_failures_for_test--
+				return error(err_capability_unsupported)
+			}
 		}
 		count := C.v_multiwindow_appkit_service_monitor_count()
 		if count < 0 || count > service_appkit_max_monitors {
@@ -2138,6 +2145,7 @@ fn (mut backend AppKitBackend) set_window_cursor(id WindowId, shape CursorShape)
 
 fn (mut backend AppKitBackend) poll_queued_events() ![]QueuedEvent {
 	mut native_events := []AppKitNativeQueuedEvent{}
+	mut pending_monitor_events := []QueuedEvent{}
 	$if darwin {
 		if !backend.started {
 			return []QueuedEvent{}
@@ -2146,6 +2154,7 @@ fn (mut backend AppKitBackend) poll_queued_events() ![]QueuedEvent {
 			return backend.queued_readback_events()!
 		}
 		C.v_multiwindow_appkit_poll_events()
+		pending_monitor_events = backend.monitor_change_event()!
 		mut i := 0
 		for i < backend.windows.len {
 			record := backend.windows[i]
@@ -2194,12 +2203,19 @@ fn (mut backend AppKitBackend) poll_queued_events() ![]QueuedEvent {
 		}
 	}
 	appkit_sort_native_events(mut native_events)
-	mut events := []QueuedEvent{cap: native_events.len}
+	mut events := []QueuedEvent{cap: native_events.len + 1}
+	mut monitor_emitted := false
 	for native_event in native_events {
+		if !monitor_emitted && appkit_service_event_depends_on_monitor_snapshot(native_event.event) {
+			if pending_monitor_events.len > 0 {
+				events << pending_monitor_events[0]
+				monitor_emitted = true
+			}
+		}
 		events << native_event.event
 	}
-	if monitor_event := backend.monitor_change_event() {
-		events << monitor_event
+	if !monitor_emitted && pending_monitor_events.len > 0 {
+		events << pending_monitor_events[0]
 	}
 	events << backend.queued_readback_events()!
 	return events
@@ -2249,14 +2265,19 @@ $if darwin {
 	}
 }
 
-fn (mut backend AppKitBackend) monitor_change_event() ?QueuedEvent {
+fn appkit_service_event_depends_on_monitor_snapshot(event QueuedEvent) bool {
+	return event.kind == .service && event.service.kind in [.state, .metrics]
+		&& service_window_state_observes_monitor_membership(event.service.state)
+}
+
+fn (mut backend AppKitBackend) monitor_change_event() ![]QueuedEvent {
 	$if darwin {
 		if !backend.service_bridge_ready() {
-			return none
+			return []QueuedEvent{}
 		}
 		revision := C.v_multiwindow_appkit_service_monitor_revision()
 		if revision == 0 || revision == backend.service_monitor_revision {
-			return none
+			return []QueuedEvent{}
 		}
 		app_instance := if backend.native_operations == unsafe { nil } {
 			u64(0)
@@ -2264,24 +2285,26 @@ fn (mut backend AppKitBackend) monitor_change_event() ?QueuedEvent {
 			backend.native_operations.app_identity
 		}
 		if app_instance == 0 {
-			return none
+			return []QueuedEvent{}
 		}
-		monitors := backend.service_monitor_snapshot(app_instance) or { return none }
-		return queued_service_event(ServiceEvent{
-			kind:     .monitor
-			monitor:  if monitors.len > 0 {
-				monitors[0]
-			} else {
-				ServiceMonitorInfo{
-					id: ServiceMonitorId{
-						app_instance: app_instance
+		monitors := backend.service_monitor_snapshot(app_instance)!
+		return [
+			queued_service_event(ServiceEvent{
+				kind:     .monitor
+				monitor:  if monitors.len > 0 {
+					monitors[0]
+				} else {
+					ServiceMonitorInfo{
+						id: ServiceMonitorId{
+							app_instance: app_instance
+						}
 					}
 				}
-			}
-			monitors: monitors
-		})
+				monitors: monitors
+			}),
+		]
 	}
-	return none
+	return []QueuedEvent{}
 }
 
 fn (mut backend AppKitBackend) take_poll_error() string {

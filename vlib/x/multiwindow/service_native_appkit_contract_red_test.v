@@ -265,15 +265,15 @@ fn test_appkit_common_clipboard_terminal_is_delivered_exactly_once() {
 	})!
 	window := app.create_window()!
 	_ = app.drain_events()!
-	request := app.begin_native_clipboard_request(window, .clipboard_read)!
-	app.complete_native_clipboard_request(request, window, .clipboard_read, 'AppKit bridge')!
+	request := app.begin_native_clipboard_request(window, .clipboard_read, false)!.request
+	app.complete_native_clipboard_request(request, window, .clipboard_read, 'AppKit bridge', 0)!
 	events := app.drain_service_events()!
 	assert events.len == 1
 	assert events[0].kind == .clipboard
 	assert events[0].clipboard.id == request
 	assert events[0].clipboard.status == .ready
 	assert events[0].clipboard.text == 'AppKit bridge'
-	app.complete_native_clipboard_request(request, window, .clipboard_read, 'duplicate') or {
+	app.complete_native_clipboard_request(request, window, .clipboard_read, 'duplicate', 0) or {
 		assert err.msg() == err_service_request_stale
 	}
 	assert app.drain_service_events()!.len == 0
@@ -309,7 +309,7 @@ fn test_appkit_package2_runtime_monitors_scale_and_events_red() {
 		AppKitContractNeed{'screen topology revision ABI', backend, 'fn C.v_multiwindow_appkit_service_monitor_revision() u64'},
 		AppKitContractNeed{'generation-safe reconciliation', backend, 'fn appkit_reconcile_service_monitors'},
 		AppKitContractNeed{'backing-scale state output', backend, 'out_scale &f32'},
-		AppKitContractNeed{'canonical service event', backend, 'fn (mut backend AppKitBackend) monitor_change_event() ?QueuedEvent'},
+		AppKitContractNeed{'canonical service event', backend, 'fn (mut backend AppKitBackend) monitor_change_event() ![]QueuedEvent'},
 	])
 }
 

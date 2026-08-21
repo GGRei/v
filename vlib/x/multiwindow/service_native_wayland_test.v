@@ -923,6 +923,48 @@ fn test_wayland_state_operations_are_deferred_by_capability_until_observation() 
 	}
 }
 
+fn test_wayland_synchronous_clipboard_write_reserves_terminal_before_native_mutation() {
+	$if linux && sokol_wayland ? {
+		mut app := new_app()!
+		window := app.create_window(title: 'Wayland clipboard delivery preflight')!
+		_ = app.drain_queued_events()!
+		original_backend := app.backend.kind
+		app.backend.kind = .wayland
+		app.backend.wayland.started = true
+		app.backend.wayland.display = voidptr(usize(1))
+		app.backend.wayland.data_device_manager = voidptr(usize(2))
+		app.backend.wayland.data_device = voidptr(usize(3))
+		app.backend.wayland.seat = voidptr(usize(4))
+		request_before := app.services.next_request
+		pending_before := app.services.pending.len
+		source_before := app.backend.wayland.clipboard_source
+		text_before := app.backend.wayland.clipboard_text
+
+		app.state_mutex.lock()
+		saved_delivery_token := app.next_event_delivery_token
+		app.next_event_delivery_token = 0
+		app.state_mutex.unlock()
+		mut rejected := false
+		app.service_set_clipboard_text(window, 'must-not-commit') or {
+			assert err.msg() == err_event_delivery_exhausted
+			rejected = true
+			ServiceRequestId{}
+		}
+		assert rejected
+		assert app.services.next_request == request_before
+		assert app.services.pending.len == pending_before
+		assert app.backend.wayland.clipboard_source == source_before
+		assert app.backend.wayland.clipboard_text == text_before
+		assert app.drain_queued_events()!.len == 0
+
+		app.state_mutex.lock()
+		app.next_event_delivery_token = saved_delivery_token
+		app.state_mutex.unlock()
+		app.backend.kind = original_backend
+		app.stop()!
+	}
+}
+
 fn test_wayland_relative_pointer_callbacks_publish_observed_state_and_motion() {
 	$if linux && sokol_wayland ? {
 		mut backend := &WaylandBackend{}

@@ -166,6 +166,123 @@ fn test_appkit_native_screen_notifications_publish_window_metrics_revision_witho
 	}
 }
 
+fn test_appkit_monitor_refresh_precedes_dependent_metrics_and_retries_atomically() {
+	$if darwin {
+		if !appkit_final_runtime_probes_required() {
+			return
+		}
+		mut app := new_app(backend: .appkit)!
+		defer {
+			app.stop() or {}
+		}
+		window := app.create_window(
+			title:    'AppKit monitor-before-metrics'
+			width:    271
+			height:   173
+			visible:  false
+			high_dpi: true
+		)!
+		_ = app.backend.appkit.service_monitor_snapshot(app.instance_id)!
+		app.poll_events()!
+		_ = app.drain_queued_events()!
+		before_revision := app.backend.appkit.service_monitor_revision
+		app.backend.appkit.service_monitors.clear()
+		app.backend.appkit.monitor_failures_for_test = 1
+
+		mut probe := &AppKitFinalBorrowProbe{}
+		invoke := fn [mut probe] (borrow NativeWindowBorrow) ! {
+			probe.invoked =
+				C.v_multiwindow_appkit_test_invoke_metrics_notification(borrow.primary_for_gg(), 3)
+		}
+		app.with_native_window_for_gg(window, invoke)!
+		assert probe.invoked == 1
+		mut failed := false
+		app.backend.appkit.poll_queued_events() or {
+			assert err.msg() == err_capability_unsupported
+			failed = true
+			[]QueuedEvent{}
+		}
+		assert failed
+		assert app.backend.appkit.service_monitors.len == 0
+		assert app.backend.appkit.service_monitor_revision == before_revision
+		assert app.drain_queued_events()!.len == 0
+
+		app.poll_events()!
+		events := app.drain_queued_events()!
+		mut monitor_position := -1
+		mut metrics_position := -1
+		mut metrics := ServiceEvent{}
+		for index, event in events {
+			if event.kind == .service && event.service.kind == .monitor && monitor_position < 0 {
+				monitor_position = index
+			}
+			if event.kind == .service && event.service.kind == .metrics
+				&& event.service.window == window && metrics_position < 0 {
+				metrics_position = index
+				metrics = event.service
+			}
+		}
+		assert monitor_position >= 0
+		assert metrics_position > monitor_position
+		assert metrics.state.monitor_membership_observed
+		assert metrics.state.monitor_ids.len == 1
+		assert app.service_monitor_info(metrics.state.monitor_ids[0])!.available
+		assert app.backend.appkit.monitor_failures_for_test == 0
+	}
+}
+
+fn test_appkit_synchronous_clipboard_operations_reserve_terminal_before_native_access() {
+	$if darwin {
+		if !appkit_final_runtime_probes_required() {
+			return
+		}
+		mut app := new_app(backend: .appkit)!
+		defer {
+			app.stop() or {}
+		}
+		window := app.create_window(title: 'AppKit clipboard delivery preflight', visible: false)!
+		_ = app.drain_queued_events()!
+		before := app.service_set_clipboard_text(window, 'before-exhaustion')!
+		before_events := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == before)
+		assert before_events.len == 1
+		request_before := app.services.next_request
+		pending_before := app.services.pending.len
+
+		app.state_mutex.lock()
+		saved_delivery_token := app.next_event_delivery_token
+		app.next_event_delivery_token = 0
+		app.state_mutex.unlock()
+		mut write_rejected := false
+		app.service_set_clipboard_text(window, 'must-not-commit') or {
+			assert err.msg() == err_event_delivery_exhausted
+			write_rejected = true
+			ServiceRequestId{}
+		}
+		mut read_rejected := false
+		app.service_request_clipboard_text(window) or {
+			assert err.msg() == err_event_delivery_exhausted
+			read_rejected = true
+			ServiceRequestId{}
+		}
+		assert write_rejected
+		assert read_rejected
+		assert app.services.next_request == request_before
+		assert app.services.pending.len == pending_before
+		assert app.drain_queued_events()!.len == 0
+
+		app.state_mutex.lock()
+		app.next_event_delivery_token = saved_delivery_token
+		app.state_mutex.unlock()
+		read_request := app.service_request_clipboard_text(window)!
+		read_events := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == read_request)
+		assert read_events.len == 1
+		assert read_events[0].service.clipboard.status == .ready
+		assert read_events[0].service.clipboard.text == 'before-exhaustion'
+	}
+}
+
 fn test_appkit_native_screen_and_backing_dimension_change_publish_one_metrics_snapshot() {
 	$if darwin {
 		if !appkit_final_runtime_probes_required() {

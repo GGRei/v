@@ -539,14 +539,17 @@ pub fn (mut app App) service_request_clipboard_text(id WindowId) !ServiceRequest
 	if app.service_operation_uses_mock(id, .clipboard_read)! {
 		return app.complete_mock_clipboard(id, false, '')!
 	}
-	request := app.begin_native_clipboard_request(id, .clipboard_read)!
+	admission := app.begin_native_clipboard_request(id, .clipboard_read, native_clipboard_requires_reserved_terminal(app.backend.kind,
+		.clipboard_read))!
+	request := admission.request
 	start := app.backend.service_request_clipboard_text(id, request) or {
-		app.rollback_native_service_request(request)
+		app.rollback_native_service_request(request, admission.reserved_terminal)
 		return err
 	}
 	if start.completed {
-		app.complete_native_clipboard_request(request, id, .clipboard_read, start.text) or {
-			app.rollback_native_service_request(request)
+		app.complete_native_clipboard_request(request, id, .clipboard_read, start.text,
+			admission.reserved_terminal) or {
+			app.rollback_native_service_request(request, admission.reserved_terminal)
 			return err
 		}
 	}
@@ -559,18 +562,34 @@ pub fn (mut app App) service_set_clipboard_text(id WindowId, text string) !Servi
 	if app.service_operation_uses_mock(id, .clipboard_write)! {
 		return app.complete_mock_clipboard(id, true, text)!
 	}
-	request := app.begin_native_clipboard_request(id, .clipboard_write)!
+	admission := app.begin_native_clipboard_request(id, .clipboard_write, native_clipboard_requires_reserved_terminal(app.backend.kind,
+		.clipboard_write))!
+	request := admission.request
 	start := app.backend.service_set_clipboard_text(id, request, text) or {
-		app.rollback_native_service_request(request)
+		app.rollback_native_service_request(request, admission.reserved_terminal)
 		return err
 	}
 	if start.completed {
-		app.complete_native_clipboard_request(request, id, .clipboard_write, start.text) or {
-			app.rollback_native_service_request(request)
+		app.complete_native_clipboard_request(request, id, .clipboard_write, start.text,
+			admission.reserved_terminal) or {
+			app.rollback_native_service_request(request, admission.reserved_terminal)
 			return err
 		}
 	}
 	return request
+}
+
+struct NativeClipboardRequestAdmission {
+	request           ServiceRequestId
+	reserved_terminal u64
+}
+
+fn native_clipboard_requires_reserved_terminal(backend BackendKind, operation ServiceOperation) bool {
+	return match backend {
+		.x11, .wayland { operation == .clipboard_write }
+		.appkit { operation in [.clipboard_read, .clipboard_write] }
+		else { false }
+	}
 }
 
 fn (mut app App) complete_mock_clipboard(id WindowId, write bool, text string) !ServiceRequestId {
@@ -610,7 +629,7 @@ fn (mut app App) complete_mock_clipboard(id WindowId, write bool, text string) !
 	return request
 }
 
-fn (mut app App) begin_native_clipboard_request(id WindowId, kind PendingServiceKind) !ServiceRequestId {
+fn (mut app App) begin_native_clipboard_request(id WindowId, kind PendingServiceKind, reserve_terminal bool) !NativeClipboardRequestAdmission {
 	app.assert_owner_thread()!
 	app.state_mutex.lock()
 	defer {
@@ -619,29 +638,51 @@ fn (mut app App) begin_native_clipboard_request(id WindowId, kind PendingService
 	app.ensure_running_locked()!
 	app.ensure_event_admission_open_locked()!
 	app.service_window_index_for_admission_locked(id)!
+	if app.services.next_request == 0 {
+		return error(err_service_request_exhausted)
+	}
+	reserved_terminal := if reserve_terminal {
+		app.reserve_event_delivery_tokens_locked(1)!
+	} else {
+		u64(0)
+	}
 	request := app.services.take_request_id()!
 	app.services.pending << PendingServiceRequest{
 		id:     request
 		window: id
 		kind:   kind
 	}
-	return request
+	return NativeClipboardRequestAdmission{
+		request:           request
+		reserved_terminal: reserved_terminal
+	}
 }
 
-fn (mut app App) rollback_native_service_request(id ServiceRequestId) {
+fn (mut app App) rollback_native_service_request(id ServiceRequestId, reserved_terminal u64) {
 	app.state_mutex.lock()
 	defer {
 		app.state_mutex.unlock()
 	}
+	mut removed := false
 	for index, request in app.services.pending {
 		if request.id == id && !request.terminal {
 			app.services.pending.delete(index)
-			return
+			removed = true
+			break
 		}
 	}
+	if reserved_terminal == 0 {
+		return
+	}
+	if removed && reserved_terminal !in app.event_deliveries
+		&& app.last_reserved_delivery_token_locked() == reserved_terminal {
+		app.next_event_delivery_token = reserved_terminal
+		return
+	}
+	app.defer_poll_error_locked(app.last_reserved_delivery_token_locked(), err_event_delivery_stale)
 }
 
-fn (mut app App) complete_native_clipboard_request(id ServiceRequestId, window WindowId, operation ServiceOperation, text string) ! {
+fn (mut app App) complete_native_clipboard_request(id ServiceRequestId, window WindowId, operation ServiceOperation, text string, reserved_terminal u64) ! {
 	app.state_mutex.lock()
 	defer {
 		app.state_mutex.unlock()
@@ -659,7 +700,11 @@ fn (mut app App) complete_native_clipboard_request(id ServiceRequestId, window W
 	if matched_index < 0 {
 		return error(err_service_request_stale)
 	}
-	token := app.reserve_event_delivery_tokens_locked(1)!
+	token := if reserved_terminal != 0 {
+		reserved_terminal
+	} else {
+		app.reserve_event_delivery_tokens_locked(1)!
+	}
 	app.services.pending[matched_index].terminal = true
 	app.enqueue_reserved_service_event_locked(ServiceEvent{
 		kind:      .clipboard

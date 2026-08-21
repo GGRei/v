@@ -343,8 +343,8 @@ fn test_native_clipboard_and_portal_completion_reserve_before_terminal_mutation(
 	mut app := new_app()!
 	window := app.create_window()!
 	_ = app.drain_queued_events()!
-	clipboard := app.begin_native_clipboard_request(window, .clipboard_read)!
-	second_clipboard := app.begin_native_clipboard_request(window, .clipboard_write)!
+	clipboard := app.begin_native_clipboard_request(window, .clipboard_read, false)!.request
+	second_clipboard := app.begin_native_clipboard_request(window, .clipboard_write, false)!.request
 	portal, lease := app.begin_portal_parent_request(window)!
 	saved_delivery_token := app.next_event_delivery_token
 	app.state_mutex.lock()
@@ -352,12 +352,12 @@ fn test_native_clipboard_and_portal_completion_reserve_before_terminal_mutation(
 	app.state_mutex.unlock()
 
 	mut rejected := 0
-	app.complete_native_clipboard_request(clipboard, window, .clipboard_read, 'native') or {
+	app.complete_native_clipboard_request(clipboard, window, .clipboard_read, 'native', 0) or {
 		assert err.msg() == err_event_delivery_exhausted
 		rejected++
 	}
 	app.complete_native_clipboard_request(second_clipboard, window, .clipboard_write,
-		'native-write') or {
+		'native-write', 0) or {
 		assert err.msg() == err_event_delivery_exhausted
 		rejected++
 	}
@@ -375,7 +375,7 @@ fn test_native_clipboard_and_portal_completion_reserve_before_terminal_mutation(
 	app.state_mutex.lock()
 	app.next_event_delivery_token = ~u64(0)
 	app.state_mutex.unlock()
-	app.complete_native_clipboard_request(clipboard, window, .clipboard_read, 'native')!
+	app.complete_native_clipboard_request(clipboard, window, .clipboard_read, 'native', 0)!
 	assert app.next_event_delivery_token == 0
 	max_event := app.drain_queued_events()!
 	assert max_event.len == 1
@@ -385,7 +385,7 @@ fn test_native_clipboard_and_portal_completion_reserve_before_terminal_mutation(
 
 	mut rejected_after_max := 0
 	app.complete_native_clipboard_request(second_clipboard, window, .clipboard_write,
-		'native-write') or {
+		'native-write', 0) or {
 		assert err.msg() == err_event_delivery_exhausted
 		rejected_after_max++
 	}
@@ -403,7 +403,7 @@ fn test_native_clipboard_and_portal_completion_reserve_before_terminal_mutation(
 	app.next_event_delivery_token = saved_delivery_token
 	app.state_mutex.unlock()
 	app.complete_native_clipboard_request(second_clipboard, window, .clipboard_write,
-		'native-write')!
+		'native-write', 0)!
 	app.complete_portal_parent_request(portal, window, lease, 'native-parent')!
 	events := app.drain_queued_events()!
 	assert events.len == 2
@@ -467,6 +467,18 @@ fn test_public_synchronous_portal_completion_exhaustion_rolls_back_and_retries()
 		return
 	}
 	assert false, 'synchronous portal completion unexpectedly consumed an exhausted delivery token'
+}
+
+fn test_native_clipboard_write_terminal_preflight_matches_backend_completion_mode() {
+	assert native_clipboard_requires_reserved_terminal(.x11, .clipboard_write)
+	assert !native_clipboard_requires_reserved_terminal(.x11, .clipboard_read)
+	assert native_clipboard_requires_reserved_terminal(.wayland, .clipboard_write)
+	assert !native_clipboard_requires_reserved_terminal(.wayland, .clipboard_read)
+	assert native_clipboard_requires_reserved_terminal(.appkit, .clipboard_write)
+	assert native_clipboard_requires_reserved_terminal(.appkit, .clipboard_read)
+	assert !native_clipboard_requires_reserved_terminal(.win32, .clipboard_write)
+	assert !native_clipboard_requires_reserved_terminal(.win32, .clipboard_read)
+	assert !native_clipboard_requires_reserved_terminal(.mock, .clipboard_write)
 }
 
 fn test_mock_focus_publishes_losses_then_gain_with_authoritative_sequences() {

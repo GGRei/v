@@ -173,6 +173,31 @@ fn test_appkit_capabilities_are_queried_for_the_requested_window() {
 	}
 }
 
+fn test_appkit_monitor_event_precedes_only_dependent_window_observations() {
+	state := queued_service_event(ServiceEvent{
+		kind:  .state
+		state: ServiceWindowState{
+			monitor_membership_observed: true
+		}
+	})
+	metrics := queued_service_event(ServiceEvent{
+		kind:  .metrics
+		state: ServiceWindowState{
+			monitor_membership_observed: true
+		}
+	})
+	unknown := queued_service_event(ServiceEvent{
+		kind: .state
+	})
+	monitor := queued_service_event(ServiceEvent{
+		kind: .monitor
+	})
+	assert appkit_service_event_depends_on_monitor_snapshot(state)
+	assert appkit_service_event_depends_on_monitor_snapshot(metrics)
+	assert !appkit_service_event_depends_on_monitor_snapshot(unknown)
+	assert !appkit_service_event_depends_on_monitor_snapshot(monitor)
+}
+
 fn test_appkit_focus_request_and_delegate_publish_once() {
 	api := appkit_nonreadback_source('service_api.v')
 	publish_body := appkit_nonreadback_body(api, 'fn (mut app App) publish_native_state')

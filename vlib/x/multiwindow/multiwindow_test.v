@@ -1826,6 +1826,25 @@ fn test_appkit_sharedlive_source_excludes_objc_implementation() {
 		'#include "@VMODROOT/vlib/x/multiwindow/appkit_backend.m"')
 }
 
+fn test_appkit_monitor_refresh_precedes_native_observation_conversion_source_guard() {
+	source := multiwindow_source_file('appkit_backend.c.v')
+	poll_body :=
+		source.all_after('fn (mut backend AppKitBackend) poll_queued_events() ![]QueuedEvent').all_before('$if darwin {\n\t@[markused]')
+	assert poll_body.contains('pending_monitor_events = backend.monitor_change_event()!')
+	assert_source_order(poll_body, 'pending_monitor_events = backend.monitor_change_event()!',
+		'for i < backend.windows.len')
+	emission_body := poll_body.all_after('for native_event in native_events {')
+	assert_source_order(emission_body,
+		'appkit_service_event_depends_on_monitor_snapshot(native_event.event)',
+		'events << native_event.event')
+	monitor_body :=
+		source.all_after('fn (mut backend AppKitBackend) monitor_change_event() ![]QueuedEvent').all_before('fn (mut backend AppKitBackend) take_poll_error')
+	assert monitor_body.contains('backend.service_monitor_snapshot(app_instance)!')
+	snapshot_body :=
+		source.all_after('fn (mut backend AppKitBackend) service_monitor_snapshot(app_instance u64) ![]ServiceMonitorInfo').all_before('fn (mut backend AppKitBackend) service_set_clipboard_text')
+	assert snapshot_body.contains('backend.monitor_failures_for_test')
+}
+
 fn appkit_service_v_declaration_names(source string) []string {
 	marker := 'fn C.v_multiwindow_appkit_service_'
 	mut names := []string{}

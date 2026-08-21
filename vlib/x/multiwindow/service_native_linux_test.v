@@ -73,6 +73,53 @@ fn test_x11_position_capability_defers_publication_until_native_observation() {
 	assert backend.service_state_publication_is_deferred(WindowId{}, .position)
 }
 
+fn test_x11_window_manager_state_capabilities_defer_to_native_observations() {
+	mut backend := Backend{
+		kind: .x11
+		x11:  new_x11_backend()
+	}
+	minimize := backend.service_operation_capability(WindowId{}, .minimize)
+	assert minimize.support == .conditional
+	assert minimize.asynchronous
+	assert minimize.state_observable
+	assert backend.service_state_publication_is_deferred(WindowId{}, .minimize)
+
+	for operation in [ServiceOperation.maximize, .fullscreen, .restore] {
+		missing := backend.service_operation_capability(WindowId{}, operation)
+		assert missing.support == .unsupported
+		assert !missing.asynchronous
+		assert !backend.service_state_publication_is_deferred(WindowId{}, operation)
+	}
+
+	backend.x11.ewmh_maximize = true
+	maximize := backend.service_operation_capability(WindowId{}, .maximize)
+	restore_from_maximize := backend.service_operation_capability(WindowId{}, .restore)
+	assert maximize.support == .available
+	assert maximize.asynchronous
+	assert restore_from_maximize.support == .available
+	assert restore_from_maximize.asynchronous
+	assert backend.service_operation_capability(WindowId{}, .fullscreen).support == .unsupported
+
+	backend.x11.ewmh_maximize = false
+	backend.x11.ewmh_fullscreen = true
+	fullscreen := backend.service_operation_capability(WindowId{}, .fullscreen)
+	restore_from_fullscreen := backend.service_operation_capability(WindowId{}, .restore)
+	assert fullscreen.support == .available
+	assert fullscreen.asynchronous
+	assert restore_from_fullscreen.support == .available
+	assert restore_from_fullscreen.asynchronous
+	assert backend.service_operation_capability(WindowId{}, .maximize).support == .unsupported
+
+	backend.x11.ewmh_maximize = true
+	for operation in [ServiceOperation.maximize, .fullscreen, .restore] {
+		available := backend.service_operation_capability(WindowId{}, operation)
+		assert available.support == .available
+		assert available.asynchronous
+		assert available.state_observable
+		assert backend.service_state_publication_is_deferred(WindowId{}, operation)
+	}
+}
+
 fn test_x11_configure_observations_publish_move_only_and_preserve_resize_events() {
 	window := WindowId{
 		app_instance: 1
@@ -721,6 +768,77 @@ fn test_x11_irrelevant_queued_selection_notify_still_expires_after_drain() {
 		assert results[0].service.clipboard.status == .failed
 		assert results[0].service.clipboard.error == err_clipboard_timeout
 		app.stop()!
+	}
+}
+
+fn test_x11_synchronous_clipboard_write_reserves_terminal_before_native_mutation() {
+	$if linux && x_multiwindow_x11 ? {
+		if os.getenv('DISPLAY') == '' {
+			return
+		}
+		mut app := new_app(backend: .x11)!
+		defer {
+			app.stop() or {}
+		}
+		window := app.create_window(title: 'clipboard terminal preflight')!
+		_ = app.drain_queued_events()!
+		first := app.service_set_clipboard_text(window, 'before-exhaustion')!
+		first_events := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == first)
+		assert first_events.len == 1
+		assert first_events[0].service.clipboard.status == .ready
+		request_before := app.services.next_request
+		pending_before := app.services.pending.len
+		owner_before, text_len_before := app.backend.x11.service_clipboard_owner_for_test()
+		assert owner_before
+		assert text_len_before == 'before-exhaustion'.len
+
+		app.state_mutex.lock()
+		saved_delivery_token := app.next_event_delivery_token
+		app.next_event_delivery_token = 0
+		app.state_mutex.unlock()
+		mut rejected := false
+		app.service_set_clipboard_text(window, 'must-not-commit') or {
+			assert err.msg() == err_event_delivery_exhausted
+			rejected = true
+			ServiceRequestId{}
+		}
+		assert rejected
+		owner_after, text_len_after := app.backend.x11.service_clipboard_owner_for_test()
+		assert owner_after
+		assert text_len_after == text_len_before
+		assert app.services.next_request == request_before
+		assert app.services.pending.len == pending_before
+		assert app.drain_queued_events()!.len == 0
+
+		app.state_mutex.lock()
+		app.next_event_delivery_token = ~u64(0)
+		app.state_mutex.unlock()
+		app.backend.x11.clipboard_write_failures_for_test = 1
+		mut backend_rejected := false
+		app.service_set_clipboard_text(window, 'must-fail-before-mutation') or {
+			assert err.msg() == err_capability_unsupported
+			backend_rejected = true
+			ServiceRequestId{}
+		}
+		assert backend_rejected
+		assert app.next_event_delivery_token == ~u64(0)
+		assert app.services.pending.len == pending_before
+		assert !app.deferred_poll_error_active
+		_, text_len_after_backend_failure := app.backend.x11.service_clipboard_owner_for_test()
+		assert text_len_after_backend_failure == text_len_before
+
+		retry := app.service_set_clipboard_text(window, 'after-retry')!
+		assert app.next_event_delivery_token == 0
+		retry_events := app.drain_queued_events()!.filter(it.kind == .service
+			&& it.service.kind == .clipboard && it.service.clipboard.id == retry)
+		assert retry_events.len == 1
+		assert retry_events[0].sequence == ~u64(0)
+		assert retry_events[0].service.clipboard.status == .ready
+		assert retry_events[0].service.clipboard.text == 'after-retry'
+		app.state_mutex.lock()
+		app.next_event_delivery_token = saved_delivery_token
+		app.state_mutex.unlock()
 	}
 }
 
