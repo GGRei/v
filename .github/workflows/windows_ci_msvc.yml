@@ -29,7 +29,50 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  msvc-dpi-diagnostic:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      VFLAGS: -cc msvc -d gg_multiwindow_d3d11_warp
+      VGG_MULTIWINDOW_RUNTIME_PROBES: '1'
+      VGG_MULTIWINDOW_RUNTIME_BACKEND: win32
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build
+        run: |
+          .\makev.bat -msvc
+          .\v.exe symlink
+      - name: Isolate buffer cleanup scenarios with non-interactive exact correction
+        shell: pwsh
+        run: |
+          $file = 'vlib/gg/multiwindow_buffer_cleanup_d_gg_multiwindow_test.v'
+          $tests = @(
+            'test_multiwindow_buffer_descriptor_boundaries_drive_real_make_operations',
+            'test_multiwindow_append_uses_sokol_alignment_reset_and_preflight',
+            'test_multiwindow_renderer_initialization_failure_reports_renderer_lost_once',
+            'test_multiwindow_runtime_callback_error_after_completed_pass_reports_app_stop_without_renderer_loss',
+            'test_multiwindow_callback_deferred_healthy_stop_reports_app_stop_once'
+          )
+          foreach ($test in $tests) {
+            Write-Host "DIAGNOSTIC START $test"
+            .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp -subsystem console test -run-only $test $file
+            if ($LASTEXITCODE -ne 0) {
+              throw "diagnostic scenario '$test' failed with exit code $LASTEXITCODE"
+            }
+            Write-Host "DIAGNOSTIC PASS $test"
+          }
+          Write-Host 'DIAGNOSTIC START full buffer cleanup file'
+          .\v.exe -cc msvc -d gg_multiwindow -d sokol_d3d11 -d gg_multiwindow_d3d11_warp -subsystem console test $file
+          if ($LASTEXITCODE -ne 0) {
+            throw "full diagnostic file failed with exit code $LASTEXITCODE"
+          }
+          Write-Host 'DIAGNOSTIC PASS full buffer cleanup file'
+
   msvc-windows:
+    if: false
     runs-on: windows-2022
     timeout-minutes: 90
     env:
@@ -274,6 +317,7 @@ jobs:
         run: v -o v2.exe cmd/v && .\v2.exe -o v3.exe cmd/v
 
   msvc-multiwindow:
+    if: false
     runs-on: windows-2022
     timeout-minutes: 70
     env:

@@ -371,7 +371,7 @@ static inline int v_multiwindow_win32_set_exact_client_size(HWND hwnd,
 		return 0;
 	}
 	UINT flags = SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE
-		| SWP_NOOWNERZORDER;
+		| SWP_NOOWNERZORDER | SWP_NOSENDCHANGING;
 	v_multiwindow_win32_record_exact_resize_for_test();
 	if (!SetWindowPos(hwnd, NULL, 0, 0, frame_width, frame_height, flags)
 			|| !GetClientRect(hwnd, &client_rect)) {
