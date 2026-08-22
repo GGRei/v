@@ -1581,11 +1581,6 @@ static inline void *v_multiwindow_win32_create_window(const wchar_t *title, int 
 			v_multiwindow_win32_min_width_prop, min_width);
 		v_multiwindow_win32_set_hwnd_int_prop(hwnd,
 			v_multiwindow_win32_min_height_prop, min_height);
-		if (!v_multiwindow_win32_set_exact_client_size(hwnd, client_width,
-				client_height, style, ex_style)) {
-			DestroyWindow(hwnd);
-			hwnd = NULL;
-		}
 	}
 	if (previous_dpi_context
 		&& !set_thread_dpi_context(previous_dpi_context)) {
