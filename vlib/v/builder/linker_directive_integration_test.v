@@ -1,0 +1,225 @@
+module builder
+
+import os
+
+struct CppLinkerDriverPair {
+	c   string
+	cpp string
+}
+
+fn run_cpp_linker_v_args(root string, args []string) os.Result {
+	mut process := os.new_process(@VEXE)
+	process.set_args(args)
+	process.set_work_folder(@VEXEROOT)
+	mut env := os.environ()
+	for key in env.keys() {
+		if key.to_upper_ascii() in ['CFLAGS', 'LDFLAGS', 'VFLAGS'] {
+			env.delete(key)
+		}
+	}
+	env['VCACHE'] = os.join_path(root, 'vcache')
+	process.set_environment(env)
+	process.set_redirect_stdio()
+	process.wait()
+	stdout := process.stdout_slurp()
+	stderr := process.stderr_slurp()
+	code := process.code
+	process.close()
+	return os.Result{
+		exit_code: code
+		output:    '${stdout}\n${stderr}'
+	}
+}
+
+fn available_cpp_linker_driver_pairs() []CppLinkerDriverPair {
+	mut pairs := []CppLinkerDriverPair{}
+	for names in [
+		['gcc', 'g++'],
+		['clang', 'clang++'],
+		['clang-17', 'clang++-17'],
+	] {
+		c := os.find_abs_path_of_executable(names[0]) or { continue }
+		cpp := os.find_abs_path_of_executable(names[1]) or { continue }
+		if !pairs.any(it.c == c && it.cpp == cpp) {
+			pairs << CppLinkerDriverPair{
+				c:   c
+				cpp: cpp
+			}
+		}
+	}
+	return pairs
+}
+
+fn run_cpp_linker_v_compile(root string, pair CppLinkerDriverPair, mode string, extra_args []string, run_binary bool) os.Result {
+	output := os.join_path(root, '${mode}${if os.user_os() == 'windows' { '.exe' } else { '' }}')
+	mut args := ['-gc', 'none', '-cc', pair.c, '-c++', pair.cpp, '-no-retry-compilation']
+	args << extra_args
+	args << ['-o', output, os.join_path(root, 'main.v')]
+	mut process := os.new_process(@VEXE)
+	process.set_args(args)
+	process.set_work_folder(@VEXEROOT)
+	mut env := os.environ()
+	for key in env.keys() {
+		if key.to_upper_ascii() in ['CFLAGS', 'LDFLAGS', 'VFLAGS'] {
+			env.delete(key)
+		}
+	}
+	env['VCACHE'] = os.join_path(root, 'vcache')
+	process.set_environment(env)
+	process.set_redirect_stdio()
+	process.wait()
+	stdout := process.stdout_slurp()
+	stderr := process.stderr_slurp()
+	code := process.code
+	process.close()
+	if code != 0 {
+		return os.Result{
+			exit_code: code
+			output:    '${stdout}\n${stderr}'
+		}
+	}
+	if !run_binary {
+		return os.Result{
+			exit_code: 0
+			output:    '${stdout}\n${stderr}'
+		}
+	}
+	run := os.execute(os.quoted_path(output))
+	return os.Result{
+		exit_code: run.exit_code
+		output:    run.output
+	}
+}
+
+fn test_cpp_linker_real_drivers_keep_c_inputs_and_supply_their_runtime() {
+	pairs := available_cpp_linker_driver_pairs()
+	if pairs.len == 0 {
+		eprintln('> skipping #linker c++ integration: no matching C/C++ GNU driver pair')
+		return
+	}
+	for pair_index, pair in pairs {
+		root := os.join_path(os.vtmp_dir(),
+			'v_cpp_linker_${os.file_name(pair.cpp).replace('+', 'p')}')
+		os.rmdir_all(root) or {}
+		os.mkdir_all(root) or { panic(err) }
+		defer {
+			os.rmdir_all(root) or {}
+		}
+		os.write_file(os.join_path(root, 'v.mod'), "Module { name: 'cpp_linker_probe' }\n") or {
+			panic(err)
+		}
+		os.write_file(os.join_path(root, 'sentinel.c'),
+			'#ifdef __cplusplus\n#error V_C_SOURCE_WAS_COMPILED_AS_CXX\n#endif\nint v_c_sentinel(void) { return 7; }\n') or {
+			panic(err)
+		}
+		os.write_file(os.join_path(root, 'runtime.cpp'),
+			'#include <string>\nextern "C" int v_cpp_runtime(void) { return int(std::string("runtime").size()); }\n') or {
+			panic(err)
+		}
+		os.mkdir_all(os.join_path(root, 'cppdep')) or { panic(err) }
+		os.write_file(os.join_path(root, 'cppdep', 'cppdep.v'),
+			'module cppdep\n#linker c++\npub fn value() int { return 0 }\n') or { panic(err) }
+		os.write_file(os.join_path(root, 'main.v'),
+			'module main\nimport cppdep\n#flag @VMODROOT/sentinel.c\n#flag @VMODROOT/runtime.o\nfn C.v_c_sentinel() int\nfn C.v_cpp_runtime() int\nfn main() { println(cppdep.value() + C.v_c_sentinel() + C.v_cpp_runtime()) }\n') or {
+			panic(err)
+		}
+		cpp_compile := os.execute('${os.quoted_path(pair.cpp)} -std=c++11 -c ${os.quoted_path(os.join_path(root,
+			'runtime.cpp'))} -o ${os.quoted_path(os.join_path(root, 'runtime.o'))}')
+		assert cpp_compile.exit_code == 0, '${pair.cpp}: ${cpp_compile.output}'
+		for mode, args in {
+			'direct': ['-no-rsp']
+			'rsp':    []string{}
+			'prod':   ['-prod']
+		} {
+			result := run_cpp_linker_v_compile(root, pair, mode, args, true)
+			assert result.exit_code == 0, '${pair.c}/${pair.cpp} ${mode}: ${result.output}'
+			assert result.output.trim_space() == '14', '${pair.c}/${pair.cpp} ${mode}: ${result.output}'
+		}
+		shared_result := run_cpp_linker_v_compile(root, pair, 'shared', [
+			'-shared',
+			'-showcc',
+		], false)
+		assert shared_result.exit_code == 0, '${pair.c}/${pair.cpp} shared: ${shared_result.output}'
+		assert shared_result.output.contains(pair.cpp), '${pair.c}/${pair.cpp} shared: ${shared_result.output}'
+		if pair_index == 0 {
+			for mode in ['cache_cold', 'cache_warm'] {
+				result := run_cpp_linker_v_compile(root, pair, mode, [
+					'-usecache',
+					'-no-rsp',
+					'-showcc',
+				], false)
+				assert result.exit_code == 0, '${pair.c}/${pair.cpp} ${mode}: ${result.output}'
+				assert result.output.contains(pair.cpp), '${pair.c}/${pair.cpp} ${mode}: ${result.output}'
+			}
+		}
+	}
+}
+
+fn test_cpp_linker_compile_only_paths_do_not_probe_the_cpp_driver() {
+	root := os.join_path(os.vtmp_dir(), 'v_cpp_linker_compile_only')
+	os.rmdir_all(root) or {}
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	source := os.join_path(root, 'main.v')
+	os.write_file(source, 'module main\n#linker c++\nfn main() {}\n') or { panic(err) }
+	missing_cpp := 'v_missing_cpp_driver_78362'
+	for mode, extra_args in {
+		'native_c': []string{}
+		'cross_c':  ['-cross']
+	} {
+		output := os.join_path(root, '${mode}.c')
+		mut args := ['-gc', 'none', '-c++', missing_cpp, '-no-retry-compilation']
+		args << extra_args
+		args << ['-o', output, source]
+		result := run_cpp_linker_v_args(root, args)
+		assert result.exit_code == 0, '${mode}: ${result.output}'
+		assert os.is_file(output), mode
+	}
+	module_dir := os.join_path(root, 'compile_only_module')
+	os.mkdir_all(module_dir) or { panic(err) }
+	os.write_file(os.join_path(module_dir, 'compile_only_module.v'),
+		'module compile_only_module\n#linker c++\npub fn value() int { return 1 }\n') or {
+		panic(err)
+	}
+	module_result := run_cpp_linker_v_args(root, [
+		'-gc',
+		'none',
+		'-shared',
+		'-c++',
+		missing_cpp,
+		'-no-retry-compilation',
+		'build-module',
+		module_dir,
+	])
+	assert module_result.exit_code == 0, module_result.output
+	assert !module_result.output.contains('requires the C++ driver'), module_result.output
+}
+
+fn test_cpp_linker_cross_target_executable_reports_before_driver_selection() {
+	root := os.join_path(os.vtmp_dir(), 'v_cpp_linker_cross_diagnostic')
+	os.rmdir_all(root) or {}
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	source := os.join_path(root, 'main.v')
+	os.write_file(source, 'module main\n#linker c++\nfn main() {}\n') or { panic(err) }
+	target_os := if os.user_os() == 'windows' { 'linux' } else { 'windows' }
+	result := run_cpp_linker_v_args(root, [
+		'-gc',
+		'none',
+		'-os',
+		target_os,
+		'-c++',
+		'v_missing_cpp_driver_78362',
+		'-no-retry-compilation',
+		'-o',
+		os.join_path(root, 'cross-target-output'),
+		source,
+	])
+	assert result.exit_code != 0
+	assert result.output.contains('does not support cross-target linking yet'), result.output
+	assert !result.output.contains('requires the C++ driver'), result.output
+}

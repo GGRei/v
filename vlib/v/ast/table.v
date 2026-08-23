@@ -84,6 +84,7 @@ pub mut:
 	global_scope                &Scope = unsafe { nil }
 	cflags                      []cflag.CFlag
 	link_flag_segments          []LinkFlagSegment
+	requires_cpp_linker         bool // at least one active `#linker c++` directive was checked
 	redefined_fns               []string
 	fn_generic_types            map[string][][]Type // for generic functions
 	structured_receiver_methods map[string][]Fn

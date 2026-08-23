@@ -254,6 +254,7 @@ argument, e.g. `v new abc`.
     * [Calling C from V](#calling-c-from-v)
     * [Calling V from C](#calling-v-from-c)
     * [Passing C compilation flags](#passing-c-compilation-flags)
+    * [Selecting the C++ linker driver](#selecting-the-c-linker-driver)
     * [#pkgconfig](#pkgconfig)
     * [Including C code](#including-c-code)
     * [C types](#c-types)
@@ -8654,6 +8655,26 @@ In the console build command, you can use:
 
 You can define a `VFLAGS` environment variable in your terminal to store your `-cc`
 and `-cflags` settings, rather than including them in the build command each time.
+
+### Selecting the C++ linker driver
+
+A module that consumes C++ object files or static archives can request a C++ driver for the
+final native link:
+
+```v oksyntax
+#linker c++
+```
+
+V keeps generated output in its platform's existing C or Objective-C mode, and ordinary `.c`
+inputs remain C. Only the final linker driver changes. The C++ driver selects the runtime for
+its own toolchain, so modules must not hardcode `-lstdc++` or `-lc++`. Use `-c++ <compiler>`
+to select a non-default C++ driver. Repeated `#linker c++` directives are idempotent,
+including directives from imported modules.
+
+`#linker c++` currently supports native executable and shared-library links with
+GNU-compatible GCC or Clang drivers. Compile-only output (`-o file.c`, `-o file.o`, and
+`build-module`) remains a C operation. Cross-target links,
+`-generate-c-project`, MSVC, clang-cl, TCC, and Emscripten modes report an explicit error.
 
 ### #pkgconfig
 

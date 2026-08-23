@@ -400,6 +400,41 @@ fn test_msvc_style_clang_never_activates_static_pkgconfig_fact_or_file() {
 	}
 }
 
+fn test_msvc_style_clang_environment_driver_mode_disables_static_pkgconfig_fact() {
+	old_cflags := os.getenv_opt('CFLAGS')
+	old_ldflags := os.getenv_opt('LDFLAGS')
+	defer {
+		if value := old_cflags {
+			os.setenv('CFLAGS', value, true)
+		} else {
+			os.unsetenv('CFLAGS')
+		}
+		if value := old_ldflags {
+			os.setenv('LDFLAGS', value, true)
+		} else {
+			os.unsetenv('LDFLAGS')
+		}
+	}
+	for variable in ['CFLAGS', 'LDFLAGS'] {
+		os.unsetenv('CFLAGS')
+		os.unsetenv('LDFLAGS')
+		os.setenv(variable, '--driver-mode=cl-like', true)
+		lookalike := issue74_preferences_for_driver_mode('clang.exe', '-static', '')
+		assert lookalike.pkgconfig_mode == .static_, variable
+		assert lookalike.compile_values['v:static_pkgconfig'] == 'true'
+
+		os.setenv(variable, '--driver-mode=cl', true)
+		prefs := issue74_preferences_for_driver_mode('clang.exe', '-static', '')
+		assert prefs.pkgconfig_mode == .dynamic, variable
+		assert prefs.compile_values['v:static_pkgconfig'] == 'false'
+		files := prefs.should_compile_filtered_files('/virtual', [
+			'bindings.c.v',
+			'bindings_d_v_static_pkgconfig.c.v',
+		])
+		assert files == ['/virtual/bindings.c.v'], variable
+	}
+}
+
 fn test_gnu_style_clang_and_driver_mode_lookalike_keep_static_pkgconfig() {
 	for tc in [
 		Issue74DriverModeCase{

@@ -86,6 +86,8 @@ fn (p &Preferences) uses_msvc_clang_driver_mode() bool {
 		|| contains_exact_cflag_token(p.ccompiler, '--driver-mode=cl')
 		|| contains_exact_cflag_token(p.cflags, '--driver-mode=cl')
 		|| contains_exact_cflag_token(p.ldflags, '--driver-mode=cl')
+		|| contains_exact_cflag_token(os.getenv('CFLAGS'), '--driver-mode=cl')
+		|| contains_exact_cflag_token(os.getenv('LDFLAGS'), '--driver-mode=cl')
 }
 
 pub fn (mut p Preferences) resolve_pkgconfig_mode() {
