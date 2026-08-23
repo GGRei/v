@@ -1,0 +1,399 @@
+name: Temporary static pkg-config comptime smoke
+
+on:
+  push:
+    branches:
+      - ci/static-pkgconfig-windows-smoke
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_PARENT_SHA: be436625e58c59d93216e5810912a545a53697d3
+
+concurrency:
+  group: static-pkgconfig-comptime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux targeted smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout candidate V
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify full checkout and vendored GC sources
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --is-shallow-repository)" = false
+          test "$(git rev-parse HEAD^)" = "$SOURCE_PARENT_SHA"
+          required=(
+            thirdparty/libgc/gc.c
+            thirdparty/libgc/include/gc.h
+            thirdparty/libgc/include/gc/gc.h
+          )
+          git ls-files --error-unmatch -- "${required[@]}"
+          for path in "${required[@]}"; do
+            test -s "$path"
+            sha256sum "$path"
+          done
+          if git ls-files --error-unmatch -- thirdparty/tcc/lib/libgc.a >/dev/null 2>&1; then
+            test -s thirdparty/tcc/lib/libgc.a
+            sha256sum thirdparty/tcc/lib/libgc.a
+          else
+            echo 'thirdparty/tcc/lib/libgc.a is not tracked at this candidate SHA; no checkout assertion applies.'
+          fi
+
+      - name: Bootstrap candidate V
+        run: |
+          make
+          ./v version
+          git rev-parse HEAD
+
+      - name: Run targeted static pkg-config regressions
+        run: |
+          set -euo pipefail
+          for test in \
+            vlib/v/pref/compiler_owned_values_test.v \
+            vlib/v/pref/pref_test.v \
+            vlib/v/builder/cc_test.v \
+            vlib/v/builder/pkgconfig_link_segment_test.v \
+            vlib/v/builder/linker_directive_integration_test.v \
+            vlib/v/checker/linker_directive_test.v \
+            vlib/v/checker/pkgconfig_static_mode_test.v \
+            vlib/v/tests/comptime/comptime_static_pkgconfig_value_test.v
+          do
+            ./v -cc gcc -no-retry-compilation test "$test"
+          done
+          ./v fmt -verify vlib/v/fmt/tests/linker_directive_keep.vv
+
+  msvc:
+    name: Windows MSVC targeted smoke
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Checkout candidate V
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify full checkout and vendored GC sources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $shallow = (& git rev-parse --is-shallow-repository).Trim()
+          if ($LASTEXITCODE -ne 0 -or $shallow -ne 'false') {
+            throw "Expected a full checkout, got is-shallow-repository=$shallow"
+          }
+          $sourceParent = (& git rev-parse 'HEAD^').Trim()
+          if ($LASTEXITCODE -ne 0 -or $sourceParent -ne $env:SOURCE_PARENT_SHA) {
+            throw "Expected source parent $env:SOURCE_PARENT_SHA, got $sourceParent"
+          }
+          $required = @(
+            'thirdparty/libgc/gc.c'
+            'thirdparty/libgc/include/gc.h'
+            'thirdparty/libgc/include/gc/gc.h'
+          )
+          foreach ($path in $required) {
+            & git ls-files --error-unmatch -- $path
+            if ($LASTEXITCODE -ne 0) {
+              throw "Required vendored file is not tracked: $path"
+            }
+            $file = Get-Item -LiteralPath $path -ErrorAction Stop
+            if ($file.Length -le 0) {
+              throw "Required vendored file is empty: $path"
+            }
+            Get-FileHash -Algorithm SHA256 -LiteralPath $path
+          }
+          $optionalArchive = 'thirdparty/tcc/lib/libgc.a'
+          & git ls-files --error-unmatch -- $optionalArchive 2>$null | Out-Null
+          $archiveTracked = $LASTEXITCODE -eq 0
+          if ($archiveTracked) {
+            $archive = Get-Item -LiteralPath $optionalArchive -ErrorAction Stop
+            if ($archive.Length -le 0) {
+              throw "Tracked GC archive is empty: $optionalArchive"
+            }
+            Get-FileHash -Algorithm SHA256 -LiteralPath $optionalArchive
+          } else {
+            Write-Host "$optionalArchive is not tracked at this candidate SHA; no checkout assertion applies."
+          }
+
+      - name: Configure MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Verify MSVC compiler
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cl.exe 2>&1 | Select-Object -First 3
+          if ($LASTEXITCODE -ne 0) {
+            throw 'MSVC is unavailable'
+          }
+
+      - name: Bootstrap candidate V with MSVC
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmd /c "makev.bat -msvc"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'makev.bat -msvc failed'
+          }
+          .\v.exe version
+          git rev-parse HEAD
+
+      - name: Run targeted static pkg-config regressions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tests = @(
+            'vlib\v\pref\compiler_owned_values_test.v'
+            'vlib\v\pref\pref_test.v'
+            'vlib\v\builder\cc_test.v'
+            'vlib\v\builder\pkgconfig_link_segment_test.v'
+            'vlib\v\builder\linker_directive_integration_test.v'
+            'vlib\v\checker\linker_directive_test.v'
+            'vlib\v\checker\pkgconfig_static_mode_test.v'
+            'vlib\v\tests\comptime\comptime_static_pkgconfig_value_test.v'
+          )
+          foreach ($test in $tests) {
+            .\v.exe -cc msvc -no-retry-compilation test $test
+            if ($LASTEXITCODE -ne 0) {
+              throw "Targeted regression failed for $test with MSVC"
+            }
+          }
+
+      - name: Check CL-compatible Clang drivers keep static pkg-config disabled
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $probe = (Resolve-Path '.github\workflows\static_pkgconfig_smoke\expected_false.v').Path
+
+          $clangCl = Get-Command clang-cl.exe -ErrorAction SilentlyContinue
+          if ($clangCl) {
+            & $clangCl.Source --version
+            if ($LASTEXITCODE -ne 0) {
+              throw 'clang-cl.exe exists but its version probe failed'
+            }
+            .\v.exe -cc $clangCl.Source -cflags '-static' -check $probe
+            if ($LASTEXITCODE -ne 0) {
+              throw 'clang-cl.exe incorrectly enabled v:static_pkgconfig for -static'
+            }
+          } else {
+            Write-Host 'clang-cl.exe is unavailable on this runner; native clang-cl probe skipped.'
+          }
+
+          $clang = Get-Command clang.exe -ErrorAction SilentlyContinue
+          if ($clang) {
+            & $clang.Source --driver-mode=cl --version
+            if ($LASTEXITCODE -eq 0) {
+              .\v.exe -cc $clang.Source -cflags '--driver-mode=cl -static' -check $probe
+              if ($LASTEXITCODE -ne 0) {
+                throw 'clang.exe --driver-mode=cl incorrectly enabled v:static_pkgconfig for -static'
+              }
+            } else {
+              Write-Host 'clang.exe does not support --driver-mode=cl; driver-mode probe skipped.'
+            }
+          } else {
+            Write-Host 'clang.exe is unavailable on this runner; driver-mode probe skipped.'
+          }
+
+  ucrt64:
+    name: Windows UCRT64 ${{ matrix.cc }} targeted smoke
+    runs-on: windows-2025
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cc: gcc
+            cxx: g++
+            package: mingw-w64-ucrt-x86_64-gcc
+          - cc: clang
+            cxx: clang++
+            package: mingw-w64-ucrt-x86_64-clang
+    steps:
+      - name: Checkout candidate V
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Provision MSYS2 UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: minimal
+          cache: false
+          install: ${{ matrix.package }}
+
+      - name: Verify full checkout and vendored GC sources
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          test "$MSYSTEM" = UCRT64
+          test "$(git rev-parse --is-shallow-repository)" = false
+          test "$(git rev-parse HEAD^)" = "$SOURCE_PARENT_SHA"
+          required=(
+            thirdparty/libgc/gc.c
+            thirdparty/libgc/include/gc.h
+            thirdparty/libgc/include/gc/gc.h
+          )
+          git ls-files --error-unmatch -- "${required[@]}"
+          for path in "${required[@]}"; do
+            test -s "$path"
+            sha256sum "$path"
+          done
+          if git ls-files --error-unmatch -- thirdparty/tcc/lib/libgc.a >/dev/null 2>&1; then
+            test -s thirdparty/tcc/lib/libgc.a
+            sha256sum thirdparty/tcc/lib/libgc.a
+          else
+            echo 'thirdparty/tcc/lib/libgc.a is not tracked at this candidate SHA; no checkout assertion applies.'
+          fi
+
+      - name: Bootstrap candidate V with UCRT64 ${{ matrix.cc }}
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          command -v '${{ matrix.cc }}'
+          command -v '${{ matrix.cxx }}'
+          '${{ matrix.cc }}' --version
+          '${{ matrix.cc }}' -dumpmachine
+          '${{ matrix.cxx }}' --version
+          MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /c "makev.bat -${{ matrix.cc }}"
+          ./v.exe version
+          git rev-parse HEAD
+
+      - name: Run targeted regressions and require the GNU-style static fact
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          for test in \
+            vlib/v/pref/compiler_owned_values_test.v \
+            vlib/v/pref/pref_test.v \
+            vlib/v/builder/cc_test.v \
+            vlib/v/builder/pkgconfig_link_segment_test.v \
+            vlib/v/builder/linker_directive_integration_test.v \
+            vlib/v/checker/linker_directive_test.v \
+            vlib/v/checker/pkgconfig_static_mode_test.v \
+            vlib/v/tests/comptime/comptime_static_pkgconfig_value_test.v
+          do
+            ./v.exe -cc '${{ matrix.cc }}' -no-retry-compilation test "$test"
+          done
+
+          ./v.exe -cc '${{ matrix.cc }}' -cflags '-static' -check \
+            .github/workflows/static_pkgconfig_smoke/expected_true.v
+
+      - name: Validate C++ linker selection without changing generated C language
+        shell: msys2 {0}
+        env:
+          CC_UNDER_TEST: ${{ matrix.cc }}
+          CXX_UNDER_TEST: ${{ matrix.cxx }}
+        run: bash .github/workflows/static_pkgconfig_smoke/check_linker_cpp.sh
+
+      - name: Upload C++ linker smoke evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: static-pkgconfig-linker-ucrt64-${{ matrix.cc }}
+          path: .static_pkgconfig_linker_artifacts/${{ matrix.cc }}
+          if-no-files-found: error
+          retention-days: 30
+
+  clang64:
+    name: Windows MSYS2 CLANG64 static fact smoke
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Checkout candidate V
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Provision MSYS2 CLANG64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          path-type: minimal
+          cache: false
+          install: >-
+            mingw-w64-clang-x86_64-clang
+
+      - name: Verify full checkout and vendored GC sources
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --is-shallow-repository)" = false
+          test "$(git rev-parse HEAD^)" = "$SOURCE_PARENT_SHA"
+          required=(
+            thirdparty/libgc/gc.c
+            thirdparty/libgc/include/gc.h
+            thirdparty/libgc/include/gc/gc.h
+          )
+          git ls-files --error-unmatch -- "${required[@]}"
+          for path in "${required[@]}"; do
+            test -s "$path"
+            sha256sum "$path"
+          done
+          if git ls-files --error-unmatch -- thirdparty/tcc/lib/libgc.a >/dev/null 2>&1; then
+            test -s thirdparty/tcc/lib/libgc.a
+            sha256sum thirdparty/tcc/lib/libgc.a
+          else
+            echo 'thirdparty/tcc/lib/libgc.a is not tracked at this candidate SHA; no checkout assertion applies.'
+          fi
+
+      - name: Bootstrap candidate V with CLANG64 Clang
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          test "$MSYSTEM" = CLANG64
+          command -v clang
+          command -v clang++
+          clang --version
+          clang -dumpmachine
+          clang++ --version
+          MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /c "makev.bat -clang"
+          ./v.exe version
+          git rev-parse HEAD
+
+      - name: Run targeted regressions and require the GNU-style static fact
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          for test in \
+            vlib/v/pref/compiler_owned_values_test.v \
+            vlib/v/pref/pref_test.v \
+            vlib/v/builder/cc_test.v \
+            vlib/v/builder/pkgconfig_link_segment_test.v \
+            vlib/v/builder/linker_directive_integration_test.v \
+            vlib/v/checker/linker_directive_test.v \
+            vlib/v/checker/pkgconfig_static_mode_test.v \
+            vlib/v/tests/comptime/comptime_static_pkgconfig_value_test.v
+          do
+            ./v.exe -cc clang -no-retry-compilation test "$test"
+          done
+
+          ./v.exe -cc clang -cflags '-static' -check \
+            .github/workflows/static_pkgconfig_smoke/expected_true.v
+
+      - name: Validate CLANG64 C++ linker selection
+        shell: msys2 {0}
+        env:
+          CC_UNDER_TEST: clang
+          CXX_UNDER_TEST: clang++
+        run: bash .github/workflows/static_pkgconfig_smoke/check_linker_cpp.sh
+
+      - name: Upload CLANG64 C++ linker smoke evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: static-pkgconfig-linker-clang64-clang
+          path: .static_pkgconfig_linker_artifacts/clang
+          if-no-files-found: error
+          retention-days: 30
