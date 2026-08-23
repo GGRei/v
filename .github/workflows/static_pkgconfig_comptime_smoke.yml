@@ -121,6 +121,7 @@ jobs:
           } else {
             Write-Host "$optionalArchive is not tracked at this candidate SHA; no checkout assertion applies."
           }
+          exit 0
 
       - name: Configure MSVC developer environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -232,6 +233,22 @@ jobs:
           cache: false
           install: ${{ matrix.package }}
 
+      - name: Expose Git for Windows to MSYS2
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          git_dir_windows='C:\Program Files\Git\cmd'
+          git_dir_posix="$(cygpath -u "$git_dir_windows")"
+          test -x "$git_dir_posix/git.exe"
+          printf '%s\n' "$git_dir_windows" >> "$(cygpath -u "$GITHUB_PATH")"
+          # Minimal login shells discard custom Windows PATH entries, so persist
+          # the same verified directory inside this job's ephemeral MSYS2 root.
+          printf 'export PATH="%s:$PATH"\n' "$git_dir_posix" \
+            > /etc/profile.d/zz-github-actions-git.sh
+          export PATH="$git_dir_posix:$PATH"
+          command -v git
+          git --version
+
       - name: Verify full checkout and vendored GC sources
         shell: msys2 {0}
         run: |
@@ -324,6 +341,22 @@ jobs:
           cache: false
           install: >-
             mingw-w64-clang-x86_64-clang
+
+      - name: Expose Git for Windows to MSYS2
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          git_dir_windows='C:\Program Files\Git\cmd'
+          git_dir_posix="$(cygpath -u "$git_dir_windows")"
+          test -x "$git_dir_posix/git.exe"
+          printf '%s\n' "$git_dir_windows" >> "$(cygpath -u "$GITHUB_PATH")"
+          # Minimal login shells discard custom Windows PATH entries, so persist
+          # the same verified directory inside this job's ephemeral MSYS2 root.
+          printf 'export PATH="%s:$PATH"\n' "$git_dir_posix" \
+            > /etc/profile.d/zz-github-actions-git.sh
+          export PATH="$git_dir_posix:$PATH"
+          command -v git
+          git --version
 
       - name: Verify full checkout and vendored GC sources
         shell: msys2 {0}
