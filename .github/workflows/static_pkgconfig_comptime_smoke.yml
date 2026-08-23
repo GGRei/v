@@ -30,7 +30,18 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse --is-shallow-repository)" = false
-          test "$(git rev-parse HEAD^)" = "$SOURCE_PARENT_SHA"
+          git merge-base --is-ancestor "$SOURCE_PARENT_SHA" HEAD
+          while IFS= read -r path; do
+            case "$path" in
+              .github/workflows/static_pkgconfig_comptime_smoke.yml|\
+              .github/workflows/static_pkgconfig_smoke/*) ;;
+              *)
+                echo "Unexpected path changed after source SHA: $path" >&2
+                exit 1
+                ;;
+            esac
+          done < <(git diff --no-renames --name-only "$SOURCE_PARENT_SHA"..HEAD)
+          git diff --no-renames --name-status "$SOURCE_PARENT_SHA"..HEAD
           required=(
             thirdparty/libgc/gc.c
             thirdparty/libgc/include/gc.h
@@ -89,9 +100,28 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $shallow -ne 'false') {
             throw "Expected a full checkout, got is-shallow-repository=$shallow"
           }
-          $sourceParent = (& git rev-parse 'HEAD^').Trim()
-          if ($LASTEXITCODE -ne 0 -or $sourceParent -ne $env:SOURCE_PARENT_SHA) {
-            throw "Expected source parent $env:SOURCE_PARENT_SHA, got $sourceParent"
+          & git merge-base --is-ancestor $env:SOURCE_PARENT_SHA HEAD
+          if ($LASTEXITCODE -ne 0) {
+            throw "Expected source SHA $env:SOURCE_PARENT_SHA to be an ancestor of HEAD"
+          }
+          $sourceRange = "$($env:SOURCE_PARENT_SHA)..HEAD"
+          $changedPaths = @(& git diff --no-renames --name-only $sourceRange)
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to enumerate paths changed in $sourceRange"
+          }
+          foreach ($path in $changedPaths) {
+            $isWorkflow = $path -eq '.github/workflows/static_pkgconfig_comptime_smoke.yml'
+            $isFixture = $path.StartsWith(
+              '.github/workflows/static_pkgconfig_smoke/',
+              [StringComparison]::Ordinal
+            )
+            if (-not ($isWorkflow -or $isFixture)) {
+              throw "Unexpected path changed after source SHA: $path"
+            }
+          }
+          & git diff --no-renames --name-status $sourceRange
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to report paths changed in $sourceRange"
           }
           $required = @(
             'thirdparty/libgc/gc.c'
@@ -255,7 +285,18 @@ jobs:
           set -euo pipefail
           test "$MSYSTEM" = UCRT64
           test "$(git rev-parse --is-shallow-repository)" = false
-          test "$(git rev-parse HEAD^)" = "$SOURCE_PARENT_SHA"
+          git merge-base --is-ancestor "$SOURCE_PARENT_SHA" HEAD
+          while IFS= read -r path; do
+            case "$path" in
+              .github/workflows/static_pkgconfig_comptime_smoke.yml|\
+              .github/workflows/static_pkgconfig_smoke/*) ;;
+              *)
+                echo "Unexpected path changed after source SHA: $path" >&2
+                exit 1
+                ;;
+            esac
+          done < <(git diff --no-renames --name-only "$SOURCE_PARENT_SHA"..HEAD)
+          git diff --no-renames --name-status "$SOURCE_PARENT_SHA"..HEAD
           required=(
             thirdparty/libgc/gc.c
             thirdparty/libgc/include/gc.h
@@ -363,7 +404,18 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse --is-shallow-repository)" = false
-          test "$(git rev-parse HEAD^)" = "$SOURCE_PARENT_SHA"
+          git merge-base --is-ancestor "$SOURCE_PARENT_SHA" HEAD
+          while IFS= read -r path; do
+            case "$path" in
+              .github/workflows/static_pkgconfig_comptime_smoke.yml|\
+              .github/workflows/static_pkgconfig_smoke/*) ;;
+              *)
+                echo "Unexpected path changed after source SHA: $path" >&2
+                exit 1
+                ;;
+            esac
+          done < <(git diff --no-renames --name-only "$SOURCE_PARENT_SHA"..HEAD)
+          git diff --no-renames --name-status "$SOURCE_PARENT_SHA"..HEAD
           required=(
             thirdparty/libgc/gc.c
             thirdparty/libgc/include/gc.h
