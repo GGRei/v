@@ -18,6 +18,18 @@ pub fn new_preferences() &Preferences {
 const windows_default_gc_defines = ['gcboehm', 'gcboehm_full', 'gcboehm_incr', 'gcboehm_opt',
 	'gcboehm_leak', 'vgc']
 
+// compiler_owned_static_pkgconfig_value is a read-only `$d()` value. Its `v:` prefix
+// distinguishes compiler facts from ordinary user defines, while the exact-key
+// reservation preserves existing user-controlled `v:*` values. The underscore alias
+// is reserved only for cross-platform `_d_` conditional filenames.
+const compiler_owned_static_pkgconfig_value = 'v:static_pkgconfig'
+const compiler_owned_static_pkgconfig_file_define = 'v_static_pkgconfig'
+
+fn is_compiler_owned_define(name string) bool {
+	return name in [compiler_owned_static_pkgconfig_value,
+		compiler_owned_static_pkgconfig_file_define]
+}
+
 // contains_exact_cflag_token reports whether input contains expected as an exact compiler flag token.
 pub fn contains_exact_cflag_token(input string, expected string) bool {
 	mut token := []u8{cap: input.len}
@@ -64,15 +76,24 @@ pub fn contains_exact_cflag_token(input string, expected string) bool {
 	return token.len > 0 && token.bytestr() == expected
 }
 
+fn (p &Preferences) uses_msvc_clang_driver_mode() bool {
+	cc_name := os.file_name(p.ccompiler).to_lower_ascii()
+	return cc_name.contains('clang-cl')
+		|| contains_exact_cflag_token(p.ccompiler, '--driver-mode=cl')
+		|| contains_exact_cflag_token(p.cflags, '--driver-mode=cl')
+		|| contains_exact_cflag_token(p.ldflags, '--driver-mode=cl')
+		|| contains_exact_cflag_token(os.getenv('CFLAGS'), '--driver-mode=cl')
+		|| contains_exact_cflag_token(os.getenv('LDFLAGS'), '--driver-mode=cl')
+}
+
 pub fn (mut p Preferences) resolve_pkgconfig_mode() {
 	p.pkgconfig_mode = .dynamic
-	if p.ccompiler_type !in [.gcc, .clang, .mingw, .cplusplus] {
-		return
-	}
-	if contains_exact_cflag_token(p.cflags, '-static')
-		|| contains_exact_cflag_token(p.ldflags, '-static') {
+	if p.ccompiler_type in [.gcc, .clang, .mingw, .cplusplus] && !p.uses_msvc_clang_driver_mode()
+		&& (contains_exact_cflag_token(p.cflags, '-static')
+		|| contains_exact_cflag_token(p.ldflags, '-static')) {
 		p.pkgconfig_mode = .static_
 	}
+	p.compile_values[compiler_owned_static_pkgconfig_value] = (p.pkgconfig_mode == .static_).str()
 }
 
 fn (p &Preferences) default_thread_stack_size() int {

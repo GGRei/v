@@ -1528,11 +1528,20 @@ fn (mut prefs Preferences) parse_compile_value(define string) {
 		return
 	}
 	name := define.all_before('=')
+	if is_compiler_owned_define(name) {
+		eprintln_exit('V error: `${name}` is a read-only compiler value and cannot be set with `-d`.')
+		return
+	}
 	value := define.all_after_first('=')
 	prefs.compile_values[name] = value
 }
 
 fn (mut prefs Preferences) parse_define(define string) {
+	name := define.all_before('=')
+	if is_compiler_owned_define(name) {
+		eprintln_exit('V error: `${name}` is a read-only compiler value and cannot be set with `-d`.')
+		return
+	}
 	if !(prefs.is_debug && define == 'debug') {
 		prefs.build_options << '-d ${define}'
 	}

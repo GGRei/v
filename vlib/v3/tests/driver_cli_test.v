@@ -1877,6 +1877,7 @@ fn main() {
 
 	assert_driver_cli_failure(v3_bin, ['--bogus'], 'unknown option `--bogus`')
 	assert_driver_cli_failure(v3_bin, ['-o'], 'option `-o` requires a value')
+	assert_driver_cli_failure(v3_bin, ['-ldflags'], 'option `-ldflags` requires a value')
 	assert_driver_cli_failure(v3_bin, ['-b', 'bogus', source], 'unknown backend `bogus`')
 	assert_driver_cli_failure(v3_bin, ['-gc', 'boehm', source],
 		'currently supports only `-gc none`')
@@ -1957,4 +1958,46 @@ pub fn value() int {
 	run := cmdexec.run(output, [])
 	assert run.exit_code == 0
 	assert run.output.trim_space() == '42'
+}
+
+fn test_driver_static_pkgconfig_fact_ldflags_and_dynamic_c_invariance() {
+	root := os.join_path(os.vtmp_dir(), 'v3_driver_static_pkgconfig_${os.getpid()}')
+	os.rmdir_all(root) or {}
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	v3_bin := build_driver_cli_v3(root)
+	source := os.join_path(root, 'main.v')
+	os.write_file(source,
+		"fn main() {\n\t\$if \$d('v:static_pkgconfig', false) {\n\t\tprintln('issue74-static-mode')\n\t} \$else {\n\t\tprintln('issue74-dynamic-mode')\n\t}\n}\n")!
+	output_c := os.join_path(root, 'main.c')
+
+	dynamic_first := cmdexec.run(v3_bin, ['-nocache', '-o', output_c, source])
+	assert dynamic_first.exit_code == 0, dynamic_first.output
+	dynamic_c := os.read_file(output_c)!
+	assert dynamic_c.contains('issue74-dynamic-mode')
+	assert !dynamic_c.contains('issue74-static-mode')
+
+	dynamic_ldflags := cmdexec.run(v3_bin, ['-nocache', '-ldflags', '-Wl,--as-needed', '-o', output_c,
+		source])
+	assert dynamic_ldflags.exit_code == 0, dynamic_ldflags.output
+	assert os.read_file(output_c)! == dynamic_c
+
+	static_ldflags := cmdexec.run(v3_bin, ['-nocache', '-cc', 'gcc', '-ldflags', '-static', '-o',
+		output_c, source])
+	assert static_ldflags.exit_code == 0, static_ldflags.output
+	static_c := os.read_file(output_c)!
+	assert static_c.contains('issue74-static-mode')
+	assert !static_c.contains('issue74-dynamic-mode')
+
+	dynamic_again := cmdexec.run(v3_bin, ['-nocache', '-o', output_c, source])
+	assert dynamic_again.exit_code == 0, dynamic_again.output
+	assert os.read_file(output_c)! == dynamic_c
+
+	for define in ['v:static_pkgconfig', 'v:static_pkgconfig=true', 'v_static_pkgconfig',
+		'v_static_pkgconfig=true'] {
+		assert_driver_cli_failure(v3_bin, ['-d', define, '-check', source],
+			'is a read-only compiler value')
+	}
 }

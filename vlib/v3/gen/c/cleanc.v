@@ -473,6 +473,7 @@ mut:
 	target                       pref.Target
 	thread_stack_size            int = 8 * 1024 * 1024
 	compile_values               map[string]string // explicit `-d` values used by `$d(...)` in `#flag`s
+	pkgconfig_mode               pref.PkgConfigMode
 	output_path                  string
 	output_error                 string
 	c99_mode                     bool
@@ -1294,6 +1295,12 @@ pub fn (mut g FlatGen) set_compile_values(values map[string]string) {
 // set_track_heap records whether user-provided heap tracking hooks are required.
 pub fn (mut g FlatGen) set_track_heap(enabled bool) {
 	g.track_heap = enabled
+}
+
+// set_pkgconfig_mode records the canonical global pkg-config mode selected by
+// the driver before imports and cache lookup.
+pub fn (mut g FlatGen) set_pkgconfig_mode(mode pref.PkgConfigMode) {
+	g.pkgconfig_mode = mode
 }
 
 // set_cache_split enables stable cache markers and string symbols in generated C.
@@ -4339,7 +4346,7 @@ fn (mut g FlatGen) collect_c_flags_from_directives() {
 			continue
 		}
 		if node.value == 'pkgconfig' {
-			flags := c_pkgconfig_flags(node.typ)
+			flags := c_pkgconfig_flags(node.typ, g.pkgconfig_mode)
 			key := flags.join('\x00')
 			if flags.len > 0 && key !in seen_groups {
 				seen_groups[key] = true
@@ -4350,7 +4357,7 @@ fn (mut g FlatGen) collect_c_flags_from_directives() {
 }
 
 // cache_directive_flags resolves source C flags that affect early C cache keys.
-pub fn cache_directive_flags(a &flat.FlatAst, vroot string, target pref.Target, compile_values map[string]string) []string {
+pub fn cache_directive_flags(a &flat.FlatAst, vroot string, target pref.Target, compile_values map[string]string, pkgconfig_mode pref.PkgConfigMode) []string {
 	mut result := []string{}
 	mut seen_groups := map[string]bool{}
 	mut cur_file := ''
@@ -4365,7 +4372,7 @@ pub fn cache_directive_flags(a &flat.FlatAst, vroot string, target pref.Target, 
 		flags := if node.value == 'flag' {
 			c_flag_args_with_values(node.typ, vroot, cur_file, target, compile_values)
 		} else if node.value == 'pkgconfig' {
-			c_pkgconfig_flags(node.typ)
+			c_pkgconfig_flags(node.typ, pkgconfig_mode)
 		} else {
 			continue
 		}
@@ -10821,13 +10828,24 @@ fn c_vmod_root_for_file(source_file string) string {
 	return os.real_path(dir)
 }
 
-fn c_pkgconfig_flags(raw string) []string {
+fn c_pkgconfig_args(raw string, pkgconfig_mode pref.PkgConfigMode) []string {
 	packages := cmdexec.split_args(trimmed_space(raw)) or { return []string{} }
 	if packages.len == 0 {
 		return []string{}
 	}
 	mut args := ['--cflags', '--libs']
+	if pkgconfig_mode == .static_ && '--static' !in packages {
+		args << '--static'
+	}
 	args << packages
+	return args
+}
+
+fn c_pkgconfig_flags(raw string, pkgconfig_mode pref.PkgConfigMode) []string {
+	args := c_pkgconfig_args(raw, pkgconfig_mode)
+	if args.len == 0 {
+		return []string{}
+	}
 	result := cmdexec.run('pkg-config', args)
 	if result.exit_code != 0 {
 		return []string{}

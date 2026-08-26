@@ -1,6 +1,7 @@
 module driver
 
 import os
+import v3.pref
 
 fn test_v3_tcc_backtrace_enabled() {
 	assert !v3_tcc_backtrace_enabled('macos', 'arm64', false)
@@ -71,4 +72,50 @@ fn test_v3_default_linker_flags_do_not_duplicate_existing_flags() {
 	mut flags := ['-lpthread', '-lm']
 	add_v3_default_linker_flags(mut flags, 'linux', false)
 	assert flags == ['-lpthread', '-lm']
+}
+
+fn test_v3_user_ldflags_are_final_and_do_not_change_dynamic_plan_when_absent() {
+	dynamic := v3_c_compiler_flag_plan(V3CCompilerFlagOptions{
+		dependencies:         ['-lpublic']
+		environment_ld_flags: ['-lenvironment']
+		target_os:            'windows'
+	})
+	assert dynamic.after_inputs == ['-lpublic', '-lm', '-lenvironment']
+
+	static_plan := v3_c_compiler_flag_plan(V3CCompilerFlagOptions{
+		dependencies:         ['-lpublic', '-lprivate']
+		environment_ld_flags: ['-lenvironment']
+		user_ld_flags:        ['-lfixture_first', '-lfixture_final']
+		target_os:            'windows'
+	})
+	assert static_plan.after_inputs == [
+		'-lpublic',
+		'-lprivate',
+		'-lm',
+		'-lenvironment',
+		'-lfixture_first',
+		'-lfixture_final',
+	]
+	assert static_plan.after_inputs.last() == '-lfixture_final'
+}
+
+fn test_v3_object_mode_ignores_link_only_user_flags() {
+	plan := v3_c_compiler_flag_plan(V3CCompilerFlagOptions{
+		user_ld_flags: ['-lfixture_final']
+		target_os:     'windows'
+		is_o:          true
+	})
+	assert plan.after_inputs == []
+}
+
+fn test_v3_pkgconfig_mode_has_a_distinct_cache_salt() {
+	assert v3_pkgconfig_cache_salt(pref.PkgConfigMode.dynamic) == 'pkgconfig_mode=dynamic'
+	assert v3_pkgconfig_cache_salt(pref.PkgConfigMode.static_) == 'pkgconfig_mode=static_'
+	assert v3_pkgconfig_cache_salt(.dynamic) != v3_pkgconfig_cache_salt(.static_)
+}
+
+fn test_v3_tcc_fast_link_never_bypasses_static_mode_or_user_ldflags() {
+	assert v3_tcc_fast_link_allowed(.dynamic, [])
+	assert !v3_tcc_fast_link_allowed(.static_, [])
+	assert !v3_tcc_fast_link_allowed(.dynamic, ['-lfixture_final'])
 }
