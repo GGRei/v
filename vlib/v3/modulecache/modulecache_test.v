@@ -2,6 +2,24 @@ module modulecache
 
 import os
 import crypto.sha256
+import v3.flat
+
+fn test_cached_directive_text_preserves_cpp_linker_requirement() {
+	node := flat.Node{
+		kind:  .directive
+		value: 'linker'
+		typ:   'c++'
+	}
+	assert cached_directive_text(node, '/virtual/vroot', '/virtual/module/source.v') == '#linker c++'
+}
+
+fn test_linker_cache_selector_is_conditional_on_source_directives() {
+	assert cache_format == 'v3-module-cache-51'
+	assert source_signature_cache_format == 'v3-source-signature-cache-4'
+	assert source_uses_linker_directive('module main\n#linker c++\nfn main() {}\n')
+	assert source_uses_linker_directive('module main\n# linker c++\nfn main() {}\n')
+	assert !source_uses_linker_directive('module main\n// #linker c++\nconst text = "#linker c++"\n')
+}
 
 fn test_cached_relative_flag_paths_preserve_path_selection_expressions() {
 	base_dir := os.join_path(os.vtmp_dir(), 'v3_modulecache_flags')
