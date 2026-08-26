@@ -149,6 +149,7 @@ struct V3CgenCacheInput {
 struct V3CgenCacheMetadata {
 	interface_impl_signature string
 	prefix_source_identity   string
+	native_link_requirements types.NativeLinkRequirements
 	flags                    []string
 	diagnostics              []V3CachedTypeDiagnostic
 }
@@ -274,7 +275,7 @@ fn cpp_runtime_link_flag(target pref.Target) string {
 	return if target.os in ['macos', 'ios'] { '-lc++' } else { '-lstdc++' }
 }
 
-fn prepare_c_flags_for_link(flags []string, environment_c_flags []string, c99 bool, pic_flag string, target_args []string, target pref.Target, c_compiler string, uncached_dir string, mut stats CObjectCacheStats) ![]string {
+fn prepare_c_flags_for_link(flags []string, environment_c_flags []string, c99 bool, pic_flag string, target_args []string, target pref.Target, c_compiler string, uncached_dir string, suppress_automatic_cpp_runtime bool, mut stats CObjectCacheStats) ![]string {
 	// Nothing to cache: without object-file or native-source flags the link
 	// plan adds no value, and preparing it costs a compiler-identity probe
 	// (subprocess) plus plan-file signatures on every build.
@@ -288,7 +289,7 @@ fn prepare_c_flags_for_link(flags []string, environment_c_flags []string, c99 bo
 	}
 	if !has_cacheable_flag {
 		mut passthrough := flags.clone()
-		if c_link_flags_use_cpp_language(passthrough) {
+		if !suppress_automatic_cpp_runtime && c_link_flags_use_cpp_language(passthrough) {
 			cpp_runtime := cpp_runtime_link_flag(target)
 			if cpp_runtime !in passthrough {
 				passthrough << cpp_runtime
@@ -301,7 +302,7 @@ fn prepare_c_flags_for_link(flags []string, environment_c_flags []string, c99 bo
 	cache_dir := os.join_path(os.vtmp_dir(), 'v3_thirdparty_objs')
 	os.mkdir_all(cache_dir)!
 	plan_path := c_link_plan_path(cache_dir, flags, support_flags, c99, pic_flag, target_args,
-		target, c_compiler, mut stats)
+		target, c_compiler, suppress_automatic_cpp_runtime, mut stats)
 	// Tracing intentionally walks the object manifests so every requested
 	// object's cache decision remains visible.
 	if os.getenv('V3_CACHE_TRACE') == '' {
@@ -344,7 +345,7 @@ fn prepare_c_flags_for_link(flags []string, environment_c_flags []string, c99 bo
 			object_path := ensure_c_object_file(clean, active_language, support_flags, c99,
 				pic_flag, target_args, target, c_compiler, uncached_dir, mut stats)!
 			append_c_link_object(mut prepared, object_path, active_language)
-			if adjacent_cpp_source {
+			if !suppress_automatic_cpp_runtime && adjacent_cpp_source {
 				cpp_runtime := cpp_runtime_link_flag(target)
 				if cpp_runtime !in flags && cpp_runtime !in prepared {
 					prepared << cpp_runtime
@@ -359,7 +360,7 @@ fn prepare_c_flags_for_link(flags []string, environment_c_flags []string, c99 bo
 			if c_generated_native_source_context(clean, uncached_dir) {
 				os.rm(clean) or {}
 			}
-			if language in ['c++', 'objective-c++'] {
+			if !suppress_automatic_cpp_runtime && language in ['c++', 'objective-c++'] {
 				cpp_runtime := cpp_runtime_link_flag(target)
 				if cpp_runtime !in flags && cpp_runtime !in prepared {
 					prepared << cpp_runtime
@@ -372,7 +373,7 @@ fn prepare_c_flags_for_link(flags []string, environment_c_flags []string, c99 bo
 		}
 		i++
 	}
-	if c_link_flags_use_cpp_language(prepared) {
+	if !suppress_automatic_cpp_runtime && c_link_flags_use_cpp_language(prepared) {
 		cpp_runtime := cpp_runtime_link_flag(target)
 		if cpp_runtime !in flags && cpp_runtime !in prepared {
 			prepared << cpp_runtime
@@ -385,13 +386,20 @@ fn prepare_c_flags_for_link(flags []string, environment_c_flags []string, c99 bo
 	return prepared
 }
 
-fn c_link_plan_path(cache_dir string, flags []string, support_flags []string, c99 bool, pic_flag string, target_args []string, target pref.Target, compiler string, mut stats CObjectCacheStats) string {
+fn c_link_plan_path(cache_dir string, flags []string, support_flags []string, c99 bool, pic_flag string, target_args []string, target pref.Target, compiler string, suppress_automatic_cpp_runtime bool, mut stats CObjectCacheStats) string {
 	compiler_path, compiler_version := c_object_compiler_identity(compiler, mut stats)
 	mut hash := u64(1469598103934665603)
-	for identity in ['v3-c-link-plan-v2', os.getwd(), flags.join('\x00'),
+	mut identities := ['v3-c-link-plan-v2', os.getwd(), flags.join('\x00'),
 		support_flags.join('\x00'), c99.str(), pic_flag, target_args.join('\x00'), compiler_path,
 		compiler_version, target.os, target.arch, target.abi, target.endian, target.pointer_bits.str(),
-		target.object_format] {
+		target.object_format]
+	// Keep the historical dynamic plan key byte-for-byte. Only the opt-in C++
+	// final-driver path needs a separate plan because it suppresses the legacy
+	// inferred runtime flag without removing any user-supplied flag.
+	if suppress_automatic_cpp_runtime {
+		identities << 'v3-native-cpp-final-driver-v1'
+	}
+	for identity in identities {
 		hash = c_hash_bytes(hash, identity.bytes())
 		hash = c_hash_bytes(hash, [u8(0xff)])
 	}
@@ -876,6 +884,394 @@ fn c_response_file_arg(arg string) string {
 	quote := [u8(34)].bytestr()
 	escaped_quote := [u8(92), 34].bytestr()
 	return quote + arg.replace(slash, escaped_slash).replace(quote, escaped_quote) + quote
+}
+
+// Keep the private C++-link response transport comfortably below Windows'
+// 32767-character CreateProcess command-line ceiling. Dynamic C links retain
+// their existing direct argv path regardless of length.
+const v3_cpp_linker_response_file_threshold = 16 * 1024
+
+fn v3_link_args_have_c_source(args []string) bool {
+	mut explicit_language := ''
+	mut expects_language := false
+	mut skip_operand := false
+	for arg in args {
+		clean := arg.trim_space()
+		if skip_operand {
+			skip_operand = false
+			continue
+		}
+		if expects_language {
+			explicit_language = clean.trim('"\'')
+			expects_language = false
+			continue
+		}
+		if clean == '-x' {
+			expects_language = true
+			continue
+		}
+		if clean.starts_with('-x') && clean.len > 2 {
+			explicit_language = clean[2..].trim_space().trim('"\'')
+			continue
+		}
+		if c_flag_consumes_next_operand(clean) || clean in ['-B', '--target', '-mllvm'] {
+			skip_operand = true
+			continue
+		}
+		path := clean.trim('"\'')
+		extension := os.file_ext(path)
+		if path.len > 0 && !path.starts_with('-') && extension in ['.c', '.m']
+			&& explicit_language !in ['c++', 'objective-c++'] {
+			return true
+		}
+	}
+	return false
+}
+
+// A C++ driver treats unqualified .c inputs as C++ on some toolchains. Preserve
+// the language of each generated or #flag-owned C source, then reset it so later
+// objects and libraries retain their normal interpretation.
+fn v3_cpp_linker_c_source_args(args []string) []string {
+	mut result := []string{cap: args.len + 8}
+	mut explicit_language := ''
+	mut expects_language := false
+	mut skip_operand := false
+	for arg in args {
+		clean := arg.trim_space()
+		if skip_operand {
+			skip_operand = false
+			result << arg
+			continue
+		}
+		if expects_language {
+			explicit_language = clean.trim('"\'')
+			expects_language = false
+			result << arg
+			continue
+		}
+		if clean.starts_with('-x') && clean.len > 2 {
+			explicit_language = clean[2..].trim_space().trim('"\'')
+			result << arg
+			continue
+		}
+		if c_flag_consumes_next_operand(clean) || clean in ['-B', '--target', '-mllvm'] {
+			skip_operand = true
+			result << arg
+			continue
+		}
+		if clean == '-x' {
+			expects_language = true
+			result << arg
+			continue
+		}
+		path := clean.trim('"\'')
+		if path.len > 0 && !path.starts_with('-') && os.file_ext(path) == '.c'
+			&& explicit_language in ['', 'none'] {
+			result << ['-x', 'c', arg, '-x', 'none']
+			explicit_language = 'none'
+		} else {
+			result << arg
+		}
+	}
+	return result
+}
+
+fn v3_cpp_linker_response_file_required_for_limit(driver string, args []string, limit int) bool {
+	mut size := driver.len + 1
+	for arg in args {
+		size += arg.len + 3
+	}
+	return size >= limit
+}
+
+fn v3_cpp_linker_response_file_required(driver string, args []string) bool {
+	return v3_cpp_linker_response_file_required_for_limit(driver, args,
+		v3_cpp_linker_response_file_threshold)
+}
+
+fn v3_cpp_linker_response_content(args []string) string {
+	return args.map(c_response_file_arg(it)).join('\n') + '\n'
+}
+
+fn v3_cpp_compile_path_operand_flag(flag string) bool {
+	return flag in ['-B', '-F', '-I', '--sysroot', '-idirafter', '-imacros', '-include', '-iprefix',
+		'-iquote', '-isystem', '-isysroot', '-iwithprefix', '-iwithprefixbefore']
+}
+
+fn v3_is_flto_token(raw_token string) bool {
+	token := raw_token.trim_space().trim('"\'')
+	return token == '-flto' || token.starts_with('-flto=')
+}
+
+fn v3_is_c_language_standard_token(raw_token string) bool {
+	token := raw_token.trim_space().trim('"\'')
+	if !token.starts_with('-std=') {
+		return false
+	}
+	standard := token.all_after('-std=')
+	return (standard.starts_with('c') && !standard.starts_with('c++'))
+		|| (standard.starts_with('gnu') && !standard.starts_with('gnu++'))
+		|| standard.starts_with('iso9899:')
+}
+
+fn v3_is_cpp_language_standard_token(raw_token string) bool {
+	token := raw_token.trim_space().trim('"\'')
+	return token.starts_with('-std=c++') || token.starts_with('-std=gnu++')
+}
+
+fn v3_cpp_compile_preserved_operand_flag(flag string) bool {
+	return v3_cpp_compile_path_operand_flag(flag)
+		|| flag in ['-D', '-U', '-Xassembler', '-Xclang', '-Xpreprocessor', '--target', '-arch', '-mllvm', '-target']
+}
+
+fn v3_cpp_compile_dropped_operand_flag(flag string) bool {
+	return flag in ['-L', '-MF', '-MQ', '-MT', '-Xlinker', '-force_load', '-framework', '-l', '-o',
+		'-undefined', '-weak_framework', '-weak_library']
+}
+
+fn v3_cpp_compile_path(path string, source_root string) string {
+	clean := path.trim_space().trim('"\'')
+	if clean == '' || os.is_abs_path(clean) {
+		return clean
+	}
+	return os.abs_path(os.join_path_single(source_root, clean))
+}
+
+fn v3_cpp_link_input_path(path string, source_root string, cc_dir string) string {
+	clean := path.trim_space().trim('"\'')
+	if clean == '' || os.is_abs_path(clean) {
+		return clean
+	}
+	build_path := os.join_path_single(cc_dir, clean)
+	if os.exists(build_path) {
+		return build_path
+	}
+	return v3_cpp_compile_path(clean, source_root)
+}
+
+fn v3_cpp_resolve_compile_operand(flag string, operand string, source_root string) string {
+	if v3_cpp_compile_path_operand_flag(flag) {
+		return v3_cpp_compile_path(operand, source_root)
+	}
+	return operand
+}
+
+fn v3_cpp_resolve_attached_compile_path_flag(raw_flag string, source_root string) string {
+	clean := raw_flag.trim_space().trim('"\'')
+	for prefix in ['-iwithprefixbefore', '--sysroot=', '-idirafter', '-iwithprefix', '-isysroot',
+		'-isystem', '-imacros', '-include', '-iprefix', '-iquote', '-B', '-F', '-I'] {
+		if clean.starts_with(prefix) && clean.len > prefix.len {
+			return prefix + v3_cpp_compile_path(clean[prefix.len..], source_root)
+		}
+	}
+	return raw_flag
+}
+
+fn v3_cpp_compile_flag_is_input_output_or_link_only(clean string) bool {
+	return
+		clean in ['-E', '-M', '-MD', '-MG', '-MM', '-MMD', '-MP', '-S', '-c', '-dynamiclib', '-flat_namespace', '-mwindows', '-nodefaultlibs', '-no-pie', '-nostdlib', '-pie', '-rdynamic', '-s', '-shared', '-static']
+		|| clean.starts_with('-L') || clean.starts_with('-MF') || clean.starts_with('-MQ')
+		|| clean.starts_with('-MT') || clean.starts_with('-Wl,') || clean.starts_with('-fuse-ld=')
+		|| clean.starts_with('-l') || clean.starts_with('-o') || c_flag_token_is_link_only(clean)
+		|| c_flag_is_object_file(clean)
+}
+
+fn v3_cpp_compile_flags(plan_flags []string, source_root string, marker bool) []string {
+	mut result := []string{cap: plan_flags.len}
+	mut i := 0
+	for i < plan_flags.len {
+		raw_flag := plan_flags[i]
+		clean := raw_flag.trim_space().trim('"\'')
+		if v3_cpp_compile_dropped_operand_flag(clean) {
+			i += if i + 1 < plan_flags.len { 2 } else { 1 }
+			continue
+		}
+		if v3_cpp_compile_preserved_operand_flag(clean) {
+			result << raw_flag
+			if i + 1 < plan_flags.len {
+				result << v3_cpp_resolve_compile_operand(clean, plan_flags[i + 1], source_root)
+			}
+			i += 2
+			continue
+		}
+		if clean == '-x' {
+			i += if i + 1 < plan_flags.len { 2 } else { 1 }
+			continue
+		}
+		if (clean.starts_with('-x') && clean.len > 2)
+			|| v3_cpp_compile_flag_is_input_output_or_link_only(clean)
+			|| (!clean.starts_with('-') && (c_flag_is_c_source_file(clean)
+			|| os.file_ext(clean) == '.C'))
+			|| (marker && (v3_is_flto_token(clean) || clean.starts_with('-std=')))
+			|| (!marker && v3_is_c_language_standard_token(clean)) {
+			i++
+			continue
+		}
+		if clean.len > 0 && !clean.starts_with('-') {
+			i++
+			continue
+		}
+		result << v3_cpp_resolve_attached_compile_path_flag(raw_flag, source_root)
+		i++
+	}
+	return result
+}
+
+// The marker only establishes that the selected final driver supplies its C++
+// runtime. It inherits ABI/toolchain/preprocessor context, but deliberately no
+// language standard or LTO mode from the generated C translation unit.
+fn v3_cpp_marker_compile_flags(plan_flags []string, source_root string) []string {
+	return v3_cpp_compile_flags(plan_flags, source_root, true)
+}
+
+// A real C++/Objective-C++ #flag source retains compile-affecting flags,
+// including its C++ standard and LTO mode. Inputs, outputs and link-only flags
+// are excluded because this command emits exactly one temporary object.
+fn v3_cpp_source_compile_flags(plan_flags []string, source_root string) []string {
+	return v3_cpp_compile_flags(plan_flags, source_root, false)
+}
+
+fn cleanup_v3_cpp_linker_temporary_files(mut paths []string) {
+	for path in paths {
+		os.rm(path) or {}
+	}
+	paths.clear()
+}
+
+fn prepare_v3_cpp_linker_marker(cpp_compiler string, plan_flags []string, source_root string, cc_dir string, show_cc bool, mut temporary_files []string) !string {
+	marker_source := os.join_path_single(cc_dir, 'v3_linker_marker.cpp')
+	marker_object := os.join_path_single(cc_dir, 'v3_linker_marker.o')
+	temporary_files << [marker_source, marker_object]
+	os.write_file(marker_source, '// V3 #linker c++ driver marker\n')!
+	mut args := v3_cpp_marker_compile_flags(plan_flags, source_root)
+	args << ['-c', '-o', os.base(marker_object), os.base(marker_source)]
+	if show_cc {
+		println('  > ${cmdexec.display(cpp_compiler, args)}')
+	}
+	result := cmdexec.run_in(cpp_compiler, args, cc_dir)
+	if result.exit_code != 0 || !os.is_file(marker_object) {
+		return error('failed to prepare the temporary `#linker c++` marker with `${cpp_compiler}`:\n${result.output}')
+	}
+	return marker_object
+}
+
+fn v3_cpp_link_source_language(path string, explicit_language string) string {
+	if explicit_language !in ['', 'none'] {
+		return explicit_language
+	}
+	extension := os.file_ext(path)
+	if extension in ['.C', '.cc', '.cpp'] {
+		return 'c++'
+	}
+	if extension == '.m' {
+		return 'objective-c'
+	}
+	if extension == '.mm' {
+		return 'objective-c++'
+	}
+	return ''
+}
+
+fn prepare_v3_cpp_linker_source_objects(cpp_compiler string, args []string, plan_flags []string, source_root string, cc_dir string, show_cc bool, mut temporary_files []string) ![]string {
+	mut result := []string{cap: args.len + 8}
+	mut explicit_language := ''
+	mut object_index := 0
+	mut i := 0
+	for i < args.len {
+		arg := args[i]
+		clean := arg.trim_space()
+		if clean == '-x' {
+			explicit_language = if i + 1 < args.len {
+				args[i + 1].trim_space().trim('"\'')
+			} else {
+				''
+			}
+			i += if i + 1 < args.len { 2 } else { 1 }
+			continue
+		}
+		if clean.starts_with('-x') && clean.len > 2 {
+			explicit_language = clean[2..].trim_space().trim('"\'')
+			i++
+			continue
+		}
+		if v3_is_cpp_language_standard_token(clean) {
+			i++
+			continue
+		}
+		if c_flag_consumes_next_operand(clean) || clean in ['-B', '--target', '-mllvm'] {
+			result << arg
+			if i + 1 < args.len {
+				result << args[i + 1]
+			}
+			i += if i + 1 < args.len { 2 } else { 1 }
+			continue
+		}
+		path := clean.trim('"\'')
+		if c_flag_is_object_file(path) || c_flag_token_is_link_only(path) {
+			result << arg
+			i++
+			continue
+		}
+		language := if path.len > 0 && !path.starts_with('-') {
+			v3_cpp_link_source_language(path, explicit_language)
+		} else {
+			''
+		}
+		if language in ['c', 'objective-c'] || (language == '' && os.file_ext(path) == '.c') {
+			source_language := if language == 'objective-c' { 'objective-c' } else { 'c' }
+			source_path := v3_cpp_link_input_path(path, source_root, cc_dir)
+			result << ['-x', source_language, source_path, '-x', 'none']
+			i++
+			continue
+		}
+		if language !in ['c++', 'objective-c++'] {
+			result << arg
+			i++
+			continue
+		}
+		object_path := os.join_path_single(cc_dir, 'v3_cpp_source_${object_index}.o')
+		object_index++
+		temporary_files << object_path
+		mut compile_args := v3_cpp_source_compile_flags(plan_flags, source_root)
+		compile_args << ['-x', language, '-c', v3_cpp_link_input_path(path, source_root, cc_dir),
+			'-o', os.base(object_path)]
+		if show_cc {
+			println('  > ${cmdexec.display(cpp_compiler, compile_args)}')
+		}
+		compile_result := cmdexec.run_in(cpp_compiler, compile_args, cc_dir)
+		if compile_result.exit_code != 0 || !os.is_file(object_path) {
+			return error('failed to compile C++ source `${path}` with `${cpp_compiler}`:\n${compile_result.output}')
+		}
+		result << object_path
+		i++
+	}
+	return result
+}
+
+fn run_v3_final_link(driver string, args []string, cc_dir string, requirements types.NativeLinkRequirements, show_cc bool, mut temporary_files []string) os.Result {
+	mut invocation_args := args.clone()
+	mut response_file := ''
+	mut response_content := ''
+	if requirements.requires_cpp && v3_cpp_linker_response_file_required(driver, args) {
+		response_file = os.join_path_single(cc_dir, 'v3_linker.rsp')
+		temporary_files << response_file
+		response_content = v3_cpp_linker_response_content(args)
+		os.write_file(response_file, response_content) or {
+			return os.Result{
+				exit_code: 1
+				output:    'failed to write C++ linker response file ${response_file}: ${err.msg()}'
+			}
+		}
+		invocation_args = ['@${response_file}']
+	}
+	if show_cc {
+		println('  > ${cmdexec.display(driver, invocation_args)}')
+		if response_file.len > 0 {
+			println('  > C++ linker response file "${response_file}":')
+			print(response_content)
+		}
+	}
+	return cmdexec.run_in(driver, invocation_args, cc_dir)
 }
 
 fn compile_v3_program_object(kind string, source string, source_identity string, external_inputs []string, manager &modulecache.Manager, c_standard string, opt_flag string, pic_flag string, warning_flags string, generated_c_flags []string, objective_c bool, target_args []string, target pref.Target, c_compiler string, mut stats CObjectCacheStats) !string {
@@ -2186,7 +2582,7 @@ fn write_v3_crun_cache_marker(bin_file string, build_identity string) ! {
 }
 
 fn v3_crun_build_identity(state &V3ModuleCacheState, prefs &pref.Preferences, user_files []string, user_c_flags []string, user_ld_flags []string, is_strict bool, enable_globals bool,
-	direct_vsh string) string {
+	direct_vsh string, native_link_requirements types.NativeLinkRequirements) string {
 	direct_vsh_path := os.real_path(direct_vsh)
 	mut source_paths := map[string]bool{}
 	for file in user_files {
@@ -2211,7 +2607,7 @@ fn v3_crun_build_identity(state &V3ModuleCacheState, prefs &pref.Preferences, us
 	}
 	uses_build_time := modulecache.source_files_use_build_time_pseudo(sources)
 	mut hash := u64(1469598103934665603)
-	for value in [
+	mut identity_values := [
 		'v3-crun-cache-v1',
 		state.manager.salt,
 		is_strict.str(),
@@ -2236,7 +2632,13 @@ fn v3_crun_build_identity(state &V3ModuleCacheState, prefs &pref.Preferences, us
 		} else {
 			''
 		},
-	] {
+	]
+	if native_link_requirements.requires_cpp {
+		identity_values[0] = 'v3-crun-cache-v2'
+		identity_values.insert(6, native_link_requirements.cache_key())
+		identity_values.insert(7, prefs.cppcompiler)
+	}
+	for value in identity_values {
 		hash = c_hash_bytes(hash, value.bytes())
 		hash = c_hash_bytes(hash, [u8(0xff)])
 	}
@@ -2274,6 +2676,7 @@ fn cli_usage() string {
 		'  -b <c|fastc|arm64|wasm|eval> backend\n' +
 		'  -os <name> -arch <name>     target platform\n' +
 		'  -cc <compiler>               C compiler executable\n' +
+		'  -c++ <compiler>              final C++ linker driver for #linker c++\n' +
 		'  -thread-stack-size <bytes>   spawned-thread stack size\n' +
 		'  -prod -c99 -shared -strict  C build modes\n' +
 		'  -v                           verbose stage profiling\n' +
@@ -2409,7 +2812,7 @@ fn clone_type_errors(values []types.TypeError) []types.TypeError {
 	return cloned
 }
 
-fn v3_cgen_cache_input(state &V3ModuleCacheState, user_files []string, user_c_flags []string) V3CgenCacheInput {
+fn v3_cgen_cache_input(state &V3ModuleCacheState, user_files []string, user_c_flags []string, native_link_requirements types.NativeLinkRequirements) V3CgenCacheInput {
 	mut source_set := map[string]bool{}
 	mut user_source_dirs := map[string]bool{}
 	for file in user_files {
@@ -2490,7 +2893,16 @@ fn v3_cgen_cache_input(state &V3ModuleCacheState, user_files []string, user_c_fl
 	return V3CgenCacheInput{
 		source_files:         source_files
 		dependency_inputs:    dependencies
-		generation_signature: user_c_flags.join('\x00')
+		generation_signature: v3_cgen_generation_signature(user_c_flags, native_link_requirements)
+	}
+}
+
+fn v3_cgen_generation_signature(user_c_flags []string, native_link_requirements types.NativeLinkRequirements) string {
+	base := user_c_flags.join('\x00')
+	return if native_link_requirements.requires_cpp {
+		'${base}\x00native_link=c++'
+	} else {
+		base
 	}
 }
 
@@ -4260,8 +4672,8 @@ fn v3_external_cache_path(key string, prefix string) ?V3ExternalCachePath {
 	}
 }
 
-fn restore_v3_cache_external_inputs(mut state V3ModuleCacheState, user_files []string, user_c_flags []string, ccompiler string, target pref.Target, incremental_declaration_signature string) bool {
-	base_input := v3_cgen_cache_input(state, user_files, user_c_flags)
+fn restore_v3_cache_external_inputs(mut state V3ModuleCacheState, user_files []string, user_c_flags []string, ccompiler string, target pref.Target, incremental_declaration_signature string, native_link_requirements types.NativeLinkRequirements) bool {
+	base_input := v3_cgen_cache_input(state, user_files, user_c_flags, native_link_requirements)
 	prefixes := ['external:', 'external-sha256:', 'external-meta:', 'external-root:',
 		'external-root-owner:', 'external-context:', 'external-owner:', 'external-dir:',
 		'external-missing:', 'external-state:']
@@ -4461,9 +4873,13 @@ fn restore_v3_cache_external_inputs(mut state V3ModuleCacheState, user_files []s
 	return true
 }
 
-fn encode_v3_cgen_metadata(flags []string, interface_impl_signature string, prefix_source_identity string, diagnostics []V3CachedTypeDiagnostic) string {
-	mut parts := ['v3-cgen-metadata-v4', interface_impl_signature, prefix_source_identity,
-		flags.len.str()]
+fn encode_v3_cgen_metadata(flags []string, interface_impl_signature string, prefix_source_identity string, native_link_requirements types.NativeLinkRequirements, diagnostics []V3CachedTypeDiagnostic) string {
+	mut parts := if native_link_requirements.requires_cpp {
+		['v3-cgen-metadata-v5', interface_impl_signature, prefix_source_identity, 'c++',
+			flags.len.str()]
+	} else {
+		['v3-cgen-metadata-v4', interface_impl_signature, prefix_source_identity, flags.len.str()]
+	}
 	parts << flags
 	parts << diagnostics.len.str()
 	for diagnostic in diagnostics {
@@ -4482,14 +4898,21 @@ fn encode_v3_cgen_metadata(flags []string, interface_impl_signature string, pref
 
 fn decode_v3_cgen_metadata(metadata string) ?V3CgenCacheMetadata {
 	parts := metadata.split('\x00')
-	if parts.len < 5 || parts[0] != 'v3-cgen-metadata-v4' {
+	mut requires_cpp := false
+	mut flag_count_index := 3
+	mut flags_index := 4
+	if parts.len >= 6 && parts[0] == 'v3-cgen-metadata-v5' && parts[3] == 'c++' {
+		requires_cpp = true
+		flag_count_index = 4
+		flags_index = 5
+	} else if parts.len < 5 || parts[0] != 'v3-cgen-metadata-v4' {
 		return none
 	}
-	flag_count := strconv.atoi(parts[3]) or { return none }
-	if flag_count < 0 || 4 + flag_count >= parts.len {
+	flag_count := strconv.atoi(parts[flag_count_index]) or { return none }
+	if flag_count < 0 || flags_index + flag_count >= parts.len {
 		return none
 	}
-	mut index := 4 + flag_count
+	mut index := flags_index + flag_count
 	diagnostic_count := strconv.atoi(parts[index]) or { return none }
 	if diagnostic_count < 0 {
 		return none
@@ -4527,9 +4950,16 @@ fn decode_v3_cgen_metadata(metadata string) ?V3CgenCacheMetadata {
 	return V3CgenCacheMetadata{
 		interface_impl_signature: parts[1]
 		prefix_source_identity:   parts[2]
-		flags:                    parts[4..4 + flag_count].clone()
+		native_link_requirements: types.NativeLinkRequirements{
+			requires_cpp: requires_cpp
+		}
+		flags:                    parts[flags_index..flags_index + flag_count].clone()
 		diagnostics:              diagnostics
 	}
+}
+
+fn v3_cgen_metadata_matches_native_link_requirements(metadata V3CgenCacheMetadata, requirements types.NativeLinkRequirements) bool {
+	return metadata.native_link_requirements.requires_cpp == requirements.requires_cpp
 }
 
 fn cache_v3_type_diagnostics(a &flat.FlatAst, diagnostics []types.TypeError) []V3CachedTypeDiagnostic {
@@ -6765,6 +7195,179 @@ fn v3_pkgconfig_cache_salt(mode pref.PkgConfigMode) string {
 	return 'pkgconfig_mode=${mode}'
 }
 
+fn v3_compiler_command_parts(command string) []string {
+	if os.is_file(command) {
+		return [command]
+	}
+	return cmdexec.split_args(command) or { []string{} }
+}
+
+fn v3_default_cpp_compiler(c_compiler string) string {
+	parts := v3_compiler_command_parts(c_compiler)
+	if parts.len != 1 {
+		return ''
+	}
+	compiler := parts[0].trim(' \t\r\n"\'')
+	dir := os.dir(compiler)
+	base := os.file_name(compiler)
+	lower := base.to_lower_ascii()
+	suffix := if lower.ends_with('.exe') { '.exe' } else { '' }
+	stem := if suffix.len > 0 { base[..base.len - suffix.len] } else { base }
+	lower_stem := stem.to_lower_ascii()
+	cpp_stem := if stem.contains('++') && v3_driver_name_pattern_family(lower_stem) != '' {
+		stem
+	} else if clang_index := lower_stem.last_index('clang') {
+		version_suffix := stem[clang_index + 'clang'.len..]
+		if (clang_index > 0 && stem[clang_index - 1] != `-`)
+			|| !v3_compiler_version_suffix_is_supported(version_suffix) {
+			return ''
+		}
+		stem[..clang_index] + 'clang++' + version_suffix
+	} else if gcc_index := lower_stem.last_index('gcc') {
+		version_suffix := stem[gcc_index + 'gcc'.len..]
+		if (gcc_index > 0 && stem[gcc_index - 1] != `-`)
+			|| !v3_compiler_version_suffix_is_supported(version_suffix) {
+			return ''
+		}
+		stem[..gcc_index] + 'g++' + version_suffix
+	} else if cc_index := lower_stem.last_index('cc') {
+		version_suffix := stem[cc_index + 'cc'.len..]
+		if (cc_index > 0 && stem[cc_index - 1] != `-`)
+			|| !v3_compiler_version_suffix_is_supported(version_suffix) {
+			return ''
+		}
+		stem[..cc_index] + 'c++' + version_suffix
+	} else {
+		return ''
+	}
+	cpp_base := cpp_stem + suffix
+	return if dir in ['', '.'] { cpp_base } else { os.join_path_single(dir, cpp_base) }
+}
+
+fn v3_driver_name_pattern_family(raw_name string) string {
+	mut name := raw_name.to_lower_ascii()
+	if name.ends_with('.exe') {
+		name = name[..name.len - 4]
+	}
+	for token, family in {
+		'clang++': 'clang'
+		'clang':   'clang'
+		'g++':     'gcc'
+		'gcc':     'gcc'
+		'c++':     'any'
+		'cc':      'any'
+	} {
+		if index := name.last_index(token) {
+			suffix := name[index + token.len..]
+			if (index == 0 || name[index - 1] == `-`)
+				&& v3_compiler_version_suffix_is_supported(suffix) {
+				return family
+			}
+		}
+	}
+	return ''
+}
+
+fn v3_compiler_version_suffix_is_supported(suffix string) bool {
+	if suffix == '' {
+		return true
+	}
+	if !suffix.starts_with('-') || suffix.len == 1 {
+		return false
+	}
+	return suffix[1..].bytes().all(it.is_digit() || it == `.`)
+}
+
+fn v3_gnu_driver_family(command string) string {
+	parts := v3_compiler_command_parts(command)
+	if parts.len != 1 {
+		return ''
+	}
+	name := os.file_name(parts[0].trim(' \t\r\n"\'')).to_lower_ascii()
+	expected_family := v3_driver_name_pattern_family(name)
+	if expected_family == '' {
+		return ''
+	}
+	version := cmdexec.run(parts[0], ['--version'])
+	if version.exit_code != 0 {
+		return ''
+	}
+	text := version.output.to_lower_ascii()
+	mut actual_family := ''
+	if text.contains('clang') && !text.contains('clang-cl') {
+		actual_family = 'clang'
+	} else if text.contains('gcc') || text.contains('free software foundation')
+		|| text.contains('mingw') {
+		actual_family = 'gcc'
+	}
+	if actual_family == '' || (expected_family != 'any' && expected_family != actual_family) {
+		return ''
+	}
+	return actual_family
+}
+
+fn v3_compiler_uses_msvc_driver_mode(command string, c_flags []string, ld_flags []string) bool {
+	parts := v3_compiler_command_parts(command)
+	name := if parts.len > 0 {
+		os.file_name(parts[0].trim(' \t\r\n"\'')).to_lower_ascii()
+	} else {
+		''
+	}
+	return name.contains('clang-cl') || '--driver-mode=cl' in parts || '--driver-mode=cl' in c_flags
+		|| '--driver-mode=cl' in ld_flags
+}
+
+fn v3_compiler_is_available(command string) bool {
+	parts := v3_compiler_command_parts(command)
+	if parts.len != 1 {
+		return false
+	}
+	executable := parts[0]
+	if os.is_executable(executable) {
+		return true
+	}
+	if _ := os.find_abs_path_of_executable(executable) {
+		return true
+	}
+	return false
+}
+
+fn validate_v3_cpp_linker(requirements types.NativeLinkRequirements, backend string, c_only bool, is_o bool, is_shared bool, generate_c_project string, target pref.Target, c_compiler string, cpp_compiler string, c_flags []string, ld_flags []string) ! {
+	if !requirements.requires_cpp {
+		return
+	}
+	if generate_c_project.len > 0 {
+		return error('`#linker c++` does not support `-generate-c-project` yet')
+	}
+	if backend != 'c' {
+		return error('`#linker c++` requires the C backend for native linking')
+	}
+	if is_shared && is_o {
+		return error('`#linker c++` cannot combine `-shared` with object output (`-o file.o` or `-is_o`)')
+	}
+	if c_only || is_o {
+		return
+	}
+	host := pref.host_target()
+	if target.os != host.os || target.arch != host.arch {
+		return error('`#linker c++` does not support cross-target linking yet; use `-o file.c` to generate C without linking')
+	}
+	c_family := v3_gnu_driver_family(c_compiler)
+	if c_family == '' || v3_compiler_uses_msvc_driver_mode(c_compiler, c_flags, ld_flags) {
+		return error('`#linker c++` requires a GNU-compatible GCC or Clang C driver; MSVC, clang-cl, TCC, and Emscripten driver modes are not supported')
+	}
+	if cpp_compiler.len == 0 || !v3_compiler_is_available(cpp_compiler) {
+		return error('`#linker c++` requires the C++ driver `${cpp_compiler}`; install it or select one with `-c++ <compiler>`')
+	}
+	cpp_family := v3_gnu_driver_family(cpp_compiler)
+	if cpp_family == '' || v3_compiler_uses_msvc_driver_mode(cpp_compiler, []string{}, []string{}) {
+		return error('`#linker c++` requires a GNU-compatible GCC or Clang C++ driver; `${cpp_compiler}` is not supported')
+	}
+	if c_family != cpp_family {
+		return error('`#linker c++` requires matching C and C++ driver families; got `${c_family}` and `${cpp_family}`')
+	}
+}
+
 fn v3_tcc_fast_link_allowed(mode pref.PkgConfigMode, user_ld_flags []string) bool {
 	return mode == .dynamic && user_ld_flags.len == 0
 }
@@ -6807,8 +7410,8 @@ fn expand_v3_module_search_paths(spec string, vroot string) []string {
 
 fn v3_driver_option_requires_value(option string) bool {
 	return option in ['-o', '-output', '-b', '-backend', '-os', '-arch', '-compile-backend',
-		'--compile-backend', '-d', '-define', '-gc', '-cc', '-thread-stack-size', '-path', '-cov',
-		'-coverage', '-file-list', '-message-limit', '-printfn', '-generate-c-project',
+		'--compile-backend', '-d', '-define', '-gc', '-cc', '-c++', '-thread-stack-size', '-path',
+		'-cov', '-coverage', '-file-list', '-message-limit', '-printfn', '-generate-c-project',
 		'-test-runner', '-run-only', '-profile-fns']
 }
 
@@ -7012,6 +7615,7 @@ pub fn run(args []string) {
 	mut c_compiler := 'cc'
 	mut c_compiler_explicit := false
 	mut c_compiler_arg_index := -1
+	mut cpp_compiler := ''
 	mut explicit_tcc := false
 	mut retry_compilation := true
 	mut gc_mode := 'none'
@@ -7238,6 +7842,9 @@ pub fn run(args []string) {
 			c_compiler = requested_compiler
 			c_compiler_explicit = true
 			c_compiler_arg_index = i
+			i += 2
+		} else if args[i] == '-c++' && i + 1 < args.len {
+			cpp_compiler = args[i + 1]
 			i += 2
 		} else if args[i] == '-thread-stack-size' && i + 1 < args.len {
 			thread_stack_size = args[i + 1].int()
@@ -7857,10 +8464,14 @@ pub fn run(args []string) {
 	} else {
 		effective_c_compiler_name(c_compiler, target)
 	}
+	if cpp_compiler.len == 0 {
+		cpp_compiler = v3_default_cpp_compiler(c_compiler)
+	}
 	explicit_tcc = c_compiler_explicit && effective_c_compiler == 'tinyc'
 	add_v3_tcc_compat_defines(mut user_defines, target.os, target.arch, is_shared, explicit_tcc)
 	prefs.ccompiler = effective_c_compiler
 	prefs.no_parallel = current_no_parallel
+	prefs.cppcompiler = cpp_compiler
 	prefs.c99 = c99
 	prefs.force_bounds_checking = force_bounds_checking
 	prefs.enable_globals = enable_globals_compat
@@ -8446,6 +9057,22 @@ pub fn run(args []string) {
 	b.metric('canonical AST texts', a.text_count(), 'texts')
 	b.metric('persistent worker threads', a.worker_count(), 'threads')
 
+	native_link_requirements := types.native_link_requirements(a) or {
+		eprintln(err.msg())
+		exit(1)
+	}
+	mut native_link_c_flags := environment_c_flags.clone()
+	native_link_c_flags << user_c_flags
+	mut native_link_ld_flags := environment_ld_flags.clone()
+	native_link_ld_flags << user_ld_flags
+	validate_v3_cpp_linker(native_link_requirements, backend, c_only || check_only
+		|| only_check_syntax, is_o, is_shared, generate_c_project, prefs.target, c_compiler,
+		prefs.cppcompiler, native_link_c_flags, native_link_ld_flags) or {
+		eprintln(err.msg())
+		exit(1)
+	}
+	link_with_cpp := native_link_requirements.requires_cpp && !c_only && !is_o
+
 	mut crun_build_identity := ''
 	if is_direct_vsh && should_run && !explicit_output {
 		carried_identity := os.getenv(v3_crun_build_identity_env)
@@ -8458,7 +9085,8 @@ pub fn run(args []string) {
 			_ = prepare_v3_cache_external_inputs(mut cache_state, a, prefs, user_files,
 				crun_c_flags)
 			crun_build_identity = v3_crun_build_identity(&cache_state, prefs, user_files,
-				crun_c_flags, user_ld_flags, is_strict, enable_globals_compat, input_file)
+				crun_c_flags, user_ld_flags, is_strict, enable_globals_compat, input_file,
+				native_link_requirements)
 			if crun_build_identity.len > 0 {
 				os.setenv(v3_crun_build_identity_env, crun_build_identity, true)
 			}
@@ -8516,7 +9144,7 @@ pub fn run(args []string) {
 	if backend == 'c' && program_cache_enabled && !cache_state.force_source
 		&& cache_state.parsed_from_source.len == 0 {
 		mut external_inputs_ready := restore_v3_cache_external_inputs(mut cache_state, user_files,
-			cache_c_flags, prefs.ccompiler, prefs.target, '')
+			cache_c_flags, prefs.ccompiler, prefs.target, '', native_link_requirements)
 		if !external_inputs_ready && incremental_cache_enabled {
 			incremental_snapshot = incremental_program_snapshot(a, user_files)
 			incremental_snapshot_ready = true
@@ -8525,7 +9153,7 @@ pub fn run(args []string) {
 			}
 			external_inputs_ready = restore_v3_cache_external_inputs(mut cache_state, user_files,
 				cache_c_flags, prefs.ccompiler, prefs.target,
-				incremental_snapshot.declaration_signature)
+				incremental_snapshot.declaration_signature, native_link_requirements)
 		}
 		if !external_inputs_ready
 			&& !prepare_v3_cache_external_inputs(mut cache_state, a, prefs, user_files, cache_c_flags) {
@@ -8536,19 +9164,25 @@ pub fn run(args []string) {
 			trace_v3_cache_fallback('native C sources declare types needed across cache units')
 			restart_v3_without_cache()
 		}
-		input := v3_cgen_cache_input(cache_state, user_files, cache_c_flags)
+		input := v3_cgen_cache_input(cache_state, user_files, cache_c_flags,
+			native_link_requirements)
 		cgen_cache_commit_exists = cache_state.manager.has_cgen_commit(input.source_files)
 		if entry := cache_state.manager.valid_cgen(input.source_files, input.generation_signature,
 			input.dependency_inputs)
 		{
 			metadata := os.read_file(entry.metadata) or { '' }
 			if decoded := decode_v3_cgen_metadata(metadata) {
-				cgen_cache_entry = entry
-				cgen_cache_metadata = decoded
-				cgen_cache_hit = true
-				if prepared := cache_state.manager.valid_cgen_prepared(entry) {
-					cgen_prepared_entry = prepared
-					cgen_prepared_hit = true
+				if !v3_cgen_metadata_matches_native_link_requirements(decoded,
+					native_link_requirements) {
+					trace_v3_cache_fallback('cached native link requirements do not match the active source')
+				} else {
+					cgen_cache_entry = entry
+					cgen_cache_metadata = decoded
+					cgen_cache_hit = true
+					if prepared := cache_state.manager.valid_cgen_prepared(entry) {
+						cgen_prepared_entry = prepared
+						cgen_prepared_hit = true
+					}
 				}
 			}
 		}
@@ -8579,7 +9213,10 @@ pub fn run(args []string) {
 						decoded_specs := decode_monomorph_cache_specs(spec_text)
 						decoded_used := decode_cached_used_fns(used_text)
 						if decoded_metadata := decode_v3_cgen_metadata(metadata) {
-							if decoded_used.len > 0 && body_text.len > 0 {
+							if !v3_cgen_metadata_matches_native_link_requirements(decoded_metadata,
+								native_link_requirements) {
+								trace_v3_cache_fallback('incremental cache native link requirements do not match the active source')
+							} else if decoded_used.len > 0 && body_text.len > 0 {
 								incremental_cache_restored = true
 								incremental_cache_hit = changed_keys.len > 0
 								incremental_changed_keys = changed_keys.clone()
@@ -8600,18 +9237,14 @@ pub fn run(args []string) {
 								}
 								generic_cache_hit = true
 								if changed_keys.len == 0 {
-									if decoded := decode_v3_cgen_metadata(metadata) {
-										materialized_body :=
-											modulecache.materialize_cached_body_string_definitions(body_text)
-										cgen_cache_entry = cache_state.manager.write_cgen(input.source_files,
-											input.generation_signature, input.dependency_inputs,
-											materialized_body, metadata) or {
-											modulecache.CgenEntry{}
-										}
-										if cgen_cache_entry.stamp.len > 0 {
-											cgen_cache_metadata = decoded
-											cgen_cache_hit = true
-										}
+									materialized_body :=
+										modulecache.materialize_cached_body_string_definitions(body_text)
+									cgen_cache_entry = cache_state.manager.write_cgen(input.source_files,
+										input.generation_signature, input.dependency_inputs,
+										materialized_body, metadata) or { modulecache.CgenEntry{} }
+									if cgen_cache_entry.stamp.len > 0 {
+										cgen_cache_metadata = decoded_metadata
+										cgen_cache_hit = true
 									}
 								}
 							}
@@ -8640,25 +9273,30 @@ pub fn run(args []string) {
 				used_text := os.read_file(entry.used) or { '' }
 				cached_program_used_fns = decode_cached_used_fns(used_text)
 				if cached_monomorph_specs.len > 0 && cached_program_used_fns.len > 0 {
-					generic_cache_entry = entry
-					generic_cache_hit = true
-					old_literal_text := os.read_file(entry.literals) or { '' }
-					cached_body := modulecache.materialize_cached_body_string_definitions(os.read_file(entry.body) or {
-						''
-					})
 					metadata := os.read_file(entry.metadata) or { '' }
-					if old_literals := decode_cached_runtime_strings(old_literal_text) {
-						if cgen_cache_commit_exists {
-							if rewritten := modulecache.rewrite_cached_runtime_strings(cached_body,
-								old_literals, generic_cache_runtime_strings)
-							{
-								if decoded := decode_v3_cgen_metadata(metadata) {
-									cgen_cache_entry = cache_state.manager.write_cgen(input.source_files,
-										input.generation_signature, input.dependency_inputs,
-										rewritten, metadata) or { modulecache.CgenEntry{} }
-									if cgen_cache_entry.stamp.len > 0 {
-										cgen_cache_metadata = decoded
-										cgen_cache_hit = true
+					if decoded := decode_v3_cgen_metadata(metadata) {
+						if !v3_cgen_metadata_matches_native_link_requirements(decoded,
+							native_link_requirements) {
+							trace_v3_cache_fallback('generic cache native link requirements do not match the active source')
+						} else {
+							generic_cache_entry = entry
+							generic_cache_hit = true
+							cgen_cache_metadata = decoded
+							old_literal_text := os.read_file(entry.literals) or { '' }
+							cached_body := modulecache.materialize_cached_body_string_definitions(os.read_file(entry.body) or {
+								''
+							})
+							if old_literals := decode_cached_runtime_strings(old_literal_text) {
+								if cgen_cache_commit_exists {
+									if rewritten := modulecache.rewrite_cached_runtime_strings(cached_body,
+										old_literals, generic_cache_runtime_strings)
+									{
+										cgen_cache_entry = cache_state.manager.write_cgen(input.source_files,
+											input.generation_signature, input.dependency_inputs,
+											rewritten, metadata) or { modulecache.CgenEntry{} }
+										if cgen_cache_entry.stamp.len > 0 {
+											cgen_cache_hit = true
+										}
 									}
 								}
 							}
@@ -9783,6 +10421,7 @@ pub fn run(args []string) {
 		c_standard := c_standard_flag(prefs.c99)
 		use_cached_dev_dylib := cache_state.manager.enabled && remove_binary_after_run && !is_prod
 			&& !is_shared && !is_selfhost && prefs.normalized_target_os() == 'macos'
+			&& !link_with_cpp
 		mut cc_dir := ''
 		mut cc_src := output_file
 		mut cc_out := ''
@@ -10020,8 +10659,8 @@ pub fn run(args []string) {
 		}
 		if !c_only || (dump_c_flags.len > 0 && generate_c_project.len == 0) {
 			resolved_c_flags = prepare_c_flags_for_link(generated_c_flags, environment_c_flags,
-				prefs.c99, pic_flag, target_args, prefs.target, c_compiler, cc_dir, mut
-				c_object_cache_stats) or {
+				prefs.c99, pic_flag, target_args, prefs.target, c_compiler, cc_dir,
+				link_with_cpp, mut c_object_cache_stats) or {
 				message := err.msg()
 				if request_macos_v3_c_error_fallback_from_message(macos_v3_fallback_file,
 					macos_v3_c_error_dir, c_compiler, message, [published_c_source, cache_plan_file,
@@ -10293,11 +10932,11 @@ pub fn run(args []string) {
 				}
 				if !cgen_cache_hit && program_cache_enabled {
 					published_cgen_cache_input := v3_cgen_cache_input(cache_state, user_files,
-						cache_c_flags)
+						cache_c_flags, native_link_requirements)
 					prepared_plan_entry = cache_state.manager.write_cgen(published_cgen_cache_input.source_files,
 						published_cgen_cache_input.generation_signature,
 						published_cgen_cache_input.dependency_inputs, generated_source, encode_v3_cgen_metadata(generated_c_flags,
-						interface_impl_signature, prefix_source_identity,
+						interface_impl_signature, prefix_source_identity, native_link_requirements,
 						cached_checker_diagnostics)) or { modulecache.CgenEntry{} }
 				}
 				if incremental_cache_restored && prepared_plan_entry.source.len > 0 {
@@ -10330,7 +10969,7 @@ pub fn run(args []string) {
 				if !generic_cache_hit && generic_cache_signature.len > 0
 					&& generated_monomorph_specs.len > 0 {
 					published_generic_input := v3_cgen_cache_input(cache_state, user_files,
-						cache_c_flags)
+						cache_c_flags, native_link_requirements)
 					cache_state.manager.write_generic_program(published_generic_input.source_files,
 						generic_cache_signature, published_generic_input.generation_signature,
 						published_generic_input.dependency_inputs,
@@ -10340,13 +10979,13 @@ pub fn run(args []string) {
 						modulecache.prune_unreferenced_static_string_definitions(prepared_cache.program_declarations),
 						prepared_cache.program_body_cache,
 						encode_cached_runtime_strings(generic_cache_runtime_strings), encode_v3_cgen_metadata(generated_c_flags,
-						interface_impl_signature, prefix_source_identity,
+						interface_impl_signature, prefix_source_identity, native_link_requirements,
 						cached_checker_diagnostics)) or {}
 				}
 				if (!generic_cache_hit || incremental_cache_hit)
 					&& incremental_snapshot.declaration_signature.len > 0 {
 					published_incremental_input := v3_cgen_cache_input(cache_state, user_files,
-						cache_c_flags)
+						cache_c_flags, native_link_requirements)
 					incremental_body := if incremental_cache_hit {
 						refreshed_incremental_body
 					} else {
@@ -10378,7 +11017,7 @@ pub fn run(args []string) {
 						encode_monomorph_cache_specs(incremental_specs),
 						prepared_cache.program_prefix_source, incremental_declarations,
 						incremental_tcc_declarations, prepared_cache.objects, encode_v3_cgen_metadata(generated_c_flags,
-						interface_impl_signature, prefix_source_identity,
+						interface_impl_signature, prefix_source_identity, native_link_requirements,
 						cached_checker_diagnostics)) or {}
 				}
 			}
@@ -10553,7 +11192,8 @@ pub fn run(args []string) {
 		mut tcc_cache_hit := false
 		mut used_tcc := false
 		if cached_dev_dylib.len > 0 && tcc_main_file.len > 0 && !link_uses_non_c_language
-			&& !is_c_debug && v3_tcc_fast_link_allowed(prefs.pkgconfig_mode, user_ld_flags) {
+			&& !link_with_cpp && !is_c_debug
+			&& v3_tcc_fast_link_allowed(prefs.pkgconfig_mode, user_ld_flags) {
 			tried_tcc = true
 			tcc_dir := os.join_path_single(os.join_path_single(prefs.vroot, 'thirdparty'), 'tcc')
 			tcc_path := os.join_path_single(tcc_dir, 'tcc.exe')
@@ -10614,6 +11254,7 @@ pub fn run(args []string) {
 		// linking the cached objects. Otherwise use the system compiler for the
 		// smaller cached main unit.
 		if !tried_tcc && !is_prod && !needs_objective_c && !link_uses_non_c_language
+			&& !link_with_cpp
 			&& (!tcc_link_has_incompatible_objects || cache_full_tcc_source.len > 0)
 			&& target_args.len == 0 && (!c_compiler_explicit || explicit_tcc)
 			&& (!cache_state.manager.enabled || cache_full_tcc_source.len > 0) && !is_c_debug
@@ -10702,11 +11343,44 @@ pub fn run(args []string) {
 				compiler_inputs << cached_dev_dylib
 			}
 			cc_args := c_flag_plan.compiler_args('out', compiler_inputs, [])
-			if !silent || show_cc {
-				println('  > ${cmdexec.display(c_compiler, cc_args)}')
+			mut active_linker_driver := c_compiler
+			if link_with_cpp {
+				active_linker_driver = prefs.cppcompiler
+				source_root := os.getwd()
+				mut cpp_plan_flags := c_flag_plan.before_inputs.clone()
+				cpp_plan_flags << c_flag_plan.after_inputs
+				mut cpp_linker_temporary_files := []string{}
+				mut cpp_args := cc_args.clone()
+				cpp_args = prepare_v3_cpp_linker_source_objects(active_linker_driver, cpp_args,
+					cpp_plan_flags, source_root, cc_dir, !silent || show_cc, mut
+					cpp_linker_temporary_files) or {
+					eprintln(err.msg())
+					cleanup_v3_cpp_linker_temporary_files(mut cpp_linker_temporary_files)
+					cleanup_c_build_dir(cc_dir)
+					exit(1)
+				}
+				if v3_link_args_have_c_source(cpp_args) {
+					cpp_args = v3_cpp_linker_c_source_args(cpp_args)
+					marker_object := prepare_v3_cpp_linker_marker(active_linker_driver,
+						cpp_plan_flags, source_root, cc_dir, !silent || show_cc, mut
+						cpp_linker_temporary_files) or {
+						eprintln(err.msg())
+						cleanup_v3_cpp_linker_temporary_files(mut cpp_linker_temporary_files)
+						cleanup_c_build_dir(cc_dir)
+						exit(1)
+					}
+					cpp_args.insert(0, marker_object)
+				}
+				result = run_v3_final_link(active_linker_driver, cpp_args, cc_dir,
+					native_link_requirements, !silent || show_cc, mut cpp_linker_temporary_files)
+				cleanup_v3_cpp_linker_temporary_files(mut cpp_linker_temporary_files)
+			} else {
+				if !silent || show_cc {
+					println('  > ${cmdexec.display(c_compiler, cc_args)}')
+				}
+				result = cmdexec.run_in(c_compiler, cc_args, cc_dir)
 			}
-			result = cmdexec.run_in(c_compiler, cc_args, cc_dir)
-			show_v3_c_compiler_output(show_c_output, c_compiler, result)
+			show_v3_c_compiler_output(show_c_output, active_linker_driver, result)
 			if result.exit_code != 0 {
 				if retry_compilation && v3_is_tcc_compilation_failure(c_compiler, result.output) {
 					fallback := 'cc'
@@ -10723,7 +11397,7 @@ pub fn run(args []string) {
 					return
 				}
 				if request_macos_v3_c_error_fallback(macos_v3_fallback_file, macos_v3_c_error_dir,
-					c_compiler, result.output, os.join_path_single(cc_dir, fallback_source),
+					active_linker_driver, result.output, os.join_path_single(cc_dir, fallback_source),
 					fallback_report_sources)
 				{
 					cleanup_c_build_dir(cc_dir)
@@ -10743,7 +11417,7 @@ Please install the corresponding development package/libraries and make sure the
 					eprintln('failed parallel C compilation')
 					eprintln(result.output)
 				} else if !retry_compilation {
-					eprintln('C compilation error (from ${os.file_name(c_compiler)}):')
+					eprintln('C compilation error (from ${os.file_name(active_linker_driver)}):')
 					eprintln(result.output)
 				} else {
 					eprintln('C compilation failed:')

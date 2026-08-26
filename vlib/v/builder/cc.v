@@ -1193,22 +1193,28 @@ fn (mut v Builder) setup_ccompiler_options(ccompiler string) {
 	}
 
 	// macOS code can include objective C  TODO remove once objective C is replaced with C
-	if v.pref.os in [.macos, .ios] {
-		if ccoptions.cc != .tcc && !user_darwin_ppc && !v.pref.is_bare && ccompiler != 'musl-gcc' {
-			ccoptions.source_args << '-x objective-c'
-		}
+	generated_source_language := if v.pref.os in [.macos, .ios] && ccoptions.cc != .tcc
+		&& !user_darwin_ppc && !v.pref.is_bare && ccompiler != 'musl-gcc' {
+		'objective-c'
+	} else {
+		'c'
+	}
+	if generated_source_language == 'objective-c' {
+		ccoptions.source_args << '-x objective-c'
 	}
 	// Newer Windows runner images can surface short paths with an uppercase `.C` suffix,
 	// which makes GCC/Clang compile the generated V C file as C++ unless we force C mode.
-	force_generated_c_language := v.pref.os == .windows && !v.pref.parallel_cc
-		&& ccoptions.cc in [.gcc, .clang, .emcc]
-	if force_generated_c_language {
-		ccoptions.source_args << '-x c'
+	// Preserve Objective-C for Darwin targets when the final linker is a C++ driver.
+	force_generated_source_language := !v.pref.parallel_cc
+		&& ((v.pref.os == .windows && ccoptions.cc in [.gcc, .clang, .emcc])
+		|| v.should_link_with_cpp())
+	if force_generated_source_language && generated_source_language != 'objective-c' {
+		ccoptions.source_args << '-x ${generated_source_language}'
 	}
 	// The C file we are compiling
 	if !v.pref.parallel_cc { // parallel_cc uses its own split up c files
 		ccoptions.source_args << v.tcc_quoted_path(v.out_name_c)
-		if force_generated_c_language {
+		if force_generated_source_language {
 			ccoptions.source_args << '-x none'
 		}
 	}
@@ -1250,6 +1256,9 @@ fn (mut v Builder) setup_ccompiler_options(ccompiler string) {
 	defines, others, libs := legacy_cflags.defines_others_libs()
 	ccoptions.pre_args << defines
 	ccoptions.pre_args << others
+	if v.should_link_with_cpp() && !v.pref.parallel_cc {
+		ccoptions.pre_args = cpp_linker_c_source_args(ccoptions.pre_args)
+	}
 	ccoptions.linker_flags << libs
 	ccoptions.linker_flags << ordered_link_flags
 	ccoptions.pkgconfig_pthread = pkgconfig_pthread
@@ -1746,6 +1755,268 @@ fn without_ccompiler_args(args []string) []string {
 	return filtered
 }
 
+fn is_c_source_path_arg(arg string) bool {
+	trimmed := arg.trim_space()
+	if trimmed == '' || trimmed.starts_with('-') {
+		return false
+	}
+	path := trimmed.trim('\'"')
+	return os.file_ext(path) == '.c'
+}
+
+fn cpp_linker_flag_consumes_next_operand(flag string) bool {
+	return flag in ['-B', '-D', '-F', '-I', '-L', '-MF', '-MQ', '-MT', '-U', '-Xlinker', '--sysroot',
+		'--target', '-arch', '-force_load', '-framework', '-idirafter', '-imacros', '-include',
+		'-iprefix', '-iquote', '-isystem', '-isysroot', '-iwithprefix', '-iwithprefixbefore',
+		'-mllvm', '-o', '-target', '-weak_framework', '-weak_library']
+}
+
+// A C++ driver treats `.c` inputs as C++ by default. Keep every C source supplied
+// through `#flag` in C mode without changing the language of adjacent object or
+// library inputs. The generated V C source is handled separately in
+// `setup_ccompiler_options`.
+fn cpp_linker_c_source_args(args []string) []string {
+	mut result := []string{cap: args.len + 6}
+	mut explicit_language := ''
+	mut expects_language := false
+	mut skip_operand := false
+	for arg in args {
+		trimmed := arg.trim_space()
+		if skip_operand {
+			skip_operand = false
+			result << arg
+			continue
+		}
+		if expects_language {
+			explicit_language = trimmed.trim('\'"')
+			expects_language = false
+			result << arg
+			continue
+		}
+		if trimmed == '-x' {
+			expects_language = true
+			result << arg
+			continue
+		}
+		if trimmed.starts_with('-x ') {
+			explicit_language = trimmed[3..].trim_space().trim('\'"')
+			result << arg
+			continue
+		}
+		if trimmed.starts_with('-x') && trimmed.len > 2 {
+			explicit_language = trimmed[2..].trim_space().trim('\'"')
+			result << arg
+			continue
+		}
+		if cpp_linker_flag_consumes_next_operand(trimmed) {
+			skip_operand = true
+			result << arg
+			continue
+		}
+		if is_c_source_path_arg(arg) && explicit_language in ['', 'none'] {
+			result << ['-x c', arg, '-x none']
+		} else {
+			result << arg
+		}
+	}
+	return result
+}
+
+fn compiler_command_uses_msvc_driver_mode(command string, cflags string, ldflags string) bool {
+	compiler_name := os.file_name(command).to_lower_ascii()
+	return compiler_name.contains('clang-cl')
+		|| pref.contains_exact_cflag_token(command, '--driver-mode=cl')
+		|| pref.contains_exact_cflag_token(cflags, '--driver-mode=cl')
+		|| pref.contains_exact_cflag_token(ldflags, '--driver-mode=cl')
+		|| pref.contains_exact_cflag_token(os.getenv('CFLAGS'), '--driver-mode=cl')
+		|| pref.contains_exact_cflag_token(os.getenv('LDFLAGS'), '--driver-mode=cl')
+}
+
+fn compiler_name_gnu_family(raw_name string) string {
+	mut name := raw_name.to_lower_ascii()
+	if name.ends_with('.exe') {
+		name = name[..name.len - 4]
+	}
+	for token, family in {
+		'clang++': 'clang'
+		'clang':   'clang'
+		'g++':     'gcc'
+		'gcc':     'gcc'
+		'c++':     'any'
+		'cc':      'any'
+	} {
+		if index := name.last_index(token) {
+			suffix := name[index + token.len..]
+			valid_version_suffix := suffix == '' || (suffix.starts_with('-') && suffix.len > 1
+				&& suffix[1..].bytes().all(it.is_digit() || it == `.`))
+			if (index == 0 || name[index - 1] == `-`) && valid_version_suffix {
+				return family
+			}
+		}
+	}
+	return ''
+}
+
+fn compiler_command_gnu_family(command string) string {
+	if command.contains(' ') && !os.is_file(command) {
+		return ''
+	}
+	executable := command.trim(' \t\r\n"\'')
+	expected_family := compiler_name_gnu_family(os.file_name(executable))
+	if expected_family == '' {
+		return ''
+	}
+	result := os.execute('${os.quoted_path(executable)} --version 2>&1')
+	if result.exit_code != 0 {
+		return ''
+	}
+	resolved, ok := ccompiler_type_from_version_output_with_ok(result.output)
+	if !ok {
+		return ''
+	}
+	actual_family := match resolved {
+		.clang { 'clang' }
+		.gcc, .mingw, .cplusplus { 'gcc' }
+		else { '' }
+	}
+	if actual_family == '' || (expected_family != 'any' && expected_family != actual_family) {
+		return ''
+	}
+	return actual_family
+}
+
+fn compiler_command_is_known_gnu_driver(command string) bool {
+	return compiler_command_gnu_family(command) != ''
+}
+
+pub fn (v &Builder) should_link_with_cpp() bool {
+	return v.table.requires_cpp_linker && !v.pref.is_o && v.pref.build_mode != .build_module
+}
+
+fn (v &Builder) ensure_cpp_linker_is_supported(ccompiler string) {
+	if !v.should_link_with_cpp() {
+		return
+	}
+	if v.pref.os != pref.get_host_os() || v.pref.arch != pref.get_host_arch() {
+		verror('`#linker c++` does not support cross-target linking yet; use `-o file.c` to generate C without linking')
+	}
+	if v.pref.generate_c_project != '' {
+		verror('`#linker c++` does not support `-generate-c-project` yet')
+	}
+	c_family := compiler_command_gnu_family(ccompiler)
+	if c_family == '' || v.ccoptions.cc in [.tcc, .msvc, .emcc] || v.pref.ccompiler_type == .msvc
+		|| compiler_command_uses_msvc_driver_mode(ccompiler, v.pref.cflags, v.pref.ldflags) {
+		verror('`#linker c++` requires a GNU-compatible GCC or Clang C driver; MSVC, clang-cl, TCC, and Emscripten driver modes are not supported')
+	}
+	cppcompiler := v.pref.cppcompiler
+	if cppcompiler == '' || !ccompiler_is_available(cppcompiler) {
+		verror('`#linker c++` requires the C++ driver `${cppcompiler}`; install it or select one with `-c++ <compiler>`')
+	}
+	cpp_family := compiler_command_gnu_family(cppcompiler)
+	if cpp_family == '' || compiler_command_uses_msvc_driver_mode(cppcompiler, '', '') {
+		verror('`#linker c++` requires a GNU-compatible GCC or Clang C++ driver; `${cppcompiler}` is not supported')
+	}
+	if c_family != cpp_family {
+		verror('`#linker c++` requires matching C and C++ driver families; got `${c_family}` and `${cpp_family}`')
+	}
+}
+
+pub fn (v &Builder) final_linker_driver(ccompiler string) string {
+	return if v.should_link_with_cpp() { v.pref.cppcompiler } else { ccompiler }
+}
+
+fn is_flto_token(raw_token string) bool {
+	token := raw_token.trim_space().trim('\'"')
+	return token == '-flto' || token.starts_with('-flto=')
+}
+
+fn is_c_language_standard_token(raw_token string) bool {
+	token := raw_token.trim_space().trim('\'"')
+	if !token.starts_with('-std=') {
+		return false
+	}
+	standard := token.all_after('-std=')
+	return (standard.starts_with('c') && !standard.starts_with('c++'))
+		|| (standard.starts_with('gnu') && !standard.starts_with('gnu++'))
+		|| standard.starts_with('iso9899:')
+}
+
+fn is_cpp_marker_incompatible_token(raw_token string) bool {
+	return is_flto_token(raw_token) || is_c_language_standard_token(raw_token)
+}
+
+fn without_cpp_marker_incompatible_tokens(input string) string {
+	mut tokens := []string{}
+	mut start := -1
+	mut quote := u8(0)
+	mut escaped := false
+	for i, ch in input.bytes() {
+		if start < 0 {
+			if ch in [` `, `\t`, `\r`, `\n`] {
+				continue
+			}
+			start = i
+		}
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == `\\` && quote != `'` {
+			escaped = true
+			continue
+		}
+		if ch in [`'`, `"`] {
+			if quote == 0 {
+				quote = ch
+			} else if quote == ch {
+				quote = 0
+			}
+			continue
+		}
+		if quote == 0 && ch in [` `, `\t`, `\r`, `\n`] {
+			token := input[start..i]
+			if !is_cpp_marker_incompatible_token(token) {
+				tokens << token
+			}
+			start = -1
+		}
+	}
+	if start >= 0 {
+		token := input[start..]
+		if !is_cpp_marker_incompatible_token(token) {
+			tokens << token
+		}
+	}
+	return tokens.join(' ')
+}
+
+// GCC suppresses its default C++ runtime when every input is explicitly forced
+// to C. A tiny C++-compiled object placed before those inputs makes the final
+// C++ driver select its own ABI runtime, without naming libstdc++ or libc++.
+fn (mut v Builder) prepare_cpp_linker_marker() string {
+	marker_source := '${v.out_name_c}.linker.cpp'
+	marker_object := '${v.out_name_c}.linker.o'
+	os.write_file(marker_source, '// V #linker c++ driver marker\n') or {
+		verror('cannot create the temporary `#linker c++` marker: ${err}')
+	}
+	v.pref.cleanup_files << [marker_source, marker_object]
+	mut marker_args := v.thirdparty_object_args(v.ccoptions, [
+		'-o ${v.tcc_quoted_path(marker_object)}',
+		'-c ${v.tcc_quoted_path(marker_source)}',
+	], true)
+	marker_args = marker_args.map(without_cpp_marker_incompatible_tokens(it)).filter(it != '')
+	cppcompiler := v.pref.cppcompiler
+	cmd := '${v.quote_compiler_name(cppcompiler)} ${marker_args.join(' ')}'
+	if v.pref.show_cc {
+		println('> C++ linker marker cmd: ${cmd}')
+	}
+	res := os.execute(cmd)
+	if res.exit_code != 0 || !os.is_file(marker_object) {
+		verror('failed to prepare the temporary `#linker c++` marker with `${cppcompiler}`:\n${res.output}')
+	}
+	return v.tcc_quoted_path(marker_object)
+}
+
 fn (v &Builder) retry_command_boundary(args []string) int {
 	if v.pref.is_run || v.pref.is_crun {
 		command := if v.pref.is_run { 'run' } else { 'crun' }
@@ -1854,6 +2125,9 @@ pub fn (mut v Builder) cc() {
 		return
 	}
 	if v.pref.generate_c_project != '' {
+		if v.should_link_with_cpp() {
+			verror('`#linker c++` does not support `-generate-c-project` yet')
+		}
 		v.pref.skip_running = true
 		v.generate_c_project()
 		return
@@ -1871,6 +2145,9 @@ pub fn (mut v Builder) cc() {
 		return
 	}
 	v.ensure_imported_coroutines_runtime() or { verror(err.msg()) }
+	if v.should_link_with_cpp() && v.pref.os != pref.get_host_os() {
+		verror('`#linker c++` does not support cross-target linking yet; use `-o file.c` to generate C without linking')
+	}
 	// Cross compiling for Windows
 	if v.pref.os == .windows && v.pref.ccompiler != 'msvc' {
 		$if !windows {
@@ -1905,6 +2182,7 @@ pub fn (mut v Builder) cc() {
 			ccompiler = 'clang'
 		}
 		v.setup_ccompiler_options(ccompiler)
+		v.ensure_cpp_linker_is_supported(ccompiler)
 		v.build_thirdparty_obj_files()
 		v.setup_output_name()
 
@@ -1934,7 +2212,13 @@ pub fn (mut v Builder) cc() {
 			}
 		}
 		//
-		all_args := v.all_args(v.ccoptions)
+		mut all_args := v.all_args(v.ccoptions)
+		mut linker_driver := ccompiler
+		if v.should_link_with_cpp() && !v.pref.parallel_cc {
+			marker_object := v.prepare_cpp_linker_marker()
+			all_args.insert(0, marker_object)
+			linker_driver = v.final_linker_driver(ccompiler)
+		}
 		v.dump_c_options(all_args)
 		mut rsp_args := all_args.map(v.rsp_safe_arg(it))
 		rsp_args = rsp_args.map(v.tcc_windows_path_arg(it))
@@ -1944,7 +2228,7 @@ pub fn (mut v Builder) cc() {
 		} else {
 			rsp_args.join(' ')
 		}
-		mut cmd := '${v.quote_compiler_name(ccompiler)} ${str_args}'
+		mut cmd := '${v.quote_compiler_name(linker_driver)} ${str_args}'
 		if v.pref.parallel_cc {
 			// In parallel cc mode, all we want in cc() is build the str_args.
 			// Actual cc logic then happens in `parallel_cc()`
@@ -1958,7 +2242,7 @@ pub fn (mut v Builder) cc() {
 			response_file_content = str_args.replace('\\', '\\\\')
 			write_response_file(response_file, response_file_content)
 			rspexpr := '@${v.tcc_windows_path(response_file)}'
-			cmd = '${v.quote_compiler_name(ccompiler)} ${os.quoted_path(rspexpr)}'
+			cmd = '${v.quote_compiler_name(linker_driver)} ${os.quoted_path(rspexpr)}'
 			if !v.ccoptions.debug_mode {
 				v.pref.cleanup_files << response_file
 			}
@@ -1978,12 +2262,16 @@ pub fn (mut v Builder) cc() {
 		v.last_cc_cmd = cmd
 		v.show_cc(cmd, response_file, response_file_content)
 		// Run
-		ccompiler_label := 'C ${os.file_name(ccompiler):3}'
+		ccompiler_label := if linker_driver == ccompiler {
+			'C ${os.file_name(ccompiler):3}'
+		} else {
+			'C++ ${os.file_name(linker_driver):3}'
+		}
 		util.timing_start(ccompiler_label)
 		res := os.execute(cmd)
 		util.timing_measure(ccompiler_label)
 		if v.pref.show_c_output {
-			v.show_c_compiler_output(ccompiler, res)
+			v.show_c_compiler_output(linker_driver, res)
 		}
 		os.chdir(original_pwd) or {}
 		vcache.dlog('| Builder.' + @FN,
@@ -2046,10 +2334,10 @@ pub fn (mut v Builder) cc() {
 					missing_compiler_info())
 			}
 		}
-		v.post_process_c_compiler_output(ccompiler, res)
+		v.post_process_c_compiler_output(linker_driver, res)
 		// Print the C command
 		if v.pref.is_verbose {
-			println('${ccompiler}')
+			println('${linker_driver}')
 			println('=========\n')
 		}
 		break

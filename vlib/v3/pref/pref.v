@@ -49,6 +49,7 @@ pub mut:
 	pkgconfig_mode        PkgConfigMode
 	backend               string = 'c'
 	ccompiler             string = 'gcc'
+	cppcompiler           string = 'c++'
 	c99                   bool
 	force_bounds_checking bool
 	enable_globals        bool

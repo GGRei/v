@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import v3.cmdexec
@@ -1999,5 +2000,601 @@ fn test_driver_static_pkgconfig_fact_ldflags_and_dynamic_c_invariance() {
 		'v_static_pkgconfig=true'] {
 		assert_driver_cli_failure(v3_bin, ['-d', define, '-check', source],
 			'is a read-only compiler value')
+	}
+}
+
+struct V3CppDriverRecorderInvocation {
+	driver string
+	cwd    string
+	args   []string
+}
+
+fn v3_cpp_driver_recorder_invocations(path string) []V3CppDriverRecorderInvocation {
+	if !os.is_file(path) {
+		return []
+	}
+	mut invocations := []V3CppDriverRecorderInvocation{}
+	for line in os.read_lines(path) or { panic(err) } {
+		if line.len == 0 {
+			continue
+		}
+		invocations << json.decode(V3CppDriverRecorderInvocation, line) or { panic(err) }
+	}
+	return invocations
+}
+
+fn v3_cpp_driver_recorder_path(invocation V3CppDriverRecorderInvocation, path string) string {
+	if os.is_abs_path(path) {
+		return os.norm_path(path)
+	}
+	return os.norm_path(os.join_path(invocation.cwd, path))
+}
+
+fn v3_cpp_driver_recorder_output(invocation V3CppDriverRecorderInvocation) string {
+	mut output := ''
+	mut output_count := 0
+	for index, arg in invocation.args {
+		if arg != '-o' {
+			continue
+		}
+		output_count++
+		assert index + 1 < invocation.args.len, invocation.args.str()
+		output = invocation.args[index + 1]
+	}
+	assert output_count == 1, invocation.args.str()
+	assert output.len > 0, invocation.args.str()
+	return v3_cpp_driver_recorder_path(invocation, output)
+}
+
+fn test_driver_cpp_linker_directive_is_exact_and_non_link_outputs_stay_c() {
+	root := os.join_path(os.vtmp_dir(), 'v3_driver_cpp_linker_modes_${os.getpid()}')
+	os.rmdir_all(root) or {}
+	os.mkdir_all(root) or { panic(err) }
+	old_cflags := os.getenv_opt('CFLAGS')
+	old_ldflags := os.getenv_opt('LDFLAGS')
+	old_vflags := os.getenv_opt('VFLAGS')
+	old_recorder_log := os.getenv_opt('V3_CPP_LINKER_RECORDER_LOG')
+	defer {
+		if value := old_cflags {
+			os.setenv('CFLAGS', value, true)
+		} else {
+			os.unsetenv('CFLAGS')
+		}
+		if value := old_ldflags {
+			os.setenv('LDFLAGS', value, true)
+		} else {
+			os.unsetenv('LDFLAGS')
+		}
+		if value := old_vflags {
+			os.setenv('VFLAGS', value, true)
+		} else {
+			os.unsetenv('VFLAGS')
+		}
+		if value := old_recorder_log {
+			os.setenv('V3_CPP_LINKER_RECORDER_LOG', value, true)
+		} else {
+			os.unsetenv('V3_CPP_LINKER_RECORDER_LOG')
+		}
+		os.rmdir_all(root) or {}
+	}
+	os.unsetenv('CFLAGS')
+	os.unsetenv('LDFLAGS')
+	os.unsetenv('VFLAGS')
+	os.unsetenv('V3_CPP_LINKER_RECORDER_LOG')
+	v3_bin := build_driver_cli_v3(root)
+	active := os.join_path(root, 'active.v')
+	inactive := os.join_path(root, 'inactive.v')
+	plain := os.join_path(root, 'plain.v')
+	invalid := os.join_path(root, 'invalid.v')
+	os.write_file(active, 'module main\n#linker c++\n#linker c++\nfn main() {}\n')!
+	os.write_file(inactive,
+		'module main\n\$if false {\n\t#linker c++\n}\nfn main() { println(42) }\n')!
+	os.write_file(invalid, 'module main\n#linker cpp\nfn main() {}\n')!
+	os.write_file(plain, 'module main\nfn main() { println(7) }\n')!
+	executable_suffix := if os.user_os() == 'windows' { '.exe' } else { '' }
+	recorder_source := os.join_path(root, 'driver_recorder.v')
+	recorder_binary := os.join_path(root, 'driver_recorder${executable_suffix}')
+	recorder_log := os.join_path(root, 'driver_recorder.jsonl')
+	os.write_file(recorder_source, 'module main
+
+import json
+import os
+
+struct DriverInvocation {
+	driver string
+	cwd    string
+	args   []string
+}
+
+fn main() {
+	log_path := os.getenv("V3_CPP_LINKER_RECORDER_LOG")
+	if log_path.len == 0 {
+		exit(2)
+	}
+	mut driver := os.file_name(os.args[0]).to_lower_ascii()
+	if driver.ends_with(".exe") {
+		driver = driver[..driver.len - 4]
+	}
+	args := os.args[1..]
+	record := json.encode(DriverInvocation{
+		driver: driver
+		cwd: os.getwd()
+		args: args
+	}) + "\\n"
+	mut log := os.open_append(log_path) or { exit(3) }
+	log.write_string(record) or { exit(3) }
+	log.close()
+	if args == ["--version"] {
+		match driver {
+			"gcc", "g++" { println("gcc (GCC) 13.2.0") }
+			"clang", "clang++" { println("clang version 17.0.0") }
+			else { exit(4) }
+		}
+		return
+	}
+	mut output := ""
+	mut output_count := 0
+	for index, arg in args {
+		if arg.starts_with("@") {
+			exit(5)
+		}
+		if arg == "-o" {
+			output_count++
+			if index + 1 >= args.len {
+				exit(6)
+			}
+			output = args[index + 1]
+		}
+	}
+	if output_count != 1 || output.len == 0 {
+		exit(7)
+	}
+	os.mkdir_all(os.dir(output)) or { exit(8) }
+	os.write_file(output, "") or { exit(8) }
+}
+')!
+	recorder_build := cmdexec.run(@VEXE, ['-gc', 'none', '-no-retry-compilation', '-o',
+		recorder_binary, recorder_source])
+	assert recorder_build.exit_code == 0, recorder_build.output
+	fake_gcc := os.join_path(root, 'gcc${executable_suffix}')
+	fake_gpp := os.join_path(root, 'g++${executable_suffix}')
+	fake_clang := os.join_path(root, 'clang${executable_suffix}')
+	fake_clangpp := os.join_path(root, 'clang++${executable_suffix}')
+	for fake_driver in [fake_gcc, fake_gpp, fake_clang, fake_clangpp] {
+		os.cp(recorder_binary, fake_driver)!
+	}
+	os.write_file(recorder_log, '')!
+	os.setenv('V3_CPP_LINKER_RECORDER_LOG', recorder_log, true)
+	assert_driver_cli_failure(v3_bin, ['-check', invalid], '`#linker` expects exactly `c++`')
+
+	missing_cpp := os.join_path(root, 'v3_missing_cpp_driver_issue74${executable_suffix}')
+	assert !os.exists(missing_cpp)
+	check := cmdexec.run(v3_bin, ['-c++', missing_cpp, '-check', active])
+	assert check.exit_code == 0, check.output
+	c_output := os.join_path(root, 'active.c')
+	c_only := cmdexec.run(v3_bin, ['-c++', missing_cpp, '-o', c_output, active])
+	assert c_only.exit_code == 0, c_only.output
+	assert os.is_file(c_output)
+
+	os.write_file(recorder_log, '')!
+	assert_driver_cli_failure(v3_bin, ['-nocache', '-cc', fake_gcc, '-c++', missing_cpp, '-shared',
+		'-o', os.join_path(root, 'active.o'), active],
+		'`#linker c++` cannot combine `-shared` with object output (`-o file.o` or `-is_o`)')
+	assert v3_cpp_driver_recorder_invocations(recorder_log).len == 0
+
+	os.write_file(recorder_log, '')!
+	duplicate_output := os.join_path(root, 'duplicate${executable_suffix}')
+	duplicate := cmdexec.run(v3_bin, ['-nocache', '-cc', fake_gcc, '-c++', fake_gpp, '-o',
+		duplicate_output, active])
+	assert duplicate.exit_code == 0, duplicate.output
+	assert os.is_file(duplicate_output)
+	duplicate_invocations := v3_cpp_driver_recorder_invocations(recorder_log)
+	duplicate_targets := duplicate_invocations.filter(it.args != ['--version'])
+	assert duplicate_targets.len == 2, duplicate_invocations.str()
+	assert duplicate_targets.all(it.driver == 'g++'), duplicate_invocations.str()
+	marker_invocations := duplicate_targets.filter('-c' in it.args)
+	link_invocations := duplicate_targets.filter('-c' !in it.args)
+	assert marker_invocations.len == 1, duplicate_invocations.str()
+	assert link_invocations.len == 1, duplicate_invocations.str()
+	marker_output := v3_cpp_driver_recorder_output(marker_invocations[0])
+	assert marker_output.ends_with('.o'), marker_invocations[0].args.str()
+	assert marker_invocations[0].args.any(it.ends_with('.cpp')), marker_invocations[0].args.str()
+
+	assert os.base(v3_cpp_driver_recorder_output(link_invocations[0])) == 'out', link_invocations[0].args.str()
+
+	assert link_invocations[0].args.filter(v3_cpp_driver_recorder_path(link_invocations[0], it) == marker_output).len == 1, link_invocations[0].args.str()
+
+	assert !duplicate_targets.any(it.driver == 'gcc'), duplicate_invocations.str()
+
+	os.write_file(recorder_log, '')!
+	object_output := os.join_path(root, 'active.o')
+	object_build := cmdexec.run(v3_bin, ['-nocache', '-cc', fake_gcc, '-c++', missing_cpp, '-o',
+		object_output, active])
+	assert object_build.exit_code == 0, object_build.output
+	assert os.is_file(object_output)
+	assert !object_build.output.contains(missing_cpp), object_build.output
+	assert !os.exists(missing_cpp)
+	object_invocations := v3_cpp_driver_recorder_invocations(recorder_log)
+	assert object_invocations.len == 1, object_invocations.str()
+	assert object_invocations[0].driver == 'gcc', object_invocations.str()
+	assert '-c' in object_invocations[0].args, object_invocations[0].args.str()
+	assert os.base(v3_cpp_driver_recorder_output(object_invocations[0])) == 'out', object_invocations[0].args.str()
+
+	assert !object_invocations.any(it.driver == 'g++'), object_invocations.str()
+	assert missing_cpp !in object_invocations[0].args, object_invocations.str()
+
+	inactive_output := os.join_path(root, 'inactive${if os.user_os() == 'windows' {
+		'.exe'
+	} else {
+		''
+	}}')
+	inactive_build := cmdexec.run(v3_bin, ['-c++', missing_cpp, '-o', inactive_output, inactive])
+	assert inactive_build.exit_code == 0, inactive_build.output
+	assert cmdexec.run(inactive_output, []string{}).output.trim_space() == '42'
+	mut plain_environment := os.environ()
+	plain_environment['V3CACHE'] = os.join_path(root, 'plain-cache')
+	for iteration in 0 .. 2 {
+		plain_output := os.join_path(root, 'plain_${iteration}${if os.user_os() == 'windows' {
+			'.exe'
+		} else {
+			''
+		}}')
+		plain_build := run_driver_with_environment(v3_bin, ['-c++', missing_cpp, '-showcc', '-o',
+			plain_output, plain], plain_environment)
+		assert plain_build.exit_code == 0, plain_build.output
+		assert !plain_build.output.contains(missing_cpp), plain_build.output
+		if iteration == 1 {
+			assert plain_build.output.contains('cgen (cached)'), plain_build.output
+		}
+		assert cmdexec.run(plain_output, []string{}).output.trim_space() == '7'
+	}
+
+	project_dir := os.join_path(root, 'generated-project')
+	assert_driver_cli_failure(v3_bin, ['-generate-c-project', project_dir, active],
+		'does not support `-generate-c-project`')
+	for compiler in ['tcc', 'clang-cl', 'msvc', 'emcc', 'v3_unknown_native_driver_issue74'] {
+		assert_driver_cli_failure(v3_bin, ['-cc', compiler, '-c++', missing_cpp, active],
+			'requires a GNU-compatible GCC or Clang C driver')
+	}
+
+	os.write_file(recorder_log, '')!
+	cl_like := cmdexec.run(v3_bin, ['-nocache', '-cc', fake_clang, '-c++', missing_cpp, '-cflags',
+		'--driver-mode=cl-like', active])
+	assert cl_like.exit_code != 0
+	assert cl_like.output.contains('requires the C++ driver `${missing_cpp}`'), cl_like.output
+	cl_like_invocations := v3_cpp_driver_recorder_invocations(recorder_log)
+	assert cl_like_invocations.len == 1, cl_like_invocations.str()
+	assert cl_like_invocations[0].driver == 'clang', cl_like_invocations.str()
+	assert cl_like_invocations[0].args == ['--version'], cl_like_invocations.str()
+
+	os.write_file(recorder_log, '')!
+	cl_mode := cmdexec.run(v3_bin, ['-nocache', '-cc', fake_clang, '-c++', missing_cpp, '-cflags',
+		'--driver-mode=cl', active])
+	assert cl_mode.exit_code != 0
+	assert cl_mode.output.contains('requires a GNU-compatible GCC or Clang C driver'), cl_mode.output
+	assert !cl_mode.output.contains('requires the C++ driver `${missing_cpp}`'), cl_mode.output
+	cl_mode_invocations := v3_cpp_driver_recorder_invocations(recorder_log)
+	assert cl_mode_invocations.len == 1, cl_mode_invocations.str()
+	assert cl_mode_invocations[0].driver == 'clang', cl_mode_invocations.str()
+	assert cl_mode_invocations[0].args == ['--version'], cl_mode_invocations.str()
+
+	assert_driver_cli_failure(v3_bin, ['-cc', fake_gcc, '-c++', missing_cpp, active],
+		'requires the C++ driver')
+	$if !windows {
+		invalid_driver_dir := os.join_path(root, 'invalid-driver')
+		os.mkdir_all(invalid_driver_dir)!
+		invalid_fake_gcc := os.join_path(invalid_driver_dir, 'gcc')
+		os.write_file(invalid_fake_gcc, '#!/bin/sh\necho "not a compiler"\n')!
+		os.chmod(invalid_fake_gcc, 0o700)!
+		assert_driver_cli_failure(v3_bin, ['-cc', invalid_fake_gcc, '-c++', missing_cpp, active],
+			'requires a GNU-compatible GCC or Clang C driver')
+	}
+	os.write_file(recorder_log, '')!
+	assert_driver_cli_failure(v3_bin, ['-cc', fake_gcc, '-c++', fake_clangpp, active],
+		'requires matching C and C++ driver families')
+	mismatch_invocations := v3_cpp_driver_recorder_invocations(recorder_log)
+	assert mismatch_invocations.len == 2, mismatch_invocations.str()
+	assert mismatch_invocations.map(it.driver) == ['gcc', 'clang++'], mismatch_invocations.str()
+	assert mismatch_invocations.all(it.args == ['--version']), mismatch_invocations.str()
+
+	host := pref.host_target()
+	cross_arch := if host.arch == 'arm64' { 'amd64' } else { 'arm64' }
+	assert_driver_cli_failure(v3_bin, ['-arch', cross_arch, '-c++', missing_cpp, active],
+		'does not support cross-target linking yet')
+}
+
+struct V3CppLinkerDriverPair {
+	c   string
+	cpp string
+}
+
+fn v3_cpp_test_compiler_version_suffix_is_supported(suffix string) bool {
+	if suffix == '' {
+		return true
+	}
+	if !suffix.starts_with('-') || suffix.len == 1 {
+		return false
+	}
+	return suffix[1..].bytes().all(it.is_digit() || it == `.`)
+}
+
+fn v3_cpp_test_driver_name_family(raw_name string) string {
+	mut name := raw_name.to_lower_ascii()
+	if name.ends_with('.exe') {
+		name = name[..name.len - 4]
+	}
+	for token, family in {
+		'clang++': 'clang'
+		'clang':   'clang'
+		'g++':     'gcc'
+		'gcc':     'gcc'
+		'c++':     'any'
+		'cc':      'any'
+	} {
+		if index := name.last_index(token) {
+			suffix := name[index + token.len..]
+			if (index == 0 || name[index - 1] == `-`)
+				&& v3_cpp_test_compiler_version_suffix_is_supported(suffix) {
+				return family
+			}
+		}
+	}
+	return ''
+}
+
+fn v3_cpp_test_gnu_driver_family(command string) string {
+	name := os.file_name(command).to_lower_ascii()
+	expected_family := v3_cpp_test_driver_name_family(name)
+	if expected_family == '' {
+		return ''
+	}
+	version := cmdexec.run(command, ['--version'])
+	if version.exit_code != 0 {
+		return ''
+	}
+	text := version.output.to_lower_ascii()
+	mut actual_family := ''
+	if text.contains('clang') && !text.contains('clang-cl') {
+		actual_family = 'clang'
+	} else if text.contains('gcc') || text.contains('free software foundation')
+		|| text.contains('mingw') {
+		actual_family = 'gcc'
+	}
+	if actual_family == '' || (expected_family != 'any' && expected_family != actual_family) {
+		return ''
+	}
+	return actual_family
+}
+
+fn v3_cpp_spy_args(line string) []string {
+	tab := line.index_u8(`\t`) or { return [] }
+	return line[tab + 1..].split(' ').filter(it.len > 0)
+}
+
+fn v3_cpp_response_file_args(showcc_output string) []string {
+	mut result := []string{}
+	mut reading_response_file := false
+	for line in showcc_output.split_into_lines() {
+		if line.contains('C++ linker response file') {
+			reading_response_file = true
+			continue
+		}
+		if !reading_response_file {
+			continue
+		}
+		clean := line.trim_space()
+		if !clean.starts_with('"') {
+			if result.len > 0 {
+				break
+			}
+			continue
+		}
+		result << clean
+	}
+	return result
+}
+
+fn v3_cpp_temporary_link_files(root string) []string {
+	mut result := []string{}
+	for extension in ['.cpp', '.o', '.rsp'] {
+		for path in os.walk_ext(root, extension) {
+			base := os.base(path)
+			if base.starts_with('v3_cpp_source_') || base.starts_with('v3_linker_marker')
+				|| base == 'v3_linker.rsp' {
+				result << path
+			}
+		}
+	}
+	return result
+}
+
+fn v3_cpp_linker_driver_pairs() []V3CppLinkerDriverPair {
+	mut pairs := []V3CppLinkerDriverPair{}
+	for names in [['gcc', 'g++'], ['clang', 'clang++']] {
+		c := os.find_abs_path_of_executable(names[0]) or { continue }
+		cpp := os.find_abs_path_of_executable(names[1]) or { continue }
+		c_family := v3_cpp_test_gnu_driver_family(c)
+		cpp_family := v3_cpp_test_gnu_driver_family(cpp)
+		if c_family == '' || cpp_family == '' || c_family != cpp_family {
+			continue
+		}
+		pairs << V3CppLinkerDriverPair{
+			c:   c
+			cpp: cpp
+		}
+	}
+	return pairs
+}
+
+fn test_driver_cpp_linker_uses_final_cpp_driver_and_keeps_sources_c() {
+	pairs := v3_cpp_linker_driver_pairs()
+	if pairs.len == 0 {
+		return
+	}
+	root := os.join_path(os.vtmp_dir(), 'v3_driver_cpp_linker_real_${os.getpid()}')
+	os.rmdir_all(root) or {}
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	v3_bin := build_driver_cli_v3(root)
+	os.write_file(os.join_path(root, 'sentinel.c'),
+		'#ifdef __cplusplus\n#error V3_C_SOURCE_WAS_COMPILED_AS_CXX\n#endif\nint v3_c_value(void) { return 7; }\n')!
+	os.write_file(os.join_path(root, 'runtime.cpp'),
+		'#include <string>\nextern "C" int v3_cpp_value(void) { return int(std::string("runtime").size()); }\n')!
+	os.write_file(os.join_path(root, 'native.C'),
+		'extern "C" int v3_upper_cpp_value(void) { return 3; }\n')!
+	os.write_file(os.join_path(root, 'native.cpp'),
+		'extern "C" int v3_native_cpp_value(void) { return 4; }\n')!
+	mut main_source := 'module main\n#linker c++\n#flag @DIR/sentinel.c\n#flag @DIR/native.C\n#flag @DIR/native.cpp\n#flag @DIR/runtime.o\nfn C.v3_c_value() int\nfn C.v3_upper_cpp_value() int\nfn C.v3_native_cpp_value() int\nfn C.v3_cpp_value() int\nfn main() { println(C.v3_c_value() + C.v3_upper_cpp_value() + C.v3_native_cpp_value() + C.v3_cpp_value()) }\n'
+	mut expected_output := '21'
+	$if macos {
+		os.write_file(os.join_path(root, 'native.m'),
+			'int v3_objective_c_value(void) { return 5; }\n')!
+		main_source = 'module main\n#linker c++\n#flag @DIR/sentinel.c\n#flag @DIR/native.C\n#flag @DIR/native.cpp\n#flag @DIR/native.m\n#flag @DIR/runtime.o\nfn C.v3_c_value() int\nfn C.v3_upper_cpp_value() int\nfn C.v3_native_cpp_value() int\nfn C.v3_objective_c_value() int\nfn C.v3_cpp_value() int\nfn main() { println(C.v3_c_value() + C.v3_upper_cpp_value() + C.v3_native_cpp_value() + C.v3_objective_c_value() + C.v3_cpp_value()) }\n'
+		expected_output = '26'
+	}
+	os.write_file(os.join_path(root, 'main.v'), main_source)!
+	for index, pair in pairs {
+		runtime_object := os.join_path(root, 'runtime.o')
+		cpp_compile := cmdexec.run(pair.cpp, ['-std=c++11', '-c', os.join_path(root, 'runtime.cpp'),
+			'-o', runtime_object])
+		assert cpp_compile.exit_code == 0, cpp_compile.output
+		for mode, mode_args in {
+			'direct':   []string{}
+			'prod':     ['-prod']
+			'parallel': ['-parallel-cc']
+		} {
+			output := os.join_path(root, '${index}_${mode}${if os.user_os() == 'windows' {
+				'.exe'
+			} else {
+				''
+			}}')
+			mut active_c := pair.c
+			mut active_cpp := pair.cpp
+			mut spy_log := ''
+			mut environment := os.environ()
+			mut args := ['-gc', 'none', '-showcc']
+			$if !windows {
+				if mode == 'parallel' {
+					spy_dir := os.join_path(root, 'spy_${index}')
+					os.mkdir_all(spy_dir) or { panic(err) }
+					spy_log = os.join_path(spy_dir, 'commands.log')
+					active_c = 'cc'
+					active_cpp = 'c++'
+					c_spy := os.join_path(spy_dir, active_c)
+					cpp_spy := os.join_path(spy_dir, active_cpp)
+					os.write_file(c_spy,
+						'#!/bin/sh\nprintf "C\\t%s\\n" "\$*" >> ${os.quoted_path(spy_log)}\nexec ${os.quoted_path(pair.c)} "\$@"\n')!
+					os.write_file(cpp_spy,
+						'#!/bin/sh\nprintf "CPP\\t%s\\n" "\$*" >> ${os.quoted_path(spy_log)}\nexec ${os.quoted_path(pair.cpp)} "\$@"\n')!
+					os.chmod(c_spy, 0o700)!
+					os.chmod(cpp_spy, 0o700)!
+					current_path := environment['PATH'] or { '' }
+					environment['PATH'] = '${spy_dir}${os.path_delimiter}${current_path}'
+				} else {
+					args << ['-cc', active_c, '-c++', active_cpp]
+				}
+			}
+			$if windows {
+				args << ['-cc', active_c, '-c++', active_cpp]
+			}
+			if mode != 'parallel' {
+				args << '-nocache'
+			}
+			args << mode_args
+			args << ['-o', output, os.join_path(root, 'main.v')]
+			environment['V3CACHE'] = os.join_path(root, 'cache_${index}_${mode}')
+			build := run_driver_with_environment(v3_bin, args, environment)
+			assert build.exit_code == 0, '${pair.c}/${pair.cpp} ${mode}: ${build.output}'
+			assert build.output.contains(active_cpp), build.output
+			if mode == 'direct' {
+				assert !build.output.contains('C++ linker response file'), build.output
+			}
+			assert !build.output.contains('-lstdc++'), build.output
+			assert !build.output.contains('-lc++'), build.output
+			assert cmdexec.run(output, []string{}).output.trim_space() == expected_output
+			$if macos {
+				assert build.output.contains('-x objective-c'), build.output
+			}
+			$if !windows {
+				if mode == 'parallel' {
+					assert '-cc' !in args
+					spy_lines := os.read_lines(spy_log)!
+					mut c_object_index := -1
+					mut cpp_link_index := -1
+					for spy_index, spy_line in spy_lines {
+						if c_object_index < 0 && spy_line.starts_with('C\t')
+							&& spy_line.contains(' -c ') {
+							c_object_index = spy_index
+						}
+						if cpp_link_index < 0 && spy_line.starts_with('CPP\t') {
+							spy_args := v3_cpp_spy_args(spy_line)
+							if spy_args.len > 0 && spy_args != ['--version'] && '-c' !in spy_args {
+								cpp_link_index = spy_index
+							}
+						}
+					}
+					assert c_object_index >= 0, spy_lines.str()
+					assert cpp_link_index > c_object_index, spy_lines.str()
+				}
+			}
+		}
+		{
+			rsp_payload_minimum := 18 * 1024
+			rsp_payload_maximum := 24 * 1024
+			long_flag := '-L${os.quoted_path(root)}'
+			missing_library_flag := '-lv3_issue74_missing'
+			mut long_flags := []string{}
+			mut long_flags_length := 0
+			for long_flags_length < rsp_payload_minimum {
+				separator_length := if long_flags.len == 0 { 0 } else { 1 }
+				next_length := long_flags_length + separator_length + long_flag.len
+				assert next_length + 1 + missing_library_flag.len < rsp_payload_maximum
+				long_flags << long_flag
+				long_flags_length = next_length
+			}
+			long_flags_text := long_flags.join(' ')
+			failed_long_flags_text := '${long_flags_text} ${missing_library_flag}'
+			assert long_flags_text.len == long_flags_length
+			assert long_flags_text.len >= rsp_payload_minimum
+			assert long_flags_text.len < rsp_payload_maximum
+			assert failed_long_flags_text.len < rsp_payload_maximum
+			output := os.join_path(root,
+				'rsp_${index}${if os.user_os() == 'windows' { '.exe' } else { '' }}')
+			rsp_build := cmdexec.run(v3_bin, ['-nocache', '-gc', 'none', '-cc', pair.c, '-c++',
+				pair.cpp, '-showcc', '-ldflags', long_flags_text, '-o', output,
+				os.join_path(root,
+					'main.v')])
+			assert rsp_build.exit_code == 0, rsp_build.output
+			assert rsp_build.output.contains('C++ linker response file'), rsp_build.output
+			assert rsp_build.output.split_into_lines().any(it.contains(pair.cpp) && it.contains('@')
+				&& !it.contains('response file')), rsp_build.output
+			response_args := v3_cpp_response_file_args(rsp_build.output)
+			assert response_args.len > 0, rsp_build.output
+			response_content := response_args.join('\n')
+			marker_index := response_content.index('v3_linker_marker.o') or { -1 }
+			c_source_index := response_content.index('sentinel.c') or { -1 }
+			cpp_source_index := response_content.index('v3_cpp_source_0.o') or { -1 }
+			cpp_source_second_index := response_content.index('v3_cpp_source_1.o') or { -1 }
+			runtime_index := response_content.index('runtime.o') or { -1 }
+			library_index := response_content.index('"-lm"') or { -1 }
+			assert marker_index >= 0 && marker_index < c_source_index
+			assert c_source_index < cpp_source_index && cpp_source_index < cpp_source_second_index
+			assert cpp_source_second_index < runtime_index
+			assert runtime_index < library_index
+			assert v3_cpp_temporary_link_files(root).len == 0
+			assert cmdexec.run(output, []string{}).output.trim_space() == expected_output
+
+			failed_output := os.join_path(root, 'rsp_failure_${index}')
+			failed_rsp := cmdexec.run(v3_bin, ['-nocache', '-gc', 'none', '-cc', pair.c, '-c++',
+				pair.cpp, '-showcc', '-ldflags', failed_long_flags_text,
+				'-o', failed_output, os.join_path(root, 'main.v')])
+			assert failed_rsp.exit_code != 0
+			assert failed_rsp.output.contains('C++ linker response file'), failed_rsp.output
+			assert failed_rsp.output.split_into_lines().any(it.contains(pair.cpp)
+				&& it.contains('@') && !it.contains('response file')), failed_rsp.output
+			assert v3_cpp_temporary_link_files(root).len == 0
+		}
 	}
 }

@@ -24,6 +24,7 @@ const c_late_directives_begin = '/* V3CACHE_LATE_DIRECTIVES_BEGIN */'
 const c_late_directives_end = '/* V3CACHE_LATE_DIRECTIVES_END */'
 const source_body_marker = '// v3cache: source bodies required'
 const source_signature_cache_format = 'v3-source-signature-cache-4'
+const linker_directive_cache_selector = 'v3-linker-directive-cache-v4'
 
 // Manager owns persistent v3 module cache paths for one compiler configuration.
 pub struct Manager {
@@ -569,8 +570,63 @@ fn (m &Manager) source_signature(source_files []string) string {
 }
 
 fn (m &Manager) source_signature_details(source_files []string) SourceSignatureDetails {
-	return cached_source_signature_details_with_build_values(m.dir, 'module', source_files,
+	details := cached_source_signature_details_with_build_values(m.dir, 'module', source_files,
 		m.build_pseudo_values, m.version_pseudo_values)
+	if details.signature.len == 0 || !source_files_use_linker_directive(source_files) {
+		return details
+	}
+	// Keep SourceSignatureDetails validation and per-file SHA-256 digests intact;
+	// only select a distinct module-cache identity for source containing #linker.
+	return SourceSignatureDetails{
+		...details
+		signature: hash_text('${details.signature}\n${linker_directive_cache_selector}')
+	}
+}
+
+fn source_files_use_linker_directive(source_files []string) bool {
+	for file in source_files {
+		source := os.read_file(file) or { continue }
+		if source_uses_linker_directive(source) {
+			return true
+		}
+	}
+	return false
+}
+
+fn source_uses_linker_directive(source string) bool {
+	if !source.contains('#') {
+		return false
+	}
+	mut pos := 0
+	for pos < source.len {
+		pos = skip_signature_space_and_comments(source, pos)
+		if pos >= source.len {
+			break
+		}
+		if source[pos] in [`'`, `"`] {
+			pos = skip_signature_quoted_text(source, pos, false)
+			continue
+		}
+		if source[pos] == `r` && pos + 1 < source.len && source[pos + 1] in [`'`, `"`] {
+			pos = skip_signature_quoted_text(source, pos + 1, true)
+			continue
+		}
+		if source[pos] != `#` {
+			pos++
+			continue
+		}
+		mut name_start := pos + 1
+		for name_start < source.len && source[name_start] in [` `, `\t`, `\r`] {
+			name_start++
+		}
+		name_end := name_start + 'linker'.len
+		if name_end <= source.len && source[name_start..name_end] == 'linker'
+			&& (name_end == source.len || !signature_name_char(source[name_end])) {
+			return true
+		}
+		pos++
+	}
+	return false
 }
 
 // cached_source_signature returns a content signature while using precise file
@@ -5677,8 +5733,8 @@ fn decl_text(a &flat.FlatAst, tc &types.TypeChecker, module_name string, node fl
 }
 
 fn cached_directive_text(node flat.Node, vroot string, source_file string) string {
-	if node.value !in ['include', 'insert', 'flag', 'pkgconfig', 'define', 'undef', 'ifdef', 'ifndef',
-		'if', 'elif', 'else', 'endif', 'pragma', 'error', 'warning'] {
+	if node.value !in ['include', 'insert', 'flag', 'pkgconfig', 'linker', 'define', 'undef', 'ifdef',
+		'ifndef', 'if', 'elif', 'else', 'endif', 'pragma', 'error', 'warning'] {
 		return ''
 	}
 	value := cached_directive_value(node.value, node.typ, vroot, source_file)
