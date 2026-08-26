@@ -701,3 +701,37 @@ fn test_preprocessor_scan_tracks_comments_after_source_code() {
 	not_a_directive, _ := c_preprocessor_directive_scan_line('int other; #define LATE 1', false)
 	assert not_a_directive == ''
 }
+
+fn test_pkgconfig_dynamic_argv_is_historically_byte_for_byte_unchanged() {
+	assert c_pkgconfig_args('pangoft2 freetype2', .dynamic) == [
+		'--cflags',
+		'--libs',
+		'pangoft2',
+		'freetype2',
+	]
+}
+
+fn test_pkgconfig_global_static_mode_inserts_one_static_option() {
+	assert c_pkgconfig_args('pangoft2 freetype2', .static_) == [
+		'--cflags',
+		'--libs',
+		'--static',
+		'pangoft2',
+		'freetype2',
+	]
+	assert c_pkgconfig_args('--static pangoft2', .static_) == [
+		'--cflags',
+		'--libs',
+		'--static',
+		'pangoft2',
+	]
+}
+
+fn test_local_pkgconfig_static_option_does_not_require_global_static_mode() {
+	assert c_pkgconfig_args('--static pangoft2', .dynamic) == [
+		'--cflags',
+		'--libs',
+		'--static',
+		'pangoft2',
+	]
+}

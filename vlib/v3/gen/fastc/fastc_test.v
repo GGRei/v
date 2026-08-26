@@ -827,6 +827,38 @@ fn test_generate_files_resolves_modules_without_an_ast() {
 	assert run_result.output.trim_space() == '42'
 }
 
+fn test_source_resolver_uses_compiler_owned_file_defines() {
+	root := os.join_path(os.vtmp_dir(), 'v3_fastc_file_defines_${os.getpid()}')
+	os.rmdir_all(root) or {}
+	module_dir := os.join_path(root, 'variant')
+	os.mkdir_all(module_dir) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	main_file := os.join_path(root, 'main.v')
+	os.write_file(main_file, 'module main\nimport variant\nfn main() { variant.selected() }\n') or {
+		panic(err)
+	}
+	os.write_file(os.join_path(module_dir, 'variant_d_v_static_pkgconfig.v'),
+		'module variant\npub fn selected() {}\n') or { panic(err) }
+	os.write_file(os.join_path(module_dir, 'variant_notd_v_static_pkgconfig.v'),
+		'module variant\npub fn selected() {}\n') or { panic(err) }
+
+	mut prefs := pref.new_preferences()
+	prefs.module_search_paths = [root]
+	dynamic_sources := fastc_resolve_source_files([main_file], prefs) or { panic(err) }
+	dynamic_files := dynamic_sources.map(os.base(it.path))
+	assert 'variant_notd_v_static_pkgconfig.v' in dynamic_files
+	assert 'variant_d_v_static_pkgconfig.v' !in dynamic_files
+
+	prefs.file_defines = ['v_static_pkgconfig']
+	static_sources := fastc_resolve_source_files([main_file], prefs) or { panic(err) }
+	static_files := static_sources.map(os.base(it.path))
+	assert 'variant_d_v_static_pkgconfig.v' in static_files
+	assert 'variant_notd_v_static_pkgconfig.v' !in static_files
+	assert prefs.user_defines == []
+}
+
 fn test_header_discovers_imports_only_from_selected_comptime_branches() {
 	root := os.join_path(os.vtmp_dir(), 'v3_fastc_comptime_imports_${os.getpid()}')
 	os.rmdir_all(root) or {}
