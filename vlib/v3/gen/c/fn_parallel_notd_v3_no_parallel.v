@@ -2337,6 +2337,7 @@ fn (g &FlatGen) new_parallel_worker_config(worker_id int, result_only bool) &Fla
 		has_builtins:                   g.has_builtins
 		cache_split:                    g.cache_split
 		compile_values:                 g.compile_values
+		pkgconfig_mode:                 g.pkgconfig_mode
 		trace_calls:                    g.trace_calls
 		skip_generics:                  g.skip_generics
 		tmp_count:                      (worker_id + 1) * 100_000

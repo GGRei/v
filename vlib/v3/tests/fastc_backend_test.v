@@ -93,7 +93,31 @@ fn main() {
 	assert tinyc_run.exit_code == 0, tinyc_run.output
 	assert tinyc_run.output.trim_space() == 'tinyc'
 
+	static_mode_module_dir := os.join_path(root, 'fastc_static_mode')
+	os.mkdir_all(static_mode_module_dir) or { panic(err) }
+	write_fastc_test_source(os.join_path(static_mode_module_dir, 'variant_d_v_static_pkgconfig.v'),
+		"module fastc_static_mode\n\npub fn selected() string { return 'variant-static' }\n")
+	write_fastc_test_source(os.join_path(static_mode_module_dir,
+		'variant_notd_v_static_pkgconfig.v'),
+		"module fastc_static_mode\n\npub fn selected() string { return 'variant-dynamic' }\n")
+	static_mode_source := os.join_path(root, 'fastc_static_mode.v')
+	write_fastc_test_source(static_mode_source, 'module main
+
+import fastc_static_mode
+
+fn main() {
+	println(fastc_static_mode.selected())
+}
+')
+
 	cross_target_os := $if windows { 'linux' } $else { 'windows' }
+	static_mode_cross_c := os.join_path(root, 'fastc_static_mode_cross.c')
+	static_mode_cross := cmdexec.run(v3_bin, ['-silent', '-b', 'fastc', '-os', cross_target_os,
+		'-cflags', '-static', '-o', static_mode_cross_c, static_mode_source])
+	assert static_mode_cross.exit_code == 0, static_mode_cross.output
+	static_mode_cross_source := os.read_file(static_mode_cross_c) or { panic(err) }
+	assert static_mode_cross_source.contains('variant-static')
+	assert !static_mode_cross_source.contains('variant-dynamic')
 	cross_c := os.join_path(root, 'cross_target.c')
 	cross_compile := cmdexec.run(v3_bin, ['-silent', '-showcc', '-b', 'fastc', '-os', cross_target_os,
 		'-o', cross_c, valid_source])
@@ -522,6 +546,11 @@ fn main() {
 			args:     ['-silent', '-prod', '-b', 'fastc', '-o', os.join_path(root, 'prod'),
 				valid_source]
 			expected: 'fastc parser does not support `-prod`'
+		},
+		UnsupportedFastCInvocation{
+			args:     ['-silent', '-b', 'fastc', '-ldflags', '-static', '-o',
+				os.join_path(root, 'linker_flags'), valid_source]
+			expected: 'fastc parser does not support custom linker flags (`-ldflags`)'
 		},
 		UnsupportedFastCInvocation{
 			args:     ['-silent', '-b', 'fastc', '-d', 'no_main', '-o', no_main_output, valid_source]
