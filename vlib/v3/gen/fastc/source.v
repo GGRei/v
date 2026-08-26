@@ -47,8 +47,8 @@ fn fastc_resolve_source_files(paths []string, prefs &pref.Preferences) ![]FastcS
 	mut queue := []FastcQueuedSource{}
 	if prefs.building_v {
 		builtin_dir := prefs.get_vlib_module_path('builtin')
-		for builtin_file in pref.get_v_files_from_dir_for_target(builtin_dir, prefs.user_defines,
-			prefs.target) {
+		for builtin_file in pref.get_v_files_from_dir_for_target(builtin_dir,
+			prefs.source_file_defines(), prefs.target) {
 			if fastc_source_file_matches_backend(builtin_file) {
 				queue << FastcQueuedSource{
 					path:        builtin_file
@@ -120,7 +120,7 @@ fn fastc_resolve_source_files(paths []string, prefs &pref.Preferences) ![]FastcS
 				module_files = cached.clone()
 			} else {
 				for module_file in pref.get_v_files_from_dir_for_target(module_dir,
-					prefs.user_defines, prefs.target) {
+					prefs.source_file_defines(), prefs.target) {
 					if fastc_source_file_matches_backend(module_file) {
 						module_files << module_file
 					}
