@@ -211,6 +211,28 @@ fn test_c_backend_skips_modules_with_only_non_c_variants() {
 	assert filtered.len == 0
 }
 
+fn test_static_pkgconfig_compiler_value_filters_reserved_conditional_files() {
+	dir := os.join_path(os.vtmp_dir(), 'static_pkgconfig_conditional_files')
+	files := [
+		'bindings.c.v',
+		'bindings_d_v_static_pkgconfig.c.v',
+		'bindings_notd_v_static_pkgconfig.c.v',
+	]
+	mut dynamic_prefs := new_c_preferences()
+	dynamic_prefs.compile_values['v:static_pkgconfig'] = 'false'
+	assert dynamic_prefs.should_compile_filtered_files(dir, files) == [
+		os.join_path(dir, 'bindings.c.v'),
+		os.join_path(dir, 'bindings_notd_v_static_pkgconfig.c.v'),
+	]
+
+	mut static_prefs := new_c_preferences()
+	static_prefs.compile_values['v:static_pkgconfig'] = 'true'
+	assert static_prefs.should_compile_filtered_files(dir, files) == [
+		os.join_path(dir, 'bindings.c.v'),
+		os.join_path(dir, 'bindings_d_v_static_pkgconfig.c.v'),
+	]
+}
+
 fn test_wasm_backend_filters_backend_specific_files() {
 	prefs := new_wasm_preferences()
 	dir := os.join_path(os.vtmp_dir(), 'wasm_backend_filters')
@@ -293,7 +315,7 @@ fn test_explicit_gc_mode_is_forwarded_to_build_module() {
 	}
 }
 
-fn issue74_cache_path_for_ldflags(ldflags string) (string, pref.PkgConfigMode) {
+fn issue74_cache_path_for_ldflags(ldflags string) (string, pref.PkgConfigMode, string) {
 	target := os.join_path(vroot, 'examples', 'hello_world.v')
 	mut args := ['-cc', 'gcc']
 	if ldflags != '' {
@@ -303,7 +325,7 @@ fn issue74_cache_path_for_ldflags(ldflags string) (string, pref.PkgConfigMode) {
 	mut prefs, _ := pref.parse_args_and_show_errors([], args, false)
 	path := prefs.cache_manager.mod_postfix_with_key2cpath('issue74-cache-salt', '.o',
 		'same-source')
-	return path, prefs.pkgconfig_mode
+	return path, prefs.pkgconfig_mode, prefs.compile_values['v:static_pkgconfig']
 }
 
 fn test_pkgconfig_mode_salts_cache_without_salt_for_all_ldflags() {
@@ -319,18 +341,176 @@ fn test_pkgconfig_mode_salts_cache_without_salt_for_all_ldflags() {
 		os.rmdir_all(cache_root) or {}
 	}
 
-	dynamic_path, dynamic_mode := issue74_cache_path_for_ldflags('')
-	dynamic_link_path, dynamic_link_mode := issue74_cache_path_for_ldflags('-Wl,--as-needed')
-	static_path, static_mode := issue74_cache_path_for_ldflags('-static')
-	static_link_path, static_link_mode := issue74_cache_path_for_ldflags('-static -Wl,--as-needed')
+	dynamic_path, dynamic_mode, dynamic_fact := issue74_cache_path_for_ldflags('')
+	dynamic_link_path, dynamic_link_mode, dynamic_link_fact :=
+		issue74_cache_path_for_ldflags('-Wl,--as-needed')
+	static_path, static_mode, static_fact := issue74_cache_path_for_ldflags('-static')
+	static_link_path, static_link_mode, static_link_fact :=
+		issue74_cache_path_for_ldflags('-static -Wl,--as-needed')
 
 	assert dynamic_mode == .dynamic
 	assert dynamic_link_mode == .dynamic
 	assert static_mode == .static_
 	assert static_link_mode == .static_
+	assert dynamic_fact == 'false'
+	assert dynamic_link_fact == 'false'
+	assert static_fact == 'true'
+	assert static_link_fact == 'true'
 	assert dynamic_path == dynamic_link_path
 	assert static_path == static_link_path
 	assert dynamic_path != static_path
+}
+
+fn issue74_preferences_for_driver_mode(ccompiler string, cflags string, ldflags string) &pref.Preferences {
+	target := os.join_path(vroot, 'examples', 'hello_world.v')
+	mut args := ['-cc', ccompiler]
+	if cflags != '' {
+		args << ['-cflags', cflags]
+	}
+	if ldflags != '' {
+		args << ['-ldflags', ldflags]
+	}
+	args << target
+	prefs, _ := pref.parse_args_and_show_errors([], args, false)
+	return prefs
+}
+
+struct Issue74DriverModeCase {
+	ccompiler string
+	cflags    string
+	ldflags   string
+}
+
+fn issue74_selected_file_names(prefs &pref.Preferences) []string {
+	dir := os.join_path(os.vtmp_dir(), 'issue74_virtual')
+	return prefs.should_compile_filtered_files(dir, [
+		'bindings.c.v',
+		'bindings_d_v_static_pkgconfig.c.v',
+	]).map(os.base(it))
+}
+
+fn test_msvc_style_clang_never_activates_static_pkgconfig_fact_or_file() {
+	for tc in [
+		Issue74DriverModeCase{
+			ccompiler: 'clang-cl.exe'
+			cflags:    '-static'
+		},
+		Issue74DriverModeCase{
+			ccompiler: 'clang-cl.exe'
+			ldflags:   '-static'
+		},
+		Issue74DriverModeCase{
+			ccompiler: 'C:/msys64/ucrt64/bin/x86_64-w64-mingw32-clang-cl.exe'
+			cflags:    '-static'
+		},
+		Issue74DriverModeCase{
+			ccompiler: 'clang.exe'
+			cflags:    '--driver-mode=cl -static'
+		},
+		Issue74DriverModeCase{
+			ccompiler: 'clang.exe'
+			ldflags:   '--driver-mode=cl -static'
+		},
+	] {
+		prefs := issue74_preferences_for_driver_mode(tc.ccompiler, tc.cflags, tc.ldflags)
+		assert prefs.pkgconfig_mode == .dynamic, '${tc.ccompiler}; ${tc.cflags}; ${tc.ldflags}'
+		assert prefs.compile_values['v:static_pkgconfig'] == 'false'
+		assert issue74_selected_file_names(prefs) == ['bindings.c.v']
+	}
+}
+
+fn test_gnu_style_clang_and_driver_mode_lookalike_keep_static_pkgconfig() {
+	for tc in [
+		Issue74DriverModeCase{
+			ccompiler: 'clang.exe'
+			cflags:    '-static'
+		},
+		Issue74DriverModeCase{
+			ccompiler: 'clang.exe'
+			cflags:    '--driver-mode=cl-like -static'
+		},
+	] {
+		prefs := issue74_preferences_for_driver_mode(tc.ccompiler, tc.cflags, '')
+		assert prefs.pkgconfig_mode == .static_, '${tc.ccompiler}; ${tc.cflags}'
+		assert prefs.compile_values['v:static_pkgconfig'] == 'true'
+		assert issue74_selected_file_names(prefs) == [
+			'bindings.c.v',
+			'bindings_d_v_static_pkgconfig.c.v',
+		]
+	}
+}
+
+fn test_static_pkgconfig_compiler_value_exact_token_matrix() {
+	for ccompiler in ['gcc', 'clang', 'mingw', 'c++'] {
+		for tc in [
+			Issue74DriverModeCase{
+				ccompiler: ccompiler
+				cflags:    '-static'
+			},
+			Issue74DriverModeCase{
+				ccompiler: ccompiler
+				ldflags:   '-static'
+			},
+		] {
+			prefs := issue74_preferences_for_driver_mode(tc.ccompiler, tc.cflags, tc.ldflags)
+			assert prefs.pkgconfig_mode == .static_, '${tc.ccompiler}; ${tc.cflags}; ${tc.ldflags}'
+			assert prefs.compile_values['v:static_pkgconfig'] == 'true'
+		}
+	}
+	for ccompiler in ['msvc', 'tcc'] {
+		for tc in [
+			Issue74DriverModeCase{
+				ccompiler: ccompiler
+				cflags:    '-static'
+			},
+			Issue74DriverModeCase{
+				ccompiler: ccompiler
+				ldflags:   '-static'
+			},
+		] {
+			prefs := issue74_preferences_for_driver_mode(tc.ccompiler, tc.cflags, tc.ldflags)
+			assert prefs.pkgconfig_mode == .dynamic, '${tc.ccompiler}; ${tc.cflags}; ${tc.ldflags}'
+			assert prefs.compile_values['v:static_pkgconfig'] == 'false'
+		}
+	}
+}
+
+fn test_static_pkgconfig_compiler_value_rejects_static_lookalikes() {
+	for lookalike in [
+		'-static-libgcc',
+		'-Wl,-Bstatic',
+		'-DVALUE=-static',
+		'-L/tmp/issue74-static',
+		'-I/tmp/-static/include',
+	] {
+		for tc in [
+			Issue74DriverModeCase{
+				ccompiler: 'gcc'
+				cflags:    lookalike
+			},
+			Issue74DriverModeCase{
+				ccompiler: 'gcc'
+				ldflags:   lookalike
+			},
+		] {
+			prefs := issue74_preferences_for_driver_mode(tc.ccompiler, tc.cflags, tc.ldflags)
+			assert prefs.pkgconfig_mode == .dynamic, '${tc.cflags}; ${tc.ldflags}'
+			assert prefs.compile_values['v:static_pkgconfig'] == 'false'
+		}
+	}
+}
+
+fn test_other_v_namespaced_compile_values_remain_user_controlled() {
+	target := os.join_path(vroot, 'examples', 'hello_world.v')
+	prefs, _ := pref.parse_args_and_show_errors([], [
+		'-d',
+		'v:flag:doc_attr=customdoc',
+		'-d',
+		'v:user_value=true',
+		target,
+	], false)
+	assert prefs.compile_values['v:flag:doc_attr'] == 'customdoc'
+	assert prefs.compile_values['v:user_value'] == 'true'
 }
 
 fn test_v_compiler_targets_default_to_no_gc() {

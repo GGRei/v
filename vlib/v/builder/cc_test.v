@@ -123,6 +123,12 @@ fn test_cc_from_string_detects_cl_as_msvc() {
 	assert pref.cc_from_string('C:/Program Files/Microsoft Visual Studio/cl.exe') == .msvc
 }
 
+fn test_cc_from_string_keeps_historical_clang_cl_classification() {
+	assert pref.cc_from_string('clang-cl') == .clang
+	assert pref.cc_from_string(r'C:\LLVM\bin\clang-cl.exe') == .clang
+	assert pref.cc_from_string('clang.exe') == .clang
+}
+
 fn test_cc_from_string_detects_tiny_gcc_as_tinyc() {
 	assert pref.cc_from_string('tiny_gcc') == .tinyc
 	assert pref.cc_from_string('/usr/local/bin/tiny_gcc') == .tinyc
@@ -180,11 +186,13 @@ fn test_resolved_tcc_wrapper_recomputes_pkgconfig_mode_as_dynamic() {
 	mut prefs, _ := pref.parse_args_and_show_errors([], full_args, false)
 	assert prefs.ccompiler_type == .gcc
 	assert prefs.pkgconfig_mode == .static_
+	assert prefs.compile_values['v:static_pkgconfig'] == 'true'
 
 	resolve_ccompiler_type_and_pkgconfig_mode(mut prefs)
 
 	assert prefs.ccompiler_type == .tinyc
 	assert prefs.pkgconfig_mode == .dynamic
+	assert prefs.compile_values['v:static_pkgconfig'] == 'false'
 }
 
 fn test_resolved_gnu_wrappers_keep_pkgconfig_mode_static() {
@@ -210,6 +218,7 @@ fn test_resolved_gnu_wrappers_keep_pkgconfig_mode_static() {
 
 		assert prefs.ccompiler_type == expected_type
 		assert prefs.pkgconfig_mode == .static_
+		assert prefs.compile_values['v:static_pkgconfig'] == 'true'
 	}
 }
 
