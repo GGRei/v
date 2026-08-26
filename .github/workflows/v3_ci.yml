@@ -30,3 +30,390 @@ jobs:
           ./v retry -- sudo apt install --quiet -y gobjc
       - name: Test v3
         run: ./v run vlib/v3/test_all.vsh
+
+  v3-macos-clang:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build V
+        run: make -j4
+      - name: Test macOS V3 routing and native Clang linking
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+          clang_path="$(command -v clang)"
+          clangxx_path="$(command -v clang++)"
+          clang_version="$("$clang_path" --version)"
+          clangxx_version="$("$clangxx_path" --version)"
+          printf '%s\n' "$clang_version" "$clangxx_version"
+          [[ "$clang_version" == *clang* && "$clang_version" != *clang-cl* ]]
+          [[ "$clangxx_version" == *clang* && "$clangxx_version" != *clang-cl* ]]
+          unset CFLAGS LDFLAGS VFLAGS
+          export VJOBS=1
+          export VTMP="$RUNNER_TEMP/v3 macos spaced tmp"
+          mkdir -p "$VTMP"
+
+          run_audited_test() {
+            local label="$1"
+            local expected_files="$2"
+            shift 2
+            local log="$RUNNER_TEMP/${label}.log"
+            "$@" 2>&1 | tee "$log"
+            grep -Fq "${expected_files} passed, ${expected_files} total" "$log"
+          }
+
+          assert_exact_test_definitions() {
+            local source="$1"
+            shift
+            [[ -f "$source" ]]
+            local name count
+            for name in "$@"; do
+              count="$(awk -v expected="fn ${name}() {" '$0 == expected { count++ } END { print count + 0 }' "$source")"
+              if [[ "$count" != 1 ]]; then
+                printf 'expected exactly one definition of %s in %s, found %s\n' "$name" "$source" "$count" >&2
+                return 1
+              fi
+            done
+          }
+
+          common=(
+            ./v -old-compiler -gc none
+            -cc "$clang_path" -c++ "$clangxx_path"
+            -no-retry-compilation -path vlib -enable-globals -silent test
+          )
+          routing_tests=(
+            test_macos_v3_relevant_command_selects_user_compilation_and_tests
+          )
+          assert_exact_test_definitions cmd/v/macos_v3_test.v "${routing_tests[@]}"
+          run_audited_test macos-v3-routing 1 \
+            "${common[@]}" \
+            -run-only "${routing_tests[0]}" \
+            cmd/v/macos_v3_test.v
+          driver_tests=(
+            test_driver_static_pkgconfig_fact_ldflags_and_dynamic_c_invariance
+            test_driver_cpp_linker_directive_is_exact_and_non_link_outputs_stay_c
+            test_driver_cpp_linker_uses_final_cpp_driver_and_keeps_sources_c
+          )
+          driver_run_only="$(IFS=,; printf '%s' "${driver_tests[*]}")"
+          assert_exact_test_definitions vlib/v3/tests/driver_cli_test.v "${driver_tests[@]}"
+          run_audited_test macos-v3-native-link 1 \
+            "${common[@]}" \
+            -run-only "$driver_run_only" \
+            vlib/v3/tests/driver_cli_test.v
+
+          git diff --exit-code
+          git diff --cached --exit-code
+          [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
+
+  v3-windows-gnu:
+    name: V3 Windows GNU (${{ matrix.lane }})
+    runs-on: windows-2025
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: ucrt64-gcc
+            msystem: UCRT64
+            package: mingw-w64-ucrt-x86_64-gcc
+            prefix: ucrt64
+            cc: gcc
+            cxx: g++
+            family: gcc
+          - lane: ucrt64-clang
+            msystem: UCRT64
+            package: mingw-w64-ucrt-x86_64-clang
+            prefix: ucrt64
+            cc: clang
+            cxx: clang++
+            family: clang
+          - lane: clang64-clang
+            msystem: CLANG64
+            package: mingw-w64-clang-x86_64-clang
+            prefix: clang64
+            cc: clang
+            cxx: clang++
+            family: clang
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build V with the ambient Windows GCC bootstrap
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gcc = (@(Get-Command gcc.exe -CommandType Application -All -ErrorAction Stop))[0].Source
+          $version = (& $gcc --version 2>&1 | Out-String)
+          Write-Host $version
+          if ($LASTEXITCODE -ne 0 -or
+              ($version -notmatch '(?i)(gcc|free software foundation|mingw)') -or
+              ($version -match '(?i)clang')) {
+            throw "ambient bootstrap compiler is not GCC: $gcc"
+          }
+          .\makev.bat -gcc
+          if ($LASTEXITCODE -ne 0) {
+            throw "makev.bat -gcc failed with exit code $LASTEXITCODE"
+          }
+      - name: Install the selected native GNU toolchain
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          path-type: minimal
+          cache: false
+          install: ${{ matrix.package }}
+      - name: Test V1 and V3 with native Windows paths
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $git = (@(Get-Command git.exe -CommandType Application -All -ErrorAction Stop))[0].Source
+          $toolBin = Join-Path '${{ steps.msys2.outputs.msys2-location }}' '${{ matrix.prefix }}\bin'
+          $ccPath = Join-Path $toolBin '${{ matrix.cc }}.exe'
+          $cxxPath = Join-Path $toolBin '${{ matrix.cxx }}.exe'
+          $env:Path = "$toolBin;$env:SystemRoot\System32;$env:SystemRoot"
+
+          function Assert-ExactCompiler([string] $Name, [string] $Expected, [string] $Family) {
+            if (-not (Test-Path -LiteralPath $Expected -PathType Leaf)) {
+              throw "missing selected compiler: $Expected"
+            }
+            $applications = @(Get-Command "$Name.exe" -CommandType Application -All -ErrorAction Stop)
+            if ($applications.Count -ne 1) {
+              throw "compiler lookup cardinality mismatch: Name=$Name Count=$($applications.Count)"
+            }
+            $resolved = $applications[0].Source
+            if (-not [string]::Equals(
+                [IO.Path]::GetFullPath($resolved),
+                [IO.Path]::GetFullPath($Expected),
+                [StringComparison]::OrdinalIgnoreCase)) {
+              throw "$Name resolved to $resolved instead of $Expected"
+            }
+            $version = (& $Expected --version 2>&1 | Out-String)
+            $code = $LASTEXITCODE
+            Write-Host $version
+            if ($code -ne 0) {
+              throw "$Expected --version failed with exit code $code"
+            }
+            if ($Family -eq 'clang') {
+              if ($version -notmatch '(?i)clang' -or $version -match '(?i)clang-cl') {
+                throw "$Expected is not a GNU-style Clang driver"
+              }
+            } elseif (($version -notmatch '(?i)(gcc|free software foundation|mingw)') -or
+                ($version -match '(?i)clang')) {
+              throw "$Expected is not a GCC-family driver"
+            }
+          }
+
+          Assert-ExactCompiler '${{ matrix.cc }}' $ccPath '${{ matrix.family }}'
+          Assert-ExactCompiler '${{ matrix.cxx }}' $cxxPath '${{ matrix.family }}'
+          foreach ($name in @('CFLAGS', 'LDFLAGS', 'VFLAGS')) {
+            Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+          }
+          $env:VJOBS = '1'
+          $env:VTMP = Join-Path $env:RUNNER_TEMP 'v3 windows spaced tmp'
+          [void] (New-Item -ItemType Directory -Force -Path $env:VTMP)
+
+          $common = @(
+            '-old-compiler', '-gc', 'none',
+            '-cc', $ccPath, '-c++', $cxxPath,
+            '-no-retry-compilation', '-path', 'vlib', '-enable-globals', '-silent', 'test'
+          )
+          function Invoke-AuditedVTest(
+            [string] $Label,
+            [int] $ExpectedFiles,
+            [string[]] $Tail,
+            [string] $ForbiddenText = ''
+          ) {
+            $log = Join-Path $env:RUNNER_TEMP "$Label.log"
+            $allArguments = $common + $Tail
+            & .\v.exe @allArguments 2>&1 | Tee-Object -FilePath $log
+            $code = $LASTEXITCODE
+            if ($code -ne 0) {
+              throw "$Label failed with exit code $code"
+            }
+            $text = [IO.File]::ReadAllText($log)
+            $summary = "$ExpectedFiles passed, $ExpectedFiles total"
+            if (-not $text.Contains($summary)) {
+              throw "$Label did not execute the expected file count: $summary"
+            }
+            if ($ForbiddenText -and $text.Contains($ForbiddenText)) {
+              throw "$Label contained forbidden skip text: $ForbiddenText"
+            }
+          }
+
+          function Assert-ExactTestDefinitions([string] $Path, [string[]] $Names) {
+            $sourcePath = Join-Path $env:GITHUB_WORKSPACE $Path
+            if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+              throw "missing test source: $sourcePath"
+            }
+            $lines = [IO.File]::ReadAllLines($sourcePath)
+            foreach ($name in $Names) {
+              $signature = "fn $name() {"
+              $count = @($lines | Where-Object { $_ -ceq $signature }).Count
+              if ($count -ne 1) {
+                throw "expected exactly one definition of $name in $Path, found $count"
+              }
+            }
+          }
+
+          Invoke-AuditedVTest -Label v1-native-link -ExpectedFiles 1 -Tail @(
+            'vlib/v/builder/linker_directive_integration_test.v'
+          ) -ForbiddenText 'skipping #linker c++ integration'
+          Invoke-AuditedVTest -Label v3-pure-requirements -ExpectedFiles 3 -Tail @(
+            'vlib/v3/pref/pref_test.v',
+            'vlib/v3/driver/c_compiler_flags_test.v',
+            'vlib/v3/modulecache/modulecache_test.v'
+          )
+          $fastcTests = @(
+            'test_cpp_linker_directive_is_rejected_before_fastc_emits_c'
+          )
+          Assert-ExactTestDefinitions -Path 'vlib/v3/gen/fastc/fastc_test.v' -Names $fastcTests
+          Invoke-AuditedVTest -Label v3-fastc-rejection -ExpectedFiles 1 -Tail @(
+            '-run-only', ($fastcTests -join ','),
+            'vlib/v3/gen/fastc/fastc_test.v'
+          )
+          $driverTests = @(
+            'test_driver_static_pkgconfig_fact_ldflags_and_dynamic_c_invariance',
+            'test_driver_cpp_linker_directive_is_exact_and_non_link_outputs_stay_c',
+            'test_driver_cpp_linker_uses_final_cpp_driver_and_keeps_sources_c'
+          )
+          Assert-ExactTestDefinitions -Path 'vlib/v3/tests/driver_cli_test.v' -Names $driverTests
+          Invoke-AuditedVTest -Label v3-driver-link -ExpectedFiles 1 -Tail @(
+            '-run-only',
+            ($driverTests -join ','),
+            'vlib/v3/tests/driver_cli_test.v'
+          )
+
+          & $git diff --exit-code
+          if ($LASTEXITCODE -ne 0) {
+            throw 'tracked files changed during the Windows GNU tests'
+          }
+          & $git diff --cached --exit-code
+          if ($LASTEXITCODE -ne 0) {
+            throw 'the index changed during the Windows GNU tests'
+          }
+          $status = (& $git status --porcelain=v1 --untracked-files=all | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $status.Length -ne 0) {
+            throw "the worktree is not clean after the Windows GNU tests: $status"
+          }
+
+  v3-windows-msvc-negative:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build V with MSVC
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cl = (@(Get-Command cl.exe -CommandType Application -All -ErrorAction Stop))[0].Source
+          $clangCl = (@(Get-Command clang-cl.exe -CommandType Application -All -ErrorAction Stop))[0].Source
+          Write-Host "cl.exe: $cl"
+          Write-Host "clang-cl.exe: $clangCl"
+          $clangClVersion = (& $clangCl --version 2>&1 | Out-String)
+          Write-Host $clangClVersion
+          if ($LASTEXITCODE -ne 0 -or $clangClVersion -notmatch '(?i)clang') {
+            throw 'clang-cl.exe preflight failed'
+          }
+          .\makev.bat -msvc
+          if ($LASTEXITCODE -ne 0) {
+            throw "makev.bat -msvc failed with exit code $LASTEXITCODE"
+          }
+          $tcc = Join-Path $env:GITHUB_WORKSPACE 'thirdparty\tcc\tcc.exe'
+          if (-not (Test-Path -LiteralPath $tcc -PathType Leaf)) {
+            throw "missing bundled TinyCC executable: $tcc"
+          }
+          $tccVersion = (& $tcc -v 2>&1 | Out-String)
+          $tccCode = $LASTEXITCODE
+          Write-Host $tccVersion
+          if ($tccCode -ne 0 -or
+              [string]::IsNullOrWhiteSpace($tccVersion) -or
+              $tccVersion -notmatch '(?i)(tiny c compiler|tcc version)') {
+            throw "bundled TinyCC preflight failed with exit code $tccCode"
+          }
+      - name: Test unsupported MSVC-family linker modes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $git = (@(Get-Command git.exe -CommandType Application -All -ErrorAction Stop))[0].Source
+          foreach ($name in @('CFLAGS', 'LDFLAGS', 'VFLAGS')) {
+            Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+          }
+          $env:VJOBS = '1'
+          $env:VTMP = Join-Path $env:RUNNER_TEMP 'v3 msvc spaced tmp'
+          [void] (New-Item -ItemType Directory -Force -Path $env:VTMP)
+          $common = @(
+            '-old-compiler', '-gc', 'none', '-cc', 'msvc',
+            '-no-retry-compilation', '-path', 'vlib', '-enable-globals', '-silent', 'test'
+          )
+          function Invoke-AuditedVTest([string] $Label, [string[]] $Tail) {
+            $log = Join-Path $env:RUNNER_TEMP "$Label.log"
+            $allArguments = $common + $Tail
+            & .\v.exe @allArguments 2>&1 | Tee-Object -FilePath $log
+            $code = $LASTEXITCODE
+            if ($code -ne 0) {
+              throw "$Label failed with exit code $code"
+            }
+            $text = [IO.File]::ReadAllText($log)
+            if (-not $text.Contains('1 passed, 1 total')) {
+              throw "$Label did not execute exactly one test file"
+            }
+          }
+
+          function Assert-ExactTestDefinitions([string] $Path, [string[]] $Names) {
+            $sourcePath = Join-Path $env:GITHUB_WORKSPACE $Path
+            if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+              throw "missing test source: $sourcePath"
+            }
+            $lines = [IO.File]::ReadAllLines($sourcePath)
+            foreach ($name in $Names) {
+              $signature = "fn $name() {"
+              $count = @($lines | Where-Object { $_ -ceq $signature }).Count
+              if ($count -ne 1) {
+                throw "expected exactly one definition of $name in $Path, found $count"
+              }
+            }
+          }
+
+          $prefTests = @(
+            'test_static_pkgconfig_mode_rejects_unsupported_drivers_and_lookalikes',
+            'test_static_pkgconfig_mode_excludes_clang_msvc_driver_dialect'
+          )
+          Assert-ExactTestDefinitions -Path 'vlib/v3/pref/pref_test.v' -Names $prefTests
+          Invoke-AuditedVTest -Label msvc-static-pkgconfig-negative -Tail @(
+            '-run-only',
+            ($prefTests -join ','),
+            'vlib/v3/pref/pref_test.v'
+          )
+          $cflagsTests = @(
+            'test_v3_cpp_linker_default_driver_follows_c_driver_family'
+          )
+          Assert-ExactTestDefinitions -Path 'vlib/v3/driver/c_compiler_flags_test.v' -Names $cflagsTests
+          Invoke-AuditedVTest -Label msvc-cpp-driver-family -Tail @(
+            '-run-only', ($cflagsTests -join ','),
+            'vlib/v3/driver/c_compiler_flags_test.v'
+          )
+          $driverTests = @(
+            'test_driver_cpp_linker_directive_is_exact_and_non_link_outputs_stay_c'
+          )
+          Assert-ExactTestDefinitions -Path 'vlib/v3/tests/driver_cli_test.v' -Names $driverTests
+          Invoke-AuditedVTest -Label msvc-driver-cli-negative -Tail @(
+            '-run-only', ($driverTests -join ','),
+            'vlib/v3/tests/driver_cli_test.v'
+          )
+
+          & $git diff --exit-code
+          if ($LASTEXITCODE -ne 0) {
+            throw 'tracked files changed during the MSVC tests'
+          }
+          & $git diff --cached --exit-code
+          if ($LASTEXITCODE -ne 0) {
+            throw 'the index changed during the MSVC tests'
+          }
+          $status = (& $git status --porcelain=v1 --untracked-files=all | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $status.Length -ne 0) {
+            throw "the worktree is not clean after the MSVC tests: $status"
+          }
