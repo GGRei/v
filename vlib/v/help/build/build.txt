@@ -89,6 +89,12 @@ NB: the build flags are shared with the run command too:
     value assigned to `<flag>`.
     If no flag identifier (or value) is assigned, `$d()` will return the passed `<default value>`.
 
+    `$d('v:static_pkgconfig', false)` is a read-only compiler value. It is true when
+    an exact `-static` token selects global static pkg-config resolution for a
+    supported GNU-compatible C compiler. It is not a claim that the complete output
+    binary is static. Clang's MSVC-compatible driver mode is excluded, and the value
+    cannot be set with `-d`.
+
   -g, -debug
     Compile the executable in debug mode, allowing code to be debugged more easily.
 
