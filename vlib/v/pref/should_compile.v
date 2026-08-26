@@ -7,6 +7,11 @@ pub fn (prefs &Preferences) should_compile_filtered_files(dir string, files_ []s
 	mut files := files_.clone()
 	files.sort()
 	mut all_v_files := []string{}
+	mut active_file_defines := prefs.compile_defines.clone()
+	if prefs.compile_values[compiler_owned_static_pkgconfig_value] == 'true'
+		&& compiler_owned_static_pkgconfig_file_define !in active_file_defines {
+		active_file_defines << compiler_owned_static_pkgconfig_file_define
+	}
 	files_loop: for file in files {
 		if !file.ends_with('.v') && !file.ends_with('.vh') {
 			continue
@@ -18,11 +23,11 @@ pub fn (prefs &Preferences) should_compile_filtered_files(dir string, files_ []s
 		mut is_d_notd_file := false
 		if file.contains('_d_') {
 			is_d_notd_file = true
-			if prefs.compile_defines_all.len == 0 {
+			if active_file_defines.len == 0 {
 				continue
 			}
 			mut allowed := false
-			for cdefine in prefs.compile_defines {
+			for cdefine in active_file_defines {
 				file_postfixes := ['_d_${cdefine}.v', '_d_${cdefine}.c.v']
 				for file_postfix in file_postfixes {
 					if file.ends_with(file_postfix) {
@@ -41,7 +46,7 @@ pub fn (prefs &Preferences) should_compile_filtered_files(dir string, files_ []s
 		if file.contains('_notd_') {
 			is_d_notd_file = true
 			mut allowed := true
-			for cdefine in prefs.compile_defines {
+			for cdefine in active_file_defines {
 				file_postfixes := ['_notd_${cdefine}.v', '_notd_${cdefine}.c.v']
 				for file_postfix in file_postfixes {
 					if file.ends_with(file_postfix) {
