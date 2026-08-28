@@ -11,7 +11,7 @@ fn (g &Parser) or_block_has_statements() bool {
 		.key_continue] {
 		return true
 	}
-	mut lookahead := scanner.new_scanner(g.prefs, .normal)
+	mut lookahead := scanner.new_scanner(g.preferences(), .normal)
 	lookahead.init(g.s.current_file(), g.s.src)
 	lookahead.offset = g.s.offset
 	mut tok := g.tok
@@ -111,7 +111,7 @@ fn (mut g Parser) parse_if() !bool {
 }
 
 fn (g &Parser) if_starts_final_block_expression() bool {
-	mut lookahead := scanner.new_scanner(g.prefs, .normal)
+	mut lookahead := scanner.new_scanner(g.preferences(), .normal)
 	lookahead.init(g.s.current_file(), g.s.src)
 	lookahead.offset = g.s.offset
 	mut tok := lookahead.scan()

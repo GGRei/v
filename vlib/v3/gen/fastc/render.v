@@ -1054,7 +1054,7 @@ fn (g &Parser) render_unsigned_right_shift_assignment(target string, value strin
 		'i16', 'u16' { 'u16', '16' }
 		'i32', 'int', 'rune', 'u32', 'unsigned int' { 'u32', '32' }
 		'i64', 'u64' { 'u64', '64' }
-		'isize', 'usize' { 'usize', '${g.prefs.target.pointer_bits}' }
+		'isize', 'usize' { 'usize', '${g.preferences().target.pointer_bits}' }
 		else { return none }
 	}
 	return '({ ${target_type} *__v_fastc_unsigned_shift_target = &(${target}); ${unsigned_type} __v_fastc_unsigned_shift_value = (${unsigned_type})(*__v_fastc_unsigned_shift_target); u64 __v_fastc_unsigned_shift_count = (u64)(${value}); *__v_fastc_unsigned_shift_target = (${target_type})(__v_fastc_unsigned_shift_count >= ${bits} ? (${unsigned_type})0 : (__v_fastc_unsigned_shift_value >> __v_fastc_unsigned_shift_count)); })'
@@ -1897,7 +1897,7 @@ fn (g &Parser) map_runtime_functions(key_type string) (string, string, string, s
 	if enum_key := g.underlying_enum_type_key(g.semantic_type_key(resolved_type)) {
 		resolved_type = if g.enum_flags[enum_key] { 'u64' } else { 'int' }
 	}
-	return fastc_map_runtime_functions(resolved_type, g.prefs.target.pointer_bits)
+	return fastc_map_runtime_functions(resolved_type, g.preferences().target.pointer_bits)
 }
 
 fn (g &Parser) render_missing_call_arguments(tokens []FastcExpressionToken) ?FastcRenderedExpression {

@@ -6,6 +6,18 @@ import v3.pref
 import v3.scanner
 import v3.token
 
+fn test_fastc_file_gen_context_preserves_preferences_pointer_identity() {
+	prefs := pref.new_preferences()
+	ctx := FastcFileGenContext{
+		prefs: voidptr(prefs)
+	}
+	assert voidptr(fastc_file_gen_preferences(&ctx)) == voidptr(prefs)
+	g := Parser{
+		prefs: ctx.prefs
+	}
+	assert voidptr(g.preferences()) == voidptr(prefs)
+}
+
 fn test_fastc_chunk_bounds_reserve_files_for_later_workers() {
 	sources := [
 		FastcSourceFile{
@@ -3587,7 +3599,7 @@ fn fastc_test_expression_token(tok token.Token, lit string) FastcExpressionToken
 fn test_literal_membership_materializes_candidates_before_comparison() {
 	prefs := pref.new_preferences()
 	g := Parser{
-		prefs:    &prefs
+		prefs:    voidptr(prefs)
 		selfhost: true
 		s:        scanner.new_scanner(prefs, .normal)
 		locals:   {

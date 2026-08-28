@@ -338,9 +338,9 @@ fn (mut g Parser) parse_comptime_unary() !bool {
 		g.next()
 	}
 	return if is_optional {
-		pref.comptime_optional_flag_value(g.prefs, name)
+		pref.comptime_optional_flag_value(g.preferences(), name)
 	} else {
-		pref.comptime_flag_value(g.prefs, name)
+		pref.comptime_flag_value(g.preferences(), name)
 	}
 }
 
@@ -483,13 +483,13 @@ fn (g &Parser) comptime_pseudo_expression(name string) ?string {
 			'${g.path}:${line}, ${location_method}'
 		}
 		'@VEXEROOT', '@VROOT' {
-			g.prefs.vroot
+			g.preferences().vroot
 		}
 		'@VMODROOT' {
 			fastc_vmod_root_for_file(g.path)
 		}
 		'@VEXE' {
-			g.prefs.vexe
+			g.preferences().vexe
 		}
 		'@VMOD_FILE' {
 			vmod_file := os.join_path_single(fastc_vmod_root_for_file(g.path), 'v.mod')
@@ -497,31 +497,31 @@ fn (g &Parser) comptime_pseudo_expression(name string) ?string {
 			content.replace('\r\n', '\n')
 		}
 		'@VHASH' {
-			g.prefs.vhash
+			g.preferences().vhash
 		}
 		'@VCURRENTHASH' {
-			g.prefs.vcurrent_hash
+			g.preferences().vcurrent_hash
 		}
 		'@BUILD_DATE' {
-			g.prefs.build_date
+			g.preferences().build_date
 		}
 		'@BUILD_TIME' {
-			g.prefs.build_time
+			g.preferences().build_time
 		}
 		'@BUILD_TIMESTAMP' {
-			g.prefs.build_timestamp
+			g.preferences().build_timestamp
 		}
 		'@OS' {
-			g.prefs.normalized_target_os()
+			g.preferences().normalized_target_os()
 		}
 		'@CCOMPILER' {
-			g.prefs.ccompiler
+			g.preferences().ccompiler
 		}
 		'@BACKEND' {
-			g.prefs.backend
+			g.preferences().backend
 		}
 		'@PLATFORM' {
-			g.prefs.comptime_platform()
+			g.preferences().comptime_platform()
 		}
 		else {
 			return none
