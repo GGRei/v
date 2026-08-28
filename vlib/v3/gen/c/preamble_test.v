@@ -1,5 +1,146 @@
 module c
 
+import v3.pref
+
+fn test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations() {
+	mut g := FlatGen.new()
+	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	g.set_ccompiler('tinyc')
+	g.preamble()
+	g.atomic_builtin_compat_decls()
+	c_code := g.sb.str()
+	compat_include := '#include "thirdparty/stdatomic/win/atomic.h"'
+	compat_pos := c_code.index(compat_include) or { -1 }
+	file_pos := c_code.index('typedef struct FILE FILE;') or { -1 }
+	assert c_code.count(compat_include) == 1, c_code
+	assert compat_pos >= 0, c_code
+	assert compat_pos < file_pos, c_code
+	assert !c_code.contains('typedef struct SECURITY_ATTRIBUTES {'), c_code
+	assert !c_code.contains('typedef struct OVERLAPPED {'), c_code
+	assert c_code.contains('#ifndef _SYNCHAPI_H_\ntypedef struct SRWLOCK { void* Ptr; } SRWLOCK;\n#endif'), c_code
+	assert !c_code.contains('typedef struct CONDITION_VARIABLE { void* Ptr; } CONDITION_VARIABLE;'), c_code
+	assert !c_code.contains('typedef void* atomic_uintptr_t;'), c_code
+	assert !c_code.contains('typedef struct COORD { i16 X; i16 Y; } COORD;'), c_code
+	assert !c_code.contains('typedef struct INPUT_RECORD {'), c_code
+	assert !c_code.contains('HANDLE CreateThread(void* attributes'), c_code
+	assert !c_code.contains('DWORD WaitForSingleObject(HANDLE handle, DWORD milliseconds);'), c_code
+	assert !c_code.contains('BOOL CloseHandle(HANDLE handle);'), c_code
+	assert !c_code.contains('DWORD GetLastError(void);'), c_code
+	assert c_code.contains('typedef struct { HANDLE handle; void* context; } __v_thread;'), c_code
+	assert c_code.contains('result.handle = CreateThread(NULL, __v_thread_stack_size,'), c_code
+	assert c_code.contains('struct fd_set { unsigned int fd_count; SOCKET fd_array[FD_SETSIZE]; };'), c_code
+	assert c_code.contains('#define O_RDONLY 0x0000'), c_code
+}
+
+fn test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions() {
+	expected := [
+		'GenerateConsoleCtrlEvent',
+		'GetConsoleMode',
+		'GetConsoleScreenBufferInfo',
+		'GetNumberOfConsoleInputEvents',
+		'ReadConsoleInput',
+		'ReadConsoleW',
+		'ScrollConsoleScreenBuffer',
+		'SetConsoleCursorPosition',
+		'SetConsoleMode',
+		'SetConsoleTitleW',
+		'WriteConsoleW',
+		'CloseHandle',
+		'CreateThread',
+		'ExitProcess',
+		'GetCurrentProcess',
+		'GetCurrentThreadId',
+		'GetLastError',
+		'GetProcessHeap',
+		'GetStdHandle',
+		'HeapAlloc',
+		'HeapFree',
+		'IsDebuggerPresent',
+		'ReadFile',
+		'WaitForSingleObject',
+		'WriteFile',
+		'MultiByteToWideChar',
+	]
+	sentinels := [
+		'SymInitialize',
+		'SymFromAddr',
+		'SymGetLineFromAddr64',
+		'WSAAddressToStringA',
+		'InitializeConditionVariable',
+		'SleepConditionVariableSRW',
+		'WakeConditionVariable',
+		'WakeAllConditionVariable',
+		'TryAcquireSRWLockExclusive',
+		'TryAcquireSRWLockShared',
+		'CaptureStackBackTrace',
+		'GetFinalPathNameByHandleW',
+		'CreateSymbolicLinkW',
+	]
+	assert c_headerless_windows_tcc_sdk_declared_fns == expected
+	mut g := FlatGen.new()
+	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	g.set_ccompiler('tinyc')
+	assert !g.windows_tcc_atomic_emitted
+	g.emit_windows_tcc_atomic_header()
+	assert g.windows_tcc_atomic_emitted
+	assert g.inlined_c_declared_fns.len == expected.len
+	for name in expected {
+		assert name in g.inlined_c_declared_fns, name
+		assert !g.should_emit_c_extern_decl(name), name
+	}
+	for name in sentinels {
+		assert name !in g.inlined_c_declared_fns, name
+		assert g.should_emit_c_extern_decl(name), name
+	}
+	first_output := g.sb.str()
+	g.emit_windows_tcc_atomic_header()
+	assert g.sb.str() == first_output
+	assert g.inlined_c_declared_fns.len == expected.len
+}
+
+fn test_system_libc_windows_tcc_atomic_header_does_not_preserve_sdk_functions() {
+	mut g := FlatGen.new()
+	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	g.set_ccompiler('tinyc')
+	g.add_c_directive('main', '#include <stdio.h>', false)
+	assert g.c_directives_use_system_libc()
+	g.preamble()
+	compat_include := '#include "thirdparty/stdatomic/win/atomic.h"'
+	before_output := g.sb.str()
+	assert before_output.contains('#include <windows.h>'), before_output
+	assert before_output.count(compat_include) == 0, before_output
+	assert !g.windows_tcc_atomic_emitted
+	assert 'GetConsoleMode' !in g.inlined_c_declared_fns
+	assert g.should_emit_c_extern_decl('GetConsoleMode')
+	g.emit_windows_tcc_atomic_header()
+	assert g.windows_tcc_atomic_emitted
+	assert 'GetConsoleMode' !in g.inlined_c_declared_fns
+	assert g.should_emit_c_extern_decl('GetConsoleMode')
+	for name in c_headerless_windows_tcc_sdk_declared_fns {
+		assert name !in g.inlined_c_declared_fns, name
+	}
+	first_output := g.sb.str()
+	compat_pos := first_output.index(compat_include) or { -1 }
+	assert first_output.count(compat_include) == 1, first_output
+	assert first_output.starts_with(before_output), first_output
+	assert compat_pos >= before_output.len, first_output
+	g.emit_windows_tcc_atomic_header()
+	assert g.sb.str() == first_output
+	assert g.windows_tcc_atomic_emitted
+}
+
+fn test_headerless_windows_non_tcc_keeps_local_sdk_fallbacks() {
+	mut g := FlatGen.new()
+	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	g.set_ccompiler('gcc')
+	g.preamble()
+	c_code := g.sb.str()
+	assert c_code.contains('typedef struct CONDITION_VARIABLE { void* Ptr; } CONDITION_VARIABLE;'), c_code
+	assert c_code.contains('typedef struct COORD { i16 X; i16 Y; } COORD;'), c_code
+	assert c_code.contains('HANDLE CreateThread(void* attributes'), c_code
+	assert g.should_emit_c_extern_decl('GetConsoleMode')
+}
+
 fn test_manual_stdlib_headers_clear_fortified_memory_macros() {
 	headers := manual_stdlib_c_headers()
 	for name in ['memcpy', 'memmove', 'memset'] {
