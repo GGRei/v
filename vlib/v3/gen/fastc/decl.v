@@ -267,7 +267,7 @@ fn fastc_generate_global_declarations(sources []FastcSourceFile, prefs &pref.Pre
 		mut file := file_set.add_file(source_file.path, source_file.source.len)
 		file.index_lines_without_digest(source_file.source)
 		mut gen := Parser{
-			prefs:                        unsafe { prefs }
+			prefs:                        voidptr(prefs)
 			path:                         source_file.path
 			module_name:                  source_file.header.module_name
 			imports:                      source_file.header.imports
@@ -450,7 +450,7 @@ fn fastc_render_struct_field_defaults(prefs &pref.Preferences, declared_types ma
 			mut file := file_set.add_file(default_path, field.default_source.len)
 			file.index_lines_without_digest(field.default_source)
 			mut gen := Parser{
-				prefs:                        unsafe { prefs }
+				prefs:                        voidptr(prefs)
 				path:                         default_path
 				module_name:                  field.module_name
 				imports:                      field.imports
@@ -510,7 +510,7 @@ fn fastc_generate_constant_declarations(sources []FastcSourceFile, prefs &pref.P
 		mut file := file_set.add_file(source_file.path, source_file.source.len)
 		file.index_lines_without_digest(source_file.source)
 		mut gen := Parser{
-			prefs:                        unsafe { prefs }
+			prefs:                        voidptr(prefs)
 			path:                         source_file.path
 			module_name:                  source_file.header.module_name
 			imports:                      source_file.header.imports

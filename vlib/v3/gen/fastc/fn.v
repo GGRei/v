@@ -78,12 +78,12 @@ fn (mut g Parser) parse_c_directive() ! {
 		|| directive.starts_with('pkgconfig ') {
 		// FastC's compiler invocation supplies its own target flags. The bootstrap
 		// dependency set only uses these directives for optional libraries.
-		if g.prefs.selfhost {
+		if g.preferences().selfhost {
 			return
 		}
 		return g.unsupported('C build directive `#${directive}`')
 	}
-	mut c_directive := fastc_resolve_c_pseudo_paths(directive, g.prefs.vroot, g.path)
+	mut c_directive := fastc_resolve_c_pseudo_paths(directive, g.preferences().vroot, g.path)
 	if c_directive.starts_with('insert ') {
 		c_directive = 'include ' + c_directive['insert '.len..]
 	}
@@ -92,7 +92,7 @@ fn (mut g Parser) parse_c_directive() ! {
 		qualifier := remainder.all_before(' ')
 		if qualifier in ['windows', 'macos', 'linux', 'freebsd', 'openbsd', 'netbsd', 'dragonfly',
 			'solaris', 'android'] {
-			if !pref.comptime_flag_value(g.prefs, qualifier) {
+			if !pref.comptime_flag_value(g.preferences(), qualifier) {
 				return
 			}
 			c_directive = 'include ' + remainder.all_after(' ')

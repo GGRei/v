@@ -73,7 +73,7 @@ fn fastc_generate_file_chunk(ctx &FastcFileGenContext, sources []FastcSourceFile
 // balanced by source size, and results are stitched back in file order, so
 // the emitted C is identical to a serial run.
 fn fastc_generate_file_outputs(ctx &FastcFileGenContext, sources []FastcSourceFile) []FastcFileGenOutput {
-	jobs := fastc_parallel_jobs(sources, ctx.prefs)
+	jobs := fastc_parallel_jobs(sources, fastc_file_gen_preferences(ctx))
 	mut outputs := []FastcFileGenOutput{cap: sources.len}
 	if jobs <= 1 {
 		for source_file in sources {

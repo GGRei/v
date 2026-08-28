@@ -142,7 +142,7 @@ fn (g &Parser) open_block_contains_select_statement() bool {
 	if g.tok != .lcbr {
 		return false
 	}
-	mut lookahead := scanner.new_scanner(g.prefs, .normal)
+	mut lookahead := scanner.new_scanner(g.preferences(), .normal)
 	lookahead.init(g.s.current_file(), g.s.src)
 	lookahead.offset = g.s.offset
 	mut depth := 1
