@@ -792,6 +792,48 @@ fn test_c_build_directives_are_rejected_instead_of_discarded() {
 	assert message.contains('C build directive `#flag -D FEATURE=1`'), message
 }
 
+fn test_cpp_linker_directive_is_rejected_before_fastc_emits_c() {
+	direct_source := 'module main\n#linker c++\nfn main() {}\n'
+	mut direct_message := ''
+	_ := generate(direct_source, 'direct_cpp_linker.v', pref.new_preferences()) or {
+		direct_message = err.msg()
+		''
+	}
+	assert direct_message == fastc_cpp_linker_error
+
+	root := os.join_path(os.vtmp_dir(), 'v3_fastc_cpp_linker_${os.getpid()}')
+	os.rmdir_all(root) or {}
+	os.mkdir_all(os.join_path(root, 'dependency')) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	main_file := os.join_path(root, 'main.v')
+	os.write_file(main_file, 'module main\nimport dependency\nfn main() { dependency.run() }\n') or {
+		panic(err)
+	}
+	os.write_file(os.join_path(root, 'dependency', 'dependency.v'),
+		'module dependency\n#linker c++\npub fn run() {}\n') or { panic(err) }
+	mut import_prefs := pref.new_preferences()
+	import_prefs.module_search_paths = [root]
+	mut import_message := ''
+	_ := generate_files([main_file], import_prefs) or {
+		import_message = err.msg()
+		''
+	}
+	assert import_message == fastc_cpp_linker_error
+
+	host := pref.host_target()
+	cross_arch := if host.arch == 'arm64' { 'amd64' } else { 'arm64' }
+	mut cross_prefs := pref.new_preferences()
+	cross_prefs.target = pref.target_from(host.os, cross_arch) or { panic(err) }
+	mut cross_message := ''
+	_ := generate(direct_source, 'cross_cpp_linker.v', cross_prefs) or {
+		cross_message = err.msg()
+		''
+	}
+	assert cross_message == fastc_cpp_linker_error
+}
+
 fn test_colliding_import_aliases_are_rejected() {
 	prefs := pref.new_preferences()
 	for source in [
