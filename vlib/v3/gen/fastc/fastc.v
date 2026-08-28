@@ -900,7 +900,7 @@ fn fastc_generate_single_file(ctx &FastcFileGenContext, source_file FastcSourceF
 	file.index_lines_without_digest(source_file.source)
 	prefs := ctx.prefs
 	mut gen := Parser{
-		prefs:                   unsafe { ctx.prefs }
+		prefs:                   unsafe { &pref.Preferences(voidptr(ctx.prefs)) }
 		path:                    source_file.path
 		module_name:             source_file.header.module_name
 		imports:                 source_file.header.imports
