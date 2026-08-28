@@ -25,6 +25,10 @@ fn run_in_mode(program string, args []string, work_folder string, merge_output b
 	} else {
 		process.set_redirect_stdio()
 	}
+	if os.getenv('V3_CMDEXEC_TRACE') != '' {
+		cwd := if work_folder.len > 0 { work_folder } else { os.getwd() }
+		eprintln('V3 cmdexec: cwd=${cwd} command=${display(program, args)}')
+	}
 	process.run()
 	mut output := strings.new_builder(1024)
 	for process.is_alive() {
