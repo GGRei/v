@@ -2,6 +2,7 @@ module driver
 
 import os
 import v3.pref
+import v3.types
 
 fn test_v3_tcc_backtrace_enabled() {
 	assert !v3_tcc_backtrace_enabled('macos', 'arm64', false)
@@ -66,6 +67,181 @@ fn test_v3_default_linker_flags() {
 	assert v3_default_linker_flags('freebsd', false) == ['-lm', '-lpthread', '-lexecinfo', '-lelf']
 	assert v3_default_linker_flags('netbsd', false) == ['-lm', '-lpthread', '-lexecinfo', '-lelf']
 	assert v3_default_linker_flags('linux', true) == []
+}
+
+fn test_v3_cpp_linker_wraps_only_implicit_c_sources() {
+	args := ['-std=gnu11', '-o', 'app', 'generated.c', 'support.o', '-x', 'c++', 'explicit.c',
+		'-x', 'none', 'extra.c', '-xc++', 'compact.c', '-xnone', 'final.c', 'native.C',
+		'-xobjective-c', 'darwin.c', '-lfixture']
+	assert v3_cpp_linker_c_source_args(args) == [
+		'-std=gnu11',
+		'-o',
+		'app',
+		'-x',
+		'c',
+		'generated.c',
+		'-x',
+		'none',
+		'support.o',
+		'-x',
+		'c++',
+		'explicit.c',
+		'-x',
+		'none',
+		'-x',
+		'c',
+		'extra.c',
+		'-x',
+		'none',
+		'-xc++',
+		'compact.c',
+		'-xnone',
+		'-x',
+		'c',
+		'final.c',
+		'-x',
+		'none',
+		'native.C',
+		'-xobjective-c',
+		'darwin.c',
+		'-lfixture',
+	]
+	assert v3_link_args_have_c_source(args)
+	assert !v3_link_args_have_c_source(['-xc++', 'explicit.c', 'native.C', 'support.o'])
+	assert v3_link_args_have_c_source(['-xobjective-c', 'darwin.c'])
+}
+
+fn test_v3_native_source_compile_flags_keep_only_the_selected_language_standard() {
+	flags := ['-I', 'include dir', '-std=c++20', '-DVALUE=1', '-Wl,--as-needed', '-lfixture',
+		'native.c', 'native.cpp']
+	c_flags := v3_c_source_compile_flags(flags, '/source', 'c', '-std=gnu11')
+	assert '-std=gnu11' in c_flags
+	assert '-std=c++20' !in c_flags
+	assert '-Wl,--as-needed' !in c_flags
+	assert '-lfixture' !in c_flags
+	assert !c_flags.any(it.ends_with('.c') || it.ends_with('.cpp'))
+	cpp_flags := v3_cpp_source_compile_flags(flags, '/source')
+	assert '-std=gnu11' !in cpp_flags
+	assert '-std=c++20' in cpp_flags
+	assert '-Wl,--as-needed' !in cpp_flags
+	assert '-lfixture' !in cpp_flags
+	assert !cpp_flags.any(it.ends_with('.c') || it.ends_with('.cpp'))
+	c_args := v3_native_source_compile_args(['-std=c99', '-DBEFORE=1'], ['-DAFTER=1', '-std=c17'],
+		'/source', 'c', '-std=gnu11', 'src.c', 'src.o')
+	c99_index := c_args.index('-std=c99')
+	gnu11_index := c_args.index('-std=gnu11')
+	c_input_index := c_args.index('src.c')
+	c_output_index := c_args.index('src.o')
+	c17_index := c_args.index('-std=c17')
+	assert c99_index >= 0 && c99_index < gnu11_index
+	assert gnu11_index < c_input_index
+	assert c_input_index < c_output_index
+	assert c_output_index < c17_index
+	assert c_args.filter(it.starts_with('-std=')).last() == '-std=c17'
+	cpp_args := v3_native_source_compile_args(['-std=c99', '-std=c++17'],
+		['-std=c17', '-std=c++23'], '/source', 'c++', '-std=gnu11', 'src.cpp', 'src.o')
+	assert '-std=c99' !in cpp_args
+	assert '-std=c17' !in cpp_args
+	assert '-std=gnu11' !in cpp_args
+	cpp17_index := cpp_args.index('-std=c++17')
+	cpp_input_index := cpp_args.index('src.cpp')
+	cpp_output_index := cpp_args.index('src.o')
+	cpp23_index := cpp_args.index('-std=c++23')
+	assert cpp17_index >= 0 && cpp17_index < cpp_input_index
+	assert cpp_input_index < cpp_output_index
+	assert cpp_output_index < cpp23_index
+	assert cpp_args.filter(it.starts_with('-std=')).last() == '-std=c++23'
+}
+
+fn test_v3_cpp_linker_response_file_is_private_and_length_driven() {
+	assert !v3_cpp_linker_response_file_required('c++', ['-o', 'app', 'main.c'])
+	assert !v3_cpp_linker_response_file_required_for_limit('c++', ['1234', '5678'], 19)
+	assert v3_cpp_linker_response_file_required_for_limit('c++', ['1234', '5678'], 18)
+	args := ['marker.o', 'C:\\fixture path\\generated.c', 'café.o', '-lfixture']
+	content := v3_cpp_linker_response_content(args)
+	lines := content.split_into_lines()
+	assert lines.len == args.len
+	assert lines[0] == '"marker.o"'
+	assert lines[1].contains('fixture path')
+	assert lines[1].contains('generated.c')
+	assert lines[2] == '"café.o"'
+	assert lines[3] == '"-lfixture"'
+}
+
+fn test_v3_cpp_source_flags_keep_compile_inputs_and_drop_link_flags() {
+	source_root := os.join_path(os.vtmp_dir(), 'v3_cpp_flags_fixture')
+	include_path := os.abs_path(os.join_path(source_root, 'relative/include'))
+	config_path := os.abs_path(os.join_path(source_root, 'relative/config.h'))
+	macros_path := os.abs_path(os.join_path(source_root, 'relative/macros.h'))
+	assert v3_cpp_source_compile_flags([
+		'-O3',
+		'-m64',
+		'--target=x86_64-w64-mingw32',
+		'-Irelative/include',
+		'-include',
+		'relative/config.h',
+		'-imacrosrelative/macros.h',
+		'-std=gnu11',
+		'-std=c++17',
+		'-flto=auto',
+		'-Wextra',
+		'-o',
+		'app',
+		'generated.cpp',
+		'-Wl,--as-needed',
+		'-lfixture',
+	], source_root) == [
+		'-O3',
+		'-m64',
+		'--target=x86_64-w64-mingw32',
+		'-I${include_path}',
+		'-include',
+		config_path,
+		'-imacros${macros_path}',
+		'-std=c++17',
+		'-flto=auto',
+		'-Wextra',
+	]
+}
+
+fn test_v3_cpp_linker_default_driver_follows_c_driver_family() {
+	assert v3_default_cpp_compiler('cc') == 'c++'
+	assert v3_default_cpp_compiler('gcc') == 'g++'
+	assert v3_default_cpp_compiler('gcc-14') == 'g++-14'
+	assert v3_default_cpp_compiler('x86_64-w64-mingw32-gcc.exe') == 'x86_64-w64-mingw32-g++.exe'
+	assert os.norm_path(v3_default_cpp_compiler('C:/msys64/ucrt64/bin/clang.exe')) == os.norm_path('C:/msys64/ucrt64/bin/clang++.exe')
+	assert os.norm_path(v3_default_cpp_compiler('/opt/llvm/bin/clang-22')) == os.norm_path('/opt/llvm/bin/clang++-22')
+	assert v3_default_cpp_compiler('clang-cl.exe') == ''
+	assert v3_default_cpp_compiler('clang-wrapper') == ''
+	assert v3_driver_name_pattern_family('x86_64-w64-mingw32-gcc.exe') == 'gcc'
+	assert v3_driver_name_pattern_family('clang++-22') == 'clang'
+	assert v3_driver_name_pattern_family('gcc-wrapper') == ''
+}
+
+fn test_v3_cgen_metadata_roundtrips_native_link_requirements() {
+	for requires_cpp in [false, true] {
+		requirements := types.NativeLinkRequirements{
+			requires_cpp: requires_cpp
+		}
+		encoded := encode_v3_cgen_metadata(['-DFIXTURE'], 'iface', 'prefix', requirements,
+			[]V3CachedTypeDiagnostic{})
+		decoded := decode_v3_cgen_metadata(encoded) or { panic('metadata did not decode') }
+		assert decoded.native_link_requirements.requires_cpp == requires_cpp
+		assert decoded.flags == ['-DFIXTURE']
+		assert encoded.starts_with(if requires_cpp {
+			'v3-cgen-metadata-v5\x00'
+		} else {
+			'v3-cgen-metadata-v4\x00'
+		})
+	}
+	dynamic_requirements := types.NativeLinkRequirements{}
+	dynamic_metadata := encode_v3_cgen_metadata(['-DFIXTURE'], 'iface', 'prefix',
+		dynamic_requirements, []V3CachedTypeDiagnostic{})
+	assert dynamic_metadata == ['v3-cgen-metadata-v4', 'iface', 'prefix', '1', '-DFIXTURE', '0'].join('\x00')
+	assert v3_cgen_generation_signature(['-DFIXTURE'], dynamic_requirements) == '-DFIXTURE'
+	assert v3_cgen_generation_signature(['-DFIXTURE'], types.NativeLinkRequirements{
+		requires_cpp: true
+	}) == '-DFIXTURE\x00native_link=c++'
 }
 
 fn test_v3_default_linker_flags_do_not_duplicate_existing_flags() {
