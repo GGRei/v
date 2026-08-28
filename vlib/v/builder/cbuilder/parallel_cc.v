@@ -176,8 +176,9 @@ fn parallel_cc(mut b builder.Builder, result c.GenOutput) ! {
 	}
 	obj_files := ofiles.join(' ')
 
+	linker_driver := b.quote_compiler_name(b.final_linker_driver(parallel_cc_compiler_path(b)))
 	alink := [
-		cc,
+		linker_driver,
 		scompile_args_for_linker,
 		'-o',
 		os.quoted_path(b.pref.out_name),
