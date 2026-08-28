@@ -50,7 +50,7 @@ fn (mut g Parser) read_spawn_expression() !string {
 		// would reference undefined creators and thread types.
 		return g.unsupported('spawn in constant, global, or field default initializers')
 	}
-	if g.prefs.normalized_target_os() == 'windows' {
+	if g.preferences().normalized_target_os() == 'windows' {
 		return g.unsupported('spawn for windows targets')
 	}
 	g.next()
