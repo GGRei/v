@@ -1,7 +1,112 @@
 module driver
 
+import json
 import os
+import v3.cmdexec
 import v3.pref
+
+struct V3CacheCompilerRecorderInvocation {
+	args []string
+}
+
+fn v3_cache_compiler_recorder_invocations(path string) []V3CacheCompilerRecorderInvocation {
+	mut invocations := []V3CacheCompilerRecorderInvocation{}
+	for line in os.read_lines(path) or { return invocations } {
+		if line.len > 0 {
+			invocations << json.decode(V3CacheCompilerRecorderInvocation, line) or { panic(err) }
+		}
+	}
+	return invocations
+}
+
+fn test_v3_cache_compiler_keeps_family_and_uses_resolved_executable_for_probes() {
+	root := os.join_path(os.vtmp_dir(), 'v3 cache compiler recorder ${os.getpid()}')
+	os.rmdir_all(root) or {}
+	os.mkdir_all(root) or { panic(err) }
+	recorder_source := os.join_path(root, 'recorder.v')
+	recorder_log := os.join_path(root, 'recorder.jsonl')
+	recorder_suffix := $if windows { '.exe' } $else { '' }
+	recorder_name := 'tinyc${recorder_suffix}'
+	recorder := os.join_path(root, recorder_name)
+	old_path := os.getenv_opt('PATH')
+	old_log := os.getenv_opt('V3_CACHE_COMPILER_RECORDER_LOG')
+	defer {
+		if value := old_path {
+			os.setenv('PATH', value, true)
+		} else {
+			os.unsetenv('PATH')
+		}
+		if value := old_log {
+			os.setenv('V3_CACHE_COMPILER_RECORDER_LOG', value, true)
+		} else {
+			os.unsetenv('V3_CACHE_COMPILER_RECORDER_LOG')
+		}
+		os.rmdir_all(root) or {}
+	}
+	os.write_file(recorder_source, 'module main
+
+import json
+import os
+
+struct Invocation {
+pub:
+	args []string
+}
+
+fn main() {
+	log := os.getenv("V3_CACHE_COMPILER_RECORDER_LOG")
+	mut log_file := os.open_append(log) or { exit(90) }
+	log_file.writeln(json.encode(Invocation{ args: os.args[1..] })) or { exit(91) }
+	log_file.close()
+	if "-dM" in os.args {
+		println("#define V3_CACHE_RECORDER 1")
+		return
+	}
+	if "-E" in os.args && "-P" in os.args {
+		println("static int v3_cache_recorder(void) { return 1; }")
+		return
+	}
+	exit(92)
+}
+') or { panic(err) }
+	build := cmdexec.run(@VEXE, ['-gc', 'none', '-no-retry-compilation', '-o', recorder,
+		recorder_source])
+	assert build.exit_code == 0, build.output
+	os.write_file(recorder_log, '') or { panic(err) }
+	os.setenv('V3_CACHE_COMPILER_RECORDER_LOG', recorder_log, true)
+	absolute := v3_cache_c_compiler('tinyc', recorder)
+	assert absolute.family == 'tinyc'
+	assert absolute.executable == recorder
+	local_macros := cache_local_c_compiler_macros([]string{}, absolute.family, pref.host_target())
+	assert local_macros['__TINYC__'].is_defined
+	macros, complete := cache_c_compiler_predefined_macros([]string{}, absolute.executable,
+		pref.host_target(), 'c')
+	assert complete
+	assert macros['V3_CACHE_RECORDER'] or { '' } == '1'
+	abs_invocations := v3_cache_compiler_recorder_invocations(recorder_log)
+	assert abs_invocations.len == 1
+	assert abs_invocations[0].args.contains('-dM')
+	assert abs_invocations[0].args.contains('-E')
+	os.write_file(recorder_log, '') or { panic(err) }
+	os.setenv('PATH', if old_path_value := old_path {
+		root + os.path_delimiter + old_path_value
+	} else {
+		root
+	}, true)
+	bare := v3_cache_c_compiler('tinyc', 'tinyc')
+	assert bare.family == 'tinyc'
+	assert bare.executable == os.abs_path(recorder)
+	native_source := os.join_path(root, 'native input.h')
+	os.write_file(native_source, 'int ignored_by_recorder;\n') or { panic(err) }
+	preprocessed := cache_preprocessed_native_input(native_source, []string{}, []string{},
+		bare.executable, pref.host_target()) or { panic('preprocessing probe did not run') }
+	assert preprocessed.contains('v3_cache_recorder')
+	preprocess_invocations := v3_cache_compiler_recorder_invocations(recorder_log)
+	assert preprocess_invocations.len == 1
+	assert preprocess_invocations[0].args.contains('-E')
+	assert preprocess_invocations[0].args.contains('-P')
+	assert v3_cache_c_compiler('tinyc', 'missing-v3-cache-compiler').executable == 'missing-v3-cache-compiler'
+}
 
 fn test_whole_program_cache_is_not_persistent_for_test_inputs() {
 	old_v3cache := os.getenv('V3CACHE')
@@ -151,7 +256,7 @@ int v3_lib_value(void) { return 42; }
 		'#define LIB_IMPL',
 	], implementation_macros, {
 		real_header: true
-	}, []string{}, 'cc', pref.host_target())
+	}, []string{}, v3_cache_c_compiler('cc', 'cc'), pref.host_target())
 }
 
 fn test_cache_native_public_include_replays_unconditional_external_definition() {
@@ -171,7 +276,7 @@ int v3_unconditional_helper(void) { return 7; }
 	assert cache_native_public_include_replays_external_definition(real_header, []string{},
 		map[string]bool{}, {
 		real_header: true
-	}, []string{}, 'cc', pref.host_target())
+	}, []string{}, v3_cache_c_compiler('cc', 'cc'), pref.host_target())
 }
 
 fn test_cache_native_public_include_keeps_static_definition_private() {
@@ -191,7 +296,7 @@ static int v3_private_helper(void) { return 7; }
 	assert !cache_native_public_include_replays_external_definition(real_header, []string{},
 		map[string]bool{}, {
 		real_header: true
-	}, []string{}, 'cc', pref.host_target())
+	}, []string{}, v3_cache_c_compiler('cc', 'cc'), pref.host_target())
 }
 
 fn test_cache_native_public_include_falls_back_when_isolated_preprocessing_fails() {
@@ -216,7 +321,7 @@ int v3_gated_helper(void) { return 7; }
 		'LIB_IMPL': true
 	}, {
 		real_header: true
-	}, []string{}, 'cc', pref.host_target())
+	}, []string{}, v3_cache_c_compiler('cc', 'cc'), pref.host_target())
 }
 
 fn test_cache_native_public_include_sees_through_static_storage_macros() {
@@ -241,7 +346,7 @@ V3_LOCAL V3MacroStaticType v3_macro_static_make(void) {
 	assert !cache_native_public_include_replays_external_definition(real_header, []string{},
 		map[string]bool{}, {
 		real_header: true
-	}, []string{}, 'cc', pref.host_target())
+	}, []string{}, v3_cache_c_compiler('cc', 'cc'), pref.host_target())
 }
 
 fn test_cache_c_flags_without_forced_inputs_drops_forced_files() {
