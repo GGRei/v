@@ -2057,6 +2057,7 @@ fn test_driver_cpp_linker_directive_is_exact_and_non_link_outputs_stay_c() {
 	old_ldflags := os.getenv_opt('LDFLAGS')
 	old_vflags := os.getenv_opt('VFLAGS')
 	old_recorder_log := os.getenv_opt('V3_CPP_LINKER_RECORDER_LOG')
+	old_cmdexec_trace := os.getenv_opt('V3_CMDEXEC_TRACE')
 	defer {
 		if value := old_cflags {
 			os.setenv('CFLAGS', value, true)
@@ -2078,12 +2079,23 @@ fn test_driver_cpp_linker_directive_is_exact_and_non_link_outputs_stay_c() {
 		} else {
 			os.unsetenv('V3_CPP_LINKER_RECORDER_LOG')
 		}
+		$if windows {
+			if value := old_cmdexec_trace {
+				os.setenv('V3_CMDEXEC_TRACE', value, true)
+			} else {
+				os.unsetenv('V3_CMDEXEC_TRACE')
+			}
+		}
 		os.rmdir_all(root) or {}
 	}
+	_ = old_cmdexec_trace
 	os.unsetenv('CFLAGS')
 	os.unsetenv('LDFLAGS')
 	os.unsetenv('VFLAGS')
 	os.unsetenv('V3_CPP_LINKER_RECORDER_LOG')
+	$if windows {
+		os.setenv('V3_CMDEXEC_TRACE', '1', true)
+	}
 	v3_bin := build_driver_cli_v3(root)
 	active := os.join_path(root, 'active.v')
 	inactive := os.join_path(root, 'inactive.v')
@@ -2135,6 +2147,10 @@ fn main() {
 		}
 		return
 	}
+	if args.len == 5 && args[..4] == ["-dM", "-E", "-x", "c"] {
+		println("#define V3_CPP_RECORDER_CACHE_PROBE 1")
+		return
+	}
 	mut output := ""
 	mut output_count := 0
 	for index, arg in args {
@@ -2165,6 +2181,7 @@ fn main() {
 	fake_clangpp := os.join_path(root, 'clang++${executable_suffix}')
 	for fake_driver in [fake_gcc, fake_gpp, fake_clang, fake_clangpp] {
 		os.cp(recorder_binary, fake_driver)!
+		assert os.is_file(fake_driver)
 	}
 	os.write_file(recorder_log, '')!
 	os.setenv('V3_CPP_LINKER_RECORDER_LOG', recorder_log, true)
@@ -2192,7 +2209,15 @@ fn main() {
 	assert duplicate.exit_code == 0, duplicate.output
 	assert os.is_file(duplicate_output)
 	duplicate_invocations := v3_cpp_driver_recorder_invocations(recorder_log)
-	duplicate_targets := duplicate_invocations.filter(it.args != ['--version'])
+	duplicate_probes := duplicate_invocations.filter('-dM' in it.args && '-E' in it.args)
+	assert duplicate_probes.len == 1, duplicate_invocations.str()
+	assert duplicate_probes[0].driver == 'gcc', duplicate_invocations.str()
+	assert duplicate_probes[0].args.len == 5, duplicate_probes[0].args.str()
+	assert duplicate_probes[0].args[..4] == ['-dM', '-E', '-x', 'c'], duplicate_probes[0].args.str()
+	assert duplicate_probes[0].args[4].ends_with('.c'), duplicate_probes[0].args.str()
+	assert '-o' !in duplicate_probes[0].args, duplicate_probes[0].args.str()
+	duplicate_targets := duplicate_invocations.filter(it.args != ['--version'] && !('-dM' in it.args
+		&& '-E' in it.args))
 	assert duplicate_targets.len == 2, duplicate_invocations.str()
 	assert duplicate_targets.all(it.driver == 'g++'), duplicate_invocations.str()
 	marker_invocations := duplicate_targets.filter('-c' in it.args)
@@ -2433,6 +2458,20 @@ fn v3_cpp_linker_driver_pairs() []V3CppLinkerDriverPair {
 }
 
 fn test_driver_cpp_linker_uses_final_cpp_driver_and_keeps_sources_c() {
+	old_cmdexec_trace := os.getenv_opt('V3_CMDEXEC_TRACE')
+	defer {
+		$if windows {
+			if value := old_cmdexec_trace {
+				os.setenv('V3_CMDEXEC_TRACE', value, true)
+			} else {
+				os.unsetenv('V3_CMDEXEC_TRACE')
+			}
+		}
+	}
+	_ = old_cmdexec_trace
+	$if windows {
+		os.setenv('V3_CMDEXEC_TRACE', '1', true)
+	}
 	pairs := v3_cpp_linker_driver_pairs()
 	if pairs.len == 0 {
 		return
