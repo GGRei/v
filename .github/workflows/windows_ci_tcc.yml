@@ -529,3 +529,58 @@ jobs:
           } finally {
             $process.Dispose()
           }
+
+  issue74-v1-windows-tcc-negative:
+    name: Issue 74 V1 negative tests (Windows TCC)
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build V with TCC
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\makev.bat -tcc
+          if ($LASTEXITCODE -ne 0) { throw "makev.bat failed: $LASTEXITCODE" }
+      - name: Run Issue 74 V1 negative owners
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tcc = Join-Path $env:GITHUB_WORKSPACE 'thirdparty\tcc\tcc.exe'
+          if (-not (Test-Path -LiteralPath $tcc -PathType Leaf)) { throw "missing TCC: $tcc" }
+          $version = (& $tcc -v 2>&1 | Out-String); $versionCode = $LASTEXITCODE
+          if ($versionCode -ne 0 -or $version -notmatch '(?i)(tiny c compiler|tcc version)') { throw 'TCC identity failed' }
+          foreach ($name in @('CFLAGS', 'LDFLAGS', 'VFLAGS')) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+          $env:VJOBS = '1'; $env:VTMP = Join-Path $env:RUNNER_TEMP 'issue74 v1 tcc tmp'
+          [void](New-Item -ItemType Directory -Force -Path $env:VTMP)
+          $env:VFLAGS = "-old-compiler -cc `"$tcc`" -no-retry-compilation"
+          function Run-Owner([string] $Label, [string] $Path, [string[]] $Names) {
+            $lines = [IO.File]::ReadAllLines((Join-Path $env:GITHUB_WORKSPACE $Path))
+            foreach ($name in $Names) { $count = @($lines | Where-Object { $_ -ceq "fn $name() {" }).Count; if ($count -ne 1) { throw "definition count ${Path}:${name}=$count" } }
+            $log = Join-Path $env:RUNNER_TEMP "$Label.log"
+            & .\v.exe -old-compiler -cc $tcc -no-retry-compilation -silent test -run-only ($Names -join ',') $Path 2>&1 | Tee-Object -FilePath $log
+            $code = $LASTEXITCODE; $text = [IO.File]::ReadAllText($log)
+            if ($code -ne 0 -or -not $text.Contains('1 passed, 1 total') -or $text.Contains('no tests found') -or $text.Contains('skipping #linker c++')) { throw "$Label failed" }
+          }
+          Run-Owner tcc-cc 'vlib/v/builder/cc_test.v' @(
+            'test_cc_from_string_keeps_historical_clang_cl_classification',
+            'test_cpp_linker_rejects_msvc_driver_mode_from_environment_flags',
+            'test_cpp_linker_driver_classifier_fails_closed_for_unknown_commands',
+            'test_cpp_linker_does_not_change_builds_without_directive')
+          Run-Owner tcc-pkgconfig 'vlib/v/checker/pkgconfig_static_mode_test.v' @('test_static_pkgconfig_segment_stays_ordered_after_target')
+          Run-Owner tcc-owned 'vlib/v/pref/compiler_owned_values_test.v' @('test_static_pkgconfig_compiler_owned_names_are_narrowly_reserved')
+          Run-Owner tcc-pref 'vlib/v/pref/pref_test.v' @(
+            'test_static_pkgconfig_compiler_value_filters_reserved_conditional_files',
+            'test_static_pkgconfig_compiler_value_exact_token_matrix',
+            'test_static_pkgconfig_compiler_value_rejects_static_lookalikes',
+            'test_other_v_namespaced_compile_values_remain_user_controlled')
+          Run-Owner tcc-comptime 'vlib/v/tests/comptime/comptime_static_pkgconfig_value_test.v' @(
+            'test_static_pkgconfig_compiler_value_is_canonical_in_a_dynamic_build',
+            'test_static_pkgconfig_compiler_owned_names_cannot_be_overridden')
+          Run-Owner tcc-linker-syntax 'vlib/v/checker/linker_directive_test.v' @(
+            'test_linker_cplusplus_is_idempotent', 'test_linker_cplusplus_in_inactive_branch_is_ignored',
+            'test_linker_rejects_every_value_except_exact_cplusplus')
+          & git diff --exit-code; if ($LASTEXITCODE -ne 0) { throw 'tracked files changed' }
+          & git diff --cached --exit-code; if ($LASTEXITCODE -ne 0) { throw 'index changed' }
+          $status = (& git status --porcelain=v1 --untracked-files=all | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $status.Length -ne 0) { throw "dirty worktree: $status" }
