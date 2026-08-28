@@ -718,7 +718,7 @@ struct FastcLoopBlockResult {
 }
 
 struct Parser {
-	prefs          &pref.Preferences
+	prefs          voidptr = unsafe { nil }
 	path           string
 	module_name    string
 	imports        map[string]string
@@ -796,6 +796,10 @@ mut:
 	declaration_initializer_mode bool
 }
 
+fn (g &Parser) preferences() &pref.Preferences {
+	return unsafe { &pref.Preferences(g.prefs) }
+}
+
 // fastc_comparison_memo_key identifies a token subrange within the current
 // expression. Every recursive slice shares the top array's backing storage, so
 // the data pointer plus length is exact; `tag` separates the two comparison
@@ -852,7 +856,7 @@ pub fn generate_files_with_source_paths(paths []string, prefs &pref.Preferences)
 // code-generation Parser starts from. Workers share it across threads; the
 // two seed maps are cloned per file, never mutated through the context.
 struct FastcFileGenContext {
-	prefs                  &pref.Preferences = unsafe { nil }
+	prefs                  voidptr = unsafe { nil }
 	declared_types         map[string]bool
 	declared_type_c_names  map[string]string
 	fastc_prefixed_c_names []string
@@ -878,6 +882,10 @@ struct FastcFileGenContext {
 	composite_types        map[string]bool
 }
 
+fn fastc_file_gen_preferences(ctx &FastcFileGenContext) &pref.Preferences {
+	return unsafe { &pref.Preferences(ctx.prefs) }
+}
+
 // FastcFileGenOutput is one source file's generation result. The sequential
 // stitch loop consumes them in file order, so parallel workers never touch
 // the shared output builders or the merged registration maps.
@@ -898,9 +906,9 @@ fn fastc_generate_single_file(ctx &FastcFileGenContext, source_file FastcSourceF
 	mut file_set := token.FileSet.new()
 	mut file := file_set.add_file(source_file.path, source_file.source.len)
 	file.index_lines_without_digest(source_file.source)
-	prefs := ctx.prefs
+	prefs := fastc_file_gen_preferences(ctx)
 	mut gen := Parser{
-		prefs:                   unsafe { prefs }
+		prefs:                   ctx.prefs
 		path:                    source_file.path
 		module_name:             source_file.header.module_name
 		imports:                 source_file.header.imports
@@ -1055,7 +1063,7 @@ fn generate_source_files(sources []FastcSourceFile, prefs &pref.Preferences) !(s
 	}
 	mut entry_has_main := false
 	ctx := FastcFileGenContext{
-		prefs:                  unsafe { prefs }
+		prefs:                  voidptr(prefs)
 		declared_types:         declared_types
 		declared_type_c_names:  declared_type_c_names
 		fastc_prefixed_c_names: fastc_prefixed_c_names
