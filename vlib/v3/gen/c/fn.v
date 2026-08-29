@@ -16672,20 +16672,21 @@ const c_shared_runtime_extern_symbols = {
 }
 
 const c_cache_macro_sensitive_extern_symbols = {
-	'exp':   true
-	'exp2':  true
-	'log10': true
-	'log1p': true
-	'log2':  true
-	'logb':  true
-	'logf':  true
-	'powf':  true
-	'sqrtf': true
-	'tanf':  true
+	'exp':                              true
+	'exp2':                             true
+	'log10':                            true
+	'log1p':                            true
+	'log2':                             true
+	'logb':                             true
+	'logf':                             true
+	'powf':                             true
+	'sqrtf':                            true
+	'tanf':                             true
+	'v_set_unhandled_exception_filter': true
 }
 
-// c_macro_safe_extern_decl parenthesizes the name of a math extern that <tgmath.h>
-// turns into a function-like macro (`double exp(double);` -> `double (exp)(double);`).
+// c_macro_safe_extern_decl parenthesizes the name of an extern that can be
+// replaced by a function-like macro (`double exp(double);` -> `double (exp)(double);`).
 // Any program that includes a header pulling in <tgmath.h> hits this, not just
 // cache-split builds — notably gg's `gg_darwin.m` (Objective-C/Metal) brings it in,
 // so the parenthesized form must be emitted unconditionally. `(exp)(x)` is plain C

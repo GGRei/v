@@ -564,6 +564,9 @@ fn test_cache_extern_declaration_avoids_tgmath_macro_expansion() {
 	// of cache-split mode; only the listed math externs are affected.
 	assert c_macro_safe_extern_decl('exp', 'double exp(double x);') == 'double (exp)(double x);'
 	assert c_macro_safe_extern_decl('custom', 'int custom(int x);') == 'int custom(int x);'
+	assert c_macro_safe_extern_decl('v_set_unhandled_exception_filter',
+		'void* v_set_unhandled_exception_filter(callback cb);') == 'void* (v_set_unhandled_exception_filter)(callback cb);'
+	assert c_macro_safe_extern_decl('unrelated_helper', 'int unrelated_helper(void);') == 'int unrelated_helper(void);'
 }
 
 fn test_cache_extern_filter_uses_pthread_preamble_declarations() {
