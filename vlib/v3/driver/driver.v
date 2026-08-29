@@ -11250,6 +11250,13 @@ Please install the corresponding development package/libraries and make sure the
 				exit(1)
 			}
 		}
+		if !os.is_file(cc_out) {
+			suffixed_cc_out := c_executable_bin_file_for_target(cc_out, target.os, is_shared,
+				is_o, c_only)
+			if suffixed_cc_out != cc_out && os.is_file(suffixed_cc_out) {
+				cc_out = suffixed_cc_out
+			}
+		}
 		os.mv(cc_out, bin_file) or {
 			eprintln('failed to finalize ${bin_file}: ${err}')
 			cleanup_c_build_dir(cc_dir)
