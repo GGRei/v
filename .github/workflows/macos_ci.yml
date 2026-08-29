@@ -330,6 +330,7 @@ jobs:
           V_MACOS_V3_NO_FALLBACK: 0
         run: make -j4
       - name: Run Issue 74 V1 owners
+        timeout-minutes: 20
         shell: bash
         run: |
           set -euo pipefail
@@ -345,6 +346,8 @@ jobs:
           export VTMP="$RUNNER_TEMP/issue74 v1 macos tmp"
           export VFLAGS="-old-compiler -cc ${cc_path} -c++ ${cpp_path} -no-retry-compilation"
           mkdir -p "$VTMP"
+          export ISSUE74_MAC_ROUTE_LOG="$RUNNER_TEMP/issue74-mac-route.log"
+          : > "$ISSUE74_MAC_ROUTE_LOG"
 
           assert_defs() {
             local file="$1"; shift
@@ -417,3 +420,21 @@ jobs:
           git diff --exit-code
           git diff --cached --exit-code
           [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
+      - name: Show Issue 74 macOS route diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          route_log="$RUNNER_TEMP/issue74-mac-route.log"
+          [[ -f "$route_log" ]]
+          line_count="$(wc -l < "$route_log")"
+          [[ "$line_count" -le 300 ]]
+          cat "$route_log"
+      - name: Upload Issue 74 macOS route diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue74-macos-route-${{ github.run_id }}-${{ github.job }}
+          path: ${{ runner.temp }}/issue74-mac-route.log
+          if-no-files-found: error
+          retention-days: 7

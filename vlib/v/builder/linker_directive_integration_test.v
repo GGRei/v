@@ -8,6 +8,16 @@ struct CppLinkerDriverPair {
 	cpp string
 }
 
+fn issue74_diag_marker(message string) {
+	path := os.getenv('ISSUE74_MAC_ROUTE_LOG')
+	if path == '' {
+		return
+	}
+	mut log := os.open_append(path) or { return }
+	log.writeln(message) or {}
+	log.close()
+}
+
 fn run_cpp_linker_v_args(root string, args []string) os.Result {
 	return run_cpp_linker_v_args_in(root, args, @VEXEROOT)
 }
@@ -109,6 +119,7 @@ fn run_cpp_linker_cache_route(root string, pair CppLinkerDriverPair, mode string
 	cache_dir := os.join_path(root, 'vcache')
 	os.rmdir_all(cache_dir) or {}
 	for iteration in 0 .. 2 {
+		issue74_diag_marker('START cache mode=${mode} iteration=${iteration}')
 		mut args := ['-usecache', '-showcc']
 		args << extra_args
 		result := run_cpp_linker_v_compile_source(root, pair, mode, args, false, source_name)
@@ -119,6 +130,7 @@ fn run_cpp_linker_cache_route(root string, pair CppLinkerDriverPair, mode string
 		}
 		output := os.join_path(root, '${mode}${if os.user_os() == 'windows' { '.exe' } else { '' }}')
 		assert os.is_file(output), output
+		issue74_diag_marker('END cache mode=${mode} iteration=${iteration}')
 	}
 }
 
@@ -129,6 +141,7 @@ fn test_cpp_linker_real_drivers_keep_c_inputs_and_supply_their_runtime() {
 		return
 	}
 	for pair_index, pair in pairs {
+		issue74_diag_marker('START pair=${pair_index}')
 		root := os.join_path(os.vtmp_dir(),
 			'v cpp linker ${os.file_name(pair.cpp).replace('+', 'p')}')
 		os.rmdir_all(root) or {}
@@ -160,38 +173,47 @@ fn test_cpp_linker_real_drivers_keep_c_inputs_and_supply_their_runtime() {
 			'module main\nimport cppdep\n#flag @VMODROOT/runtime.o\nfn C.v_cpp_runtime() int\nfn main() { println(cppdep.value() + C.v_cpp_runtime()) }\n') or {
 			panic(err)
 		}
+		issue74_diag_marker('START pair=${pair_index} precompile')
 		cpp_compile := os.execute('${os.quoted_path(pair.cpp)} -std=c++14 -c ${os.quoted_path(os.join_path(root,
 			'runtime.cpp'))} -o ${os.quoted_path(os.join_path(root, 'runtime.o'))}')
 		assert cpp_compile.exit_code == 0, '${pair.cpp}: ${cpp_compile.output}'
+		issue74_diag_marker('END pair=${pair_index} precompile')
 		mode_args := {
 			'direct': ['-no-rsp']
 			'rsp':    []string{}
 			'prod':   ['-prod']
 		}
 		for mode in ['direct', 'rsp', 'prod'] {
+			issue74_diag_marker('START pair=${pair_index} mode=${mode}')
 			args := mode_args[mode]
 			result := run_cpp_linker_v_compile(root, pair, mode, args, true)
 			assert result.exit_code == 0, '${pair.c}/${pair.cpp} ${mode}: ${result.output}'
 			assert result.output.trim_space() == '14', '${pair.c}/${pair.cpp} ${mode}: ${result.output}'
+			issue74_diag_marker('END pair=${pair_index} mode=${mode}')
 		}
+		issue74_diag_marker('START pair=${pair_index} mode=parallel')
 		parallel_result := run_cpp_linker_v_compile_source(root, pair, 'parallel', [
 			'-parallel-cc',
 			'-no-rsp',
 		], true, 'parallel_main.v')
 		assert parallel_result.exit_code == 0, '${pair.c}/${pair.cpp} parallel: ${parallel_result.output}'
 		assert parallel_result.output.trim_space() == '7', '${pair.c}/${pair.cpp} parallel: ${parallel_result.output}'
+		issue74_diag_marker('END pair=${pair_index} mode=parallel')
+		issue74_diag_marker('START pair=${pair_index} mode=shared')
 		shared_result := run_cpp_linker_v_compile(root, pair, 'shared', [
 			'-shared',
 			'-showcc',
 		], false)
 		assert shared_result.exit_code == 0, '${pair.c}/${pair.cpp} shared: ${shared_result.output}'
 		assert shared_result.output.contains(pair.cpp), '${pair.c}/${pair.cpp} shared: ${shared_result.output}'
+		issue74_diag_marker('END pair=${pair_index} mode=shared')
 		if pair_index == 0 {
 			run_cpp_linker_cache_route(root, pair, 'cache_direct', ['-no-rsp'], 'main.v')
 			run_cpp_linker_cache_route(root, pair, 'cache_rsp', [], 'main.v')
 			run_cpp_linker_cache_route(root, pair, 'cache_parallel', ['-parallel-cc', '-no-rsp'],
 				'parallel_main.v')
 		}
+		issue74_diag_marker('END pair=${pair_index}')
 	}
 }
 
