@@ -656,7 +656,7 @@ fn (g &Parser) infer_expression_type(tokens []FastcExpressionToken) !string {
 				return value_type
 			}
 			if base_type.ends_with('*') {
-				return base_type.trim_right('*')
+				return base_type[..base_type.len - 1]
 			}
 			if base_type.trim_right('*') == 'string' {
 				return 'u8'
@@ -854,7 +854,7 @@ fn (g &Parser) infer_member_access_type(tokens []FastcExpressionToken) ?string {
 				_, value_type := g.map_key_value_types(current_type) or { return none }
 				current_type = value_type
 			} else if current_type.ends_with('*') {
-				current_type = current_type.trim_right('*')
+				current_type = current_type[..current_type.len - 1]
 			} else {
 				current_type = g.array_element_type(current_type) or { return none }
 			}
