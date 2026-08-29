@@ -452,74 +452,75 @@ mut:
 	// generic_plain_fn_base_for_call (O(generic fns) with two string allocations
 	// per key, run for nearly every emitted call). The ordinal preserves the
 	// map's iteration order so multi-match resolution stays byte-identical.
-	generic_fn_keys_by_short     map[string][]string
-	generic_fn_keys_by_cname     map[string][]string
-	generic_fn_key_ordinal       map[string]int
-	struct_decl_infos            map[string]StructDeclInfo
-	struct_decl_short_infos      map[string]StructDeclInfo
-	decl_attrs                   map[int][]string
+	generic_fn_keys_by_short      map[string][]string
+	generic_fn_keys_by_cname      map[string][]string
+	generic_fn_key_ordinal        map[string]int
+	struct_decl_infos             map[string]StructDeclInfo
+	struct_decl_short_infos       map[string]StructDeclInfo
+	decl_attrs                    map[int][]string
 	decl_attrs_by_source_position map[u64][]string
-	c_decl_abi_names             map[string]string
-	c_extern_global_names        map[string]string
-	shared_type_names            map[string]SharedTypeInfo // __shared__ wrapper name -> wrapped type metadata
-	shared_alias_pointer_shorts  map[string]string         // alias short name -> shared inner type; '' means ambiguous
-	needs_shared_runtime         bool
-	const_runtime_inits          []string
-	const_runtime_init_modules   []string
-	runtime_inits                []string
-	runtime_init_modules         []string
-	compiler_vroot               string
-	compiler_vexe                string
-	compiler_vexe_env_setup      bool = true
-	ccompiler                    string
-	target                       pref.Target
-	thread_stack_size            int = 8 * 1024 * 1024
-	compile_values               map[string]string // explicit `-d` values used by `$d(...)` in `#flag`s
-	output_path                  string
-	output_error                 string
-	c99_mode                     bool
-	trace_calls                  bool
-	track_heap                   bool
-	inside_trace_call            bool
-	skip_generics                bool
-	skip_enum_autostr            bool
-	placeholder_check_forced     bool
-	cur_fn_name                  string
-	cur_fn_is_specialized        bool
-	cur_fn_assert_continues      bool
-	current_decl_is_mut          bool
-	direct_array_access          bool
-	struct_default_module        string
-	default_value_stack          map[string]bool
-	shadowed_global_locals       map[string]bool
-	cur_param_names              []string
-	cur_param_type_values        []types.Type
-	cur_param_types              map[string]types.Type
-	cur_param_name_bits          u64
-	cur_concrete_optional_params map[string]bool
-	cur_mut_params               map[string]bool
-	cur_mut_pointer_params       map[string]bool
-	cur_mut_param_owners         map[string]types.ScopeBindingOwner
-	cur_fn_ret                   types.Type = types.Type(types.void_)
-	cur_fn_ret_is_optional       bool
-	cur_fn_ret_base              types.Type = types.Type(types.void_)
-	defer_return_tmp_var         string
-	active_locks                 []ActiveLock
-	unsafe_depth                 int
-	loop_depth                   int
-	conditional_branch_scopes    []&types.Scope
-	conditional_branch_depths    []int
-	conditional_branch_depth     int
-	loop_label_depths            map[string]int
-	loop_defer_starts            []int
-	loop_label_defer_starts      map[string]int
-	loop_control_copybacks       []LoopControlCopyback
-	map_loop_copyback_guards     []MapLoopCopybackGuard
-	emitted_loop_break_labels    map[string]bool
-	goto_label_c_names           map[string]string
-	goto_label_count             int
-	goto_label_lock_scopes       map[string][]int
-	pending_loop_label           string
+	c_decl_abi_names              map[string]string
+	c_extern_global_names         map[string]string
+	shared_type_names             map[string]SharedTypeInfo // __shared__ wrapper name -> wrapped type metadata
+	shared_alias_pointer_shorts   map[string]string         // alias short name -> shared inner type; '' means ambiguous
+	needs_shared_runtime          bool
+	const_runtime_inits           []string
+	const_runtime_init_modules    []string
+	runtime_inits                 []string
+	runtime_init_modules          []string
+	compiler_vroot                string
+	compiler_vexe                 string
+	compiler_vexe_env_setup       bool = true
+	ccompiler                     string
+	target                        pref.Target
+	windows_tcc_atomic_emitted    bool
+	thread_stack_size             int = 8 * 1024 * 1024
+	compile_values                map[string]string // explicit `-d` values used by `$d(...)` in `#flag`s
+	output_path                   string
+	output_error                  string
+	c99_mode                      bool
+	trace_calls                   bool
+	track_heap                    bool
+	inside_trace_call             bool
+	skip_generics                 bool
+	skip_enum_autostr             bool
+	placeholder_check_forced      bool
+	cur_fn_name                   string
+	cur_fn_is_specialized         bool
+	cur_fn_assert_continues       bool
+	current_decl_is_mut           bool
+	direct_array_access           bool
+	struct_default_module         string
+	default_value_stack           map[string]bool
+	shadowed_global_locals        map[string]bool
+	cur_param_names               []string
+	cur_param_type_values         []types.Type
+	cur_param_types               map[string]types.Type
+	cur_param_name_bits           u64
+	cur_concrete_optional_params  map[string]bool
+	cur_mut_params                map[string]bool
+	cur_mut_pointer_params        map[string]bool
+	cur_mut_param_owners          map[string]types.ScopeBindingOwner
+	cur_fn_ret                    types.Type = types.Type(types.void_)
+	cur_fn_ret_is_optional        bool
+	cur_fn_ret_base               types.Type = types.Type(types.void_)
+	defer_return_tmp_var          string
+	active_locks                  []ActiveLock
+	unsafe_depth                  int
+	loop_depth                    int
+	conditional_branch_scopes     []&types.Scope
+	conditional_branch_depths     []int
+	conditional_branch_depth      int
+	loop_label_depths             map[string]int
+	loop_defer_starts             []int
+	loop_label_defer_starts       map[string]int
+	loop_control_copybacks        []LoopControlCopyback
+	map_loop_copyback_guards      []MapLoopCopybackGuard
+	emitted_loop_break_labels     map[string]bool
+	goto_label_c_names            map[string]string
+	goto_label_count              int
+	goto_label_lock_scopes        map[string][]int
+	pending_loop_label            string
 	// in_return is true only while generating a `return` statement's value, so a bare
 	// generic literal (`return Box{...}`) may adopt `cur_fn_ret`'s concrete instance —
 	// but a literal in a local decl / argument elsewhere in the body does not.
@@ -2882,6 +2883,7 @@ pub fn (mut g FlatGen) gen_with_used_options(a &flat.FlatAst, used_fns map[strin
 	g.runtime_inits = []string{}
 	g.runtime_init_modules = []string{}
 	g.compiler_vroot = ''
+	g.windows_tcc_atomic_emitted = false
 	g.str_lit_ids.clear()
 	g.global_types.clear()
 	g.global_raw_type_texts.clear()
@@ -18124,6 +18126,9 @@ fn (mut g FlatGen) preamble() {
 		g.system_libc_headers()
 		g.system_libc_preamble()
 	} else {
+		if g.uses_windows_tcc_atomic_header() {
+			g.emit_windows_tcc_atomic_header()
+		}
 		g.headerless_libc_preamble()
 	}
 	g.write_arch_macros()
@@ -18381,7 +18386,9 @@ fn (mut g FlatGen) headerless_libc_preamble() {
 	g.writeln('#ifndef _IONBF')
 	g.writeln('#define _IONBF 2')
 	g.writeln('#endif')
-	g.headerless_windows_sdk_types()
+	if !g.uses_windows_tcc_atomic_header() {
+		g.headerless_windows_sdk_types()
+	}
 	g.writeln('#if !defined(__FILE_defined) && !defined(_FILE_DEFINED) && !defined(_FILEDEFED) && !defined(__DEFINED_FILE) && !defined(_FILE_DECLARED) && !defined(__FILE_DECLARED)')
 	g.writeln('typedef struct FILE FILE;')
 	g.writeln('#endif')
@@ -18611,10 +18618,12 @@ fn (mut g FlatGen) headerless_libc_preamble() {
 	g.writeln('#ifndef INFINITE')
 	g.writeln('#define INFINITE 0xFFFFFFFF')
 	g.writeln('#endif')
-	g.writeln('HANDLE CreateThread(void* attributes, size_t stack_size, DWORD (WINAPI *start)(void*), void* parameter, DWORD flags, DWORD* thread_id);')
-	g.writeln('DWORD WaitForSingleObject(HANDLE handle, DWORD milliseconds);')
-	g.writeln('BOOL CloseHandle(HANDLE handle);')
-	g.writeln('DWORD GetLastError(void);')
+	if !g.uses_windows_tcc_atomic_header() {
+		g.writeln('HANDLE CreateThread(void* attributes, size_t stack_size, DWORD (WINAPI *start)(void*), void* parameter, DWORD flags, DWORD* thread_id);')
+		g.writeln('DWORD WaitForSingleObject(HANDLE handle, DWORD milliseconds);')
+		g.writeln('BOOL CloseHandle(HANDLE handle);')
+		g.writeln('DWORD GetLastError(void);')
+	}
 	g.writeln('typedef struct { HANDLE handle; void* context; } __v_thread;')
 	g.writeln('static bool __v_thread_equal(__v_thread a, __v_thread b) { return a.handle == b.handle; }')
 	g.writeln('typedef void* (*__v_thread_start_fn)(void*);')
@@ -18666,9 +18675,15 @@ fn (mut g FlatGen) headerless_libc_preamble() {
 	g.writeln('#ifdef __linux__')
 	g.writeln('int pthread_rwlockattr_setkind_np(void* attr, int kind);')
 	g.writeln('#endif')
-	g.writeln('typedef struct SRWLOCK { void* Ptr; } SRWLOCK;')
-	g.writeln('typedef struct CONDITION_VARIABLE { void* Ptr; } CONDITION_VARIABLE;')
-	g.writeln('typedef void* atomic_uintptr_t;')
+	if g.uses_windows_tcc_atomic_header() {
+		g.writeln('#ifndef _SYNCHAPI_H_')
+		g.writeln('typedef struct SRWLOCK { void* Ptr; } SRWLOCK;')
+		g.writeln('#endif')
+	} else {
+		g.writeln('typedef struct SRWLOCK { void* Ptr; } SRWLOCK;')
+		g.writeln('typedef struct CONDITION_VARIABLE { void* Ptr; } CONDITION_VARIABLE;')
+		g.writeln('typedef void* atomic_uintptr_t;')
+	}
 	g.writeln('#if !defined(__cplusplus) && !defined(_WCHAR_T) && !defined(_WCHAR_T_DEFINED) && !defined(__WCHAR_T) && !defined(__wchar_t_defined) && !defined(_BSD_WCHAR_T_DEFINED_) && !defined(_WCHAR_T_DECLARED)')
 	g.writeln('#ifdef __WCHAR_TYPE__')
 	g.writeln('typedef __WCHAR_TYPE__ wchar_t;')
@@ -18684,7 +18699,9 @@ fn (mut g FlatGen) headerless_libc_preamble() {
 	g.writeln('#endif')
 	g.headerless_fd_set_struct()
 	g.writeln('#endif')
-	g.headerless_windows_console_structs()
+	if !g.uses_windows_tcc_atomic_header() {
+		g.headerless_windows_console_structs()
+	}
 	g.headerless_winsize_struct()
 	if !g.c_directives_provide_posix_socket_structs() {
 		g.headerless_addrinfo_struct()
@@ -20469,12 +20486,133 @@ fn (mut g FlatGen) prealloc_atomic_compat_decls() {
 	g.writeln('#endif')
 }
 
+fn (g &FlatGen) uses_windows_tcc_atomic_header() bool {
+	return g.target.os == 'windows'
+		&& (g.ccompiler == 'tinyc' || g.ccompiler.to_lower().contains('tcc'))
+}
+
+const c_headerless_windows_tcc_sdk_declared_fns = [
+	'AddVectoredExceptionHandler',
+	'BeginUpdateResourceW',
+	'CloseHandle',
+	'ConvertFiberToThread',
+	'ConvertThreadToFiber',
+	'CopyFileW',
+	'CreateDirectoryW',
+	'CreateEvent',
+	'CreateFiber',
+	'CreateFileW',
+	'CreateHardLinkW',
+	'CreateIoCompletionPort',
+	'CreateMutex',
+	'CreatePipe',
+	'CreateProcessW',
+	'CreateSemaphore',
+	'CreateThread',
+	'DeleteFiber',
+	'DeleteFileW',
+	'EndUpdateResourceW',
+	'ExitProcess',
+	'ExpandEnvironmentStringsW',
+	'FileTimeToSystemTime',
+	'FindClose',
+	'FindFirstFileW',
+	'FindNextFileW',
+	'FormatMessageW',
+	'FreeEnvironmentStringsW',
+	'FreeLibrary',
+	'GenerateConsoleCtrlEvent',
+	'GetCommandLineW',
+	'GetComputerNameW',
+	'GetConsoleMode',
+	'GetConsoleScreenBufferInfo',
+	'GetCurrentProcess',
+	'GetCurrentProcessId',
+	'GetCurrentThreadId',
+	'GetDiskFreeSpaceExA',
+	'GetEnvironmentStringsW',
+	'GetExitCodeProcess',
+	'GetFileAttributesW',
+	'GetFullPathNameW',
+	'GetLastError',
+	'GetLongPathNameW',
+	'GetModuleFileNameW',
+	'GetModuleHandleA',
+	'GetNativeSystemInfo',
+	'GetNumberOfConsoleInputEvents',
+	'GetProcAddress',
+	'GetProcessHeap',
+	'GetQueuedCompletionStatus',
+	'GetShortPathNameW',
+	'GetStdHandle',
+	'GetSystemInfo',
+	'GetSystemTimeAsFileTime',
+	'GetTickCount',
+	'GetUserNameW',
+	'GlobalAlloc',
+	'GlobalFree',
+	'GlobalLock',
+	'GlobalMemoryStatus',
+	'GlobalUnlock',
+	'HeapAlloc',
+	'HeapFree',
+	'IsDebuggerPresent',
+	'LoadLibraryW',
+	'LocalFree',
+	'PeekNamedPipe',
+	'PostQueuedCompletionStatus',
+	'QueryPerformanceCounter',
+	'QueryPerformanceFrequency',
+	'ReadConsoleInput',
+	'ReadConsoleW',
+	'ReadFile',
+	'RegCloseKey',
+	'RegOpenKeyExW',
+	'RegQueryValueExW',
+	'RegSetValueExW',
+	'ReleaseMutex',
+	'ReleaseSemaphore',
+	'RemoveDirectoryW',
+	'ScrollConsoleScreenBuffer',
+	'SetConsoleCursorPosition',
+	'SetConsoleMode',
+	'SetConsoleTitleW',
+	'SetEvent',
+	'SetHandleInformation',
+	'SetLastError',
+	'SetUnhandledExceptionFilter',
+	'Sleep',
+	'SwitchToFiber',
+	'SystemTimeToTzSpecificLocalTime',
+	'TerminateProcess',
+	'TlsAlloc',
+	'TlsFree',
+	'TlsGetValue',
+	'TlsSetValue',
+	'UpdateResourceW',
+	'VirtualAlloc',
+	'VirtualProtect',
+	'WaitForSingleObject',
+	'WriteConsoleW',
+	'WriteFile',
+]
+
+fn (mut g FlatGen) emit_windows_tcc_atomic_header() {
+	if g.windows_tcc_atomic_emitted {
+		return
+	}
+	header :=
+		os.join_path(g.compiler_vroot, 'thirdparty', 'stdatomic', 'win', 'atomic.h').replace('\\', '/')
+	g.writeln('#include "${header}"')
+	if !g.c_directives_use_system_libc() {
+		g.collect_preserved_c_fns(c_headerless_windows_tcc_sdk_declared_fns)
+	}
+	g.windows_tcc_atomic_emitted = true
+}
+
 fn (mut g FlatGen) atomic_builtin_compat_decls() {
-	if g.target.os == 'windows'
-		&& (g.ccompiler == 'tinyc' || g.ccompiler.to_lower().contains('tcc')) {
-		header :=
-			os.join_path(g.compiler_vroot, 'thirdparty', 'stdatomic', 'win', 'atomic.h').replace('\\', '/')
-		g.writeln('#include "${header}"')
+	if g.uses_windows_tcc_atomic_header() {
+		g.emit_windows_tcc_atomic_header()
 		return
 	}
 	// Atomic helpers. We use compiler __atomic_* builtins (memory order 5 == __ATOMIC_SEQ_CST).
