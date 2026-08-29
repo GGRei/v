@@ -208,6 +208,34 @@ fn test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions() {
 	assert g.inlined_c_declared_fns.len == expected.len
 }
 
+fn test_windows_tcc_atomic_header_guards_only_conditional_nls_externs() {
+	declaration := 'int MultiByteToWideChar(void);'
+	mut g := FlatGen.new()
+	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	g.set_ccompiler('tinyc')
+	assert !g.c_directives_use_system_libc()
+	assert g.c_windows_tcc_nonls_extern_decl('MultiByteToWideChar', declaration) == '#ifdef NONLS\n${declaration}\n#endif'
+	assert g.c_windows_tcc_nonls_extern_decl('WideCharToMultiByte', declaration) == '#ifdef NONLS\n${declaration}\n#endif'
+	assert g.c_windows_tcc_nonls_extern_decl('GetConsoleMode', declaration) == declaration
+	mut system_g := FlatGen.new()
+	system_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	system_g.set_ccompiler('tinyc')
+	system_g.add_c_directive('main', '#include <stdio.h>', false)
+	assert system_g.c_directives_use_system_libc()
+	for name in ['MultiByteToWideChar', 'WideCharToMultiByte'] {
+		assert system_g.c_windows_tcc_nonls_extern_decl(name, declaration) == '#ifdef NONLS\n${declaration}\n#endif'
+	}
+	g.set_ccompiler('gcc')
+	for name in ['MultiByteToWideChar', 'WideCharToMultiByte'] {
+		assert g.c_windows_tcc_nonls_extern_decl(name, declaration) == declaration
+	}
+	g.set_target(pref.target_from('linux', 'amd64') or { panic(err) })
+	g.set_ccompiler('tinyc')
+	for name in ['MultiByteToWideChar', 'WideCharToMultiByte'] {
+		assert g.c_windows_tcc_nonls_extern_decl(name, declaration) == declaration
+	}
+}
+
 fn test_system_libc_windows_tcc_atomic_header_does_not_preserve_sdk_functions() {
 	mut g := FlatGen.new()
 	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
