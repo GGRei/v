@@ -105,6 +105,23 @@ fn run_cpp_linker_v_compile_source(root string, pair CppLinkerDriverPair, mode s
 	}
 }
 
+fn run_cpp_linker_cache_route(root string, pair CppLinkerDriverPair, mode string, extra_args []string, source_name string) {
+	cache_dir := os.join_path(root, 'vcache')
+	os.rmdir_all(cache_dir) or {}
+	for iteration in 0 .. 2 {
+		mut args := ['-usecache', '-showcc']
+		args << extra_args
+		result := run_cpp_linker_v_compile_source(root, pair, mode, args, false, source_name)
+		assert result.exit_code == 0, '${pair.c}/${pair.cpp} ${mode} ${iteration}: ${result.output}'
+		assert result.output.contains(pair.cpp), result.output
+		if iteration == 0 {
+			assert os.is_dir(cache_dir), cache_dir
+		}
+		output := os.join_path(root, '${mode}${if os.user_os() == 'windows' { '.exe' } else { '' }}')
+		assert os.is_file(output), output
+	}
+}
+
 fn test_cpp_linker_real_drivers_keep_c_inputs_and_supply_their_runtime() {
 	pairs := available_cpp_linker_driver_pairs()
 	if pairs.len == 0 {
@@ -113,7 +130,7 @@ fn test_cpp_linker_real_drivers_keep_c_inputs_and_supply_their_runtime() {
 	}
 	for pair_index, pair in pairs {
 		root := os.join_path(os.vtmp_dir(),
-			'v_cpp_linker_${os.file_name(pair.cpp).replace('+', 'p')}')
+			'v cpp linker ${os.file_name(pair.cpp).replace('+', 'p')}')
 		os.rmdir_all(root) or {}
 		os.mkdir_all(root) or { panic(err) }
 		defer {
@@ -170,15 +187,10 @@ fn test_cpp_linker_real_drivers_keep_c_inputs_and_supply_their_runtime() {
 		assert shared_result.exit_code == 0, '${pair.c}/${pair.cpp} shared: ${shared_result.output}'
 		assert shared_result.output.contains(pair.cpp), '${pair.c}/${pair.cpp} shared: ${shared_result.output}'
 		if pair_index == 0 {
-			for mode in ['cache_cold', 'cache_warm'] {
-				result := run_cpp_linker_v_compile(root, pair, mode, [
-					'-usecache',
-					'-no-rsp',
-					'-showcc',
-				], false)
-				assert result.exit_code == 0, '${pair.c}/${pair.cpp} ${mode}: ${result.output}'
-				assert result.output.contains(pair.cpp), '${pair.c}/${pair.cpp} ${mode}: ${result.output}'
-			}
+			run_cpp_linker_cache_route(root, pair, 'cache_direct', ['-no-rsp'], 'main.v')
+			run_cpp_linker_cache_route(root, pair, 'cache_rsp', [], 'main.v')
+			run_cpp_linker_cache_route(root, pair, 'cache_parallel', ['-parallel-cc', '-no-rsp'],
+				'parallel_main.v')
 		}
 	}
 }
