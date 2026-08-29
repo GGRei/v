@@ -16684,6 +16684,15 @@ fn (g &FlatGen) c_possibly_active_macro_extern_decl(cfn string, declaration stri
 }
 
 fn (g &FlatGen) should_emit_c_extern_decl(cfn string) bool {
+	if g.target.os == 'windows' && g.has_builtins && !g.c_directives_use_system_libc()
+		&& cfn in ['_aligned_malloc', '_aligned_free'] {
+		return false
+	}
+	if g.target.os == 'windows' && !g.c_directives_use_system_libc()
+		&& !g.uses_windows_tcc_atomic_header()
+		&& cfn in ['_putenv_s', 'SetUnhandledExceptionFilter'] {
+		return false
+	}
 	if cfn.contains('.') {
 		return false
 	}

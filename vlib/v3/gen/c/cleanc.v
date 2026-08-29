@@ -18408,6 +18408,15 @@ fn (mut g FlatGen) headerless_libc_preamble() {
 	g.writeln('char* getenv(const char* name);')
 	g.writeln('int setenv(const char* name, const char* value, int overwrite);')
 	g.writeln('int unsetenv(const char* name);')
+	if g.target.os == 'windows' && !g.uses_windows_tcc_atomic_header() {
+		g.writeln('int _putenv_s(const char *name, const char *value);')
+		g.writeln('#ifndef _WINBASE_')
+		g.writeln('struct _EXCEPTION_POINTERS;')
+		g.writeln('typedef long (WINAPI *PTOP_LEVEL_EXCEPTION_FILTER)(struct _EXCEPTION_POINTERS*);')
+		g.writeln('typedef PTOP_LEVEL_EXCEPTION_FILTER LPTOP_LEVEL_EXCEPTION_FILTER;')
+		g.writeln('LPTOP_LEVEL_EXCEPTION_FILTER WINAPI SetUnhandledExceptionFilter(LPTOP_LEVEL_EXCEPTION_FILTER filter);')
+		g.writeln('#endif')
+	}
 	g.writeln('void abort(void);')
 	for name in c_function_like_macro_decl_names() {
 		g.writeln('#ifdef ${name}')
