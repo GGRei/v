@@ -4539,6 +4539,13 @@ fn (mut c Checker) hash_stmt(mut node ast.HashStmt) {
 				}
 			}
 		}
+		'linker' {
+			if node.main != 'c++' {
+				c.error('`#linker` expects exactly `c++`', node.pos)
+				return
+			}
+			c.table.requires_cpp_linker = true
+		}
 		'flag' {
 			// #flag linux -lm
 			mut flag := node.main
@@ -4560,7 +4567,7 @@ fn (mut c Checker) hash_stmt(mut node ast.HashStmt) {
 					}
 				}
 			} else {
-				c.error('expected `#define`, `#flag`, `#include`, `#insert` or `#pkgconfig` not ${node.val}',
+				c.error('expected `#define`, `#flag`, `#include`, `#insert`, `#linker` or `#pkgconfig` not ${node.val}',
 					node.pos)
 			}
 		}

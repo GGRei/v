@@ -7,6 +7,8 @@ import v3.pref
 import v3.token
 import v3.scanner
 
+const fastc_cpp_linker_error = '`#linker c++` requires the C backend for native linking'
+
 fn (mut g Parser) run() !string {
 	g.next()
 	g.parse_top_level_items(false)!
@@ -139,6 +141,12 @@ fn (mut g Parser) parse_top_level_items(stop_at_block_end bool) ! {
 fn (mut g Parser) parse_c_directive() ! {
 	directive := g.lit.trim_space()
 	g.next()
+	if directive == 'linker c++' {
+		return error(fastc_cpp_linker_error)
+	}
+	if directive == 'linker' || directive.starts_with('linker ') {
+		return error('`#linker` expects exactly `c++`')
+	}
 	if directive == 'flag' || directive.starts_with('flag ') || directive == 'pkgconfig'
 		|| directive.starts_with('pkgconfig ') {
 		// FastC's compiler invocation supplies its own target flags. The bootstrap

@@ -2601,6 +2601,16 @@ fn (mut tc TypeChecker) collect_module_attributes(node flat.Node, file string) {
 }
 
 fn (mut tc TypeChecker) check_insert_directive(id flat.NodeId, node flat.Node, file string, module_name string) {
+	if node.value == 'linker' && node.typ.trim_space() != 'c++' {
+		saved_file := tc.cur_file
+		saved_module := tc.cur_module
+		tc.cur_file = file
+		tc.cur_module = if module_name.len > 0 { module_name } else { 'main' }
+		tc.record_error_at(.compile_error, '`#linker` expects exactly `c++`', id, node.pos)
+		tc.cur_file = saved_file
+		tc.cur_module = saved_module
+		return
+	}
 	if node.value == 'flag' && node.typ.contains('`') {
 		saved_file := tc.cur_file
 		saved_module := tc.cur_module
