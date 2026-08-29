@@ -460,12 +460,40 @@ jobs:
           }
           run_owner() {
             local label="$1" file="$2"; shift 2
-            local names=("$@") csv log text
+            local names=("$@") csv log text v_code tee_code
+            local statuses=()
             assert_defs "$file" "${names[@]}"
             csv="$(IFS=,; printf '%s' "${names[*]}")"
             log="$RUNNER_TEMP/${label}.log"
+            set +e
             ./v -old-compiler -gc none -no-retry-compilation -path vlib -enable-globals \
               -silent test -run-only "$csv" "$file" 2>&1 | tee "$log"
+            statuses=("${PIPESTATUS[@]}")
+            set -e
+            v_code="${statuses[0]}"
+            tee_code="${statuses[1]}"
+            if (( v_code != 0 )); then
+              if [[ "$label" == v3-fastc-backend && -f "${V3_FASTC_KEEP_FAILED_C:-}" ]]; then
+                echo "=== bounded FastC generated-C failure context ==="
+                nl -ba "$V3_FASTC_KEEP_FAILED_C" | sed -n '21565,21582p'
+                mapfile -t identifiers < <(
+                  sed -n '21574p' "$V3_FASTC_KEEP_FAILED_C" |
+                    grep -oE '[A-Za-z_][A-Za-z0-9_]*' |
+                    awk '!/^(auto|break|case|char|const|continue|default|do|double|else|enum|extern|float|for|goto|if|inline|int|long|register|restrict|return|short|signed|sizeof|static|struct|switch|typedef|union|unsigned|void|volatile|while)$/ && !seen[$0]++' |
+                    head -n 12
+                )
+                for identifier in "${identifiers[@]}"; do
+                  echo "--- ${identifier} (up to 3 occurrences) ---"
+                  if ! grep -n -m 3 -w -- "$identifier" "$V3_FASTC_KEEP_FAILED_C"; then
+                    echo "(no additional occurrence)"
+                  fi
+                done
+              fi
+              return "$v_code"
+            fi
+            if (( tee_code != 0 )); then
+              return "$tee_code"
+            fi
             text="$(<"$log")"
             [[ "$text" == *"1 passed, 1 total"* ]]
             [[ "$text" != *"no tests found"* && "$text" != *"skipping #linker c++"* ]]
@@ -505,9 +533,11 @@ jobs:
           run_owner v3-modulecache-units vlib/v3/modulecache/modulecache_test.v \
             test_cached_directive_text_preserves_cpp_linker_requirement \
             test_linker_cache_selector_is_conditional_on_source_directives
+          export V3_FASTC_KEEP_FAILED_C="$RUNNER_TEMP/fastc-failed-src.c"
           run_owner v3-fastc-backend vlib/v3/tests/fastc_backend_test.v \
             test_v_self_accepts_fastc_backend \
             test_fastc_backend_parses_directly_to_c_without_ast_fallback
+          unset V3_FASTC_KEEP_FAILED_C
           run_owner v3-module-cache-integration vlib/v3/tests/module_cache_test.v \
             test_pkgconfig_mode_cache_isolated_across_dynamic_static_dynamic_sequence \
             test_cpp_linker_requirement_survives_import_cache_true_false_true_sequence
@@ -519,3 +549,11 @@ jobs:
           git diff --exit-code
           git diff --cached --exit-code
           [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
+      - name: Upload bounded FastC generated-C diagnostic
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue74-fastc-failed-c-${{ github.run_id }}-${{ github.job }}
+          path: ${{ runner.temp }}/fastc-failed-src.c
+          if-no-files-found: warn
+          retention-days: 7
