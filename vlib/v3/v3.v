@@ -30,7 +30,8 @@ $if vgc ? {
 
 fn main() {
 	$if fastc_selfhost ? {
-		fastcdriver.run(os.args[1..])
+		all_args := os.args
+		fastcdriver.run(all_args[1..])
 	} $else {
 		driver.run(os.args[1..])
 	}

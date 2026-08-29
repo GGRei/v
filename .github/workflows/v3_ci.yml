@@ -505,9 +505,11 @@ jobs:
           run_owner v3-modulecache-units vlib/v3/modulecache/modulecache_test.v \
             test_cached_directive_text_preserves_cpp_linker_requirement \
             test_linker_cache_selector_is_conditional_on_source_directives
+          export V3_FASTC_DIAG_KEEP_TMP=1
           run_owner v3-fastc-backend vlib/v3/tests/fastc_backend_test.v \
             test_v_self_accepts_fastc_backend \
             test_fastc_backend_parses_directly_to_c_without_ast_fallback
+          unset V3_FASTC_DIAG_KEEP_TMP
           run_owner v3-module-cache-integration vlib/v3/tests/module_cache_test.v \
             test_pkgconfig_mode_cache_isolated_across_dynamic_static_dynamic_sequence \
             test_cpp_linker_requirement_survives_import_cache_true_false_true_sequence
@@ -519,3 +521,66 @@ jobs:
           git diff --exit-code
           git diff --cached --exit-code
           [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
+      - name: Collect Issue 74 FastC argv diagnostics
+        if: always()
+        shell: bash
+        env:
+          VTMP: ${{ runner.temp }}/issue74 v3 linux tmp
+        run: |
+          set -euo pipefail
+          diag_dir="$RUNNER_TEMP/issue74-fastc-argv-diag"
+          mkdir -p "$diag_dir"
+          mapfile -d '' sources < <(find "$VTMP" -type f \
+            \( -name 'v fastc from vflags.c' -o -name 'selfhost.c' \) \
+            -size -8388608c -print0 | sort -z)
+          source_count="${#sources[@]}"
+          if [[ "$source_count" -ne 2 ]]; then
+            echo "expected exactly 2 FastC diagnostic sources, found $source_count" >&2
+            exit 1
+          fi
+          vflags_count=0
+          selfhost_count=0
+          for source in "${sources[@]}"; do
+            case "$(basename "$source")" in
+              'v fastc from vflags.c') vflags_count="$((vflags_count + 1))" ;;
+              'selfhost.c') selfhost_count="$((selfhost_count + 1))" ;;
+            esac
+          done
+          [[ "$vflags_count" -eq 1 && "$selfhost_count" -eq 1 ]]
+          : > "$diag_dir/context.raw.txt"
+          for index in "${!sources[@]}"; do
+            ordinal="$((index + 1))"
+            cp -- "${sources[$index]}" "$diag_dir/fastc-diag-${ordinal}.c"
+            for pattern in fastcdriver__parse_arguments fastcdriver__run; do
+              line="$(grep -n -m 1 -E "${pattern}.*\\{" "${sources[$index]}" | cut -d: -f1)"
+              start="$((line > 12 ? line - 12 : 1))"
+              end="$((line + 12))"
+              printf '=== fastc-diag-%s.c %s lines %s-%s ===\n' \
+                "$ordinal" "$pattern" "$start" "$end" >> "$diag_dir/context.raw.txt"
+              sed -n "${start},${end}p" "${sources[$index]}" | \
+                nl -ba -v "$start" >> "$diag_dir/context.raw.txt"
+            done
+            main_line="$(grep -n -m 1 -E 'main__main.*\{' "${sources[$index]}" | cut -d: -f1)"
+            main_start="$((main_line > 2 ? main_line - 2 : 1))"
+            main_end="$((main_line + 70))"
+            main_context="$(sed -n "${main_start},${main_end}p" "${sources[$index]}")"
+            all_args_line="$(grep -n -m 1 'all_args' <<< "$main_context" | cut -d: -f1)"
+            slice_line="$(grep -n -m 1 'array_slice' <<< "$main_context" | cut -d: -f1)"
+            run_line="$(grep -n -m 1 'fastcdriver__run' <<< "$main_context" | cut -d: -f1)"
+            free_line="$(grep -n -m 1 -E 'array_free|Array_free' <<< "$main_context" | cut -d: -f1)"
+            [[ "$all_args_line" -lt "$slice_line" && "$slice_line" -lt "$run_line" \
+              && "$run_line" -lt "$free_line" ]]
+            printf '=== fastc-diag-%s.c main__main lines %s-%s ===\n' \
+              "$ordinal" "$main_start" "$main_end" >> "$diag_dir/context.raw.txt"
+            printf '%s\n' "$main_context" | nl -ba -v "$main_start" >> "$diag_dir/context.raw.txt"
+          done
+          [[ "$(wc -l < "$diag_dir/context.raw.txt")" -le 400 ]]
+          mv "$diag_dir/context.raw.txt" "$diag_dir/context.txt"
+      - name: Upload Issue 74 FastC argv diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue74-fastc-argv-${{ github.run_id }}-${{ github.job }}
+          path: ${{ runner.temp }}/issue74-fastc-argv-diag
+          if-no-files-found: error
+          retention-days: 7
