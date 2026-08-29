@@ -3254,6 +3254,9 @@ fn (mut tc TypeChecker) check_valid_call_preamble(id flat.NodeId, node flat.Node
 	}
 	callee_id := tc.a.child(&node, 0)
 	callee := tc.a.node(callee_id)
+	if tc.rewrite_c_alias_call_as_cast(id, node, callee) {
+		return true
+	}
 	if callee.kind in [.call, .fn_literal, .lambda_expr] {
 		tc.check_node(callee_id)
 	}
@@ -3305,6 +3308,9 @@ fn (mut tc TypeChecker) check_call(id flat.NodeId, node flat.Node) {
 		}
 		callee_id := tc.a.child(&node, 0)
 		callee := tc.a.child_node(&node, 0)
+		if tc.rewrite_c_alias_call_as_cast(id, node, callee) {
+			return
+		}
 		if callee.kind == .selector && callee.children_count > 0 {
 			receiver_id := tc.a.child(callee, 0)
 			receiver := tc.a.node(receiver_id)
