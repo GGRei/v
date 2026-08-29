@@ -1,6 +1,8 @@
 module c
 
+import v3.flat
 import v3.pref
+import v3.types
 
 fn test_thread_local_decl_uses_portable_c_dialects() {
 	mut g := FlatGen.new()
@@ -42,9 +44,23 @@ fn test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations() {
 	g.atomic_builtin_compat_decls()
 	c_code := g.sb.str()
 	compat_include := '#include "thirdparty/stdatomic/win/atomic.h"'
+	compat_pos := c_code.index(compat_include) or { -1 }
+	file_pos := c_code.index('typedef struct FILE FILE;') or { -1 }
+	tcc_file_pos := c_code.index('struct _iobuf {') or { -1 }
+	tcc_stream_pos := c_code.index('FILE* __cdecl __iob_func(void);') or { -1 }
+	generic_stream_pos := c_code.index('#elif defined(_WIN32)\nextern FILE* stdin;\nextern FILE* stdout;\nextern FILE* stderr;') or { -1 }
 	assert c_code.count(compat_include) == 1, c_code
-	assert c_code.index(compat_include) >= 0, c_code
-	assert c_code.index(compat_include) < c_code.index('typedef struct FILE FILE;'), c_code
+	assert compat_pos >= 0, c_code
+	assert compat_pos < file_pos, c_code
+	assert compat_pos < tcc_file_pos, c_code
+	assert tcc_file_pos < file_pos, c_code
+	assert tcc_stream_pos < generic_stream_pos, c_code
+	assert c_code.count('struct _iobuf {') == 1, c_code
+	assert c_code.count('typedef struct _iobuf FILE;') == 2, c_code
+	assert c_code.count('FILE* __cdecl __iob_func(void);') == 1, c_code
+	assert c_code.contains('#define stdin (&__iob_func()[0])'), c_code
+	assert c_code.contains('#define stdout (&__iob_func()[1])'), c_code
+	assert c_code.contains('#define stderr (&__iob_func()[2])'), c_code
 	assert !c_code.contains('typedef struct SECURITY_ATTRIBUTES {'), c_code
 	assert !c_code.contains('typedef struct OVERLAPPED {'), c_code
 	assert c_code.contains('#ifndef _SYNCHAPI_H_\ntypedef struct SRWLOCK { void* Ptr; } SRWLOCK;\n#endif'), c_code
@@ -60,6 +76,8 @@ fn test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations() {
 	assert c_code.contains('result.handle = CreateThread(NULL, __v_thread_stack_size,'), c_code
 	assert c_code.contains('struct fd_set { unsigned int fd_count; SOCKET fd_array[FD_SETSIZE]; };'), c_code
 	assert c_code.contains('#define O_RDONLY 0x0000'), c_code
+	assert !c_code.contains('int _putenv_s(const char *name, const char *value);'), c_code
+	assert !c_code.contains('struct _EXCEPTION_POINTERS;'), c_code
 }
 
 fn test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions() {
@@ -270,14 +288,89 @@ fn test_system_libc_windows_tcc_atomic_header_does_not_preserve_sdk_functions() 
 }
 
 fn test_headerless_windows_non_tcc_keeps_local_sdk_fallbacks() {
+	mut ast := &flat.FlatAst{}
+	mut tc := types.TypeChecker.new(ast)
 	mut g := FlatGen.new()
+	g.a = ast
+	g.tc = &tc
 	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
 	g.set_ccompiler('gcc')
+	g.has_builtins = true
 	g.preamble()
+	g.builtin_abi_decls()
 	c_code := g.sb.str()
+	mingw_file_pos := c_code.index('typedef struct _iobuf FILE;') or { -1 }
+	mingw_stream_pos := c_code.index('FILE* __cdecl __acrt_iob_func(unsigned index);') or { -1 }
+	generic_stream_pos := c_code.index('#elif defined(_WIN32)\nextern FILE* stdin;\nextern FILE* stdout;\nextern FILE* stderr;') or { -1 }
+	assert mingw_file_pos >= 0, c_code
+	assert mingw_stream_pos > mingw_file_pos, c_code
+	assert mingw_stream_pos < generic_stream_pos, c_code
+	assert c_code.count('FILE* __cdecl __acrt_iob_func(unsigned index);') == 1, c_code
+	assert c_code.contains('#define stdin  (__acrt_iob_func(0))'), c_code
+	assert c_code.contains('#define stdout (__acrt_iob_func(1))'), c_code
+	assert c_code.contains('#define stderr (__acrt_iob_func(2))'), c_code
 	assert c_code.contains('typedef struct CONDITION_VARIABLE { void* Ptr; } CONDITION_VARIABLE;'), c_code
 	assert c_code.contains('typedef struct COORD { i16 X; i16 Y; } COORD;'), c_code
 	assert c_code.contains('HANDLE CreateThread(void* attributes'), c_code
+	assert g.should_emit_c_extern_decl('GetConsoleMode')
+	assert c_code.count('void* _aligned_malloc(size_t size, size_t alignment);') == 1, c_code
+	assert c_code.count('void _aligned_free(void* memblock);') == 1, c_code
+	assert c_code.count('int _putenv_s(const char *name, const char *value);') == 1, c_code
+	assert c_code.count('struct _EXCEPTION_POINTERS;') == 1, c_code
+	assert c_code.count('typedef long (WINAPI *PTOP_LEVEL_EXCEPTION_FILTER)(struct _EXCEPTION_POINTERS*);') == 1, c_code
+
+	assert c_code.count('typedef PTOP_LEVEL_EXCEPTION_FILTER LPTOP_LEVEL_EXCEPTION_FILTER;') == 1, c_code
+
+	assert c_code.count('LPTOP_LEVEL_EXCEPTION_FILTER WINAPI SetUnhandledExceptionFilter(') == 1, c_code
+
+	assert !g.should_emit_c_extern_decl('_aligned_malloc')
+	assert !g.should_emit_c_extern_decl('_aligned_free')
+	assert !g.should_emit_c_extern_decl('_putenv_s')
+	assert !g.should_emit_c_extern_decl('SetUnhandledExceptionFilter')
+}
+
+fn test_headerless_windows_non_tcc_without_builtins_keeps_aligned_externs_owned_by_source() {
+	mut ast := &flat.FlatAst{}
+	mut tc := types.TypeChecker.new(ast)
+	mut g := FlatGen.new()
+	g.a = ast
+	g.tc = &tc
+	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	g.set_ccompiler('gcc')
+	assert !g.has_builtins
+	g.preamble()
+	g.builtin_abi_decls()
+	c_code := g.sb.after(0)
+	assert !c_code.contains('void* _aligned_malloc(size_t size, size_t alignment);'), c_code
+	assert !c_code.contains('void _aligned_free(void* memblock);'), c_code
+	assert g.should_emit_c_extern_decl('_aligned_malloc')
+	assert g.should_emit_c_extern_decl('_aligned_free')
+	assert c_code.count('int _putenv_s(const char *name, const char *value);') == 1, c_code
+	assert c_code.count('LPTOP_LEVEL_EXCEPTION_FILTER WINAPI SetUnhandledExceptionFilter(') == 1, c_code
+}
+
+fn test_non_windows_preamble_does_not_emit_windows_abi_fallbacks() {
+	mut ast := &flat.FlatAst{}
+	mut tc := types.TypeChecker.new(ast)
+	mut g := FlatGen.new()
+	g.a = ast
+	g.tc = &tc
+	g.set_target(pref.target_from('linux', 'amd64') or { panic(err) })
+	g.set_ccompiler('gcc')
+	g.has_builtins = true
+	g.preamble()
+	g.builtin_abi_decls()
+	c_code := g.sb.after(0)
+	for declaration in [
+		'int _putenv_s(const char *name, const char *value);',
+		'struct _EXCEPTION_POINTERS;',
+		'PTOP_LEVEL_EXCEPTION_FILTER',
+		'LPTOP_LEVEL_EXCEPTION_FILTER',
+		'SetUnhandledExceptionFilter(',
+	] {
+		assert !c_code.contains(declaration), declaration
+	}
+	assert c_code.contains('#ifdef _WIN32\nvoid* _aligned_malloc(size_t size, size_t alignment);'), c_code
 }
 
 fn test_manual_stdlib_headers_clear_fortified_memory_macros() {
