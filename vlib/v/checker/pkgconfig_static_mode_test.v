@@ -117,6 +117,7 @@ struct Issue74CheckedFlags {
 	all_linker       []string
 	ordinary_linker  []string
 	pkgconfig_linker []string
+	static_fact      bool
 	checker_errors   []string
 }
 
@@ -182,6 +183,7 @@ fn issue74_checked_flags_for_source(ccompiler string, cflags_value string, ldfla
 		all_linker:       all_linker
 		ordinary_linker:  ordinary
 		pkgconfig_linker: pkgconfig_linker
+		static_fact:      prefs.compile_values['v:static_pkgconfig'] == 'true'
 		checker_errors:   chk.errors.map(it.message)
 	}
 }
@@ -248,6 +250,7 @@ fn test_static_pkgconfig_segment_stays_ordered_after_target() {
 fn test_explicit_static_directive_uses_ordered_transport_without_global_static_cflag() {
 	for ccompiler in ['gcc', 'clang'] {
 		flags := issue74_checked_flags_for_source(ccompiler, '', '', issue74_explicit_static_source)
+		assert !flags.static_fact, ccompiler
 		assert flags.all_linker == issue74_static_linker_segment, ccompiler
 		assert flags.ordinary_linker == [], ccompiler
 		assert flags.pkgconfig_linker == issue74_static_linker_segment, ccompiler
