@@ -172,14 +172,20 @@ fn (mut g Parser) parse_c_directive() ! {
 			// path (FastC's bundled tcc already resolves the system headers these C
 			// files include). Skip such flags instead of rejecting the whole program.
 			if fastc_flag_is_skippable(rest) {
-				g.c_flags << fastc_c_flag_args(rest, g.prefs.vroot, g.path)!
+				skippable_flag_args := fastc_c_flag_args(rest, g.prefs.vroot, g.path)!
+				for flag_arg in skippable_flag_args {
+					g.c_flags << flag_arg
+				}
 				return
 			}
 			// A `#flag -DNAME` / `-DNAME=value` preprocessor define affects the C that
 			// follows (e.g. the sqlite3 header/binding); emit it as a `#define` so the
 			// definition is in effect, skipping any link/header flags mixed alongside.
 			if defines := fastc_flag_defines(rest) {
-				g.c_flags << fastc_c_flag_args(rest, g.prefs.vroot, g.path)!
+				define_flag_args := fastc_c_flag_args(rest, g.prefs.vroot, g.path)!
+				for flag_arg in define_flag_args {
+					g.c_flags << flag_arg
+				}
 				for define in defines {
 					g.out.writeln('#define ${define}')
 				}
@@ -188,7 +194,10 @@ fn (mut g Parser) parse_c_directive() ! {
 		}
 		if directive == 'pkgconfig' || directive.starts_with('pkgconfig ') {
 			packages := directive.all_after('pkgconfig').trim_space()
-			g.c_flags << fastc_pkgconfig_flags(packages)!
+			pkgconfig_flag_args := fastc_pkgconfig_flags(packages)!
+			for flag_arg in pkgconfig_flag_args {
+				g.c_flags << flag_arg
+			}
 			return
 		}
 		return g.unsupported('C build directive `#${directive}`')
