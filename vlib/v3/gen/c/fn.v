@@ -16492,8 +16492,8 @@ fn (mut g FlatGen) c_extern_forward_decls() {
 		g.tc.cur_file = decl.file
 		g.tc.cur_module = decl.module_name
 		node := g.a.nodes[decl.node_idx]
-		line := g.c_possibly_active_macro_extern_decl(name, c_macro_safe_extern_decl(name,
-			g.c_extern_decl_line(node, name)))
+		line := g.c_windows_tcc_nonls_extern_decl(name, g.c_possibly_active_macro_extern_decl(name, c_macro_safe_extern_decl(name,
+			g.c_extern_decl_line(node, name))))
 		if g.c_extern_decl_is_cached_object_fallback(name) {
 			g.writeln('#ifndef V3CACHE_PROGRAM_UNIT')
 			g.writeln(line)
@@ -16699,6 +16699,16 @@ fn (g &FlatGen) c_possibly_active_macro_extern_decl(cfn string, declaration stri
 		return declaration
 	}
 	return '#ifndef ${cfn}\n${declaration}\n#endif'
+}
+
+// TinyCC's bundled atomic compatibility header includes <windows.h>. Its NLS
+// declarations are present unless NONLS is defined; keep V's fallback only in
+// the complementary preprocessor branch.
+fn (g &FlatGen) c_windows_tcc_nonls_extern_decl(cfn string, declaration string) string {
+	if g.uses_windows_tcc_atomic_header() && cfn in ['MultiByteToWideChar', 'WideCharToMultiByte'] {
+		return '#ifdef NONLS\n${declaration}\n#endif'
+	}
+	return declaration
 }
 
 fn (g &FlatGen) should_emit_c_extern_decl(cfn string) bool {
