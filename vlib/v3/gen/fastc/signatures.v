@@ -128,8 +128,9 @@ fn collect_function_signatures(source string, path string, header FastcSourceHea
 				if alias_scan.scan() == .assign && alias_scan.scan() == .key_fn {
 					alias_key := fastc_c_declared_type_name(fastc_type_key(header.module_name,
 						alias_name))
-					functions[alias_key] = fastc_scan_function_alias_signature(mut alias_scan,
-						path, header, prefs, declared_types)!
+					alias_signature := fastc_scan_function_alias_signature(mut alias_scan, path,
+						header, prefs, declared_types)!
+					functions[alias_key] = alias_signature
 				}
 			}
 		}
