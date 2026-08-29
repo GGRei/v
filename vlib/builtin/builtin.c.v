@@ -141,7 +141,8 @@ pub fn arguments() []string {
 		$if windows {
 			res << unsafe { string_from_wide(&u16(argv[i])) }
 		} $else {
-			res << unsafe { tos_clone(argv[i]) }
+			raw_arg := unsafe { argv[i] }
+			res << unsafe { tos_clone(raw_arg) }
 		}
 	}
 	return res

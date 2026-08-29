@@ -505,9 +505,11 @@ jobs:
           run_owner v3-modulecache-units vlib/v3/modulecache/modulecache_test.v \
             test_cached_directive_text_preserves_cpp_linker_requirement \
             test_linker_cache_selector_is_conditional_on_source_directives
+          export V3_FASTC_DIAG_KEEP_TMP=1
           run_owner v3-fastc-backend vlib/v3/tests/fastc_backend_test.v \
             test_v_self_accepts_fastc_backend \
             test_fastc_backend_parses_directly_to_c_without_ast_fallback
+          unset V3_FASTC_DIAG_KEEP_TMP
           run_owner v3-module-cache-integration vlib/v3/tests/module_cache_test.v \
             test_pkgconfig_mode_cache_isolated_across_dynamic_static_dynamic_sequence \
             test_cpp_linker_requirement_survives_import_cache_true_false_true_sequence
@@ -519,3 +521,53 @@ jobs:
           git diff --exit-code
           git diff --cached --exit-code
           [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
+      - name: Collect Issue 74 FastC raw argv diagnostics
+        if: always()
+        shell: bash
+        env:
+          VTMP: ${{ runner.temp }}/issue74 v3 linux tmp
+        run: |
+          set -euo pipefail
+          diag_dir="$RUNNER_TEMP/issue74-fastc-raw-argv-diag"
+          mkdir -p "$diag_dir"
+          mapfile -d '' sources < <(find "$VTMP" -type f \
+            \( -name 'v fastc from vflags.c' -o -name 'selfhost.c' \) \
+            -size -8388608c -print0 | sort -z)
+          [[ "${#sources[@]}" -eq 2 ]]
+          vflags_count=0
+          selfhost_count=0
+          : > "$diag_dir/context.raw.txt"
+          for source in "${sources[@]}"; do
+            case "$(basename "$source")" in
+              'v fastc from vflags.c')
+                vflags_count="$((vflags_count + 1))"
+                stable_name='fastc-vflags.c'
+                ;;
+              'selfhost.c')
+                selfhost_count="$((selfhost_count + 1))"
+                stable_name='fastc-selfhost.c'
+                ;;
+            esac
+            cp -- "$source" "$diag_dir/$stable_name"
+            ! grep -n -E 'tos_clone\(&[^)]*argv[^)]*\)' "$source"
+            grep -n -m 1 -E 'raw_arg.*argv' "$source"
+            grep -n -m 1 -E 'tos_clone\(raw_arg\)' "$source"
+            line="$(grep -n -m 1 -E 'builtin__arguments.*\{' "$source" | cut -d: -f1)"
+            start="$((line > 5 ? line - 5 : 1))"
+            end="$((line + 45))"
+            printf '=== %s builtin__arguments lines %s-%s ===\n' \
+              "$stable_name" "$start" "$end" >> "$diag_dir/context.raw.txt"
+            sed -n "${start},${end}p" "$source" | \
+              nl -ba -v "$start" >> "$diag_dir/context.raw.txt"
+          done
+          [[ "$vflags_count" -eq 1 && "$selfhost_count" -eq 1 ]]
+          [[ "$(wc -l < "$diag_dir/context.raw.txt")" -le 300 ]]
+          mv "$diag_dir/context.raw.txt" "$diag_dir/context.txt"
+      - name: Upload Issue 74 FastC raw argv diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue74-fastc-raw-argv-${{ github.run_id }}-${{ github.job }}
+          path: ${{ runner.temp }}/issue74-fastc-raw-argv-diag
+          if-no-files-found: error
+          retention-days: 7

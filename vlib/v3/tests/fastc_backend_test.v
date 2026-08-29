@@ -54,7 +54,9 @@ fn test_v_self_accepts_fastc_backend() {
 	os.rmdir_all(root) or {}
 	os.mkdir_all(root) or { panic(err) }
 	defer {
-		os.rmdir_all(root) or {}
+		if os.getenv('V3_FASTC_DIAG_KEEP_TMP') == '' {
+			os.rmdir_all(root) or {}
+		}
 	}
 	vflags_value_binary := os.join_path(root, 'v from x2 value')
 	vflags_value_build := run_with_v_environment(@VEXE, ['-exclude', 'x2', 'self', '-silent', '-o',
@@ -66,8 +68,8 @@ fn test_v_self_accepts_fastc_backend() {
 	assert os.is_executable(vflags_value_binary)
 
 	vflags_binary := os.join_path(root, 'v fastc from vflags')
-	vflags_self_build := run_with_v_environment(@VEXE, ['self', '-silent', '-o', vflags_binary],
-		'-d self -b fastc', @VEXE)
+	vflags_self_build := run_with_v_environment(@VEXE, ['self', '-silent', '-keepc', '-o',
+		vflags_binary], '-d self -b fastc', @VEXE)
 	assert vflags_self_build.exit_code == 0, vflags_self_build.output
 	assert vflags_self_build.output.count('V self compiling') == 1, vflags_self_build.output
 	assert vflags_self_build.output.contains('-d self'), vflags_self_build.output
@@ -176,7 +178,9 @@ fn test_fastc_backend_parses_directly_to_c_without_ast_fallback() {
 	os.rmdir_all(root) or {}
 	os.mkdir_all(root) or { panic(err) }
 	defer {
-		os.rmdir_all(root) or {}
+		if os.getenv('V3_FASTC_DIAG_KEEP_TMP') == '' {
+			os.rmdir_all(root) or {}
+		}
 	}
 	v3_bin := os.join_path(root, 'v3')
 	build := cmdexec.run(@VEXE, ['-gc', 'none', '-path', '${fastc_backend_vlib_dir}|@vlib|@vmodules',
@@ -623,8 +627,8 @@ fn main() {
 	assert scoped_run.output.trim_space() == '2\n1\n0\n1\n7\n5\n4\n6\n1\n2\n42\n3'
 
 	selfhost_binary := os.join_path(root, 'selfhost')
-	selfhost_compile := cmdexec.run(v3_bin, ['-silent', '-selfhost', '-b', 'fastc', '-o',
-		selfhost_binary, fastc_backend_v3_source])
+	selfhost_compile := cmdexec.run(v3_bin, ['-silent', '-selfhost', '-b', 'fastc', '-keepc',
+		'-o', selfhost_binary, fastc_backend_v3_source])
 	assert selfhost_compile.exit_code == 0, selfhost_compile.output
 	selfhost_collision := cmdexec.run(selfhost_binary, ['-b', 'fastc', '-o', collision_output,
 		collision_source])
