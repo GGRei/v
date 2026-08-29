@@ -10671,6 +10671,46 @@ fn main() {
 	assert !c_source.contains('&(0)'), c_source
 }
 
+fn test_selfhost_double_pointer_index_keeps_one_pointer_level() {
+	mut prefs := pref.new_preferences()
+	prefs.building_v = true
+	c_source := generate('module main
+
+struct Arguments {
+	values &&u8
+}
+
+struct Item {
+	value &u8
+}
+
+fn clone_direct(values &&u8, index int) string {
+	return unsafe { tos_clone(values[index]) }
+}
+
+fn clone_member(arguments Arguments, index int) string {
+	return unsafe { tos_clone(arguments.values[index]) }
+}
+
+fn clone_indexed_field(items &&Item, index int) string {
+	return unsafe { tos_clone(items[index].value) }
+}
+
+fn clone_local(values &&u8, index int) string {
+	raw_arg := unsafe { values[index] }
+	return unsafe { tos_clone(raw_arg) }
+}
+', 'selfhost_double_pointer_index.v', prefs) or { panic(err) }
+	assert c_source.contains('builtin__tos_clone(((values)[index]))'), c_source
+	assert c_source.contains('builtin__tos_clone(((arguments.values)[index]))'), c_source
+	assert !c_source.contains('builtin__tos_clone(&(((values)[index])))'), c_source
+	assert !c_source.contains('builtin__tos_clone(&(((arguments.values)[index])))'), c_source
+	assert c_source.contains(')[index])->value'), c_source
+	assert c_source.contains('raw_arg = '), c_source
+	assert c_source.contains('builtin__tos_clone(raw_arg)'), c_source
+	assert !c_source.contains('builtin__tos_clone(&(raw_arg))'), c_source
+}
+
 fn test_selfhost_fixed_array_of_c_struct_uses_registered_compound_type() {
 	mut prefs := pref.new_preferences()
 	prefs.building_v = true
