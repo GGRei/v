@@ -145,9 +145,20 @@ fn test_macos_v3_relevant_command_selects_user_compilation_and_tests() {
 		prefs.exclude = ['@vlib/math/*.c.v']
 		assert !is_macos_v3_relevant_command('main.v', prefs)
 		prefs.exclude.clear()
-		prefs.ldflags = '-L/custom/lib -lcustom'
-		assert !is_macos_v3_relevant_command('main.v', prefs)
+		prefs.ccompiler = 'gcc'
+		prefs.ccompiler_type = .gcc
+		for dynamic_ldflags in ['-L/custom/lib -lcustom', '-static-libgcc', '-Wl,-Bstatic'] {
+			prefs.ldflags = dynamic_ldflags
+			prefs.resolve_pkgconfig_mode()
+			assert prefs.pkgconfig_mode == .dynamic
+			assert !is_macos_v3_relevant_command('main.v', prefs)
+		}
+		prefs.ldflags = '-static'
+		prefs.resolve_pkgconfig_mode()
+		assert prefs.pkgconfig_mode == .static_
+		assert is_macos_v3_relevant_command('main.v', prefs)
 		prefs.ldflags = ''
+		prefs.resolve_pkgconfig_mode()
 		prefs.nofloat = true
 		assert !is_macos_v3_relevant_command('main.v', prefs)
 		prefs.nofloat = false
@@ -2795,6 +2806,21 @@ fn test_macos_v3_fastc_rejects_incompatible_preferences() {
 		return
 	}
 	assert message.contains('`-b fastc` only supports `-gc none`')
+
+	mut fastc_static_ldflags, _ := pref.parse_args_and_show_errors([], ['-b', 'fastc', '-ldflags',
+		'-static', 'main.v'], false)
+	assert fastc_static_ldflags.is_fastc
+	assert !fastc_static_ldflags.ccompiler_set_by_flag
+	fastc_static_ldflags.ccompiler = 'gcc'
+	fastc_static_ldflags.ccompiler_type = .gcc
+	fastc_static_ldflags.resolve_pkgconfig_mode()
+	assert fastc_static_ldflags.pkgconfig_mode == .static_
+	assert v3_has_v1_only_preferences(fastc_static_ldflags)
+	static_ldflags_message := macos_v3_fastc_incompatibility(fastc_static_ldflags) or {
+		assert false, 'expected FastC with static linker flags to remain V1-only'
+		return
+	}
+	assert static_ldflags_message.contains('only supported by the V1 compiler')
 
 	overridden, _ := pref.parse_args_and_show_errors([], ['-b', 'fastc', '-gc', 'boehm', '-b',
 		'c', 'main.v'], false)
