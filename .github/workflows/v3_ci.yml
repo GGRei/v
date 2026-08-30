@@ -498,6 +498,8 @@ jobs:
             test_headerless_windows_non_tcc_keeps_local_sdk_fallbacks
           run_owner v3-fastc-units vlib/v3/gen/fastc/fastc_test.v \
             test_literal_membership_materializes_candidates_before_comparison \
+            test_fastc_file_generation_one_worker_preserves_all_indices_after_growth \
+            test_fastc_initial_entry_path_canonicalizes_only_building_v_entries \
             test_selfhost_double_pointer_index_keeps_one_pointer_level \
             test_source_resolver_uses_compiler_owned_file_defines \
             test_cpp_linker_directive_is_rejected_before_fastc_emits_c
