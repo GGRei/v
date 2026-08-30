@@ -2655,22 +2655,27 @@ fn test_driver_cpp_linker_uses_final_cpp_driver_and_keeps_sources_c() {
 				if mode == 'parallel' {
 					assert '-cc' !in args
 					spy_lines := os.read_lines(spy_log)!
-					mut c_object_index := -1
-					mut cpp_link_index := -1
+					mut last_compile_index := -1
+					mut cpp_link_candidates := []int{}
 					for spy_index, spy_line in spy_lines {
-						if c_object_index < 0 && spy_line.starts_with('C\t')
-							&& spy_line.contains(' -c ') {
-							c_object_index = spy_index
-						}
-						if cpp_link_index < 0 && spy_line.starts_with('CPP\t') {
+						if spy_line.starts_with('C\t') || spy_line.starts_with('CPP\t') {
 							spy_args := v3_cpp_spy_args(spy_line)
-							if spy_args.len > 0 && spy_args != ['--version'] && '-c' !in spy_args {
-								cpp_link_index = spy_index
+							if '-c' in spy_args {
+								last_compile_index = spy_index
+							}
+						}
+						if spy_line.starts_with('CPP\t') {
+							spy_args := v3_cpp_spy_args(spy_line)
+							if '-c' !in spy_args && '-M' !in spy_args && '-MM' !in spy_args
+								&& '-o' in spy_args
+								&& spy_args.filter(it.ends_with('runtime.o')).len == 1 {
+								cpp_link_candidates << spy_index
 							}
 						}
 					}
-					assert c_object_index >= 0, spy_lines.str()
-					assert cpp_link_index > c_object_index, spy_lines.str()
+					assert last_compile_index >= 0, spy_lines.str()
+					assert cpp_link_candidates.len == 1, spy_lines.str()
+					assert cpp_link_candidates[0] > last_compile_index, spy_lines.str()
 				}
 			}
 		}
