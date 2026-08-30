@@ -34,8 +34,9 @@ fn build_driver_cli_v3_with_flags(root string, flags []string) string {
 
 fn assert_driver_cli_failure(v3_bin string, args []string, message string) {
 	result := cmdexec.run(v3_bin, args)
-	assert result.exit_code != 0
-	assert result.output.contains(message), result.output
+	label := cmdexec.display(v3_bin, args)
+	assert result.exit_code != 0, label
+	assert result.output.contains(message), '${label}\n${result.output}'
 }
 
 fn v3_profile_counter(profile_output string, fn_name string) int {
@@ -2162,9 +2163,13 @@ fn main() {
 	fake_gpp := os.join_path(root, 'g++${executable_suffix}')
 	fake_clang := os.join_path(root, 'clang${executable_suffix}')
 	fake_clangpp := os.join_path(root, 'clang++${executable_suffix}')
+	fake_tcc := os.join_path(root, 'tcc${executable_suffix}')
+	fake_clang_cl := os.join_path(root, 'clang-cl${executable_suffix}')
+	fake_msvc := os.join_path(root, 'msvc${executable_suffix}')
 	fake_emcc := os.join_path(root, 'emcc${executable_suffix}')
 	fake_unknown := os.join_path(root, 'v3_unknown_native_driver_issue74${executable_suffix}')
-	for fake_driver in [fake_gcc, fake_gpp, fake_clang, fake_clangpp, fake_emcc, fake_unknown] {
+	for fake_driver in [fake_gcc, fake_gpp, fake_clang, fake_clangpp, fake_tcc, fake_clang_cl,
+		fake_msvc, fake_emcc, fake_unknown] {
 		os.cp(recorder_binary, fake_driver)!
 	}
 	os.write_file(recorder_log, '')!
@@ -2315,15 +2320,14 @@ fn main() {
 	project_dir := os.join_path(root, 'generated-project')
 	assert_driver_cli_failure(v3_bin, ['-generate-c-project', project_dir, active],
 		'does not support `-generate-c-project`')
-	for compiler in ['tcc', 'clang-cl', 'msvc', fake_emcc, fake_unknown] {
+	for compiler in [fake_tcc, fake_clang_cl, fake_msvc, fake_emcc, fake_unknown] {
 		os.write_file(recorder_log, '')!
 		assert_driver_cli_failure(v3_bin, ['-cc', compiler, '-c++', missing_cpp, active],
 			'requires a GNU-compatible GCC or Clang C driver')
-		if compiler in [fake_emcc, fake_unknown] {
-			invocations := v3_cpp_driver_recorder_invocations(recorder_log)
-			assert invocations.len == 2, invocations.str()
-			assert invocations.all(it.args == ['--version']), invocations.str()
-		}
+		invocations := v3_cpp_driver_recorder_invocations(recorder_log)
+		expected_invocations := if compiler in [fake_emcc, fake_unknown] { 2 } else { 1 }
+		assert invocations.len == expected_invocations, invocations.str()
+		assert invocations.all(it.args == ['--version']), invocations.str()
 	}
 
 	os.write_file(recorder_log, '')!
