@@ -10785,21 +10785,23 @@ struct Item {
 	value &u8
 }
 
-fn clone_direct(values &&u8, index int) string {
-	return unsafe { tos_clone(values[index]) }
+fn C.fastc_accept_pointer(&u8) int
+
+fn clone_direct(values &&u8, index int) int {
+	return unsafe { C.fastc_accept_pointer(values[index]) }
 }
 
-fn clone_member(arguments Arguments, index int) string {
-	return unsafe { tos_clone(arguments.values[index]) }
+fn clone_member(arguments Arguments, index int) int {
+	return unsafe { C.fastc_accept_pointer(arguments.values[index]) }
 }
 
-fn clone_indexed_field(items &&Item, index int) string {
-	return unsafe { tos_clone(items[index].value) }
+fn clone_indexed_field(items &&Item, index int) int {
+	return unsafe { C.fastc_accept_pointer(items[index].value) }
 }
 
-fn clone_local(values &&u8, index int) string {
+fn clone_local(values &&u8, index int) int {
 	raw_arg := unsafe { values[index] }
-	return unsafe { tos_clone(raw_arg) }
+	return unsafe { C.fastc_accept_pointer(raw_arg) }
 }
 
 fn main() {
@@ -10810,20 +10812,19 @@ fn main() {
 }
 ', 'selfhost_double_pointer_index.v', prefs) or { panic(err) }
 	compact := c_source.replace(' ', '').replace('\t', '').replace('\r', '').replace('\n', '').replace('(', '').replace(')', '')
-	assert compact.count('builtin__tos_clone') == 4, c_source
-	assert compact.count('stringclone_direct') == 1, c_source
-	assert compact.count('stringclone_member') == 1, c_source
-	assert compact.count('stringclone_indexed_field') == 1, c_source
-	assert compact.count('stringclone_local') == 1, c_source
-	assert compact.contains('builtin__tos_clonevalues[index]'), c_source
-	assert compact.contains('builtin__tos_clonearguments.values[index]'), c_source
-	assert compact.contains('builtin__tos_cloneitems[index]->value'), c_source
+	assert compact.count('intclone_direct') == 1, c_source
+	assert compact.count('intclone_member') == 1, c_source
+	assert compact.count('intclone_indexed_field') == 1, c_source
+	assert compact.count('intclone_local') == 1, c_source
+	assert compact.count('fastc_accept_pointervalues[index]') == 1, c_source
+	assert compact.count('fastc_accept_pointerarguments.values[index]') == 1, c_source
+	assert compact.count('fastc_accept_pointeritems[index]->value') == 1, c_source
 	assert compact.contains('raw_arg=values[index]'), c_source
-	assert compact.contains('builtin__tos_cloneraw_arg'), c_source
-	assert !compact.contains('builtin__tos_clone&values[index]'), c_source
-	assert !compact.contains('builtin__tos_clone&arguments.values[index]'), c_source
-	assert !compact.contains('builtin__tos_clone&items[index]->value'), c_source
-	assert !compact.contains('builtin__tos_clone&raw_arg'), c_source
+	assert compact.count('fastc_accept_pointerraw_arg') == 1, c_source
+	assert !compact.contains('fastc_accept_pointer&values[index]'), c_source
+	assert !compact.contains('fastc_accept_pointer&arguments.values[index]'), c_source
+	assert !compact.contains('fastc_accept_pointer&items[index]->value'), c_source
+	assert !compact.contains('fastc_accept_pointer&raw_arg'), c_source
 }
 
 fn test_selfhost_fixed_array_of_c_struct_uses_registered_compound_type() {
