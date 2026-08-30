@@ -134,16 +134,33 @@ fn main() {
 	defer {
 		log.close()
 	}
+	log.writeln("__V_DRIVER__:" + os.file_name(os.args[0])) or { panic(err) }
 	mut output := ""
 	mut take_output := false
 	for arg in os.args[1..] {
 		log.writeln(arg) or { panic(err) }
+		if arg.starts_with("@") {
+			rsp_content := os.read_file(arg[1..].trim("\\"")) or { "" }
+			log.writeln("__V_RSP__:" + rsp_content) or { panic(err) }
+		}
 		if take_output {
 			output = arg
 			take_output = false
 		} else if arg == "-o" {
-			take_output = true
+				take_output = true
+			}
 		}
+	mut driver_name := os.file_name(os.args[0]).to_lower_ascii()
+	if driver_name.ends_with(".exe") {
+		driver_name = driver_name[..driver_name.len - 4]
+	}
+	if os.args.len == 2 && os.args[1] == "--version" {
+		match driver_name {
+			"gcc", "g++" { println("gcc (GCC) 13.2.0") }
+			"clang", "clang++" { println("clang version 17.0.0") }
+			else { exit(1) }
+		}
+		return
 	}
 	if output != "" {
 		os.mkdir_all(os.dir(output)) or { panic(err) }
@@ -1187,9 +1204,27 @@ fn issue74_write_fake_ccompiler(path string) {
 	os.write_file(path, '#!/bin/sh
 set -eu
 : "\${ISSUE74_CC_LOG:?ISSUE74_CC_LOG must name the argv log}"
+printf "__V_DRIVER__:%s\\n" "\${0##*/}" >> "\$ISSUE74_CC_LOG"
 for arg do
 	printf "%s\\n" "\$arg" >> "\$ISSUE74_CC_LOG"
+	case "\$arg" in
+		@*)
+			rsp_path=\${arg#@}
+			if [ -f "\$rsp_path" ]; then
+				printf "__V_RSP__:%s\\n" "\$(tr "\\n" " " < "\$rsp_path")" >> "\$ISSUE74_CC_LOG"
+			fi
+			;;
+	esac
 done
+if [ "\$#" -eq 1 ] && [ "\$1" = "--version" ]; then
+	driver_name=\${0##*/}
+	driver_name=\${driver_name%.exe}
+	case "\$driver_name" in
+		gcc|g++) printf "%s\\n" "gcc (GCC) 13.2.0"; exit 0 ;;
+		clang|clang++) printf "%s\\n" "clang version 17.0.0"; exit 0 ;;
+		*) exit 1 ;;
+	esac
+fi
 output=""
 take_output=0
 for arg do
@@ -1222,6 +1257,11 @@ fn issue74_run_fake_compile(root string, ccompiler string, name string, source s
 }
 
 fn issue74_run_fake_compile_with_args(root string, ccompiler string, name string, source string, extra_args []string) Issue74FakeCompileResult {
+	return issue74_run_fake_compile_with_args_and_rsp(root, ccompiler, name, source, extra_args,
+		false)
+}
+
+fn issue74_run_fake_compile_with_args_and_rsp(root string, ccompiler string, name string, source string, extra_args []string, use_rsp bool) Issue74FakeCompileResult {
 	bin_dir := os.join_path(root, 'bin')
 	probe_name := '${ccompiler}_${name}'
 	tmp_dir := os.join_path(root, 'tmp', probe_name)
@@ -1246,9 +1286,13 @@ fn issue74_run_fake_compile_with_args(root string, ccompiler string, name string
 	env['PKG_CONFIG_PATH_DEFAULTS'] = issue74_fixture_dir
 	env['ISSUE74_CC_LOG'] = log_path
 	env['TMPDIR'] = tmp_dir
+	env['VCACHE'] = os.join_path(root, 'vcache')
 	issue74_replace_environment_value_case_insensitive(mut env, 'VFLAGS', '')
 	mut process := os.new_process(@VEXE)
-	mut compiler_args := ['-no-rsp', '-gc', 'none', '-cc', ccompiler, '-no-retry-compilation']
+	mut compiler_args := ['-gc', 'none', '-cc', ccompiler, '-no-retry-compilation']
+	if !use_rsp {
+		compiler_args << '-no-rsp'
+	}
 	compiler_args << extra_args
 	compiler_args << ['-o', output_path, source_path]
 	process.set_args(compiler_args)
@@ -1350,6 +1394,264 @@ fn test_pkgconfig_posix_fake_compiler_final_argv() {
 			assert parallel_group_alias_markers == issue74_group_alias_markers, ccompiler
 		}
 	}
+}
+
+fn issue74_prepare_fake_cpp_driver(root string, name string) {
+	bin_dir := os.join_path(root, 'bin')
+	os.mkdir_all(bin_dir) or { panic(err) }
+	mut driver_name := name
+	$if windows {
+		driver_name += '.exe'
+	}
+	issue74_write_fake_ccompiler(os.join_path(bin_dir, driver_name))
+}
+
+fn issue74_cpp_linker_source(root string) string {
+	extra_c := os.join_path(root, 'issue74_extra.c').replace('\\', '/')
+	extra_upper_c := os.join_path(root, 'issue74_extra.C').replace('\\', '/')
+	extra_o := os.join_path(root, 'issue74_keep.o').replace('\\', '/')
+	os.write_file(extra_c, '#ifdef __cplusplus\n#error V_C_SOURCE_WAS_COMPILED_AS_CXX\n#endif\n') or {
+		panic(err)
+	}
+	os.write_file(extra_upper_c,
+		'#ifndef __cplusplus\n#error V_UPPERCASE_C_SOURCE_WAS_NOT_COMPILED_AS_CXX\n#endif\n') or {
+		panic(err)
+	}
+	os.write_file(extra_o, '') or { panic(err) }
+	return 'module main\n#linker c++\n#flag ${extra_c}\n#flag ${extra_upper_c}\n#flag ${extra_o}\nfn main() {}\n'
+}
+
+fn issue74_last_index_containing(items []string, needle string) int {
+	for i := items.len - 1; i >= 0; i-- {
+		if items[i].contains(needle) {
+			return i
+		}
+	}
+	return -1
+}
+
+struct Issue74FakeDriverInvocation {
+	driver string
+	args   []string
+}
+
+fn issue74_fake_driver_name(marker string) string {
+	if !marker.starts_with('__V_DRIVER__:') {
+		return ''
+	}
+	mut driver := marker['__V_DRIVER__:'.len..].to_lower_ascii()
+	if driver.ends_with('.exe') {
+		driver = driver[..driver.len - 4]
+	}
+	return driver
+}
+
+fn issue74_fake_driver_invocations(argv []string) []Issue74FakeDriverInvocation {
+	mut marker_indices := []int{}
+	for index, arg in argv {
+		if arg.starts_with('__V_DRIVER__:') {
+			marker_indices << index
+		}
+	}
+	mut invocations := []Issue74FakeDriverInvocation{cap: marker_indices.len}
+	for marker_order, start in marker_indices {
+		end := if marker_order + 1 < marker_indices.len {
+			marker_indices[marker_order + 1]
+		} else {
+			argv.len
+		}
+		invocations << Issue74FakeDriverInvocation{
+			driver: issue74_fake_driver_name(argv[start])
+			args:   argv[start + 1..end].clone()
+		}
+	}
+	return invocations
+}
+
+fn issue74_non_probe_fake_driver_invocations(argv []string) []Issue74FakeDriverInvocation {
+	non_probe := issue74_fake_driver_invocations(argv).filter(it.args != ['--version'])
+	assert non_probe.len > 0, argv.str()
+	return non_probe
+}
+
+fn issue74_assert_cpp_linker_non_probe_drivers(argv []string) []Issue74FakeDriverInvocation {
+	non_probe := issue74_non_probe_fake_driver_invocations(argv)
+	assert non_probe.all(it.driver == 'g++'), non_probe.str()
+	assert non_probe.last().driver == 'g++', non_probe.str()
+	return non_probe
+}
+
+fn issue74_assert_direct_cpp_linker_argv(argv []string, root string, expect_flto bool) {
+	non_probe := issue74_assert_cpp_linker_non_probe_drivers(argv)
+	final_args := non_probe.last().args
+	marker_source_index := issue74_last_index_containing(argv, '.linker.cpp')
+	marker_object_index := issue74_last_index_containing(final_args, '.linker.o')
+	extra_c_index := issue74_last_index_containing(final_args, 'issue74_extra.c')
+	extra_upper_c_index := issue74_last_index_containing(final_args, 'issue74_extra.C')
+	generated_language := if os.user_os() == 'macos' { 'objective-c' } else { 'c' }
+	mut generated_indices := []int{}
+	for index, arg in final_args {
+		if index >= 2 && index + 2 < final_args.len
+			&& final_args[index - 2..index] == ['-x', generated_language]
+			&& final_args[index + 1..index + 3] == ['-x', 'none']
+			&& !arg.contains('issue74_extra.c') {
+			generated_indices << index
+		}
+	}
+	assert generated_indices.len == 1, final_args.str()
+	generated_c_index := generated_indices[0]
+	assert marker_source_index >= 0
+	assert marker_object_index >= 0
+	assert extra_c_index > marker_object_index
+	assert extra_upper_c_index > extra_c_index
+	assert generated_c_index > extra_upper_c_index
+	assert extra_c_index >= 2
+	assert final_args[extra_c_index - 2..extra_c_index] == ['-x', 'c']
+	assert final_args[extra_c_index + 1..extra_c_index + 3] == ['-x', 'none']
+	assert generated_c_index >= 2
+	assert final_args[extra_upper_c_index - 2..extra_upper_c_index] != ['-x', 'c']
+	marker_driver_index := issue74_last_index_containing(argv[..marker_source_index],
+		'__V_DRIVER__:')
+	assert marker_driver_index >= 0
+	marker_compile_args := argv[marker_driver_index..marker_source_index + 1]
+	assert marker_compile_args.all(without_cpp_marker_incompatible_tokens(it) == it)
+	if expect_flto {
+		assert final_args[marker_object_index..].any(without_cpp_marker_incompatible_tokens(it) != it)
+	}
+	marker_source := argv[marker_source_index].trim_space().trim('"').trim("'")
+	marker_object := final_args[marker_object_index].trim_space().trim('"').trim("'")
+	assert !os.exists(marker_source)
+	assert !os.exists(marker_object)
+	assert extra_c_index >= 0, root
+}
+
+fn test_cpp_linker_fake_driver_direct_rsp_prod_and_parallel_paths() {
+	root := os.join_path(os.vtmp_dir(), 'issue74_cpp_linker_fake_driver')
+	os.rmdir_all(root) or {}
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	os.mkdir_all(root) or { panic(err) }
+	issue74_prepare_fake_cpp_driver(root, 'g++')
+	source := issue74_cpp_linker_source(root)
+	for mode in ['direct', 'prod'] {
+		extra_args := if mode == 'prod' { ['-c++', 'g++', '-prod'] } else { ['-c++', 'g++'] }
+		result := issue74_run_fake_compile_with_args(root, 'gcc', 'cpp_${mode}', source, extra_args)
+		assert result.exit_code == 0, '${mode}:\n${result.stdout}\n${result.stderr}\n${result.argv}'
+		issue74_assert_direct_cpp_linker_argv(result.argv, root, mode == 'prod')
+	}
+
+	rsp := issue74_run_fake_compile_with_args_and_rsp(root, 'gcc', 'cpp_rsp', source, [
+		'-c++',
+		'g++',
+	], true)
+	assert rsp.exit_code == 0, 'rsp:\n${rsp.stdout}\n${rsp.stderr}'
+	rsp_non_probe := issue74_assert_cpp_linker_non_probe_drivers(rsp.argv)
+	rsp_final := rsp_non_probe.last()
+	mut rsp_arg_index := -1
+	mut rsp_content_index := -1
+	for index, arg in rsp_final.args {
+		if rsp_arg_index < 0 && arg.starts_with('@') {
+			rsp_arg_index = index
+		}
+		if rsp_content_index < 0 && arg.starts_with('__V_RSP__:') {
+			rsp_content_index = index
+		}
+	}
+	assert rsp_arg_index >= 0, rsp_final.args.str()
+	assert rsp_content_index == rsp_arg_index + 1, rsp_final.args.str()
+	rsp_content := rsp_final.args[rsp_content_index]
+	rsp_marker_index := rsp_content.index('.linker.o') or { -1 }
+	rsp_extra_c_index := rsp_content.index('issue74_extra.c') or { -1 }
+	assert rsp_marker_index >= 0, rsp.argv.str()
+	assert rsp_extra_c_index > rsp_marker_index
+	assert rsp_content.contains('-x c')
+	assert rsp_content.contains('issue74_extra.c')
+	assert rsp_content.contains('issue74_extra.C')
+	assert rsp_content.contains('.tmp.c')
+	assert rsp_content.count('-x none') >= 2
+	assert !rsp_content.contains('.linker.cpp')
+
+	parallel_source := 'module main\n#linker c++\nfn main() {}\n'
+	parallel := issue74_run_fake_compile_with_args(root, 'gcc', 'cpp_parallel', parallel_source, [
+		'-c++',
+		'g++',
+		'-parallel-cc',
+	])
+	assert parallel.exit_code == 0, 'parallel:\n${parallel.stdout}\n${parallel.stderr}'
+	assert !parallel.argv.any(it.contains('.linker.cpp') || it.contains('.linker.o'))
+	final_marker_index := issue74_last_index_containing(parallel.argv, '__V_DRIVER__:')
+	assert final_marker_index >= 0, parallel.argv.str()
+	final_driver := issue74_fake_driver_name(parallel.argv[final_marker_index])
+	final_args := parallel.argv[final_marker_index + 1..]
+	assert final_driver == 'g++', parallel.argv.str()
+	assert final_args.any(it.contains('out_0.o')), final_args.str()
+	assert !final_args.any(is_c_source_path_arg(it)), final_args.str()
+	assert !final_args.any(it.contains('out_0.c')), final_args.str()
+	assert '-c' !in final_args, final_args.str()
+
+	// Parallel compiler records can interleave because each worker appends the marker and
+	// its arguments separately. Only prove their driver and C compilation properties over
+	// the complete pre-final stream; the post-wait final invocation above is attributable.
+	prefix := parallel.argv[..final_marker_index]
+	mut prefix_marker_indices := []int{}
+	for index, arg in prefix {
+		if arg.starts_with('__V_DRIVER__:') {
+			prefix_marker_indices << index
+		}
+	}
+	mut compile_drivers := []string{}
+	for marker_order, start in prefix_marker_indices {
+		end := if marker_order + 1 < prefix_marker_indices.len {
+			prefix_marker_indices[marker_order + 1]
+		} else {
+			prefix.len
+		}
+		if prefix[start + 1..end] == ['--version'] {
+			continue
+		}
+		compile_drivers << issue74_fake_driver_name(prefix[start])
+	}
+	assert compile_drivers.len > 0, prefix.str()
+	assert compile_drivers.all(it == 'gcc'), compile_drivers.str()
+	assert '-c' in prefix, prefix.str()
+	assert prefix.any(it.contains('out_0.c')), prefix.str()
+}
+
+fn test_cpp_linker_rejects_unsupported_or_missing_final_drivers() {
+	root := os.join_path(os.vtmp_dir(), 'issue74_cpp_linker_diagnostics')
+	os.rmdir_all(root) or {}
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	os.mkdir_all(root) or { panic(err) }
+	issue74_prepare_fake_cpp_driver(root, 'g++')
+	source := 'module main\n#linker c++\nfn main() {}\n'
+	for ccompiler, extra_args in {
+		'clang-cl': ['-c++', 'g++']
+		'msvc':     ['-c++', 'g++']
+		'clang':    ['-c++', 'g++', '-cflags', '--driver-mode=cl']
+	} {
+		result := issue74_run_fake_compile_with_args(root, ccompiler,
+			'unsupported_${ccompiler.replace('-', '_')}', source, extra_args)
+		assert result.exit_code != 0, ccompiler
+		assert result.stderr.contains('requires a GNU-compatible GCC or Clang C driver'), '${ccompiler}: ${result.stdout}\n${result.stderr}'
+	}
+	missing := issue74_run_fake_compile_with_args(root, 'gcc', 'missing_cpp', source, [
+		'-c++',
+		'v_missing_cpp_driver_78362',
+	])
+	assert missing.exit_code != 0
+	assert missing.stderr.contains('requires the C++ driver `v_missing_cpp_driver_78362`'), '${missing.stdout}\n${missing.stderr}'
+
+	generated := issue74_run_fake_compile_with_args(root, 'gcc', 'generated_project', source, [
+		'-c++',
+		'g++',
+		'-generate-c-project',
+		os.join_path(root, 'generated-project'),
+	])
+	assert generated.exit_code != 0
+	assert generated.stderr.contains('does not support `-generate-c-project` yet'), '${generated.stdout}\n${generated.stderr}'
 }
 
 fn test_pkgconfig_posix_generated_project_group_alias_commands() {
