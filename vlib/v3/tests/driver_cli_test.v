@@ -2229,6 +2229,29 @@ fn main() {
 	assert duplicate_targets.map(it.driver) == ['gcc', 'g++'], duplicate_invocations.str()
 
 	os.write_file(recorder_log, '')!
+	prod_output := os.join_path(root, 'prod${executable_suffix}')
+	prod_build := cmdexec.run(v3_bin, ['-nocache', '-prod', '-cc', fake_gcc, '-c++', fake_gpp,
+		'-o', prod_output, active])
+	assert prod_build.exit_code == 0, prod_build.output
+	assert os.is_file(prod_output)
+	prod_invocations := v3_cpp_driver_recorder_invocations(recorder_log)
+	prod_targets := prod_invocations.filter(it.args != ['--version'] && !('-dM' in it.args
+		&& '-E' in it.args))
+	assert prod_targets.len == 2, prod_invocations.str()
+	assert prod_targets.map(it.driver) == ['gcc', 'g++'], prod_targets.str()
+	assert '-c' in prod_targets[0].args, prod_targets[0].args.str()
+	assert prod_targets[0].args.filter(it.ends_with('.c')).len == 1, prod_targets[0].args.str()
+	assert os.base(v3_cpp_driver_recorder_output(prod_targets[0])).starts_with('v3_c_source_'), prod_targets[0].args.str()
+	assert '-c' !in prod_targets[1].args, prod_targets[1].args.str()
+	assert !prod_targets[1].args.any(it.ends_with('.c')), prod_targets[1].args.str()
+	assert prod_targets[1].args.filter(it.contains('v3_c_source_')).len == 1, prod_targets[1].args.str()
+	assert os.base(v3_cpp_driver_recorder_output(prod_targets[1])) == 'out', prod_targets[1].args.str()
+	for invocation in prod_targets {
+		assert '-O3' in invocation.args, invocation.args.str()
+		assert '-flto' in invocation.args, invocation.args.str()
+	}
+
+	os.write_file(recorder_log, '')!
 	object_output := os.join_path(root, 'active.o')
 	object_build := cmdexec.run(v3_bin, ['-nocache', '-cc', fake_gcc, '-c++', missing_cpp, '-o',
 		object_output, active])
@@ -2325,8 +2348,13 @@ fn main() {
 		assert_driver_cli_failure(v3_bin, ['-cc', compiler, '-c++', missing_cpp, active],
 			'requires a GNU-compatible GCC or Clang C driver')
 		invocations := v3_cpp_driver_recorder_invocations(recorder_log)
-		expected_invocations := if compiler in [fake_emcc, fake_unknown] { 2 } else { 1 }
-		assert invocations.len == expected_invocations, invocations.str()
+		if compiler in [fake_tcc, fake_clang_cl, fake_msvc] {
+			assert invocations.len == 0, invocations.str()
+		} else {
+			assert invocations.len > 0, invocations.str()
+			expected_driver := os.file_name(compiler).trim_suffix(executable_suffix)
+			assert invocations.all(it.driver == expected_driver), invocations.str()
+		}
 		assert invocations.all(it.args == ['--version']), invocations.str()
 	}
 
@@ -2549,7 +2577,7 @@ fn test_driver_cpp_linker_uses_final_cpp_driver_and_keeps_sources_c() {
 		assert cpp_compile.exit_code == 0, cpp_compile.output
 		for mode, mode_args in {
 			'direct':   []string{}
-			'prod':     ['-prod']
+			'prod':     ['-prod', '-no-prod-options']
 			'parallel': ['-parallel-cc']
 		} {
 			output := os.join_path(root, '${index}_${mode}${if os.user_os() == 'windows' {
