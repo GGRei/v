@@ -506,9 +506,14 @@ jobs:
           run_owner v3-modulecache-units vlib/v3/modulecache/modulecache_test.v \
             test_cached_directive_text_preserves_cpp_linker_requirement \
             test_linker_cache_selector_is_conditional_on_source_directives
-          run_owner v3-fastc-backend vlib/v3/tests/fastc_backend_test.v \
-            test_v_self_accepts_fastc_backend \
-            test_fastc_backend_parses_directly_to_c_without_ast_fallback
+          fastc_diag_dir="$RUNNER_TEMP/issue74-fastc-c11"
+          mkdir -p "$fastc_diag_dir"
+          (
+            export V3_FASTC_KEEP_FAILED_C="$fastc_diag_dir"
+            run_owner v3-fastc-backend vlib/v3/tests/fastc_backend_test.v \
+              test_v_self_accepts_fastc_backend \
+              test_fastc_backend_parses_directly_to_c_without_ast_fallback
+          )
           run_owner v3-module-cache-integration vlib/v3/tests/module_cache_test.v \
             test_pkgconfig_mode_cache_isolated_across_dynamic_static_dynamic_sequence \
             test_cpp_linker_requirement_survives_import_cache_true_false_true_sequence
@@ -520,3 +525,54 @@ jobs:
           git diff --exit-code
           git diff --cached --exit-code
           [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
+      - name: Collect bounded FastC failed C diagnostic
+        id: collect-fastc-failed-c
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          diag_dir="$RUNNER_TEMP/issue74-fastc-c11"
+          source_file="$diag_dir/src.c"
+          [[ -d "$diag_dir" && ! -L "$diag_dir" ]]
+          mapfile -t sources < <(find "$diag_dir" -maxdepth 1 -type f -name 'src.c' -print)
+          [[ "${#sources[@]}" == 1 && "${sources[0]}" == "$source_file" ]]
+          [[ -f "$source_file" && ! -L "$source_file" ]]
+          source_size="$(stat -c '%s' "$source_file")"
+          [[ "$source_size" -ge 1 && "$source_size" -le 8388608 ]]
+          source_sha="$(sha256sum "$source_file" | awk '{ print $1 }')"
+          sed -n '26419,26443p' "$source_file" > "$diag_dir/src-26419-26443.txt"
+          {
+            printf 'src.c size=%s sha256=%s\n' "$source_size" "$source_sha"
+            printf 'excerpt=src-26419-26443.txt lines=26419-26443\n'
+            printf 'bounded-context:\n'
+            grep -n -E '26431|binary|operator|operand|token|expression|main' "$source_file" || true
+          } | awk 'NR <= 200' > "$diag_dir/manifest.txt"
+          mapfile -t entries < <(find "$diag_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+          [[ "${#entries[@]}" == 3 ]]
+          [[ "${entries[0]}" == 'manifest.txt' ]]
+          [[ "${entries[1]}" == 'src-26419-26443.txt' ]]
+          [[ "${entries[2]}" == 'src.c' ]]
+          total_size=0
+          for name in "${entries[@]}"; do
+            path="$diag_dir/$name"
+            [[ -f "$path" && ! -L "$path" ]]
+            size="$(stat -c '%s' "$path")"
+            [[ "$size" -ge 1 && "$size" -le 8388608 ]]
+            total_size=$((total_size + size))
+          done
+          [[ "$total_size" -lt 8388608 ]]
+      - name: Upload bounded FastC failed C diagnostic
+        if: failure() && steps.collect-fastc-failed-c.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue74-fastc-failed-c-c11
+          path: ${{ runner.temp }}/issue74-fastc-c11
+          if-no-files-found: error
+          retention-days: 7
+      - name: Clean FastC failed C diagnostic
+        if: always()
+        shell: bash
+        run: |
+          diag_dir="$RUNNER_TEMP/issue74-fastc-c11"
+          [[ "$diag_dir" == "$RUNNER_TEMP/issue74-fastc-c11" ]]
+          rm -rf -- "$diag_dir"
