@@ -10694,7 +10694,8 @@ fn main() {
 }
 
 fn test_selfhost_double_pointer_index_keeps_one_pointer_level() {
-	prefs := fastc_test_preferences()
+	mut prefs := pref.new_preferences()
+	prefs.building_v = true
 	c_source := generate('module main
 
 struct Arguments {
