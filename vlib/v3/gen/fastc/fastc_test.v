@@ -10801,15 +10801,29 @@ fn clone_local(values &&u8, index int) string {
 	raw_arg := unsafe { values[index] }
 	return unsafe { tos_clone(raw_arg) }
 }
+
+fn main() {
+	_ = clone_direct(unsafe { nil }, 0)
+	_ = clone_member(Arguments{ values: unsafe { nil } }, 0)
+	_ = clone_indexed_field(unsafe { nil }, 0)
+	_ = clone_local(unsafe { nil }, 0)
+}
 ', 'selfhost_double_pointer_index.v', prefs) or { panic(err) }
-	assert c_source.contains('builtin__tos_clone(((values)[index]))'), c_source
-	assert c_source.contains('builtin__tos_clone(((arguments.values)[index]))'), c_source
-	assert !c_source.contains('builtin__tos_clone(&(((values)[index])))'), c_source
-	assert !c_source.contains('builtin__tos_clone(&(((arguments.values)[index])))'), c_source
-	assert c_source.contains(')[index])->value'), c_source
-	assert c_source.contains('raw_arg = '), c_source
-	assert c_source.contains('builtin__tos_clone(raw_arg)'), c_source
-	assert !c_source.contains('builtin__tos_clone(&(raw_arg))'), c_source
+	compact := c_source.replace(' ', '').replace('\t', '').replace('\r', '').replace('\n', '').replace('(', '').replace(')', '')
+	assert compact.count('builtin__tos_clone') == 4, c_source
+	assert compact.count('stringclone_direct') == 1, c_source
+	assert compact.count('stringclone_member') == 1, c_source
+	assert compact.count('stringclone_indexed_field') == 1, c_source
+	assert compact.count('stringclone_local') == 1, c_source
+	assert compact.contains('builtin__tos_clonevalues[index]'), c_source
+	assert compact.contains('builtin__tos_clonearguments.values[index]'), c_source
+	assert compact.contains('builtin__tos_cloneitems[index]->value'), c_source
+	assert compact.contains('raw_arg=values[index]'), c_source
+	assert compact.contains('builtin__tos_cloneraw_arg'), c_source
+	assert !compact.contains('builtin__tos_clone&values[index]'), c_source
+	assert !compact.contains('builtin__tos_clone&arguments.values[index]'), c_source
+	assert !compact.contains('builtin__tos_clone&items[index]->value'), c_source
+	assert !compact.contains('builtin__tos_clone&raw_arg'), c_source
 }
 
 fn test_selfhost_fixed_array_of_c_struct_uses_registered_compound_type() {
