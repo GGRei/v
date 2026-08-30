@@ -7300,6 +7300,24 @@ statements should be literal `string`s.
 granting you the ability to selectively turn on/off certain sections of code, at compile
 time, without modifying your source code, or keeping different versions of it.
 
+The read-only boolean value `v:static_pkgconfig` reports whether V selected global
+static pkg-config resolution. Use it with a conservative fallback so that older V
+compilers keep selecting the dynamic branch:
+
+```v
+$if $d('v:static_pkgconfig', false) {
+	// flags needed only while consuming static pkg-config dependencies
+}
+```
+
+It is true only when an exact `-static` token is present in `-cflags` or `-ldflags`
+for a supported GNU-compatible C compiler. A local `#pkgconfig --static` directive
+does not change it, and it does not promise that the resulting executable is fully
+static. Clang's MSVC-compatible `clang-cl`/`--driver-mode=cl` mode is excluded. The
+value cannot be overridden with `-d`. Use this compiler-owned value as an expression
+or `$if` condition; compiler-owned values are not substitutions inside `#flag` or
+`#include` text.
+
 #### `$compile_error` and `$compile_warn`
 
 These two comptime functions are very useful for displaying custom errors/warnings during

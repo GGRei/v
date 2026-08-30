@@ -2495,6 +2495,129 @@ fn main() {
 	assert run_module_cache_binary(second_output) == '42'
 }
 
+fn test_pkgconfig_mode_cache_isolated_across_dynamic_static_dynamic_sequence() {
+	$if !linux {
+		return
+	}
+	bash := os.find_abs_path_of_executable('bash') or { return }
+	real_cc := os.find_abs_path_of_executable('cc') or { return }
+	v3_bin := build_module_cache_v3()
+	root := os.join_path(os.temp_dir(), 'v3_pkgconfig_mode_cache_${os.getpid()}')
+	os.rmdir_all(root) or {}
+	os.mkdir_all(root) or { panic(err) }
+	old_path := os.getenv('PATH')
+	old_log := os.getenv_opt('V3_TEST_PKGCONFIG_LOG')
+	old_cflags := os.getenv_opt('CFLAGS')
+	old_ldflags := os.getenv_opt('LDFLAGS')
+	old_vflags := os.getenv_opt('VFLAGS')
+	defer {
+		os.setenv('PATH', old_path, true)
+		if value := old_log {
+			os.setenv('V3_TEST_PKGCONFIG_LOG', value, true)
+		} else {
+			os.unsetenv('V3_TEST_PKGCONFIG_LOG')
+		}
+		if value := old_cflags {
+			os.setenv('CFLAGS', value, true)
+		} else {
+			os.unsetenv('CFLAGS')
+		}
+		if value := old_ldflags {
+			os.setenv('LDFLAGS', value, true)
+		} else {
+			os.unsetenv('LDFLAGS')
+		}
+		if value := old_vflags {
+			os.setenv('VFLAGS', value, true)
+		} else {
+			os.unsetenv('VFLAGS')
+		}
+		os.rmdir_all(root) or {}
+	}
+	cc_wrapper := os.join_path(root, 'cc')
+	write_module_cache_file(root, 'cc', '#!${bash}
+args=()
+for arg in "\$@"; do
+	if [[ "\$arg" != "-static" ]]; then
+		args+=("\$arg")
+	fi
+done
+exec ${os.quoted_path(real_cc)} "\${args[@]}"
+')
+	os.chmod(cc_wrapper, 0o700) or { panic(err) }
+	log_path := os.join_path(root, 'pkgconfig.argv')
+	write_module_cache_file(root, 'pkg-config', '#!/bin/sh
+printf "%s\\n" "\$*" >> "\$V3_TEST_PKGCONFIG_LOG"
+printf "%s\\n" "-DV3_PKG_VALUE=41"
+')
+	os.chmod(os.join_path(root, 'pkg-config'), 0o700) or { panic(err) }
+	os.setenv('PATH', '${root}${os.path_delimiter}${old_path}', true)
+	os.setenv('V3_TEST_PKGCONFIG_LOG', log_path, true)
+	for name in ['CFLAGS', 'LDFLAGS', 'VFLAGS'] {
+		os.setenv(name, '', true)
+	}
+	write_module_cache_file(root, 'value.c', '#ifndef V3_PKG_VALUE
+#error V3_PKG_VALUE is required
+#endif
+int v3_pkg_value(void) { return V3_PKG_VALUE; }
+')
+	main_file := os.join_path(root, 'main.v')
+	write_module_cache_file(root, 'main.v', 'module main
+
+#pkgconfig v3-cache-test
+#insert "@DIR/value.c"
+
+fn C.v3_pkg_value() int
+
+fn main() {
+	$if $d(\'v:static_pkgconfig\', false) {
+		println(42)
+	} $else {
+		println(C.v3_pkg_value())
+	}
+}
+')
+	cache_dir := os.join_path(root, 'cache')
+
+	dynamic_cold_output := os.join_path(root, 'dynamic-cold')
+	dynamic_cold :=
+		os.execute('V3CACHE=${os.quoted_path(cache_dir)} ${os.quoted_path(v3_bin)} -o ${os.quoted_path(dynamic_cold_output)} ${os.quoted_path(main_file)}')
+	assert dynamic_cold.exit_code == 0, dynamic_cold.output
+	assert run_module_cache_binary(dynamic_cold_output) == '41'
+
+	dynamic_warm_output := os.join_path(root, 'dynamic-warm')
+	dynamic_warm :=
+		os.execute('V3CACHE=${os.quoted_path(cache_dir)} ${os.quoted_path(v3_bin)} -o ${os.quoted_path(dynamic_warm_output)} ${os.quoted_path(main_file)}')
+	assert dynamic_warm.exit_code == 0, dynamic_warm.output
+	assert dynamic_warm.output.contains('cgen (cached)'), dynamic_warm.output
+	assert run_module_cache_binary(dynamic_warm_output) == '41'
+
+	static_cold_output := os.join_path(root, 'static-cold')
+	static_cold :=
+		os.execute('V3CACHE=${os.quoted_path(cache_dir)} ${os.quoted_path(v3_bin)} -ldflags -static -o ${os.quoted_path(static_cold_output)} ${os.quoted_path(main_file)}')
+	assert static_cold.exit_code == 0, static_cold.output
+	assert !static_cold.output.contains('cgen (cached)'), static_cold.output
+	assert run_module_cache_binary(static_cold_output) == '42'
+
+	static_warm_output := os.join_path(root, 'static-warm')
+	static_warm :=
+		os.execute('V3CACHE=${os.quoted_path(cache_dir)} ${os.quoted_path(v3_bin)} -ldflags -static -o ${os.quoted_path(static_warm_output)} ${os.quoted_path(main_file)}')
+	assert static_warm.exit_code == 0, static_warm.output
+	assert static_warm.output.contains('cgen (cached)'), static_warm.output
+	assert run_module_cache_binary(static_warm_output) == '42'
+
+	dynamic_again_output := os.join_path(root, 'dynamic-again')
+	dynamic_again :=
+		os.execute('V3CACHE=${os.quoted_path(cache_dir)} ${os.quoted_path(v3_bin)} -o ${os.quoted_path(dynamic_again_output)} ${os.quoted_path(main_file)}')
+	assert dynamic_again.exit_code == 0, dynamic_again.output
+	assert dynamic_again.output.contains('cgen (cached)'), dynamic_again.output
+	assert run_module_cache_binary(dynamic_again_output) == '41'
+
+	argv_lines := os.read_lines(log_path)!
+	assert argv_lines.any(it == '--cflags --libs v3-cache-test'), argv_lines.str()
+	assert argv_lines.any(it == '--cflags --libs --static v3-cache-test'), argv_lines.str()
+}
+
 fn test_module_cache_salt_tracks_default_cc_wrapper_version() {
 	$if windows {
 		return
