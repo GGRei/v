@@ -256,6 +256,17 @@ fn run_self(args []string, command_index int) {
 	for run_index in 0 .. repeat_count {
 		run_label := if repeat_count > 1 { ' [${run_index + 1}/${repeat_count}]' } else { '' }
 		println('V self compiling${run_label} (-b fastc)...')
+		$if linux {
+			if os.getenv('V3_FASTC_C13_DIR') != '' && repeat_count == 2 {
+				previous_c13_phase := os.getenv_opt('V3_FASTC_C13_PHASE')
+				os.setenv('V3_FASTC_C13_PHASE', if run_index == 0 { 'repeat-1-of-2' } else { 'repeat-2-of-2' }, true)
+				run_self_compiler(compiler, compile_args, replacement, source)
+				// A failed repeat terminates this process through fail(); successful calls restore now.
+				if previous := previous_c13_phase { os.setenv('V3_FASTC_C13_PHASE', previous, true) } else { os.unsetenv('V3_FASTC_C13_PHASE') }
+				replace_self_compiler(compiler, replacement)
+				continue
+			}
+		}
 		run_self_compiler(compiler, compile_args, replacement, source)
 		replace_self_compiler(compiler, replacement)
 	}

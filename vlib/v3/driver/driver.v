@@ -7961,6 +7961,33 @@ struct V3FastCCompileResult {
 	output  string
 }
 
+fn capture_v3_fastc_c13_source(source string) {
+	$if linux {
+		phase := os.getenv('V3_FASTC_C13_PHASE')
+		name := match phase { 'repeat-1-of-2' { 'gen1.c' } 'selfhost-build' { 'selfhost.c' } else { return } }
+		dir := os.getenv('V3_FASTC_C13_DIR')
+		if dir == '' || !os.is_abs_path(dir) || !os.is_dir(dir) || os.is_link(dir) || os.real_path(dir) != dir || source.len < 1 || source.len > 8 * 1024 * 1024 { return }
+		path := os.join_path_single(dir, name)
+		tmp := os.join_path_single(dir, '.${name}.tmp')
+		meta_path := os.join_path_single(dir, name.all_before_last('.') + '.meta')
+		meta_tmp := os.join_path_single(dir, '.${name.all_before_last('.')}.meta.tmp')
+		if os.exists(path) || os.is_link(path) || os.exists(tmp) || os.is_link(tmp)
+			|| os.exists(meta_path) || os.is_link(meta_path) || os.exists(meta_tmp) || os.is_link(meta_tmp) { return }
+		os.write_file(tmp, source) or { return }
+		if !os.is_file(tmp) || os.is_link(tmp) { os.rm(tmp) or {}; return }
+		meta := 'phase=${phase}\npid=${os.getpid()}\n'
+		os.write_file(meta_tmp, meta) or { os.rm(tmp) or {}; return }
+		if meta.len > 256 || !os.is_file(meta_tmp) || os.is_link(meta_tmp) { os.rm(tmp) or {}; os.rm(meta_tmp) or {}; return }
+		os.mv(tmp, path) or { os.rm(tmp) or {}; os.rm(meta_tmp) or {}; return }
+		os.mv(meta_tmp, meta_path) or {
+			os.rm(meta_tmp) or {}
+			os.rm(path) or {}
+			os.rm(meta_path) or {}
+			return
+		}
+	}
+}
+
 fn publish_v3_fastc_c_source(source string, output_file string, c_to_stdout bool) ! {
 	if c_to_stdout {
 		print(source)
@@ -8035,6 +8062,11 @@ fn compile_v3_fastc_source(source string, bin_file string, prefs &pref.Preferenc
 		return V3FastCCompileResult{
 			command: command
 			output:  result.output
+		}
+	}
+	$if linux {
+		if os.getenv('V3_FASTC_C13_DIR') != '' {
+			capture_v3_fastc_c13_source(source)
 		}
 	}
 	os.mv(staged_binary, bin_file) or {

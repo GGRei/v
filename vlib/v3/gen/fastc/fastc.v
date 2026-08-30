@@ -1,9 +1,31 @@
 module fastc
 
+import os
 import strings
 import v3.pref
 import v3.scanner
 import v3.token
+
+fn fastc_c13_hash(text string) u64 {
+	mut value := u64(14695981039346656037)
+	for byte in text.bytes() { value = (value ^ u64(byte)) * u64(1099511628211) }
+	return value
+}
+
+fn fastc_c13_write(name string, text string) {
+	$if linux {
+		phase := os.getenv('V3_FASTC_C13_PHASE')
+		if phase !in ['repeat-1-of-2', 'repeat-2-of-2'] { return }
+		dir := os.getenv('V3_FASTC_C13_DIR')
+		if dir == '' || !os.is_abs_path(dir) || !os.is_dir(dir) || os.is_link(dir) || os.real_path(dir) != dir { return }
+		path := os.join_path_single(dir, '${phase}-${name}')
+		tmp := os.join_path_single(dir, '.${phase}-${name}.tmp')
+		if os.exists(path) || os.is_link(path) || os.exists(tmp) || os.is_link(tmp) { return }
+		os.write_file(tmp, text) or { return }
+		if text.len == 0 || text.len > 4096 || !os.is_file(tmp) || os.is_link(tmp) { os.rm(tmp) or {}; return }
+		os.mv(tmp, path) or { os.rm(tmp) or {} }
+	}
+}
 
 // FastC parses scanner tokens and emits C immediately. It deliberately has no
 // AST, semantic-checker, transformer, mark-used, or conventional cgen path.
@@ -960,6 +982,16 @@ pub fn generate_files(paths []string, prefs &pref.Preferences) !string {
 // generate_files_with_source_paths emits C and reports every source read during import discovery.
 pub fn generate_files_with_source_paths(paths []string, prefs &pref.Preferences) !GenerationResult {
 	sources, module_aliases := fastc_resolve_source_files(paths, prefs)!
+	$if linux {
+		if os.getenv('V3_FASTC_C13_DIR') != '' && os.getenv('V3_FASTC_C13_PHASE') in ['repeat-1-of-2', 'repeat-2-of-2'] {
+			mut c13_rows := []string{}
+			for index, source_file in sources {
+				base := os.base(source_file.path)
+				if base in ['chan_option_result.v', 'os.v'] { c13_rows << '${index}:${base}:${source_file.header.module_name}' }
+			}
+			fastc_c13_write('sources.txt', 'pid=${os.getpid()}\nphase=${os.getenv("V3_FASTC_C13_PHASE")}\ncount=${sources.len}\nhash=${fastc_c13_hash(sources.map(it.path).join("\\n"))}\n${c13_rows.join("\\n")}\n')
+		}
+	}
 	mut source_paths := []string{cap: sources.len}
 	for source_file in sources {
 		source_paths << source_file.path
@@ -1133,6 +1165,15 @@ fn generate_source_files(input_sources []FastcSourceFile, module_aliases map[str
 	fastc_collect_declaration_indexes(sources, prefs, mut declared_types, mut declared_kinds, mut
 		enum_flags, mut params_structs, mut type_source_paths, mut constants, mut public_constants, mut
 		globals, mut public_globals)!
+	$if linux {
+		if os.getenv('V3_FASTC_C13_DIR') != '' && os.getenv('V3_FASTC_C13_PHASE') in ['repeat-1-of-2', 'repeat-2-of-2'] {
+			mut c13_keys := declared_types.keys()
+			c13_keys.sort()
+			mut c13_owners := []string{}
+			for source_file in sources { if source_file.source.contains('IError') { c13_owners << os.base(source_file.path) } }
+			fastc_c13_write('declared.txt', 'pid=${os.getpid()}\nphase=${os.getenv("V3_FASTC_C13_PHASE")}\nworker=merged\nchunk=all\ncount=${c13_keys.len}\nhash=${fastc_c13_hash(c13_keys.join("\\n"))}\nIError=${'IError' in declared_types}\nbuiltin.IError=${'builtin.IError' in declared_types}\ntype_source=${c13_owners.join(",")}\n')
+		}
+	}
 	declared_type_c_names := fastc_declared_type_c_names(declared_types)
 	mut functions := map[string]FastcFunctionSignature{}
 	mut interface_methods := map[string]bool{}

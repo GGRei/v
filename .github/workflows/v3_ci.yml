@@ -508,9 +508,18 @@ jobs:
           run_owner v3-modulecache-units vlib/v3/modulecache/modulecache_test.v \
             test_cached_directive_text_preserves_cpp_linker_requirement \
             test_linker_cache_selector_is_conditional_on_source_directives
-          run_owner v3-fastc-backend vlib/v3/tests/fastc_backend_test.v \
-            test_v_self_accepts_fastc_backend \
-            test_fastc_backend_parses_directly_to_c_without_ast_fallback
+          c13_dir="$RUNNER_TEMP/issue74-fastc-c13"
+          umask 077
+          [[ -n "$RUNNER_TEMP" && "$c13_dir" == "$RUNNER_TEMP/issue74-fastc-c13" ]]
+          [[ ! -e "$c13_dir" && ! -L "$c13_dir" ]]
+          mkdir "$c13_dir"
+          [[ -d "$c13_dir" && ! -L "$c13_dir" ]]
+          (
+            export V3_FASTC_C13_DIR="$c13_dir"
+            run_owner v3-fastc-backend vlib/v3/tests/fastc_backend_test.v \
+              test_v_self_accepts_fastc_backend \
+              test_fastc_backend_parses_directly_to_c_without_ast_fallback
+          )
           run_owner v3-module-cache-integration vlib/v3/tests/module_cache_test.v \
             test_pkgconfig_mode_cache_isolated_across_dynamic_static_dynamic_sequence \
             test_cpp_linker_requirement_survives_import_cache_true_false_true_sequence
@@ -522,3 +531,99 @@ jobs:
           git diff --exit-code
           git diff --cached --exit-code
           [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
+
+      - name: Collect bounded FastC C13 evidence
+        id: c13_collect
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$RUNNER_TEMP/issue74-fastc-c13"
+          stage="$RUNNER_TEMP/issue74-fastc-c13-upload"
+          [[ -n "$RUNNER_TEMP" && "$raw" == "$RUNNER_TEMP/issue74-fastc-c13" ]]
+          [[ -d "$raw" && ! -L "$raw" && ! -e "$stage" && ! -L "$stage" ]]
+          expected=(repeat-1-of-2-sources.txt repeat-1-of-2-declared.txt repeat-2-of-2-sources.txt repeat-2-of-2-declared.txt repeat-2-of-2-error.txt gen1.c gen1.meta selfhost.c selfhost.meta)
+          mapfile -t actual < <(find "$raw" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+          mapfile -t wanted < <(printf '%s\n' "${expected[@]}" | sort)
+          [[ "${actual[*]}" == "${wanted[*]}" ]]
+          total_c=0
+          for name in "${expected[@]}"; do
+            file="$raw/$name"
+            [[ -f "$file" && ! -L "$file" && "$(stat -c %h "$file")" == 1 ]]
+            size="$(stat -c %s "$file")"
+            case "$name" in
+              *.txt) [[ "$size" -ge 1 && "$size" -le 4096 ]] ;;
+              *.meta) [[ "$size" -ge 1 && "$size" -le 256 ]] ;;
+              *.c) [[ "$size" -ge 1 && "$size" -le 8388608 ]]; total_c=$((total_c + size)) ;;
+            esac
+          done
+          [[ "$total_c" -lt 16777216 ]]
+          field() { awk -F= -v key="$2" '$1==key {print substr($0,length(key)+2)}' "$1"; }
+          p1="$(field "$raw/repeat-1-of-2-sources.txt" pid)"
+          p2="$(field "$raw/repeat-2-of-2-sources.txt" pid)"
+          ps="$(field "$raw/selfhost.meta" pid)"
+          [[ "$p1" =~ ^[0-9]+$ && "$p2" =~ ^[0-9]+$ && "$ps" =~ ^[0-9]+$ ]]
+          for file in repeat-1-of-2-sources.txt repeat-1-of-2-declared.txt gen1.meta; do
+            [[ "$(field "$raw/$file" pid)" == "$p1" && "$(field "$raw/$file" phase)" == repeat-1-of-2 ]]
+          done
+          for file in repeat-2-of-2-sources.txt repeat-2-of-2-declared.txt repeat-2-of-2-error.txt; do
+            [[ "$(field "$raw/$file" pid)" == "$p2" && "$(field "$raw/$file" phase)" == repeat-2-of-2 ]]
+          done
+          [[ "$(field "$raw/selfhost.meta" phase)" == selfhost-build ]]
+          umask 077
+          mkdir "$stage"
+          [[ -d "$stage" && ! -L "$stage" && "$(stat -c %a "$stage")" == 700 ]]
+          cat "$raw"/repeat-1-of-2-{sources,declared}.txt "$raw"/repeat-2-of-2-{sources,declared,error}.txt > "$stage/a-manifest.txt"
+          extract_definition() {
+            awk -v symbol="$2" -v max_lines="$3" '
+              $0 ~ ("^[A-Za-z_].* " symbol "\\(.*\\) \\{$") { starts++; if(starts>1) exit 42; active=1 }
+              active { line=$0 ORS; if(bytes+length(line)>60000 || lines>=max_lines) exit 43; printf "%s",line; bytes+=length(line); lines++; opens+=gsub(/\{/,"{"); closes+=gsub(/\}/,"}"); if(opens>0 && opens==closes){done=1; active=0} }
+              END { if(starts!=1 || !done) exit 44 }
+            ' "$1"
+          }
+          extract_definition_prefix() {
+            awk -v symbol="$2" -v max_lines="$3" '
+              $0 ~ ("^[A-Za-z_].* " symbol "\\(.*\\) \\{$") { starts++; if(starts>1) exit 42; active=1 }
+              active { line=$0 ORS; if(lines>=max_lines || bytes+length(line)>60000){active=0; next}; printf "%s",line; bytes+=length(line); lines++ }
+              END { if(starts!=1 || lines<1) exit 44 }
+            ' "$1"
+          }
+          extract_definition "$raw/gen1.c" v3__gen__fastc__fastc_collect_declaration_indexes 220 >> "$stage/a-manifest.txt"
+          extract_definition "$raw/gen1.c" v3__gen__fastc__fastc_collect_declaration_chunk 220 >> "$stage/a-manifest.txt"
+          extract_definition "$raw/gen1.c" v3__gen__fastc__fastc_merge_declaration_partial 220 >> "$stage/a-manifest.txt"
+          cp "$raw/gen1.c" "$stage/gen1.c"
+          (cd "$raw" && sha256sum selfhost.c) > "$stage/b-manifest.txt"
+          sed -n '20058,20098p' "$raw/selfhost.c" >> "$stage/b-manifest.txt"
+          extract_definition_prefix "$raw/selfhost.c" v3__gen__fastc__Parser_read_expression_with_prefix_mode_impl 500 >> "$stage/b-manifest.txt"
+          cp "$raw/selfhost.c" "$stage/selfhost.c"
+          [[ "$(stat -c %s "$stage/a-manifest.txt")" -le 65536 ]]
+          [[ "$(stat -c %s "$stage/b-manifest.txt")" -le 65536 ]]
+          mapfile -t staged < <(find "$stage" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+          [[ "${staged[*]}" == "a-manifest.txt b-manifest.txt gen1.c selfhost.c" ]]
+          staged_c=0
+          for file in "$stage"/*; do
+            [[ -f "$file" && ! -L "$file" && "$(stat -c %h "$file")" == 1 ]]
+            size="$(stat -c %s "$file")"
+            case "$file" in *.txt) [[ "$size" -ge 1 && "$size" -le 65536 ]];; *.c) [[ "$size" -ge 1 && "$size" -le 8388608 ]]; staged_c=$((staged_c + size));; esac
+          done
+          [[ "$staged_c" -lt 16777216 ]]
+
+      - name: Upload bounded FastC C13 evidence
+        if: failure() && steps.c13_collect.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue74-fastc-c13
+          path: ${{ runner.temp }}/issue74-fastc-c13-upload
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Clean FastC C13 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$RUNNER_TEMP/issue74-fastc-c13"
+          stage="$RUNNER_TEMP/issue74-fastc-c13-upload"
+          [[ -n "$RUNNER_TEMP" ]]
+          [[ "$raw" == "$RUNNER_TEMP/issue74-fastc-c13" && "$stage" == "$RUNNER_TEMP/issue74-fastc-c13-upload" ]]
+          rm -rf -- "$raw" "$stage"

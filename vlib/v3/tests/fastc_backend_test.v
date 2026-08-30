@@ -623,9 +623,24 @@ fn main() {
 	assert scoped_run.output.trim_space() == '2\n1\n0\n1\n7\n5\n4\n6\n1\n2\n42\n3'
 
 	selfhost_binary := os.join_path(root, 'selfhost')
-	selfhost_compile := cmdexec.run(v3_bin, ['-silent', '-selfhost', '-b', 'fastc', '-o',
-		selfhost_binary, fastc_backend_v3_source])
-	assert selfhost_compile.exit_code == 0, selfhost_compile.output
+	$if linux {
+		if os.getenv('V3_FASTC_C13_DIR') != '' {
+			previous_c13_phase := os.getenv_opt('V3_FASTC_C13_PHASE')
+			os.setenv('V3_FASTC_C13_PHASE', 'selfhost-build', true)
+			selfhost_compile := cmdexec.run(v3_bin, ['-silent', '-selfhost', '-b', 'fastc', '-o',
+				selfhost_binary, fastc_backend_v3_source])
+			if previous := previous_c13_phase { os.setenv('V3_FASTC_C13_PHASE', previous, true) } else { os.unsetenv('V3_FASTC_C13_PHASE') }
+			assert selfhost_compile.exit_code == 0, selfhost_compile.output
+		} else {
+			selfhost_compile := cmdexec.run(v3_bin, ['-silent', '-selfhost', '-b', 'fastc', '-o',
+				selfhost_binary, fastc_backend_v3_source])
+			assert selfhost_compile.exit_code == 0, selfhost_compile.output
+		}
+	} $else {
+		selfhost_compile := cmdexec.run(v3_bin, ['-silent', '-selfhost', '-b', 'fastc', '-o',
+			selfhost_binary, fastc_backend_v3_source])
+		assert selfhost_compile.exit_code == 0, selfhost_compile.output
+	}
 	selfhost_collision := cmdexec.run(selfhost_binary, ['-b', 'fastc', '-o', collision_output,
 		collision_source])
 	assert selfhost_collision.exit_code != 0
