@@ -148,7 +148,9 @@ fn fastc_file_generation_job_indices(sources []FastcSourceFile, jobs int) [][]in
 				lightest = job
 			}
 		}
-		job_indices[lightest] << index
+		mut lightest_job_indices := job_indices[lightest]
+		lightest_job_indices << index
+		job_indices[lightest] = lightest_job_indices
 		job_weights[lightest] += i64(sources[index].source.len) + 1
 	}
 	return job_indices

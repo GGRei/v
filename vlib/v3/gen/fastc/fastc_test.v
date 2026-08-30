@@ -34,6 +34,42 @@ fn test_fastc_file_generation_jobs_balance_largest_files_first() {
 	assert fastc_file_generation_job_indices(sources, 2) == [[0, 3], [1, 2]]
 }
 
+fn test_fastc_file_generation_one_worker_preserves_all_indices_after_growth() {
+	mut sources := []FastcSourceFile{cap: 128}
+	mut expected := []int{cap: 128}
+	mut expected_modules := []string{cap: 128}
+	for index in 0 .. 128 {
+		module_name := 'module_${index}'
+		sources << FastcSourceFile{
+			source: 'x'
+			header: FastcSourceHeader{
+				module_name: module_name
+			}
+		}
+		expected << index
+		expected_modules << module_name
+	}
+	job_indices := fastc_file_generation_job_indices(sources, 1)
+	assert job_indices.len == 1
+	assert job_indices[0] == expected
+	assert job_indices[0].map(sources[it].header.module_name) == expected_modules
+}
+
+fn test_fastc_initial_entry_path_canonicalizes_only_building_v_entries() {
+	root := os.join_path(os.vtmp_dir(), 'v3_fastc_initial_entry_${os.getpid()}')
+	os.rmdir_all(root) or {}
+	os.mkdir_all(os.join_path(root, 'nested')) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	entry_path := os.join_path(root, 'nested', '..', 'main.v')
+	canonical_path := os.join_path(root, 'main.v')
+	os.write_file(canonical_path, 'module main\nfn main() {}\n') or { panic(err) }
+	assert fastc_initial_entry_path(entry_path, true) == os.real_path(canonical_path)
+	assert fastc_initial_entry_path(canonical_path, true) == os.real_path(canonical_path)
+	assert fastc_initial_entry_path(entry_path, false) == entry_path
+}
+
 fn test_fastc_source_declaration_flags_respect_identifier_boundaries() {
 	has_constants, has_global_declarations := fastc_source_declaration_flags('module main\nconst answer = 42\n__global count int\n')
 	assert has_constants

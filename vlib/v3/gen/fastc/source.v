@@ -79,6 +79,13 @@ fn fastc_load_source(path string, prefs &pref.Preferences) FastcLoadedSource {
 	}
 }
 
+fn fastc_initial_entry_path(path string, building_v bool) string {
+	if building_v {
+		return os.real_path(path)
+	}
+	return path
+}
+
 fn fastc_resolve_source_files(paths []string, prefs &pref.Preferences) !([]FastcSourceFile, map[string]string) {
 	mut queue := []FastcQueuedSource{}
 	if prefs.building_v {
@@ -94,8 +101,9 @@ fn fastc_resolve_source_files(paths []string, prefs &pref.Preferences) !([]Fastc
 		}
 	}
 	for path in paths {
+		entry_path := fastc_initial_entry_path(path, prefs.building_v)
 		queue << FastcQueuedSource{
-			path: path
+			path: entry_path
 		}
 		// A V module spans every source file in its directory, plus any `subdirs`
 		// its v.mod lists that belong to the same module (e.g. gitly's `ssh/`,
@@ -104,7 +112,7 @@ fn fastc_resolve_source_files(paths []string, prefs &pref.Preferences) !([]Fastc
 		// path does this: the bootstrap runtime compiles single entry files, and its
 		// tests place several independent programs in one scratch directory.
 		if prefs.building_v {
-			for module_file in fastc_entry_module_files(path, prefs) {
+			for module_file in fastc_entry_module_files(entry_path, prefs) {
 				if fastc_source_file_matches_backend(module_file) {
 					queue << FastcQueuedSource{
 						path: module_file
