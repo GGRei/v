@@ -1765,6 +1765,7 @@ fn safe_default_bin_file_name(filename string) string {
 struct V3CCompilerFlagOptions {
 	environment_c_flags  []string
 	environment_ld_flags []string
+	user_ld_flags        []string
 	target_args          []string
 	link_c_standard      string
 	dependencies         []string
@@ -1948,6 +1949,7 @@ fn v3_c_compiler_flag_plan(options V3CCompilerFlagOptions) V3CCompilerFlagPlan {
 	add_v3_default_linker_flags(mut after_inputs, options.target_os, options.is_o)
 	if !options.is_o {
 		after_inputs << options.environment_ld_flags
+		after_inputs << options.user_ld_flags
 	}
 	return V3CCompilerFlagPlan{
 		before_inputs: before_inputs
@@ -2205,7 +2207,8 @@ fn write_v3_crun_cache_marker(bin_file string, build_identity string) ! {
 	}
 }
 
-fn v3_crun_build_identity(state &V3ModuleCacheState, prefs &pref.Preferences, user_files []string, user_c_flags []string, is_strict bool, enable_globals bool, direct_vsh string) string {
+fn v3_crun_build_identity(state &V3ModuleCacheState, prefs &pref.Preferences, user_files []string, user_c_flags []string, user_ld_flags []string, is_strict bool, enable_globals bool,
+	direct_vsh string) string {
 	direct_vsh_path := os.real_path(direct_vsh)
 	mut source_paths := map[string]bool{}
 	for file in user_files {
@@ -2236,6 +2239,7 @@ fn v3_crun_build_identity(state &V3ModuleCacheState, prefs &pref.Preferences, us
 		is_strict.str(),
 		enable_globals.str(),
 		user_c_flags.join('\x00'),
+		user_ld_flags.join('\x00'),
 		source_signature,
 		prefs.vhash,
 		prefs.vcurrent_hash,
@@ -6702,6 +6706,10 @@ fn record_user_define(mut defines []string, mut values map[string]string, define
 	if name.len == 0 {
 		return
 	}
+	if pref.is_compiler_owned_define(name) {
+		eprintln('V error: `${name}` is a read-only compiler value and cannot be set with `-d`.')
+		exit(1)
+	}
 	has_value := define.contains('=')
 	value := if has_value { define.all_after_first('=') } else { 'true' }
 	if (!has_value || value.len > 0) && name !in defines {
@@ -7234,6 +7242,14 @@ fn v3_effective_warns_are_errors(explicit bool, is_prod bool) bool {
 	return explicit || is_prod
 }
 
+fn v3_pkgconfig_cache_salt(mode pref.PkgConfigMode) string {
+	return 'pkgconfig_mode=${mode}'
+}
+
+fn v3_tcc_fast_link_allowed(mode pref.PkgConfigMode, user_ld_flags []string) bool {
+	return mode == .dynamic && user_ld_flags.len == 0
+}
+
 fn v3_prod_c_optimization_flags(is_prod bool, no_prod_options bool, is_shared bool, parallel_cc bool, explicit_tcc bool) []string {
 	if !is_prod || no_prod_options {
 		return []
@@ -7278,7 +7294,8 @@ fn v3_driver_option_requires_value(option string) bool {
 }
 
 fn v3_driver_option_consumes_value(option string) bool {
-	return v3_driver_option_requires_value(option) || option in ['-cflags', '-dump-c-flags']
+	return v3_driver_option_requires_value(option)
+		|| option in ['-cflags', '-ldflags', '-dump-c-flags']
 }
 
 fn apply_v3_diagnostic_color_option(option string) {
@@ -7529,6 +7546,7 @@ pub fn run(args []string) {
 	mut user_defines := []string{}
 	mut compile_values := map[string]string{}
 	mut user_c_flags := []string{}
+	mut user_ld_flags := []string{}
 	mut should_run := false
 	mut is_direct_vsh := false
 	mut is_test_command := false
@@ -7573,6 +7591,10 @@ pub fn run(args []string) {
 		}
 		if args[i] == '-cflags' && i + 1 >= args.len {
 			eprintln('option `-cflags` requires a value')
+			exit(1)
+		}
+		if args[i] == '-ldflags' && i + 1 >= args.len {
+			eprintln('option `-ldflags` requires a value')
 			exit(1)
 		}
 		if args[i] == 'run' && input_file.len == 0 && !should_run {
@@ -7774,6 +7796,13 @@ pub fn run(args []string) {
 				exit(1)
 			}
 			user_c_flags << parsed_c_flags
+			i += 2
+		} else if args[i] == '-ldflags' && i + 1 < args.len {
+			parsed_ld_flags := cmdexec.split_args(args[i + 1]) or {
+				eprintln('invalid `-ldflags` value: ${err.msg()}')
+				exit(1)
+			}
+			user_ld_flags << parsed_ld_flags
 			i += 2
 		} else if args[i] in ['-g', '-cg', '-cdebug'] {
 			is_debug = true
@@ -8364,6 +8393,8 @@ pub fn run(args []string) {
 	prefs.enable_globals = enable_globals_compat
 	prefs.user_defines = user_defines
 	prefs.compile_values = compile_values.clone()
+	prefs.resolve_pkgconfig_mode(c_compiler, user_c_flags, user_ld_flags, environment_c_flags,
+		environment_ld_flags)
 	prefs.module_search_paths = expand_v3_module_search_paths(module_search_path_spec, prefs.vroot)
 	if explicit_tcc && c_compiler in ['tcc', 'tinyc'] {
 		bundled_tcc := os.join_path(prefs.vroot, 'thirdparty', 'tcc', 'tcc.exe')
@@ -8435,6 +8466,9 @@ pub fn run(args []string) {
 			if is_o {
 				unsupported_modes << 'object-file output'
 			}
+			if user_ld_flags.len > 0 {
+				unsupported_modes << 'custom linker flags (`-ldflags`)'
+			}
 			if is_prof || coverage_dir.len > 0 {
 				unsupported_modes << 'profiling/coverage'
 			}
@@ -8484,6 +8518,8 @@ pub fn run(args []string) {
 				// the host default, so compile-time compiler branches must see TinyCC.
 				prefs.ccompiler = 'tinyc'
 				add_v3_tcc_compat_defines(mut prefs.user_defines, target.os, target.arch, false, true)
+				prefs.resolve_pkgconfig_mode(prefs.ccompiler, user_c_flags, user_ld_flags,
+					environment_c_flags, environment_ld_flags)
 			}
 			fastc_generation := fastc.generate_files_with_source_paths([input_file], prefs) or {
 				eprintln(err.msg())
@@ -8607,6 +8643,7 @@ pub fn run(args []string) {
 		'compiler=${compiler_signature}',
 		'cc=${cc_identity}',
 		'ccompiler=${prefs.ccompiler}',
+		v3_pkgconfig_cache_salt(prefs.pkgconfig_mode),
 		'vexe=${prefs.vexe}',
 		'backend=${backend}',
 		'target=${prefs.normalized_target_os()}',
@@ -8648,7 +8685,7 @@ pub fn run(args []string) {
 	}
 
 	builtin_dir := builtin_dir_for_vroot(prefs.vroot)
-	mut builtin_defines := prefs.user_defines.clone()
+	mut builtin_defines := prefs.source_file_defines()
 	// Builtin contains a small number of ABI-sensitive helpers. Keep their v3
 	// implementations separate from the regular backend without exposing this
 	// internal selection define to user modules.
@@ -8949,11 +8986,11 @@ pub fn run(args []string) {
 		} else {
 			mut crun_c_flags := user_c_flags.clone()
 			crun_c_flags << cgen.cache_directive_flags(a, prefs.vroot, prefs.target,
-				prefs.compile_values)
+				prefs.compile_values, prefs.pkgconfig_mode)
 			_ = prepare_v3_cache_external_inputs_scoped(mut cache_state, a, prefs, user_files,
 				crun_c_flags, scope_prealloc_stages)
 			crun_build_identity = v3_crun_build_identity(&cache_state, prefs, user_files,
-				crun_c_flags, is_strict, enable_globals_compat, input_file)
+				crun_c_flags, user_ld_flags, is_strict, enable_globals_compat, input_file)
 			if crun_build_identity.len > 0 {
 				os.setenv(v3_crun_build_identity_env, crun_build_identity, true)
 			}
@@ -8991,7 +9028,7 @@ pub fn run(args []string) {
 	mut cache_c_flags := user_c_flags.clone()
 	if backend == 'c' && cache_state.manager.enabled {
 		cache_c_flags << cgen.cache_directive_flags(a, prefs.vroot, prefs.target,
-			prefs.compile_values)
+			prefs.compile_values, prefs.pkgconfig_mode)
 	}
 	use_macos_dev_program_cache := backend == 'c' && program_cache_enabled && !is_prod && !is_shared
 		&& !is_selfhost && prefs.normalized_target_os() == 'macos'
@@ -10395,6 +10432,7 @@ pub fn run(args []string) {
 			g.set_suppress_main('no_main' in prefs.user_defines)
 			g.set_coverage(coverage_dir, args.join(' '))
 			g.set_compile_values(prefs.compile_values)
+			g.set_pkgconfig_mode(prefs.pkgconfig_mode)
 			g.set_track_heap('track_heap' in prefs.user_defines)
 			g.set_cache_split(cache_state.manager.enabled)
 			g.set_cache_native_input_paths(cache_scoped_native_input_paths(cache_state))
@@ -10451,6 +10489,7 @@ pub fn run(args []string) {
 			g.set_suppress_main('no_main' in prefs.user_defines)
 			g.set_coverage(coverage_dir, args.join(' '))
 			g.set_compile_values(prefs.compile_values)
+			g.set_pkgconfig_mode(prefs.pkgconfig_mode)
 			g.set_track_heap('track_heap' in prefs.user_defines)
 			g.set_cache_split(cache_state.manager.enabled)
 			g.set_cache_native_input_paths(cache_scoped_native_input_paths(cache_state))
@@ -10563,6 +10602,7 @@ pub fn run(args []string) {
 		c_flag_plan := v3_c_compiler_flag_plan(V3CCompilerFlagOptions{
 			environment_c_flags:  environment_c_flags
 			environment_ld_flags: environment_ld_flags
+			user_ld_flags:        user_ld_flags
 			target_args:          target_args
 			link_c_standard:      link_c_standard
 			dependencies:         resolved_c_flags
@@ -11076,7 +11116,7 @@ pub fn run(args []string) {
 		mut tcc_cache_hit := false
 		mut used_tcc := false
 		if cached_dev_dylib.len > 0 && tcc_main_file.len > 0 && !link_uses_non_c_language
-			&& !is_c_debug {
+			&& !is_c_debug && v3_tcc_fast_link_allowed(prefs.pkgconfig_mode, user_ld_flags) {
 			tried_tcc = true
 			tcc_dir := os.join_path_single(os.join_path_single(prefs.vroot, 'thirdparty'), 'tcc')
 			tcc_path := os.join_path_single(tcc_dir, 'tcc.exe')
@@ -11140,7 +11180,8 @@ pub fn run(args []string) {
 			&& (!tcc_link_has_incompatible_objects || cache_full_tcc_source.len > 0)
 			&& target_args.len == 0 && (!c_compiler_explicit || explicit_tcc)
 			&& (!cache_state.manager.enabled || cache_full_tcc_source.len > 0) && !is_c_debug
-			&& dump_c_flags.len == 0 {
+			&& dump_c_flags.len == 0
+			&& v3_tcc_fast_link_allowed(prefs.pkgconfig_mode, user_ld_flags) {
 			tried_tcc = true
 			tcc_dir := os.join_path_single(os.join_path_single(prefs.vroot, 'thirdparty'), 'tcc')
 			bundled_tcc_path := os.join_path_single(tcc_dir, 'tcc.exe')
@@ -11582,7 +11623,8 @@ fn builtin_bundle_source_files(prefs &pref.Preferences, builtin_files []string) 
 		if !os.is_dir(dir) {
 			continue
 		}
-		for file in pref.get_v_files_from_dir_for_target(dir, prefs.user_defines, prefs.target) {
+		for file in pref.get_v_files_from_dir_for_target(dir, prefs.source_file_defines(),
+			prefs.target) {
 			key := os.real_path(file)
 			if seen[key] {
 				continue
@@ -13130,11 +13172,11 @@ fn collect_v3_directory_user_files_rec(module_root string, dir string, prefs &pr
 }
 
 fn append_v3_directory_user_files(dir string, prefs &pref.Preferences, is_test_command bool, mut seen map[string]bool, mut files []string) {
-	for file in pref.get_v_files_from_dir_for_target(dir, prefs.user_defines, prefs.target) {
+	for file in pref.get_v_files_from_dir_for_target(dir, prefs.source_file_defines(), prefs.target) {
 		append_unique_file(mut files, mut seen, file)
 	}
 	if is_test_command {
-		for file in pref.get_test_v_files_from_dir_for_target(dir, prefs.user_defines,
+		for file in pref.get_test_v_files_from_dir_for_target(dir, prefs.source_file_defines(),
 			prefs.backend, prefs.target) {
 			append_unique_file(mut files, mut seen, file)
 		}
@@ -13194,7 +13236,8 @@ fn expand_single_test_file_inputs(user_files []string, prefs &pref.Preferences) 
 
 fn same_dir_module_source_files(test_file string, module_name string, prefs &pref.Preferences) []string {
 	dir := os.dir(test_file)
-	all_files := pref.get_v_files_from_dir_for_target(dir, prefs.user_defines, prefs.target)
+	all_files := pref.get_v_files_from_dir_for_target(dir, prefs.source_file_defines(),
+		prefs.target)
 	mut files := []string{}
 	mut imported_modules := map[string]bool{}
 	if module_name.len > 0 {
@@ -15007,8 +15050,8 @@ fn eager_selfhost_resolve_thread(arg voidptr) voidptr {
 		result.project_root, mut local_cache)
 	if result.dir.len > 0 && os.is_dir(result.dir) {
 		result.real_dir = os.real_path(result.dir)
-		result.files = pref.get_v_files_from_dir_for_target(result.dir, prefs.user_defines,
-			prefs.target)
+		result.files = pref.get_v_files_from_dir_for_target(result.dir,
+			prefs.source_file_defines(), prefs.target)
 		if result.files.len > 0 {
 			result.identity = import_module_identity_with_path_cache(prefs, result.path,
 				result.importing_file, result.project_root, result.dir, mut local_cache)
@@ -15586,7 +15629,7 @@ fn resolve_imports(mut a flat.FlatAst, mut p parser.Parser, prefs &pref.Preferen
 			if is_bundle_warmup_import && cache_state.bundle_valid {
 				warmup_dir := prefs.get_vlib_module_path(mod_name)
 				warmup_files := pref.get_v_files_from_dir_for_target(warmup_dir,
-					prefs.user_defines, prefs.target)
+					prefs.source_file_defines(), prefs.target)
 				if cache_state.manager.valid_header(mod_name, warmup_files) == none {
 					// The cached bundle may have been built while a project module
 					// shadowed this optional warmup import. An actual user import was
@@ -15648,7 +15691,8 @@ fn resolve_imports(mut a flat.FlatAst, mut p parser.Parser, prefs &pref.Preferen
 			mod_dir_exists := mod_dir.len > 0 && os.is_dir(mod_dir)
 			mod_files := if mod_dir_exists {
 				v3_directory_user_files(mod_dir, prefs, false, false) or {
-					pref.get_v_files_from_dir_for_target(mod_dir, prefs.user_defines, prefs.target)
+					pref.get_v_files_from_dir_for_target(mod_dir, prefs.source_file_defines(),
+						prefs.target)
 				}
 			} else {
 				[]string{}
@@ -16119,7 +16163,8 @@ fn aliased_import_module_identity(prefs &pref.Preferences, import_path string, i
 	if os.real_path(requested_dir) == os.real_path(import_dir) {
 		return none
 	}
-	for file in pref.get_v_files_from_dir_for_target(import_dir, prefs.user_defines, prefs.target) {
+	for file in pref.get_v_files_from_dir_for_target(import_dir, prefs.source_file_defines(),
+		prefs.target) {
 		module_name := declared_module_in_file(file)
 		if module_name.len > 0 {
 			return module_name

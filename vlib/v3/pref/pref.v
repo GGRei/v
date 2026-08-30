@@ -10,6 +10,8 @@ const macos_v3_caller_vchild_env = 'V_MACOS_V3_CALLER_VCHILD'
 const macos_v3_caller_vchild_present_env = 'V_MACOS_V3_CALLER_VCHILD_PRESENT'
 const macos_v3_caller_no_fallback_env = 'V_MACOS_V3_CALLER_NO_FALLBACK'
 const macos_v3_caller_no_fallback_present_env = 'V_MACOS_V3_CALLER_NO_FALLBACK_PRESENT'
+const compiler_owned_static_pkgconfig_value = 'v:static_pkgconfig'
+const compiler_owned_static_pkgconfig_file_define = 'v_static_pkgconfig'
 const macos_v3_private_environment_names = [
 	'V_MACOS_V3_FALLBACK_FILE',
 	'V_MACOS_V3_C_ERROR_DIR',
@@ -27,6 +29,13 @@ const macos_v3_private_environment_names = [
 	macos_v3_caller_no_fallback_present_env,
 ]
 
+// PkgConfigMode controls whether global `#pkgconfig` directives request public
+// dependencies only or include their private static-link dependencies too.
+pub enum PkgConfigMode {
+	dynamic
+	static_
+}
+
 // Preferences represents preferences data used by pref.
 pub struct Preferences {
 pub mut:
@@ -35,7 +44,9 @@ pub mut:
 	output_file           string
 	target                Target = host_target()
 	user_defines          []string
+	file_defines          []string
 	compile_values        map[string]string
+	pkgconfig_mode        PkgConfigMode
 	backend               string = 'c'
 	ccompiler             string = 'gcc'
 	c99                   bool
@@ -67,6 +78,63 @@ pub:
 	build_date      string
 	build_time      string
 	build_timestamp string
+}
+
+// is_compiler_owned_define reports the exact compiler facts that users cannot
+// override through `-d`. Other `v:*` values remain user controlled.
+pub fn is_compiler_owned_define(name string) bool {
+	return name in [compiler_owned_static_pkgconfig_value,
+		compiler_owned_static_pkgconfig_file_define]
+}
+
+fn has_exact_flag(flags []string, expected string) bool {
+	return expected in flags
+}
+
+fn uses_msvc_clang_driver_mode(raw_ccompiler string, user_c_flags []string, user_ld_flags []string,
+	env_c_flags []string, env_ld_flags []string) bool {
+	raw_compiler_name := os.file_name(raw_ccompiler.trim(' \t\r\n"\'')).to_lower_ascii()
+	compiler_parts := cmdexec.split_args(raw_ccompiler) or { [raw_ccompiler] }
+	compiler_name := if compiler_parts.len > 0 {
+		os.file_name(compiler_parts[0].trim(' \t\r\n"\'')).to_lower_ascii()
+	} else {
+		''
+	}
+	return raw_compiler_name.contains('clang-cl') || compiler_name.contains('clang-cl')
+		|| has_exact_flag(compiler_parts, '--driver-mode=cl')
+		|| has_exact_flag(user_c_flags, '--driver-mode=cl')
+		|| has_exact_flag(user_ld_flags, '--driver-mode=cl')
+		|| has_exact_flag(env_c_flags, '--driver-mode=cl')
+		|| has_exact_flag(env_ld_flags, '--driver-mode=cl')
+}
+
+// resolve_pkgconfig_mode records the canonical read-only fact before source
+// selection and cache lookup. Ambient flags may select clang's MSVC dialect,
+// but only explicit V `-cflags`/`-ldflags` can request global static pkg-config.
+pub fn (mut p Preferences) resolve_pkgconfig_mode(raw_ccompiler string, user_c_flags []string,
+	user_ld_flags []string, env_c_flags []string, env_ld_flags []string) {
+	p.pkgconfig_mode = .dynamic
+	p.file_defines = p.file_defines.filter(it != compiler_owned_static_pkgconfig_file_define)
+	if p.ccompiler in ['gcc', 'clang', 'mingw', 'cplusplus']
+		&& !uses_msvc_clang_driver_mode(raw_ccompiler, user_c_flags, user_ld_flags, env_c_flags, env_ld_flags)
+		&& (has_exact_flag(user_c_flags, '-static')
+		|| has_exact_flag(user_ld_flags, '-static')) {
+		p.pkgconfig_mode = .static_
+		p.file_defines << compiler_owned_static_pkgconfig_file_define
+	}
+	p.compile_values[compiler_owned_static_pkgconfig_value] = (p.pkgconfig_mode == .static_).str()
+}
+
+// source_file_defines returns the define namespace used only by `_d_`/`_notd_`
+// source selection. The internal alias is deliberately not a user define.
+pub fn (p &Preferences) source_file_defines() []string {
+	mut defines := p.user_defines.clone()
+	for define in p.file_defines {
+		if define !in defines {
+			defines << define
+		}
+	}
+	return defines
 }
 
 // Target is the canonical description of the platform for which code is generated.
@@ -168,11 +236,14 @@ pub fn target_from(os_name string, arch_name string) !Target {
 // new_preferences supports new preferences handling for pref.
 pub fn new_preferences() &Preferences {
 	build_time := target_build_time()
-	return &Preferences{
+	mut prefs := &Preferences{
+		compile_values:  map[string]string{}
 		build_date:      build_time.strftime('%Y-%m-%d')
 		build_time:      build_time.strftime('%H:%M:%S')
 		build_timestamp: build_time.unix().str()
 	}
+	prefs.compile_values[compiler_owned_static_pkgconfig_value] = 'false'
+	return prefs
 }
 
 // has_macos_v3_caller_environment reports whether the macOS driver transported
