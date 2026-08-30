@@ -8,6 +8,35 @@ struct CppLinkerDriverPair {
 	cpp string
 }
 
+fn cpp_linker_windows_gnu_target(target string) bool {
+	lower := target.to_lower_ascii()
+	if lower.contains('msvc') {
+		return false
+	}
+	return lower.contains('mingw') || lower.contains('windows-gnu')
+}
+
+fn cpp_linker_driver_target(executable string) ?string {
+	result := os.execute('${os.quoted_path(executable)} -dumpmachine')
+	if result.exit_code != 0 {
+		return none
+	}
+	target := result.output.trim_space()
+	if target.len == 0 {
+		return none
+	}
+	return target
+}
+
+fn assert_cpp_linker_windows_gnu_target_classifier() {
+	assert cpp_linker_windows_gnu_target('x86_64-w64-mingw32')
+	assert cpp_linker_windows_gnu_target('x86_64-pc-windows-gnu')
+	assert !cpp_linker_windows_gnu_target('x86_64-pc-windows-msvc')
+	assert !cpp_linker_windows_gnu_target('x86_64-w64-windows-msvc')
+	assert !cpp_linker_windows_gnu_target('x86_64-unknown-linux-gnu')
+	assert !cpp_linker_windows_gnu_target('')
+}
+
 fn run_cpp_linker_v_args(root string, args []string) os.Result {
 	return run_cpp_linker_v_args_in(root, args, @VEXEROOT)
 }
@@ -49,6 +78,16 @@ fn available_cpp_linker_driver_pairs() []CppLinkerDriverPair {
 		cpp_family := compiler_command_gnu_family(cpp)
 		if c_family == '' || cpp_family == '' || c_family != cpp_family {
 			continue
+		}
+		$if windows {
+			c_target_raw := cpp_linker_driver_target(c) or { continue }
+			cpp_target_raw := cpp_linker_driver_target(cpp) or { continue }
+			c_target := c_target_raw.to_lower_ascii()
+			cpp_target := cpp_target_raw.to_lower_ascii()
+			if c_target != cpp_target || !cpp_linker_windows_gnu_target(c_target) {
+				eprintln('> ignoring non-GNU Windows C/C++ driver pair: ${c_target} / ${cpp_target}')
+				continue
+			}
 		}
 		if !pairs.any(it.c == c && it.cpp == cpp) {
 			pairs << CppLinkerDriverPair{
@@ -123,6 +162,7 @@ fn run_cpp_linker_cache_route(root string, pair CppLinkerDriverPair, mode string
 }
 
 fn test_cpp_linker_real_drivers_keep_c_inputs_and_supply_their_runtime() {
+	assert_cpp_linker_windows_gnu_target_classifier()
 	pairs := available_cpp_linker_driver_pairs()
 	if pairs.len == 0 {
 		eprintln('> skipping #linker c++ integration: no matching C/C++ GNU driver pair')
