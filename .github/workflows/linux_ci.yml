@@ -1258,3 +1258,142 @@ jobs:
             '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
             "$RUNNER_TEMP/multiwindow_weston_command.sh" \
             "/tmp/gg_multiwindow_wayland_$compiler"
+
+  issue74-v1-linux:
+    name: Issue 74 V1 causal tests (${{ matrix.family }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - family: gcc
+            cc: gcc
+            cpp: g++
+            supports_cpp: true
+          - family: clang
+            cc: clang
+            cpp: clang++
+            supports_cpp: true
+          - family: tcc
+            cc: thirdparty/tcc/tcc.exe
+            cpp: ''
+            supports_cpp: false
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build V
+        env:
+          V_MACOS_V3_NO_FALLBACK: 0
+        run: make -j4
+      - name: Run Issue 74 V1 owners
+        shell: bash
+        env:
+          ISSUE74_CC: ${{ matrix.cc }}
+          ISSUE74_CPP: ${{ matrix.cpp }}
+          ISSUE74_SUPPORTS_CPP: ${{ matrix.supports_cpp }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.family }}" == tcc ]]; then
+            cc_path="$GITHUB_WORKSPACE/$ISSUE74_CC"
+            [[ -x "$cc_path" ]]
+            tcc_version="$($cc_path -v 2>&1)"
+            [[ "$tcc_version" =~ [Tt]iny[[:space:]][Cc][[:space:]][Cc]ompiler|[Tt][Cc][Cc][[:space:]]version ]]
+          else
+            cc_path="$(command -v "$ISSUE74_CC")"
+            cc_version="$($cc_path --version 2>&1)"
+          fi
+          cpp_path=''
+          if [[ "$ISSUE74_SUPPORTS_CPP" == true ]]; then
+            cpp_path="$(command -v "$ISSUE74_CPP")"
+            cpp_version="$($cpp_path --version 2>&1)"
+          fi
+          if [[ "${{ matrix.family }}" == gcc ]]; then
+            [[ "$cc_version" =~ GCC|gcc|Free[[:space:]]Software[[:space:]]Foundation|MinGW ]]
+            [[ "$cpp_version" =~ GCC|gcc|Free[[:space:]]Software[[:space:]]Foundation|MinGW ]]
+            [[ "$cc_version" != *clang* && "$cpp_version" != *clang* ]]
+          elif [[ "${{ matrix.family }}" == clang ]]; then
+            [[ "$cc_version" == *clang* && "$cc_version" != *clang-cl* ]]
+            [[ "$cpp_version" == *clang* && "$cpp_version" != *clang-cl* ]]
+          fi
+          unset CFLAGS LDFLAGS VFLAGS
+          export VJOBS=1
+          export VTMP="$RUNNER_TEMP/issue74 v1 linux ${{ matrix.family }} tmp"
+          mkdir -p "$VTMP"
+          export VFLAGS="-old-compiler -cc ${cc_path} -no-retry-compilation"
+          [[ -z "$cpp_path" ]] || export VFLAGS="$VFLAGS -c++ ${cpp_path}"
+
+          assert_defs() {
+            local file="$1"; shift
+            local name count
+            for name in "$@"; do
+              count="$(awk -v expected="fn ${name}() {" '$0 == expected { n++ } END { print n + 0 }' "$file")"
+              [[ "$count" == 1 ]] || { echo "definition count ${file}:${name}=${count}" >&2; return 1; }
+            done
+          }
+          run_owner() {
+            local label="$1" file="$2"; shift 2
+            local names=("$@") csv log text
+            assert_defs "$file" "${names[@]}"
+            csv="$(IFS=,; printf '%s' "${names[*]}")"
+            log="$RUNNER_TEMP/${label}-${{ matrix.family }}.log"
+            args=(./v -old-compiler -cc "$cc_path" -no-retry-compilation -silent test -run-only "$csv" "$file")
+            [[ -z "$cpp_path" ]] || args=(./v -old-compiler -cc "$cc_path" -c++ "$cpp_path" -no-retry-compilation -silent test -run-only "$csv" "$file")
+            "${args[@]}" 2>&1 | tee "$log"
+            text="$(<"$log")"
+            [[ "$text" == *"1 passed, 1 total"* ]]
+            [[ "$text" != *"no tests found"* && "$text" != *"skipping #linker c++"* ]]
+          }
+
+          run_owner v1-cc-routing vlib/v/builder/cc_test.v \
+            test_cc_from_string_keeps_historical_clang_cl_classification \
+            test_resolved_tcc_wrapper_recomputes_pkgconfig_mode_as_dynamic \
+            test_resolved_gnu_wrappers_keep_pkgconfig_mode_static
+          run_owner v1-pkgconfig-checker vlib/v/checker/pkgconfig_static_mode_test.v \
+            test_static_pkgconfig_segment_stays_ordered_after_target
+          run_owner v1-owned-values vlib/v/pref/compiler_owned_values_test.v \
+            test_static_pkgconfig_compiler_owned_names_are_narrowly_reserved
+          run_owner v1-pref vlib/v/pref/pref_test.v \
+            test_static_pkgconfig_compiler_value_filters_reserved_conditional_files \
+            test_pkgconfig_mode_salts_cache_without_salt_for_all_ldflags \
+            test_msvc_style_clang_never_activates_static_pkgconfig_fact_or_file \
+            test_gnu_style_clang_and_driver_mode_lookalike_keep_static_pkgconfig \
+            test_static_pkgconfig_compiler_value_exact_token_matrix \
+            test_static_pkgconfig_compiler_value_rejects_static_lookalikes \
+            test_other_v_namespaced_compile_values_remain_user_controlled
+          run_owner v1-comptime vlib/v/tests/comptime/comptime_static_pkgconfig_value_test.v \
+            test_static_pkgconfig_compiler_value_is_canonical_in_a_dynamic_build \
+            test_static_pkgconfig_compiler_owned_names_cannot_be_overridden
+
+          if [[ "$ISSUE74_SUPPORTS_CPP" == true ]]; then
+            run_owner v1-cpp-units vlib/v/builder/cc_test.v \
+              test_cpp_linker_c_source_args_wrap_only_c_sources \
+              test_cpp_linker_marker_removes_only_lto_and_c_language_standard_tokens \
+              test_cpp_linker_rejects_msvc_driver_mode_from_environment_flags \
+              test_cpp_linker_forces_generated_c_but_not_object_inputs \
+              test_cpp_linker_driver_classifier_fails_closed_for_unknown_commands \
+              test_cpp_linker_preserves_objective_c_for_generated_darwin_source \
+              test_no_cpp_linker_keeps_legacy_objective_c_generated_source_args \
+              test_cpp_linker_does_not_change_builds_without_directive
+            run_owner v1-linker-checker vlib/v/checker/linker_directive_test.v \
+              test_linker_cplusplus_is_idempotent \
+              test_linker_cplusplus_in_inactive_branch_is_ignored \
+              test_linker_rejects_every_value_except_exact_cplusplus
+            run_owner v1-linker-fake vlib/v/builder/pkgconfig_link_segment_test.v \
+              test_cpp_linker_fake_driver_direct_rsp_prod_and_parallel_paths \
+              test_cpp_linker_rejects_unsupported_or_missing_final_drivers
+            run_owner v1-linker-real vlib/v/builder/linker_directive_integration_test.v \
+              test_cpp_linker_real_drivers_keep_c_inputs_and_supply_their_runtime \
+              test_cpp_linker_compile_only_paths_do_not_probe_the_cpp_driver \
+              test_cpp_linker_cross_target_executable_reports_before_driver_selection
+          fi
+
+          fmt_log="$RUNNER_TEMP/issue74-fmt-${{ matrix.family }}.log"
+          VTEST_ONLY=fmt_keep_test.v,linker_directive_keep.vv \
+            ./v -old-compiler -cc "$cc_path" -no-retry-compilation -no-parallel -nocache -gc none -silent test \
+              -run-only test_fmt vlib/v/fmt/fmt_keep_test.v 2>&1 | tee "$fmt_log"
+          grep -Fq '1 passed, 1 total' "$fmt_log"
+          ! grep -Fq 'no tests found with VTEST_ONLY' "$fmt_log"
+
+          git diff --exit-code
+          git diff --cached --exit-code
+          [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
