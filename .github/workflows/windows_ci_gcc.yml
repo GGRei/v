@@ -1,6 +1,7 @@
 name: CI Windows GCC
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - master
