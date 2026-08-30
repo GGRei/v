@@ -506,8 +506,14 @@ jobs:
           run_owner v3-modulecache-units vlib/v3/modulecache/modulecache_test.v \
             test_cached_directive_text_preserves_cpp_linker_requirement \
             test_linker_cache_selector_is_conditional_on_source_directives
+          set -euo pipefail
+          [[ -n "${RUNNER_TEMP:-}" ]]
           fastc_diag_dir="$RUNNER_TEMP/issue74-fastc-c11"
+          [[ "$fastc_diag_dir" == "$RUNNER_TEMP/issue74-fastc-c11" ]]
+          [[ "$(dirname "$fastc_diag_dir")" == "$RUNNER_TEMP" ]]
+          [[ ! -e "$fastc_diag_dir" && ! -L "$fastc_diag_dir" ]]
           mkdir -p "$fastc_diag_dir"
+          [[ -d "$fastc_diag_dir" && ! -L "$fastc_diag_dir" ]]
           (
             export V3_FASTC_KEEP_FAILED_C="$fastc_diag_dir"
             run_owner v3-fastc-backend vlib/v3/tests/fastc_backend_test.v \
@@ -573,6 +579,9 @@ jobs:
         if: always()
         shell: bash
         run: |
+          set -euo pipefail
+          [[ -n "${RUNNER_TEMP:-}" ]]
           diag_dir="$RUNNER_TEMP/issue74-fastc-c11"
           [[ "$diag_dir" == "$RUNNER_TEMP/issue74-fastc-c11" ]]
+          [[ "$(dirname "$diag_dir")" == "$RUNNER_TEMP" ]]
           rm -rf -- "$diag_dir"
