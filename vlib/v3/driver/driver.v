@@ -8775,10 +8775,14 @@ pub fn run(args []string) {
 		eprintln(err.msg())
 		exit(1)
 	}
-	constraint_ccompiler := if backend == 'arm64' {
-		'tinyc'
+	constraint_ccompiler := if is_test_command && os.is_file(input_file) {
+		if backend == 'arm64' {
+			'tinyc'
+		} else {
+			effective_c_compiler_name(c_compiler, target)
+		}
 	} else {
-		effective_c_compiler_name(c_compiler, target)
+		''
 	}
 	incompatible_direct_test := v3_direct_test_input_is_incompatible(is_test_command, input_file,
 		backend, target, constraint_ccompiler, is_prod, user_defines)
