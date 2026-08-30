@@ -300,6 +300,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "makev.bat failed: $LASTEXITCODE" }
       - name: Run Issue 74 V1 owners
         shell: pwsh
+        timeout-minutes: 20
         run: |
           $ErrorActionPreference = 'Stop'
           function Resolve-First([string] $Name) {
@@ -365,10 +366,18 @@ jobs:
           Run-Owner v1-fake-link 'vlib/v/builder/pkgconfig_link_segment_test.v' @(
             'test_cpp_linker_fake_driver_direct_rsp_prod_and_parallel_paths',
             'test_cpp_linker_rejects_unsupported_or_missing_final_drivers')
-          Run-Owner v1-real-link 'vlib/v/builder/linker_directive_integration_test.v' @(
-            'test_cpp_linker_real_drivers_keep_c_inputs_and_supply_their_runtime',
-            'test_cpp_linker_compile_only_paths_do_not_probe_the_cpp_driver',
-            'test_cpp_linker_cross_target_executable_reports_before_driver_selection')
+          $env:ISSUE74_WINGCC_CLANG_DIAG = Join-Path $env:RUNNER_TEMP 'issue74-wingcc-clang-diag'
+          Remove-Item -LiteralPath $env:ISSUE74_WINGCC_CLANG_DIAG -Recurse -Force -ErrorAction SilentlyContinue
+          [void](New-Item -ItemType Directory -Force -Path $env:ISSUE74_WINGCC_CLANG_DIAG)
+          Set-Content -LiteralPath (Join-Path $env:ISSUE74_WINGCC_CLANG_DIAG 'armed.txt') -Value 'windows-clang-direct-only'
+          try {
+            Run-Owner v1-real-link 'vlib/v/builder/linker_directive_integration_test.v' @(
+              'test_cpp_linker_real_drivers_keep_c_inputs_and_supply_their_runtime',
+              'test_cpp_linker_compile_only_paths_do_not_probe_the_cpp_driver',
+              'test_cpp_linker_cross_target_executable_reports_before_driver_selection')
+          } finally {
+            Remove-Item Env:ISSUE74_WINGCC_CLANG_DIAG -ErrorAction SilentlyContinue
+          }
 
           $oldVTestOnly = [Environment]::GetEnvironmentVariable('VTEST_ONLY')
           $env:VTEST_ONLY = 'fmt_keep_test.v,linker_directive_keep.vv'
@@ -381,6 +390,67 @@ jobs:
           & git diff --cached --exit-code; if ($LASTEXITCODE -ne 0) { throw 'index changed' }
           $status = (& git status --porcelain=v1 --untracked-files=all | Out-String).Trim()
           if ($LASTEXITCODE -ne 0 -or $status.Length -ne 0) { throw "dirty worktree: $status" }
+
+      - name: Show bounded Issue 74 WinGCC Clang diagnostic
+        id: validate_wingcc_diag
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'issue74-wingcc-clang-diag'
+          $staging = Join-Path $env:RUNNER_TEMP 'issue74-wingcc-clang-upload'
+          Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+          [void](New-Item -ItemType Directory -Force -Path $staging)
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'diagnostic directory absent' }
+          $allowedExtensions = @('.c', '.cpp', '.exe', '.log', '.o', '.obj', '.rsp', '.txt', '.v')
+          $files = @()
+          $pending = [Collections.Generic.Queue[string]]::new()
+          $pending.Enqueue($root)
+          while ($pending.Count -gt 0) {
+            $directoryPath = $pending.Dequeue()
+            foreach ($entry in @(Get-ChildItem -LiteralPath $directoryPath -Force)) {
+              if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "reparse entry rejected: $($entry.FullName)" }
+              if ($entry.PSIsContainer) {
+                if ($entry.Name -notin @('vtmp', 'vcache', 'failure-vtmp')) { $pending.Enqueue($entry.FullName) }
+              } else {
+                $files += $entry
+              }
+            }
+          }
+          if ($files.Count -gt 63) { throw "raw diagnostic file count $($files.Count) > 63" }
+          $total = [int64]0
+          $manifestLines = @()
+          foreach ($file in $files) {
+            if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "reparse point rejected: $($file.FullName)" }
+            if ($allowedExtensions -cnotcontains $file.Extension.ToLowerInvariant()) { throw "extension rejected: $($file.Name)" }
+            if ($file.Length -gt 16MB) { throw "oversized diagnostic: $($file.Name)" }
+            $total += $file.Length
+            $relative = [IO.Path]::GetRelativePath($root, $file.FullName)
+            $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+            $manifestLines += "$relative`t$($file.Length)`t$sha"
+            $destination = Join-Path $staging $relative
+            [void](New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination))
+            Copy-Item -LiteralPath $file.FullName -Destination $destination
+          }
+          $manifestLines | Sort-Object | Set-Content -LiteralPath (Join-Path $staging 'manifest.txt')
+          $manifestInfo = Get-Item -LiteralPath (Join-Path $staging 'manifest.txt')
+          $total += $manifestInfo.Length
+          $stagedCount = @(Get-ChildItem -LiteralPath $staging -File -Recurse).Count
+          if ($stagedCount -gt 64 -or $total -gt 64MB) { throw "staged diagnostic exceeds cap: files=$stagedCount bytes=$total" }
+          $logs = @(Get-ChildItem -LiteralPath $staging -File -Recurse -Filter '*.log')
+          foreach ($log in $logs) {
+            if ($log.Length -gt 256KB) { throw "oversized log: $($log.Name)" }
+            Get-Content -LiteralPath $log.FullName -TotalCount 300
+          }
+
+      - name: Upload Issue 74 WinGCC Clang diagnostic
+        if: always() && steps.validate_wingcc_diag.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: issue74-wingcc-clang-diag-${{ github.run_id }}-${{ github.job }}
+          path: ${{ runner.temp }}/issue74-wingcc-clang-upload
+          if-no-files-found: warn
+          retention-days: 7
 
   gcc-multiwindow:
     runs-on: windows-2025
