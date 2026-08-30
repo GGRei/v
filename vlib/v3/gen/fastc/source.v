@@ -83,7 +83,8 @@ fn fastc_resolve_source_files(paths []string, prefs &pref.Preferences) !([]Fastc
 	mut queue := []FastcQueuedSource{}
 	if prefs.building_v {
 		builtin_dir := prefs.get_vlib_module_path('builtin')
-		for builtin_file in pref.get_v_files_from_dir_for_target(builtin_dir, prefs.user_defines, prefs.target) {
+		for builtin_file in pref.get_v_files_from_dir_for_target(builtin_dir,
+			prefs.source_file_defines(), prefs.target) {
 			if fastc_source_file_matches_backend(builtin_file) {
 				queue << FastcQueuedSource{
 					path: builtin_file
@@ -246,7 +247,8 @@ fn fastc_resolve_source_files(paths []string, prefs &pref.Preferences) !([]Fastc
 				if cached := module_dir_files[module_dir] {
 					module_files = cached.clone()
 				} else {
-					for module_file in pref.get_v_files_from_dir_for_target(module_dir, prefs.user_defines, prefs.target) {
+					for module_file in pref.get_v_files_from_dir_for_target(module_dir,
+						prefs.source_file_defines(), prefs.target) {
 						if fastc_source_file_matches_backend(module_file) {
 							module_files << module_file
 						}
@@ -291,7 +293,8 @@ fn fastc_entry_module_files(entry_path string, prefs &pref.Preferences) []string
 	if entry_dir == '' {
 		return []string{}
 	}
-	mut files := pref.get_v_files_from_dir_for_target(entry_dir, prefs.user_defines, prefs.target)
+	mut files := pref.get_v_files_from_dir_for_target(entry_dir, prefs.source_file_defines(),
+		prefs.target)
 	// Only the module root (where v.mod lives) pulls in the declared subdirs, so
 	// an entry file already inside a subdir does not re-expand the whole project.
 	vmod_root := fastc_vmod_root_for_file(entry_path)
@@ -299,8 +302,8 @@ fn fastc_entry_module_files(entry_path string, prefs &pref.Preferences) []string
 		for subdir in fastc_vmod_subdirs(vmod_root) {
 			subdir_path := os.join_path(vmod_root, subdir)
 			if os.is_dir(subdir_path) {
-				files << pref.get_v_files_from_dir_for_target(subdir_path, prefs.user_defines,
-					prefs.target)
+				files << pref.get_v_files_from_dir_for_target(subdir_path,
+					prefs.source_file_defines(), prefs.target)
 			}
 		}
 	}
