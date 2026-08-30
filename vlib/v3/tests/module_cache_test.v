@@ -1,4 +1,5 @@
 import os
+import v3.cmdexec
 import v3.flat
 import v3.modulecache
 import v3.types
@@ -75,6 +76,79 @@ fn run_module_cache_binary(path string) string {
 	result := os.execute(os.quoted_path(path))
 	assert result.exit_code == 0, '${path}: ${result.output}'
 	return result.output.trim_space()
+}
+
+fn module_cache_logged_driver_args(line string) []string {
+	tab := line.index_u8(`\t`)
+	if tab < 0 {
+		return []
+	}
+	return line[tab + 1..].split(' ').filter(it.len > 0)
+}
+
+fn module_cache_logged_cpp_final_link(line string) bool {
+	if !line.starts_with('CPP\t') {
+		return false
+	}
+	args := module_cache_logged_driver_args(line)
+	return args.len > 0 && args != ['--version'] && '-c' !in args
+}
+
+fn module_cache_test_compiler_version_suffix_is_supported(suffix string) bool {
+	if suffix == '' {
+		return true
+	}
+	if !suffix.starts_with('-') || suffix.len == 1 {
+		return false
+	}
+	return suffix[1..].bytes().all(it.is_digit() || it == `.`)
+}
+
+fn module_cache_test_driver_name_family(raw_name string) string {
+	mut name := raw_name.to_lower_ascii()
+	if name.ends_with('.exe') {
+		name = name[..name.len - 4]
+	}
+	for token, family in {
+		'clang++': 'clang'
+		'clang':   'clang'
+		'g++':     'gcc'
+		'gcc':     'gcc'
+		'c++':     'any'
+		'cc':      'any'
+	} {
+		if index := name.last_index(token) {
+			suffix := name[index + token.len..]
+			if (index == 0 || name[index - 1] == `-`)
+				&& module_cache_test_compiler_version_suffix_is_supported(suffix) {
+				return family
+			}
+		}
+	}
+	return ''
+}
+
+fn module_cache_test_gnu_driver_family(command string) string {
+	expected_family := module_cache_test_driver_name_family(os.file_name(command))
+	if expected_family == '' {
+		return ''
+	}
+	version := cmdexec.run(command, ['--version'])
+	if version.exit_code != 0 {
+		return ''
+	}
+	text := version.output.to_lower_ascii()
+	mut actual_family := ''
+	if text.contains('clang') && !text.contains('clang-cl') {
+		actual_family = 'clang'
+	} else if text.contains('gcc') || text.contains('free software foundation')
+		|| text.contains('mingw') {
+		actual_family = 'gcc'
+	}
+	if actual_family == '' || (expected_family != 'any' && expected_family != actual_family) {
+		return ''
+	}
+	return actual_family
 }
 
 fn test_program_module_owns_synthetic_helpers_and_native_sources() {
@@ -2616,6 +2690,122 @@ fn main() {
 	argv_lines := os.read_lines(log_path)!
 	assert argv_lines.any(it == '--cflags --libs v3-cache-test'), argv_lines.str()
 	assert argv_lines.any(it == '--cflags --libs --static v3-cache-test'), argv_lines.str()
+}
+
+fn test_cpp_linker_requirement_survives_import_cache_true_false_true_sequence() {
+	$if !linux {
+		return
+	}
+	mut c_compiler := ''
+	mut cpp_compiler := ''
+	for names in [['gcc', 'g++'], ['clang', 'clang++']] {
+		c_candidate := os.find_abs_path_of_executable(names[0]) or { continue }
+		cpp_candidate := os.find_abs_path_of_executable(names[1]) or { continue }
+		c_family := module_cache_test_gnu_driver_family(c_candidate)
+		cpp_family := module_cache_test_gnu_driver_family(cpp_candidate)
+		if c_family == '' || cpp_family == '' || c_family != cpp_family {
+			continue
+		}
+		c_compiler = c_candidate
+		cpp_compiler = cpp_candidate
+		break
+	}
+	if c_compiler == '' || cpp_compiler == '' {
+		return
+	}
+	v3_bin := build_module_cache_v3()
+	root := os.join_path(os.temp_dir(), 'v3_cpp_linker_cache_${os.getpid()}')
+	os.rmdir_all(root) or {}
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	cpp_source := os.join_path(root, 'bridge/runtime.cpp')
+	cpp_object := os.join_path(root, 'bridge/runtime.o')
+	write_module_cache_file(root, 'bridge/runtime.cpp',
+		'#include <string>\nextern "C" int v3_cached_link_value(void) { return int(std::string("cached").size()); }\n')
+	cpp_compile :=
+		os.execute('${os.quoted_path(cpp_compiler)} -std=c++11 -c ${os.quoted_path(cpp_source)} -o ${os.quoted_path(cpp_object)}')
+	assert cpp_compile.exit_code == 0, cpp_compile.output
+	c_source := os.join_path(root, 'bridge/runtime.c')
+	c_object := os.join_path(root, 'bridge/runtime_c.o')
+	write_module_cache_file(root, 'bridge/runtime.c',
+		'int v3_cached_link_value(void) { return 5; }\n')
+	c_compile :=
+		os.execute('${os.quoted_path(c_compiler)} -c ${os.quoted_path(c_source)} -o ${os.quoted_path(c_object)}')
+	assert c_compile.exit_code == 0, c_compile.output
+	toolchain_dir := os.join_path(root, 'toolchain')
+	driver_log := os.join_path(root, 'driver.log')
+	write_module_cache_file(root, 'driver.log', '')
+	write_module_cache_file(root, 'toolchain/cc',
+		'#!/bin/sh\nprintf "C\\t%s\\n" "\$*" >> ${os.quoted_path(driver_log)}\nexec ${os.quoted_path(c_compiler)} "\$@"\n')
+	write_module_cache_file(root, 'toolchain/c++',
+		'#!/bin/sh\nprintf "CPP\\t%s\\n" "\$*" >> ${os.quoted_path(driver_log)}\nexec ${os.quoted_path(cpp_compiler)} "\$@"\n')
+	os.chmod(os.join_path(toolchain_dir, 'cc'), 0o700) or { panic(err) }
+	os.chmod(os.join_path(toolchain_dir, 'c++'), 0o700) or { panic(err) }
+	old_path := os.getenv('PATH')
+	toolchain_path := '${toolchain_dir}${os.path_delimiter}${old_path}'
+
+	cpp_module := 'module bridge\n\n#linker c++\n#flag @DIR/runtime.o\n\nfn C.v3_cached_link_value() int\n\npub fn value() int {\n\treturn C.v3_cached_link_value()\n}\n'
+	c_module := 'module bridge\n\n#flag @DIR/runtime_c.o\n\nfn C.v3_cached_link_value() int\n\npub fn value() int {\n\treturn C.v3_cached_link_value()\n}\n'
+	write_module_cache_file(root, 'bridge/bridge.v', cpp_module)
+	main_file := os.join_path(root, 'main.v')
+	write_module_cache_file(root, 'main.v',
+		'module main\n\nimport bridge\n\nfn main() {\n\tprintln(bridge.value())\n}\n')
+	cache_dir := os.join_path(root, 'cache')
+	base_command := 'PATH=${os.quoted_path(toolchain_path)} CFLAGS= LDFLAGS= VFLAGS= V3CACHE=${os.quoted_path(cache_dir)} ${os.quoted_path(v3_bin)} -showcc'
+
+	cpp_cold_output := os.join_path(root, 'cpp-cold')
+	cpp_cold :=
+		os.execute('${base_command} -o ${os.quoted_path(cpp_cold_output)} ${os.quoted_path(main_file)}')
+	assert cpp_cold.exit_code == 0, cpp_cold.output
+	assert !cpp_cold.output.contains('cgen (cached)'), cpp_cold.output
+	assert run_module_cache_binary(cpp_cold_output) == '6'
+
+	cpp_warm_output := os.join_path(root, 'cpp-warm')
+	cpp_warm :=
+		os.execute('${base_command} -o ${os.quoted_path(cpp_warm_output)} ${os.quoted_path(main_file)}')
+	assert cpp_warm.exit_code == 0, cpp_warm.output
+	assert cpp_warm.output.contains('cgen (cached)'), cpp_warm.output
+	assert run_module_cache_binary(cpp_warm_output) == '6'
+	cpp_driver_lines := os.read_lines(driver_log)!
+	assert cpp_driver_lines.any(module_cache_logged_cpp_final_link(it)), cpp_driver_lines.str()
+
+	write_module_cache_file(root, 'bridge/bridge.v', c_module)
+	os.write_file(driver_log, '')!
+	c_output := os.join_path(root, 'c-only')
+	c_build :=
+		os.execute('${base_command} -o ${os.quoted_path(c_output)} ${os.quoted_path(main_file)}')
+	assert c_build.exit_code == 0, c_build.output
+	assert !c_build.output.contains('cgen (cached)'), c_build.output
+	assert run_module_cache_binary(c_output) == '5'
+	c_warm_output := os.join_path(root, 'c-only-warm')
+	c_warm :=
+		os.execute('${base_command} -o ${os.quoted_path(c_warm_output)} ${os.quoted_path(main_file)}')
+	assert c_warm.exit_code == 0, c_warm.output
+	assert c_warm.output.contains('cgen (cached)'), c_warm.output
+	assert run_module_cache_binary(c_warm_output) == '5'
+	c_driver_lines := os.read_lines(driver_log)!
+	assert !c_driver_lines.any(it.starts_with('CPP\t')), c_driver_lines.str()
+
+	write_module_cache_file(root, 'bridge/bridge.v', cpp_module)
+	os.write_file(driver_log, '')!
+	cpp_again_output := os.join_path(root, 'cpp-again')
+	cpp_again :=
+		os.execute('${base_command} -o ${os.quoted_path(cpp_again_output)} ${os.quoted_path(main_file)}')
+	assert cpp_again.exit_code == 0, cpp_again.output
+	assert !cpp_again.output.contains('cgen (cached)'), cpp_again.output
+	assert run_module_cache_binary(cpp_again_output) == '6'
+
+	os.write_file(driver_log, '')!
+	cpp_final_warm_output := os.join_path(root, 'cpp-final-warm')
+	cpp_final_warm :=
+		os.execute('${base_command} -o ${os.quoted_path(cpp_final_warm_output)} ${os.quoted_path(main_file)}')
+	assert cpp_final_warm.exit_code == 0, cpp_final_warm.output
+	assert cpp_final_warm.output.contains('cgen (cached)'), cpp_final_warm.output
+	assert run_module_cache_binary(cpp_final_warm_output) == '6'
+	cpp_final_driver_lines := os.read_lines(driver_log)!
+	assert cpp_final_driver_lines.any(module_cache_logged_cpp_final_link(it)), cpp_final_driver_lines.str()
 }
 
 fn test_module_cache_salt_tracks_default_cc_wrapper_version() {
