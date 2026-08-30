@@ -672,6 +672,270 @@ fn test_should_not_use_rsp_for_args_with_embedded_single_quotes() {
 	assert !builder.should_use_rsp(["'\\''"])
 }
 
+fn test_cpp_linker_c_source_args_wrap_only_c_sources() {
+	extra_c := os.quoted_path(os.join_path(os.vtmp_dir(), 'extra source.c'))
+	extra_upper_c := os.quoted_path(os.join_path(os.vtmp_dir(), 'extra source.C'))
+	extra_cpp := os.quoted_path(os.join_path(os.vtmp_dir(), 'extra.cpp'))
+	extra_o := os.quoted_path(os.join_path(os.vtmp_dir(), 'extra.o'))
+	assert cpp_linker_c_source_args([
+		'-DKEEP=1',
+		extra_c,
+		extra_upper_c,
+		extra_cpp,
+		extra_o,
+		'-lkeep',
+	]) == [
+		'-DKEEP=1',
+		'-x c',
+		extra_c,
+		'-x none',
+		extra_upper_c,
+		extra_cpp,
+		extra_o,
+		'-lkeep',
+	]
+	assert cpp_linker_c_source_args(['-x c++', extra_c, '-x none', extra_c]) == [
+		'-x c++',
+		extra_c,
+		'-x none',
+		'-x c',
+		extra_c,
+		'-x none',
+	]
+	assert cpp_linker_c_source_args(['-x', 'objective-c', extra_c]) == [
+		'-x',
+		'objective-c',
+		extra_c,
+	]
+	assert cpp_linker_c_source_args([
+		'-xc++',
+		extra_c,
+		'-xnone',
+		extra_c,
+		'-include',
+		extra_c,
+		'-imacros',
+		extra_c,
+		'-I',
+		extra_c,
+	]) == [
+		'-xc++',
+		extra_c,
+		'-xnone',
+		'-x c',
+		extra_c,
+		'-x none',
+		'-include',
+		extra_c,
+		'-imacros',
+		extra_c,
+		'-I',
+		extra_c,
+	]
+	raw_space_c := os.join_path(os.vtmp_dir(), 'raw source.c')
+	raw_tab_c := os.join_path(os.vtmp_dir(), 'raw\tsource.c')
+	raw_plain_c := os.join_path(os.vtmp_dir(), 'raw_source.c')
+	raw_cpp := os.join_path(os.vtmp_dir(), 'raw source.cpp')
+	raw_object := os.join_path(os.vtmp_dir(), 'raw source.o')
+	assert cpp_linker_c_source_args([
+		'-DVALUE=raw source.c',
+		raw_plain_c,
+		raw_space_c,
+		raw_tab_c,
+		extra_c,
+		raw_cpp,
+		raw_object,
+		'-include',
+		raw_space_c,
+		'-imacros',
+		raw_tab_c,
+		'-I',
+		raw_space_c,
+		'-lafter',
+	]) == [
+		'-DVALUE=raw source.c',
+		'-x c',
+		os.quoted_path(raw_plain_c),
+		'-x none',
+		'-x c',
+		os.quoted_path(raw_space_c),
+		'-x none',
+		'-x c',
+		os.quoted_path(raw_tab_c),
+		'-x none',
+		'-x c',
+		extra_c,
+		'-x none',
+		raw_cpp,
+		raw_object,
+		'-include',
+		raw_space_c,
+		'-imacros',
+		raw_tab_c,
+		'-I',
+		raw_space_c,
+		'-lafter',
+	]
+}
+
+fn test_cpp_linker_marker_removes_only_lto_and_c_language_standard_tokens() {
+	assert without_cpp_marker_incompatible_tokens('-static -m64 -flto -std=c99 -O3') == '-static -m64 -O3'
+	assert without_cpp_marker_incompatible_tokens('-flto=auto -std=gnu11 -fno-strict-aliasing') == '-fno-strict-aliasing'
+	assert without_cpp_marker_incompatible_tokens('-std=iso9899:2018 -std=c++17 -std=gnu++20') == '-std=c++17 -std=gnu++20'
+	assert without_cpp_marker_incompatible_tokens('-Wl,-flto -DNAME="with spaces"') == '-Wl,-flto -DNAME="with spaces"'
+}
+
+fn test_cpp_linker_rejects_msvc_driver_mode_from_environment_flags() {
+	old_cflags := os.getenv_opt('CFLAGS')
+	old_ldflags := os.getenv_opt('LDFLAGS')
+	defer {
+		if value := old_cflags {
+			os.setenv('CFLAGS', value, true)
+		} else {
+			os.unsetenv('CFLAGS')
+		}
+		if value := old_ldflags {
+			os.setenv('LDFLAGS', value, true)
+		} else {
+			os.unsetenv('LDFLAGS')
+		}
+	}
+	for variable in ['CFLAGS', 'LDFLAGS'] {
+		os.unsetenv('CFLAGS')
+		os.unsetenv('LDFLAGS')
+		os.setenv(variable, '--driver-mode=cl-like', true)
+		assert !compiler_command_uses_msvc_driver_mode('clang', '', '')
+		os.setenv(variable, '--driver-mode=cl', true)
+		assert compiler_command_uses_msvc_driver_mode('clang', '', '')
+	}
+}
+
+fn test_cpp_linker_forces_generated_c_but_not_object_inputs() {
+	mut builder := new_test_builder_without_cc_setup(['-os', 'linux', '-cc', 'gcc',
+		hello_world_example()])
+	builder.table.requires_cpp_linker = true
+	builder.setup_ccompiler_options(builder.pref.ccompiler)
+	mut generated_index := -1
+	for i, arg in builder.ccoptions.source_args {
+		if normalized_compile_arg_path(arg) == normalized_test_path(builder.out_name_c)
+			|| normalized_compile_arg_path(arg) == normalized_test_path(os.short_path(builder.out_name_c)) {
+			generated_index = i
+			break
+		}
+	}
+	assert generated_index > 0, '${builder.out_name_c}: ${builder.ccoptions.source_args}'
+	assert builder.ccoptions.source_args[generated_index - 1] == '-x c'
+	assert builder.ccoptions.source_args[generated_index + 1] == '-x none'
+	assert builder.final_linker_driver(builder.pref.ccompiler) == builder.pref.cppcompiler
+
+	builder.pref.is_o = true
+	assert !builder.should_link_with_cpp()
+	assert builder.final_linker_driver(builder.pref.ccompiler) == builder.pref.ccompiler
+	builder.pref.is_o = false
+	builder.pref.build_mode = .build_module
+	assert !builder.should_link_with_cpp()
+	assert builder.final_linker_driver(builder.pref.ccompiler) == builder.pref.ccompiler
+	builder.pref.is_shared = true
+	assert !builder.should_link_with_cpp()
+	assert builder.final_linker_driver(builder.pref.ccompiler) == builder.pref.ccompiler
+}
+
+fn test_cpp_linker_driver_classifier_fails_closed_for_unknown_commands() {
+	assert compiler_name_gnu_family('x86_64-w64-mingw32-gcc.exe') == 'gcc'
+	assert compiler_name_gnu_family('clang-22') == 'clang'
+	assert compiler_name_gnu_family('clang-wrapper') == ''
+	assert !compiler_command_is_known_gnu_driver('clang-cl')
+	assert !compiler_command_is_known_gnu_driver('em++')
+	assert !compiler_command_is_known_gnu_driver('tcc')
+	assert !compiler_command_is_known_gnu_driver('/definitely/missing/issue74-compiler')
+	$if !windows {
+		fake_root := os.join_path(os.vtmp_dir(), 'issue74-gnu-driver-${os.getpid()}')
+		defer {
+			os.rmdir_all(fake_root) or {}
+		}
+		fake_gcc := prepare_test_ccompiler_alias(os.join_path(fake_root, 'gcc-ok'), 'gcc',
+			'gcc (GCC) 13.2.0')
+		fake_clang := prepare_test_ccompiler_alias(os.join_path(fake_root, 'clang-ok'), 'clang',
+			'clang version 17.0.0')
+		assert compiler_command_is_known_gnu_driver(fake_gcc)
+		assert compiler_command_is_known_gnu_driver(fake_clang)
+		failing_dir := os.join_path(fake_root, 'gcc-fail')
+		failing_gcc := os.join_path(failing_dir, 'gcc')
+		os.mkdir_all(failing_dir)!
+		os.write_file(failing_gcc, '#!/bin/sh\necho "gcc fixture"\nexit 1\n')!
+		os.chmod(failing_gcc, 0o700)!
+		assert !compiler_command_is_known_gnu_driver(failing_gcc)
+	}
+}
+
+fn test_cpp_linker_preserves_objective_c_for_generated_darwin_source() {
+	mut builder := new_test_builder_without_cc_setup([
+		'-os',
+		'macos',
+		'-cc',
+		'clang',
+		hello_world_example(),
+	])
+	builder.table.requires_cpp_linker = true
+	builder.setup_ccompiler_options(builder.pref.ccompiler)
+	mut generated_index := -1
+	for i, arg in builder.ccoptions.source_args {
+		if normalized_compile_arg_path(arg) == normalized_test_path(builder.out_name_c)
+			|| normalized_compile_arg_path(arg) == normalized_test_path(os.short_path(builder.out_name_c)) {
+			generated_index = i
+			break
+		}
+	}
+	assert generated_index > 0, '${builder.out_name_c}: ${builder.ccoptions.source_args}'
+	assert builder.ccoptions.source_args[generated_index - 1] == '-x objective-c'
+	assert builder.ccoptions.source_args[generated_index + 1] == '-x none'
+}
+
+fn test_no_cpp_linker_keeps_legacy_objective_c_generated_source_args() {
+	mut builder := new_test_builder_without_cc_setup([
+		'-os',
+		'macos',
+		'-cc',
+		'clang',
+		hello_world_example(),
+	])
+	builder.setup_ccompiler_options(builder.pref.ccompiler)
+	mut generated_index := -1
+	for i, arg in builder.ccoptions.source_args {
+		if normalized_compile_arg_path(arg) == normalized_test_path(builder.out_name_c)
+			|| normalized_compile_arg_path(arg) == normalized_test_path(os.short_path(builder.out_name_c)) {
+			generated_index = i
+			break
+		}
+	}
+	assert generated_index > 0, '${builder.out_name_c}: ${builder.ccoptions.source_args}'
+	assert builder.ccoptions.source_args[generated_index - 1] == '-x objective-c'
+	assert '-x none' !in builder.ccoptions.source_args
+
+	mut parallel_builder := new_test_builder_without_cc_setup([
+		'-os',
+		'macos',
+		'-cc',
+		'clang',
+		'-parallel-cc',
+		hello_world_example(),
+	])
+	parallel_builder.setup_ccompiler_options(parallel_builder.pref.ccompiler)
+	assert '-x objective-c' in parallel_builder.ccoptions.source_args
+	assert '-x none' !in parallel_builder.ccoptions.source_args
+}
+
+fn test_cpp_linker_does_not_change_builds_without_directive() {
+	mut builder := new_test_builder_without_cc_setup(['-cc', 'gcc', hello_world_example()])
+	builder.setup_ccompiler_options(builder.pref.ccompiler)
+	assert !builder.should_link_with_cpp()
+	assert builder.final_linker_driver(builder.pref.ccompiler) == builder.pref.ccompiler
+	$if !windows {
+		assert '-x c' !in builder.ccoptions.source_args
+		assert '-x none' !in builder.ccoptions.source_args
+	}
+}
+
 fn test_setup_ccompiler_options_detects_cc_alias_path_as_clang() {
 	$if windows {
 		return
