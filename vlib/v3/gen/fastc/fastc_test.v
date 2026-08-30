@@ -10813,8 +10813,8 @@ fn main() {
 ', 'selfhost_double_pointer_index.v', prefs) or { panic(err) }
 	compact := c_source.replace(' ', '').replace('\t', '').replace('\r', '').replace('\n', '').replace('(', '').replace(')', '')
 	assert compact.count('intclone_directu8**values,intindex{') == 1, c_source
-	assert compact.count('intclone_membermain__Argumentsarguments,intindex{') == 1, c_source
-	assert compact.count('intclone_indexed_fieldmain__Item**items,intindex{') == 1, c_source
+	assert compact.count('intclone_memberArgumentsarguments,intindex{') == 1, c_source
+	assert compact.count('intclone_indexed_fieldItem**items,intindex{') == 1, c_source
 	assert compact.count('intclone_localu8**values,intindex{') == 1, c_source
 	assert compact.count('fastc_accept_pointervalues[index]') == 1, c_source
 	assert compact.count('fastc_accept_pointerarguments.values[index]') == 1, c_source
