@@ -2352,7 +2352,7 @@ fn main() {
 			assert invocations.len == 0, invocations.str()
 		} else {
 			assert invocations.len > 0, invocations.str()
-			expected_driver := os.file_name(compiler).trim_suffix(executable_suffix)
+			expected_driver := os.file_name(compiler).trim_string_right(executable_suffix)
 			assert invocations.all(it.driver == expected_driver), invocations.str()
 		}
 		assert invocations.all(it.args == ['--version']), invocations.str()
