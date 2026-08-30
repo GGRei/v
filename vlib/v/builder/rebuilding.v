@@ -265,7 +265,13 @@ fn (mut b Builder) handle_usecache(vexe string) {
 			built_modules << imp
 		}
 	}
-	b.ccoptions.post_args << libs
+	if b.should_link_with_cpp() {
+		for lib in libs {
+			b.ccoptions.post_args << b.tcc_quoted_path(lib)
+		}
+	} else {
+		b.ccoptions.post_args << libs
+	}
 }
 
 pub fn (mut b Builder) should_rebuild() bool {
