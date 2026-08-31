@@ -498,8 +498,13 @@ jobs:
             test_headerless_windows_non_tcc_keeps_local_sdk_fallbacks
           run_owner v3-fastc-units vlib/v3/gen/fastc/fastc_test.v \
             test_literal_membership_materializes_candidates_before_comparison \
+            test_selfhost_double_pointer_index_preserves_one_pointer_level \
             test_selfhost_double_pointer_index_keeps_one_pointer_level \
             test_source_resolver_uses_compiler_owned_file_defines \
+            test_fastc_initial_entry_path_canonicalizes_only_building_v_entries \
+            test_selfhost_append_to_nested_array \
+            test_selfhost_append_array_result_to_struct_field \
+            test_selfhost_map_assignment_with_propagated_result \
             test_cpp_linker_directive_is_rejected_before_fastc_emits_c
           run_owner v3-cache-compiler vlib/v3/driver/cache_prune_test.v \
             test_v3_cache_compiler_keeps_family_and_uses_resolved_executable_for_probes
