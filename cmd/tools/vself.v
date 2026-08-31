@@ -99,9 +99,25 @@ fn main() {
 			}
 		}
 		if fastc_self_build {
+			mut c14_phase_active := false
+			mut previous_c14_phase := ?string(none)
+			$if linux {
+				if os.getenv('V3_FASTC_C14_DIR') != '' && repeat_count == 2 {
+					previous_c14_phase = os.getenv_opt('V3_FASTC_C14_PHASE')
+					os.setenv('V3_FASTC_C14_PHASE', if run_idx == 0 { 'repeat-1-of-2' } else { 'repeat-2-of-2' }, true)
+					c14_phase_active = true
+				}
+			}
 			run_cmd(cmd) or {
 				eprintln('cannot compile to `${vroot}`: \n${err.msg()}')
 				exit(1)
+			}
+			if c14_phase_active {
+				if previous := previous_c14_phase {
+					os.setenv('V3_FASTC_C14_PHASE', previous, true)
+				} else {
+					os.unsetenv('V3_FASTC_C14_PHASE')
+				}
 			}
 		} else if !used_pgo {
 			if !try_compile(cmd) {

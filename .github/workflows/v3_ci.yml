@@ -567,21 +567,41 @@ jobs:
           trap c14_collect_error ERR
           [[ -n "$RUNNER_TEMP" && "$raw" == "$RUNNER_TEMP/issue74-fastc-c14" ]]
           [[ -d "$raw" && ! -L "$raw" && ! -e "$stage" && ! -L "$stage" ]]
-          fixed=(repeat-1-of-2-sources.txt repeat-1-of-2-declared.txt repeat-2-of-2-sources.txt repeat-2-of-2-error.txt gen1.c gen1.meta selfhost.c selfhost.meta)
+          a_fixed=(repeat-1-of-2-sources.txt repeat-1-of-2-declared.txt repeat-2-of-2-sources.txt repeat-2-of-2-error.txt gen1.c gen1.meta)
+          b_fixed=(selfhost.c selfhost.meta)
           mapfile -t actual < <(find "$raw" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
-          [[ "${#actual[@]}" -ge 9 && "${#actual[@]}" -le 20 ]]
-          for name in "${fixed[@]}"; do
-            [[ " ${actual[*]} " == *" $name "* ]]
-          done
+          [[ "${#actual[@]}" -ge 1 && "${#actual[@]}" -le 20 ]]
+          a_count=0
+          b_count=0
           trace_names=()
           for name in "${actual[@]}"; do
-            case " ${fixed[*]} " in *" $name "*) continue ;; esac
-            [[ "$name" =~ ^trace-([0-9]+)-(0[1-9]|1[0-2])\.txt$ ]]
-            trace_names+=("$name")
+            case " ${a_fixed[*]} " in *" $name "*) a_count=$((a_count + 1)); continue ;; esac
+            case " ${b_fixed[*]} " in *" $name "*) b_count=$((b_count + 1)); continue ;; esac
+            if [[ "$name" =~ ^trace-([0-9]+)-(0[1-9]|1[0-2])\.txt$ ]]; then
+              trace_names+=("$name")
+              continue
+            fi
+            false
           done
-          [[ "${#trace_names[@]}" -ge 1 && "${#trace_names[@]}" -le 12 ]]
+          a_present=0
+          b_present=0
+          if [[ "$a_count" -gt 0 ]]; then
+            [[ "$a_count" -eq 6 ]]
+            for name in "${a_fixed[@]}"; do
+              [[ " ${actual[*]} " == *" $name "* ]]
+            done
+            a_present=1
+          fi
+          if [[ "$b_count" -gt 0 || "${#trace_names[@]}" -gt 0 ]]; then
+            [[ "$b_count" -eq 2 && "${#trace_names[@]}" -ge 1 && "${#trace_names[@]}" -le 12 ]]
+            for name in "${b_fixed[@]}"; do
+              [[ " ${actual[*]} " == *" $name "* ]]
+            done
+            b_present=1
+          fi
+          [[ "$a_present" -eq 1 || "$b_present" -eq 1 ]]
           total_c=0
-          for name in "${fixed[@]}"; do
+          for name in "${actual[@]}"; do
             file="$raw/$name"
             [[ -f "$file" && ! -L "$file" && "$(stat -c %h "$file")" == 1 ]]
             size="$(stat -c %s "$file")"
@@ -589,20 +609,25 @@ jobs:
               *.txt) [[ "$size" -ge 1 && "$size" -le 4096 ]] ;;
               *.meta) [[ "$size" -ge 1 && "$size" -le 256 ]] ;;
               *.c) [[ "$size" -ge 1 && "$size" -le 8388608 ]]; total_c=$((total_c + size)) ;;
+              *) false ;;
             esac
           done
           [[ "$total_c" -lt 16777216 ]]
           field() { awk -F= -v key="$2" '$1==key {print substr($0,length(key)+2)}' "$1"; }
-          p1="$(field "$raw/repeat-1-of-2-sources.txt" pid)"
-          p2="$(field "$raw/repeat-2-of-2-sources.txt" pid)"
-          [[ "$p1" =~ ^[0-9]+$ && "$p2" =~ ^[0-9]+$ ]]
-          for file in repeat-1-of-2-sources.txt repeat-1-of-2-declared.txt gen1.meta; do
-            [[ "$(field "$raw/$file" pid)" == "$p1" && "$(field "$raw/$file" phase)" == repeat-1-of-2 ]]
-          done
-          for file in repeat-2-of-2-sources.txt repeat-2-of-2-error.txt; do
-            [[ "$(field "$raw/$file" pid)" == "$p2" && "$(field "$raw/$file" phase)" == repeat-2-of-2 ]]
-          done
-          [[ "$(field "$raw/selfhost.meta" pid)" =~ ^[0-9]+$ && "$(field "$raw/selfhost.meta" phase)" == selfhost-build ]]
+          if [[ "$a_present" -eq 1 ]]; then
+            p1="$(field "$raw/repeat-1-of-2-sources.txt" pid)"
+            p2="$(field "$raw/repeat-2-of-2-sources.txt" pid)"
+            [[ "$p1" =~ ^[0-9]+$ && "$p2" =~ ^[0-9]+$ ]]
+            for file in repeat-1-of-2-sources.txt repeat-1-of-2-declared.txt gen1.meta; do
+              [[ "$(field "$raw/$file" pid)" == "$p1" && "$(field "$raw/$file" phase)" == repeat-1-of-2 ]]
+            done
+            for file in repeat-2-of-2-sources.txt repeat-2-of-2-error.txt; do
+              [[ "$(field "$raw/$file" pid)" == "$p2" && "$(field "$raw/$file" phase)" == repeat-2-of-2 ]]
+            done
+          fi
+          if [[ "$b_present" -eq 1 ]]; then
+            [[ "$(field "$raw/selfhost.meta" pid)" =~ ^[0-9]+$ && "$(field "$raw/selfhost.meta" phase)" == selfhost-build ]]
+          fi
           stages=(entry after-next name-branch name-read in-branch before-collection after-collection collection-normalized element-ready loop-emitted body-done complete)
           trace_pid=''
           trace_total=0
@@ -639,7 +664,6 @@ jobs:
           umask 077
           mkdir "$stage"
           [[ -d "$stage" && ! -L "$stage" && "$(stat -c %a "$stage")" == 700 ]]
-          cat "$raw"/repeat-1-of-2-{sources,declared}.txt "$raw"/repeat-2-of-2-{sources,error}.txt > "$stage/a-manifest.txt"
           extract_definition() {
             awk -v symbol="$2" -v max_lines="$3" -v max_bytes="$4" '
               $0 ~ ("^[A-Za-z_].* " symbol "\\(.*\\) \\{$") { starts++; if(starts>1) exit 42; active=1 }
@@ -654,19 +678,30 @@ jobs:
               END { if(starts!=1 || lines<1) exit 44 }
             ' "$1"
           }
-          extract_definition "$raw/gen1.c" v3__gen__fastc__fastc_collect_declaration_indexes 220 16384 >> "$stage/a-manifest.txt"
-          extract_definition "$raw/gen1.c" v3__gen__fastc__fastc_collect_declaration_chunk 220 16384 >> "$stage/a-manifest.txt"
-          extract_definition "$raw/gen1.c" v3__gen__fastc__fastc_merge_declaration_partial 220 16384 >> "$stage/a-manifest.txt"
-          cp "$raw/gen1.c" "$stage/gen1.c"
-          (cd "$raw" && sha256sum selfhost.c) > "$stage/b-manifest.txt"
-          extract_definition_prefix "$raw/selfhost.c" v3__gen__fastc__Parser_parse_for 500 65536 >> "$stage/b-manifest.txt"
-          printf '%s\n' "${trace_names[@]}" | while IFS= read -r name; do cat "$raw/$name"; done > "$stage/b-trace.txt"
-          cp "$raw/selfhost.c" "$stage/selfhost.c"
-          [[ "$(stat -c %s "$stage/a-manifest.txt")" -ge 1 && "$(stat -c %s "$stage/a-manifest.txt")" -le 53248 ]]
-          [[ "$(stat -c %s "$stage/b-manifest.txt")" -ge 1 && "$(stat -c %s "$stage/b-manifest.txt")" -le 81920 ]]
-          [[ "$(stat -c %s "$stage/b-trace.txt")" -ge 1 && "$(stat -c %s "$stage/b-trace.txt")" -le 16384 ]]
+          if [[ "$a_present" -eq 1 ]]; then
+            cat "$raw"/repeat-1-of-2-{sources,declared}.txt "$raw"/repeat-2-of-2-{sources,error}.txt > "$stage/a-manifest.txt"
+            extract_definition "$raw/gen1.c" v3__gen__fastc__fastc_collect_declaration_indexes 220 16384 >> "$stage/a-manifest.txt"
+            extract_definition "$raw/gen1.c" v3__gen__fastc__fastc_collect_declaration_chunk 220 16384 >> "$stage/a-manifest.txt"
+            extract_definition "$raw/gen1.c" v3__gen__fastc__fastc_merge_declaration_partial 220 16384 >> "$stage/a-manifest.txt"
+            cp "$raw/gen1.c" "$stage/gen1.c"
+            [[ "$(stat -c %s "$stage/a-manifest.txt")" -ge 1 && "$(stat -c %s "$stage/a-manifest.txt")" -le 53248 ]]
+          fi
+          if [[ "$b_present" -eq 1 ]]; then
+            (cd "$raw" && sha256sum selfhost.c) > "$stage/b-manifest.txt"
+            extract_definition_prefix "$raw/selfhost.c" v3__gen__fastc__Parser_parse_for 500 65536 >> "$stage/b-manifest.txt"
+            printf '%s\n' "${trace_names[@]}" | while IFS= read -r name; do cat "$raw/$name"; done > "$stage/b-trace.txt"
+            cp "$raw/selfhost.c" "$stage/selfhost.c"
+            [[ "$(stat -c %s "$stage/b-manifest.txt")" -ge 1 && "$(stat -c %s "$stage/b-manifest.txt")" -le 81920 ]]
+            [[ "$(stat -c %s "$stage/b-trace.txt")" -ge 1 && "$(stat -c %s "$stage/b-trace.txt")" -le 16384 ]]
+          fi
           mapfile -t staged < <(find "$stage" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
-          [[ "${staged[*]}" == "a-manifest.txt b-manifest.txt b-trace.txt gen1.c selfhost.c" ]]
+          if [[ "$a_present" -eq 1 && "$b_present" -eq 1 ]]; then
+            [[ "${staged[*]}" == "a-manifest.txt b-manifest.txt b-trace.txt gen1.c selfhost.c" ]]
+          elif [[ "$a_present" -eq 1 ]]; then
+            [[ "${staged[*]}" == "a-manifest.txt gen1.c" ]]
+          else
+            [[ "${staged[*]}" == "b-manifest.txt b-trace.txt selfhost.c" ]]
+          fi
           staged_c=0
           for file in "$stage"/*; do
             [[ -f "$file" && ! -L "$file" && "$(stat -c %h "$file")" == 1 ]]
