@@ -22,6 +22,33 @@ fn test_fastc_canonical_vroot_resolves_symlinked_checkout() {
 	assert fastc_canonical_vroot(linked_root) == os.real_path(real_root)
 }
 
+fn test_parse_arguments_captures_requested_selfhost() {
+	input, output, keep_c, requested_selfhost := parse_arguments(['-selfhost', '-silent', '-keepc',
+		'-o', 'custom-v', 'compiler.v'])
+	assert input == 'compiler.v'
+	assert output == 'custom-v'
+	assert keep_c
+	assert requested_selfhost
+	_, _, _, ordinary_request := parse_arguments(['compiler.v'])
+	assert !ordinary_request
+}
+
+fn test_fastc_canonical_v3_entry_rejects_other_sources() {
+	root := os.join_path(os.temp_dir(), 'fastc_canonical_entry_${os.getpid()}')
+	os.rmdir_all(root) or {}
+	entry := os.join_path(root, 'vlib', 'v3', 'v3.v')
+	other := os.join_path(root, 'compiler.v')
+	os.mkdir_all(os.dir(entry)) or { panic(err) }
+	os.write_file(entry, 'module main') or { panic(err) }
+	os.write_file(other, 'module main') or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	canonical_entry := os.real_path(entry)
+	assert fastc_is_canonical_v3_entry(canonical_entry, root)
+	assert !fastc_is_canonical_v3_entry(os.real_path(other), root)
+}
+
 fn test_fastc_parse_bench_child_output() {
 	sample := fastc_parse_bench_child_output('notice\nfastc-bench-child 50123 170 64516\n') or {
 		assert false, 'expected benchmark sample'

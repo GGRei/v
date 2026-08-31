@@ -12,10 +12,11 @@ fn fail(message string) {
 	exit(1)
 }
 
-fn parse_arguments(args []string) (string, string, bool) {
+fn parse_arguments(args []string) (string, string, bool, bool) {
 	mut input := ''
 	mut output := ''
 	mut keep_c := false
+	mut requested_selfhost := false
 	mut index := 0
 	for index < args.len {
 		arg := args[index]
@@ -53,12 +54,14 @@ fn parse_arguments(args []string) (string, string, bool) {
 		}
 		if arg == '-keepc' {
 			keep_c = true
+		} else if arg == '-selfhost' {
+			requested_selfhost = true
 		} else if arg.ends_with('.v') {
 			if input != '' {
 				fail('fastc self-host compiler accepts only one V source entry file')
 			}
 			input = arg
-		} else if arg !in ['-silent', '-selfhost'] {
+		} else if arg != '-silent' {
 			fail('fastc self-host compiler does not support `${arg}`')
 		}
 		index++
@@ -69,7 +72,7 @@ fn parse_arguments(args []string) (string, string, bool) {
 	if output == '' {
 		output = os.file_name(input).all_before_last('.')
 	}
-	return input, output, keep_c
+	return input, output, keep_c, requested_selfhost
 }
 
 fn self_command_index(args []string) int {
@@ -278,6 +281,14 @@ fn fastc_canonical_vroot(vroot string) string {
 	return os.real_path(vroot)
 }
 
+fn fastc_is_canonical_v3_entry(real_input string, vroot string) bool {
+	if real_input == '' || vroot == '' {
+		return false
+	}
+	entry := os.join_path(vroot, 'vlib', 'v3', 'v3.v')
+	return os.is_file(entry) && os.real_path(real_input) == os.real_path(entry)
+}
+
 fn fastc_tcc_backtrace_enabled(target_os string, target_arch string) bool {
 	return !(target_os == 'macos' && target_arch == 'arm64')
 }
@@ -367,7 +378,7 @@ pub fn run(args []string) {
 		run_self(args, command_index)
 		return
 	}
-	input, output, keep_c := parse_arguments(args)
+	input, output, keep_c, requested_selfhost := parse_arguments(args)
 	real_input := os.real_path(input)
 	if pref.is_test_file_for_backend(real_input, 'fastc') || pref.is_test_file_for_backend(real_input, 'c') {
 		fail('fastc self-host compiler does not support test files')
@@ -383,6 +394,7 @@ pub fn run(args []string) {
 	prefs.backend = 'fastc'
 	prefs.ccompiler = 'tinyc'
 	prefs.building_v = real_input.ends_with('/vlib/v3/v3.v')
+		|| (requested_selfhost && fastc_is_canonical_v3_entry(real_input, prefs.vroot))
 	prefs.selfhost = prefs.building_v
 	prefs.user_defines = ['fastc_selfhost', 'v3_backend', 'skip_arm64', 'skip_wasm', 'skip_eval']
 	backtrace_enabled := fastc_tcc_backtrace_enabled(prefs.normalized_target_os(), prefs.target.arch)
