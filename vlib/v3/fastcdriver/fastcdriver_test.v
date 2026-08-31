@@ -52,29 +52,6 @@ fn test_fastc_vroot_for_input_replaces_nonempty_only_when_building_v() {
 	assert fastc_vroot_for_input(wrong_nonempty, lookalike, fastc_is_v3_entry(lookalike)) == wrong_nonempty
 }
 
-fn test_fastc_repeat2_diag_request_requires_exact_round_keepc_and_marker() {
-	runner_temp := os.join_path('runner', 'temp')
-	destination := fastc_repeat2_diag_expected_destination(runner_temp)
-	compile_args := ['-silent', '-keepc', '-b', 'fastc', '-gc', 'none', '-selfhost']
-	assert fastc_repeat2_diag_request_is_exact(0, 2, compile_args, '1', runner_temp, destination)
-	assert !fastc_repeat2_diag_request_is_exact(1, 2, compile_args, '1', runner_temp, destination)
-	assert !fastc_repeat2_diag_request_is_exact(0, 1, compile_args, '1', runner_temp, destination)
-	assert !fastc_repeat2_diag_request_is_exact(0, 3, compile_args, '1', runner_temp, destination)
-	assert !fastc_repeat2_diag_request_is_exact(0, 2, compile_args.filter(it != '-keepc'), '1', runner_temp, destination)
-	assert !fastc_repeat2_diag_request_is_exact(0, 2, compile_args, '01', runner_temp, destination)
-}
-
-fn test_fastc_repeat2_diag_request_requires_the_exact_destination() {
-	runner_temp := os.join_path('runner', 'temp')
-	destination := fastc_repeat2_diag_expected_destination(runner_temp)
-	compile_args := ['-keepc']
-	assert destination == os.join_path(runner_temp, fastc_repeat2_diag_source_dir, fastc_repeat2_diag_file)
-	assert fastc_repeat2_diag_request_is_exact(0, 2, compile_args, '1', runner_temp, destination)
-	assert !fastc_repeat2_diag_request_is_exact(0, 2, compile_args, '1', runner_temp, destination + '.bak')
-	assert !fastc_repeat2_diag_request_is_exact(0, 2, compile_args, '1', runner_temp + '-other', destination)
-	assert fastc_repeat2_diag_expected_destination('') == ''
-}
-
 fn test_fastc_parse_bench_child_output() {
 	sample := fastc_parse_bench_child_output('notice\nfastc-bench-child 50123 170 64516\n') or {
 		assert false, 'expected benchmark sample'

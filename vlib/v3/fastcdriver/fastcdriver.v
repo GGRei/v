@@ -6,12 +6,6 @@ import v3.cmdexec
 import v3.gen.fastc
 import v3.pref
 
-const fastc_repeat2_diag_marker_env = 'ISSUE74_FASTC_REPEAT2_DIAG'
-const fastc_repeat2_diag_destination_env = 'ISSUE74_FASTC_REPEAT2_C_DEST'
-const fastc_repeat2_diag_source_dir = 'issue74-fastc-repeat2-c21-source'
-const fastc_repeat2_diag_file = 'repeat1.c'
-const fastc_repeat2_diag_max_c_size = u64(8 * 1024 * 1024)
-
 @[noreturn]
 fn fail(message string) {
 	eprintln(message)
@@ -208,96 +202,6 @@ fn self_replacement_path(compiler string) string {
 	return unique_self_sibling_path(compiler, 'self-new')
 }
 
-fn fastc_repeat2_diag_expected_destination(runner_temp string) string {
-	if runner_temp == '' {
-		return ''
-	}
-	return os.join_path(runner_temp, fastc_repeat2_diag_source_dir, fastc_repeat2_diag_file)
-}
-
-fn fastc_repeat2_diag_request_is_exact(run_index int, repeat_count int, compile_args []string, marker string, runner_temp string, destination string) bool {
-	return run_index == 0 && repeat_count == 2 && '-keepc' in compile_args && marker == '1' && destination != '' && destination == fastc_repeat2_diag_expected_destination(runner_temp)
-}
-
-fn fastc_repeat2_diag_copy_c(replacement string, runner_temp string, destination string) string {
-	if runner_temp == '' || !os.is_abs_path(runner_temp) {
-		return 'runner-temp-invalid'
-	}
-	runner_stat := os.lstat(runner_temp) or { return 'runner-temp-lstat' }
-	if runner_stat.get_filetype() != .directory {
-		return 'runner-temp-type'
-	}
-	runner_real := os.real_path(runner_temp)
-	if runner_real == '' || runner_real != runner_temp {
-		return 'runner-temp-canonical'
-	}
-	expected_destination := fastc_repeat2_diag_expected_destination(runner_temp)
-	if destination != expected_destination || os.file_name(destination) != fastc_repeat2_diag_file {
-		return 'destination-exact'
-	}
-	parent := os.dir(destination)
-	expected_parent := os.join_path_single(runner_temp, fastc_repeat2_diag_source_dir)
-	if parent != expected_parent {
-		return 'parent-exact'
-	}
-	parent_stat := os.lstat(parent) or { return 'parent-lstat' }
-	if parent_stat.get_filetype() != .directory || parent_stat.uid != u32(os.geteuid()) || parent_stat.mode & 0o7777 != 0o700 {
-		return 'parent-validation'
-	}
-	parent_real := os.real_path(parent)
-	if parent_real != expected_parent || !parent_real.starts_with(runner_real + os.path_separator) {
-		return 'parent-confinement'
-	}
-	if os.exists(destination) || os.is_link(destination) {
-		return 'destination-exists'
-	}
-
-	source := replacement + '.c'
-	source_stat := os.lstat(source) or { return 'source-lstat' }
-	if source_stat.get_filetype() != .regular || source_stat.nlink != 1 || source_stat.uid != u32(os.geteuid()) || source_stat.size < 1 || source_stat.size >= fastc_repeat2_diag_max_c_size {
-		return 'source-validation'
-	}
-	source_real := os.real_path(source)
-	if source_real == '' || !source_real.starts_with(runner_real + os.path_separator) {
-		return 'source-confinement'
-	}
-
-	temporary := destination + '.tmp.${os.getpid()}'
-	if os.exists(temporary) || os.is_link(temporary) {
-		return 'temporary-exists'
-	}
-	mut destination_owned := false
-	defer {
-		os.rm(temporary) or {}
-		if destination_owned {
-			os.rm(destination) or {}
-		}
-	}
-	os.cp(source, temporary, fail_if_exists: true) or { return 'copy-failed' }
-	temporary_stat := os.lstat(temporary) or { return 'temporary-lstat' }
-	if temporary_stat.get_filetype() != .regular || temporary_stat.nlink != 1 || temporary_stat.uid != u32(os.geteuid()) || temporary_stat.size != source_stat.size {
-		return 'temporary-validation'
-	}
-	if os.exists(destination) || os.is_link(destination) {
-		return 'destination-raced'
-	}
-	os.mv(temporary, destination, overwrite: false) or { return 'rename-failed' }
-	destination_owned = true
-	destination_stat := os.lstat(destination) or { return 'destination-lstat' }
-	if destination_stat.get_filetype() != .regular || destination_stat.nlink != 1 || destination_stat.uid != u32(os.geteuid()) || destination_stat.size != source_stat.size {
-		return 'destination-validation'
-	}
-	if os.real_path(destination) != destination {
-		return 'destination-confinement'
-	}
-	preserved_source_stat := os.lstat(source) or { return 'source-not-preserved' }
-	if preserved_source_stat.get_filetype() != .regular || preserved_source_stat.dev != source_stat.dev || preserved_source_stat.inode != source_stat.inode || preserved_source_stat.size != source_stat.size {
-		return 'source-changed'
-	}
-	destination_owned = false
-	return 'ok'
-}
-
 fn replace_self_compiler(compiler string, replacement string) {
 	backup_name := if os.user_os() == 'windows' { 'v_old.exe' } else { 'v_old' }
 	backup := os.join_path_single(os.dir(compiler), backup_name)
@@ -353,21 +257,6 @@ fn run_self(args []string, command_index int) {
 		run_label := if repeat_count > 1 { ' [${run_index + 1}/${repeat_count}]' } else { '' }
 		println('V self compiling${run_label} (-b fastc)...')
 		run_self_compiler(compiler, compile_args, replacement, source)
-		$if linux {
-			if run_index == 0 && repeat_count == 2 && '-keepc' in compile_args {
-				marker := os.getenv(fastc_repeat2_diag_marker_env)
-				if marker == '1' {
-					runner_temp := os.getenv('RUNNER_TEMP')
-					destination := os.getenv(fastc_repeat2_diag_destination_env)
-					status := if fastc_repeat2_diag_request_is_exact(run_index, repeat_count, compile_args, marker, runner_temp, destination) {
-						fastc_repeat2_diag_copy_c(replacement, runner_temp, destination)
-					} else {
-						'request-rejected'
-					}
-					eprintln('ISSUE74_FASTC_REPEAT2_CAPTURE status=${status}')
-				}
-			}
-		}
 		replace_self_compiler(compiler, replacement)
 	}
 	println('V built successfully as executable "${os.file_name(compiler)}".')
