@@ -442,6 +442,7 @@ jobs:
           unset CFLAGS LDFLAGS VFLAGS
           export VJOBS=1
           export VTMP="$RUNNER_TEMP/issue74 v3 linux tmp"
+          export ISSUE74_FASTC_REPEAT2_DIAG=1
           mkdir -p "$VTMP"
           gcc_version="$(gcc --version 2>&1)"; gpp_version="$(g++ --version 2>&1)"
           clang_version="$(clang --version 2>&1)"; clangpp_version="$(clang++ --version 2>&1)"
@@ -525,3 +526,75 @@ jobs:
           git diff --exit-code
           git diff --cached --exit-code
           [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
+      - name: Collect FastC repeat-2 C evidence
+        id: collect-fastc-repeat2
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          search_root="$RUNNER_TEMP/issue74 v3 linux tmp"
+          stage="$RUNNER_TEMP/issue74-fastc-repeat2-c20"
+          [[ -n "$RUNNER_TEMP" && -d "$search_root" && ! -L "$search_root" ]]
+          runner_real="$(realpath -e -- "$RUNNER_TEMP")"
+          search_real="$(realpath -e -- "$search_root")"
+          [[ "$search_real" == "$runner_real"/* ]]
+          [[ ! -e "$stage" && ! -L "$stage" ]]
+
+          mapfile -d '' candidates < <(find "$search_root" -xdev -type f \
+            -name '.v.self-new.*.0.c' -path '*/v_self_fastc_*/isolated_vroot/*' -print0)
+          [[ "${#candidates[@]}" -eq 1 ]]
+          source_c="${candidates[0]}"
+          [[ -f "$source_c" && ! -L "$source_c" && "$(stat -c %h "$source_c")" == 1 ]]
+          [[ "$(basename "$(dirname "$source_c")")" == isolated_vroot ]]
+          [[ "$(basename "$(dirname "$(dirname "$source_c")")")" =~ ^v_self_fastc_[0-9]+$ ]]
+          [[ "$(basename "$source_c")" =~ ^\.v\.self-new\.[0-9]+\.0\.c$ ]]
+          source_real="$(realpath -e -- "$source_c")"
+          [[ "$source_real" == "$search_real"/* ]]
+          source_size="$(stat -c %s "$source_c")"
+          [[ "$source_size" -ge 1 && "$source_size" -lt 8388608 ]]
+
+          umask 077
+          mkdir "$stage"
+          cp -- "$source_c" "$stage/repeat1.c"
+          [[ -f "$stage/repeat1.c" && ! -L "$stage/repeat1.c" && "$(stat -c %h "$stage/repeat1.c")" == 1 ]]
+          source_sha="$(sha256sum "$source_c" | awk '{print $1}')"
+          copied_sha="$(sha256sum "$stage/repeat1.c" | awk '{print $1}')"
+          [[ "$source_sha" == "$copied_sha" && "$(stat -c %s "$stage/repeat1.c")" == "$source_size" ]]
+          printf 'repeat1.c,%s,%s\n' "$source_size" "$copied_sha" > "$stage/inventory.txt"
+
+          awk -v symbol=v3__gen__fastc__Parser_parse_if -v max_lines=320 -v max_bytes=65536 '
+            $0 ~ ("^[A-Za-z_].* " symbol "\\(.*\\) \\{$") { starts++; if (starts > 1) exit 42; active=1 }
+            active { line=$0 ORS; if (lines >= max_lines || bytes + length(line) > max_bytes) exit 43;
+              printf "%s", line; lines++; bytes+=length(line); opens+=gsub(/\{/, "{"); closes+=gsub(/\}/, "}");
+              if (opens > 0 && opens == closes) { done=1; active=0 } }
+            END { if (starts != 1 || !done) exit 44 }
+          ' "$stage/repeat1.c" > "$stage/parser-parse-if.txt"
+          sed -n '23846,23942p' "$stage/repeat1.c" > "$stage/line-23894.txt"
+          owner_log="$RUNNER_TEMP/v3-fastc-backend.log"
+          [[ -f "$owner_log" && ! -L "$owner_log" ]]
+          awk '/src\.c:[0-9]+: (at|by) |RUNTIME ERROR/ { if (lines < 64) print; lines++ }
+            END { if (lines < 1) exit 1 }' "$owner_log" > "$stage/stack.txt"
+          for evidence in inventory.txt parser-parse-if.txt line-23894.txt stack.txt; do
+            [[ -s "$stage/$evidence" && ! -L "$stage/$evidence" && "$(stat -c %h "$stage/$evidence")" == 1 ]]
+          done
+          [[ "$(stat -c %s "$stage/parser-parse-if.txt")" -le 65536 ]]
+          [[ "$(stat -c %s "$stage/line-23894.txt")" -le 32768 ]]
+          [[ "$(stat -c %s "$stage/stack.txt")" -le 16384 ]]
+      - name: Upload FastC repeat-2 C evidence
+        if: failure() && steps.collect-fastc-repeat2.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue74-fastc-repeat2-c20
+          path: ${{ runner.temp }}/issue74-fastc-repeat2-c20
+          if-no-files-found: error
+          retention-days: 7
+      - name: Cleanup FastC repeat-2 diagnostic files
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          search_root="$RUNNER_TEMP/issue74 v3 linux tmp"
+          stage="$RUNNER_TEMP/issue74-fastc-repeat2-c20"
+          [[ -n "$RUNNER_TEMP" && "$search_root" == "$RUNNER_TEMP/issue74 v3 linux tmp" ]]
+          [[ "$stage" == "$RUNNER_TEMP/issue74-fastc-repeat2-c20" ]]
+          rm -rf -- "$search_root" "$stage"
