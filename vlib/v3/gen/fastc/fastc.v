@@ -14,28 +14,138 @@ fn fastc_c14_hash(text string) u64 {
 	return value
 }
 
-fn fastc_c14_write(name string, text string) {
+fn fastc_c14_write_once(name string, text string) bool {
 	$if linux {
 		phase := os.getenv('V3_FASTC_C14_PHASE')
 		if phase !in ['repeat-1-of-2', 'repeat-2-of-2'] {
-			return
+			return false
 		}
 		dir := os.getenv('V3_FASTC_C14_DIR')
 		if dir == '' || !os.is_abs_path(dir) || !os.is_dir(dir) || os.is_link(dir)
 			|| os.real_path(dir) != dir {
-			return
+			return false
 		}
 		path := os.join_path_single(dir, '${phase}-${name}')
 		tmp := os.join_path_single(dir, '.${phase}-${name}.tmp')
 		if os.exists(path) || os.is_link(path) || os.exists(tmp) || os.is_link(tmp) {
-			return
+			return false
 		}
-		os.write_file(tmp, text) or { return }
+		os.write_file(tmp, text) or { return false }
 		if text.len == 0 || text.len > 4096 || !os.is_file(tmp) || os.is_link(tmp) {
 			os.rm(tmp) or {}
+			return false
+		}
+		os.mv(tmp, path) or {
+			os.rm(tmp) or {}
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+fn fastc_c14_write(name string, text string) {
+	_ = fastc_c14_write_once(name, text)
+}
+
+fn fastc_c18_active() bool {
+	$if linux {
+		return os.getenv('V3_FASTC_C14_PHASE') == 'repeat-2-of-2'
+			&& os.getenv('V3_FASTC_C14_DIR') != '' && os.getenv('V3_FASTC_C18_CONTEXT_DIR') != ''
+	}
+	return false
+}
+
+fn fastc_c18_atomic_write(dir string, name string, text string, max_size int) bool {
+	$if linux {
+		if dir == '' || !os.is_abs_path(dir) || !os.is_dir(dir) || os.is_link(dir)
+			|| os.real_path(dir) != dir || text.len < 1 || text.len > max_size {
+			return false
+		}
+		path := os.join_path_single(dir, name)
+		tmp := os.join_path_single(dir, '.${name}.tmp')
+		if os.exists(path) || os.is_link(path) || os.exists(tmp) || os.is_link(tmp) {
+			return false
+		}
+		os.write_file(tmp, text) or {
+			os.rm(tmp) or {}
+			return false
+		}
+		if !os.is_file(tmp) || os.is_link(tmp) {
+			os.rm(tmp) or {}
+			return false
+		}
+		os.mv(tmp, path) or {
+			os.rm(tmp) or {}
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+fn fastc_c18_write_context(sources []FastcSourceFile, rows []string) {
+	$if linux {
+		if !fastc_c18_active() {
 			return
 		}
-		os.mv(tmp, path) or { os.rm(tmp) or {} }
+		mut source_rows := []string{}
+		for index, source in sources {
+			base := os.base(source.path)
+			if base in ['chan_option_result.v', 'os.v'] {
+				source_rows << '${index}:${base}:${source.header.module_name}'
+			}
+		}
+		source_paths := sources.map(it.path)
+		mut args_rows := []string{}
+		mut args_total_bytes := 0
+		for arg in os.args {
+			args_total_bytes += arg.len
+		}
+		mut args_encoded_bytes := 0
+		limit := if os.args.len < 32 { os.args.len } else { 32 }
+		for index in 0 .. limit {
+			arg := os.args[index]
+			remaining := 8192 - args_encoded_bytes
+			if remaining <= 0 {
+				break
+			}
+			keep := if arg.len < 256 && arg.len < remaining {
+				arg.len
+			} else if remaining < 256 {
+				remaining
+			} else {
+				256
+			}
+			args_encoded_bytes += keep
+			args_rows << '${index}:len=${arg.len}:hash=${fastc_c14_hash(arg)}:truncated=${keep < arg.len}:hex=${arg.bytes()[..keep].hex()}'
+		}
+		text := 'schema=c18-context-v1\ncontext_pid=${os.getpid()}\ncontext_ppid=${os.getppid()}\nphase=repeat-2-of-2\nsource_count=${sources.len}\nsource_hash=${fastc_c14_hash(source_paths.join('\\n'))}\nsource_indices=${source_rows.join(',')}\nargs_count=${os.args.len}\nargs_recorded=${args_rows.len}\nargs_total_bytes=${args_total_bytes}\nargs_encoded_bytes=${args_encoded_bytes}\n${args_rows.join('\\n')}\n${rows.join('\\n')}\n'
+		_ = fastc_c18_atomic_write(os.getenv('V3_FASTC_C18_CONTEXT_DIR'),
+			'context-${os.getpid()}.txt', text, 60000)
+	}
+}
+
+fn fastc_c18_publish_error_snapshot(error_text string) {
+	$if linux {
+		if !fastc_c18_active() {
+			return
+		}
+		context_dir := os.getenv('V3_FASTC_C18_CONTEXT_DIR')
+		raw_dir := os.getenv('V3_FASTC_C14_DIR')
+		pid := os.getpid()
+		context_path := os.join_path_single(context_dir, 'context-${pid}.txt')
+		if !os.is_file(context_path) || os.is_link(context_path) {
+			return
+		}
+		context := os.read_file(context_path) or { '' }
+		if context.len < 1 || context.len > 60000 {
+			return
+		}
+		snapshot := 'schema=c18-error-v1\nsnapshot_pid=${pid}\ncontext_size=${context.len}\nerror_size=${error_text.len}\n---context---\n${context}---error---\n${error_text}'
+		if fastc_c18_atomic_write(raw_dir, 'c18-error-${pid}.txt', snapshot, 65536) {
+			os.rm(context_path) or {}
+		}
 	}
 }
 
@@ -1182,9 +1292,15 @@ fn generate_source_files(input_sources []FastcSourceFile, module_aliases map[str
 	mut globals := map[string]string{}
 	mut public_globals := map[string]bool{}
 	mut type_source_paths := map[string]bool{}
+	mut c18 := FastcC18DeclarationSummary{}
 	fastc_collect_declaration_indexes(sources, prefs, mut declared_types, mut declared_kinds, mut
 		enum_flags, mut params_structs, mut type_source_paths, mut constants, mut public_constants, mut
-		globals, mut public_globals)!
+		globals, mut public_globals, mut c18)!
+	$if linux {
+		if fastc_c18_active() {
+			fastc_c18_write_context(sources, c18.rows)
+		}
+	}
 	$if linux {
 		if os.getenv('V3_FASTC_C14_DIR') != ''
 			&& os.getenv('V3_FASTC_C14_PHASE') in ['repeat-1-of-2', 'repeat-2-of-2'] {

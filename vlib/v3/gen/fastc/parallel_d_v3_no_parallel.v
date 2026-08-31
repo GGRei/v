@@ -32,11 +32,23 @@ fn fastc_collect_reference_partials(sources []FastcSourceFile, prefs &pref.Prefe
 	}
 }
 
-fn fastc_collect_declaration_indexes(sources []FastcSourceFile, prefs &pref.Preferences, mut declared_types map[string]bool, mut declared_kinds map[string]FastcDeclaredTypeKind, mut enum_flags map[string]bool, mut params_structs map[string]bool, mut type_source_paths map[string]bool, mut constants map[string]string, mut public_constants map[string]bool, mut globals map[string]string, mut public_globals map[string]bool) ! {
+fn fastc_collect_declaration_indexes(sources []FastcSourceFile, prefs &pref.Preferences, mut declared_types map[string]bool, mut declared_kinds map[string]FastcDeclaredTypeKind, mut enum_flags map[string]bool, mut params_structs map[string]bool, mut type_source_paths map[string]bool, mut constants map[string]string, mut public_constants map[string]bool, mut globals map[string]string, mut public_globals map[string]bool, mut c18 FastcC18DeclarationSummary) ! {
 	partial := fastc_collect_declaration_chunk(sources, prefs, 0, sources.len)
+	$if linux {
+		if fastc_c18_active() {
+			c18.rows << 'jobs=1'
+			c18.rows << 'bounds=0,${sources.len}'
+			c18.rows << fastc_c18_partial_summary('partial-0', partial)
+		}
+	}
 	fastc_merge_declaration_partial(partial, mut declared_types, mut declared_kinds, mut
 		enum_flags, mut params_structs, mut type_source_paths, mut constants, mut public_constants, mut
 		globals, mut public_globals)!
+	$if linux {
+		if fastc_c18_active() {
+			c18.rows << fastc_c18_map_summary('merged-0', declared_types)
+		}
+	}
 }
 
 fn fastc_collect_signatures(sources []FastcSourceFile, prefs &pref.Preferences, declared_types map[string]bool, declared_type_c_names map[string]string, params_structs map[string]bool, mut functions map[string]FastcFunctionSignature, mut interface_methods map[string]bool, mut interface_fields map[string]FastcInterfaceField, mut embed_embedders []string, mut embed_embeddeds []string) ! {

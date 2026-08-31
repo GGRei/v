@@ -295,6 +295,21 @@ mut:
 	error_message       string
 }
 
+struct FastcC18DeclarationSummary {
+mut:
+	rows []string
+}
+
+fn fastc_c18_map_summary(label string, values map[string]bool) string {
+	mut keys := values.keys()
+	keys.sort()
+	return '${label}:count=${keys.len}:hash=${fastc_c14_hash(keys.join('\\n'))}:IError=${'IError' in values}:builtin.IError=${'builtin.IError' in values}'
+}
+
+fn fastc_c18_partial_summary(label string, partial FastcDeclarationPartial) string {
+	return fastc_c18_map_summary(label, partial.declared_types)
+}
+
 fn fastc_collect_declaration_chunk(sources []FastcSourceFile, prefs &pref.Preferences, start int, end int) FastcDeclarationPartial {
 	mut partial := FastcDeclarationPartial{
 		declared_types:      map[string]bool{}

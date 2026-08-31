@@ -258,16 +258,41 @@ fn fastc_collect_reference_partials(sources []FastcSourceFile, prefs &pref.Prefe
 	}
 }
 
-fn fastc_collect_declaration_indexes(sources []FastcSourceFile, prefs &pref.Preferences, mut declared_types map[string]bool, mut declared_kinds map[string]FastcDeclaredTypeKind, mut enum_flags map[string]bool, mut params_structs map[string]bool, mut type_source_paths map[string]bool, mut constants map[string]string, mut public_constants map[string]bool, mut globals map[string]string, mut public_globals map[string]bool) ! {
+fn fastc_collect_declaration_indexes(sources []FastcSourceFile, prefs &pref.Preferences, mut declared_types map[string]bool, mut declared_kinds map[string]FastcDeclaredTypeKind, mut enum_flags map[string]bool, mut params_structs map[string]bool, mut type_source_paths map[string]bool, mut constants map[string]string, mut public_constants map[string]bool, mut globals map[string]string, mut public_globals map[string]bool, mut c18 FastcC18DeclarationSummary) ! {
 	jobs := fastc_parallel_jobs(sources, prefs)
+	$if linux {
+		if fastc_c18_active() {
+			c18.rows << 'jobs=${jobs}'
+		}
+	}
 	if jobs <= 1 {
 		partial := fastc_collect_declaration_chunk(sources, prefs, 0, sources.len)
+		$if linux {
+			if fastc_c18_active() {
+				c18.rows << 'bounds=0,${sources.len}'
+				c18.rows << fastc_c18_partial_summary('partial-0', partial)
+			}
+		}
 		fastc_merge_declaration_partial(partial, mut declared_types, mut declared_kinds, mut
 			enum_flags, mut params_structs, mut type_source_paths, mut constants, mut public_constants,
 			mut globals, mut public_globals)!
+		$if linux {
+			if fastc_c18_active() {
+				c18.rows << fastc_c18_map_summary('merged-0', declared_types)
+			}
+		}
 		return
 	}
 	bounds := fastc_chunk_bounds(sources, jobs)
+	$if linux {
+		if fastc_c18_active() {
+			mut bound_rows := []string{cap: bounds.len}
+			for bound in bounds {
+				bound_rows << bound.str()
+			}
+			c18.rows << 'bounds=${bound_rows.join(',')}'
+		}
+	}
 	first_thread := spawn fastc_collect_declaration_chunk(sources, prefs, bounds[0], bounds[1])
 	mut chunk_threads := [first_thread]
 	for chunk_idx in 1 .. bounds.len / 2 {
@@ -277,9 +302,19 @@ fn fastc_collect_declaration_indexes(sources []FastcSourceFile, prefs &pref.Pref
 	}
 	for chunk_idx in 0 .. chunk_threads.len {
 		partial := chunk_threads[chunk_idx].wait()
+		$if linux {
+			if fastc_c18_active() {
+				c18.rows << fastc_c18_partial_summary('partial-${chunk_idx}', partial)
+			}
+		}
 		fastc_merge_declaration_partial(partial, mut declared_types, mut declared_kinds, mut
 			enum_flags, mut params_structs, mut type_source_paths, mut constants, mut public_constants,
 			mut globals, mut public_globals)!
+		$if linux {
+			if fastc_c18_active() {
+				c18.rows << fastc_c18_map_summary('merged-${chunk_idx}', declared_types)
+			}
+		}
 	}
 }
 

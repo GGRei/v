@@ -512,13 +512,18 @@ jobs:
             test_cached_directive_text_preserves_cpp_linker_requirement \
             test_linker_cache_selector_is_conditional_on_source_directives
           c14_dir="$RUNNER_TEMP/issue74-fastc-c14"
+          c18_context_dir="$RUNNER_TEMP/issue74-fastc-c18-context"
           umask 077
           [[ -n "$RUNNER_TEMP" && "$c14_dir" == "$RUNNER_TEMP/issue74-fastc-c14" ]]
+          [[ "$c18_context_dir" == "$RUNNER_TEMP/issue74-fastc-c18-context" ]]
           [[ ! -e "$c14_dir" && ! -L "$c14_dir" ]]
-          mkdir "$c14_dir"
+          [[ ! -e "$c18_context_dir" && ! -L "$c18_context_dir" ]]
+          mkdir "$c14_dir" "$c18_context_dir"
           [[ -d "$c14_dir" && ! -L "$c14_dir" && "$(stat -c %a "$c14_dir")" == 700 ]]
+          [[ -d "$c18_context_dir" && ! -L "$c18_context_dir" && "$(stat -c %a "$c18_context_dir")" == 700 ]]
           (
             export V3_FASTC_C14_DIR="$c14_dir"
+            export V3_FASTC_C18_CONTEXT_DIR="$c18_context_dir"
             run_owner v3-fastc-backend vlib/v3/tests/fastc_backend_test.v \
               test_v_self_accepts_fastc_backend \
               test_fastc_backend_parses_directly_to_c_without_ast_fallback
@@ -570,13 +575,23 @@ jobs:
           a_fixed=(repeat-1-of-2-sources.txt repeat-1-of-2-declared.txt repeat-2-of-2-sources.txt repeat-2-of-2-declared.txt repeat-2-of-2-error.txt gen1.c gen1.meta)
           b_fixed=(selfhost.c selfhost.meta)
           mapfile -t actual < <(find "$raw" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
-          [[ "${#actual[@]}" -ge 1 && "${#actual[@]}" -le 21 ]]
+          [[ "${#actual[@]}" -ge 1 && "${#actual[@]}" -le 22 ]]
           a_count=0
           b_count=0
+          c18_count=0
+          c18_name=''
+          c18_pid=''
           trace_names=()
           for name in "${actual[@]}"; do
             case " ${a_fixed[*]} " in *" $name "*) a_count=$((a_count + 1)); continue ;; esac
             case " ${b_fixed[*]} " in *" $name "*) b_count=$((b_count + 1)); continue ;; esac
+            if [[ "$name" =~ ^c18-error-([0-9]+)\.txt$ ]]; then
+              c18_count=$((c18_count + 1))
+              [[ "$c18_count" -eq 1 ]]
+              c18_name="$name"
+              c18_pid="${BASH_REMATCH[1]}"
+              continue
+            fi
             if [[ "$name" =~ ^trace-([0-9]+)-(0[1-9]|1[0-2])\.txt$ ]]; then
               trace_names+=("$name")
               continue
@@ -605,6 +620,7 @@ jobs:
             [[ -f "$file" && ! -L "$file" && "$(stat -c %h "$file")" == 1 ]]
             size="$(stat -c %s "$file")"
             case "$name" in
+              c18-error-*.txt) [[ "$size" -ge 1 && "$size" -le 65536 ]] ;;
               trace-*.txt) [[ "$size" -ge 1 && "$size" -le 1024 ]] ;;
               *.txt) [[ "$size" -ge 1 && "$size" -le 4096 ]] ;;
               *.meta) [[ "$size" -ge 1 && "$size" -le 256 ]] ;;
@@ -654,6 +670,44 @@ jobs:
           }
           if [[ "$a_present" -eq 1 ]]; then status component_a complete; elif [[ "$a_count" -gt 0 ]]; then status component_a partial; else status component_a missing; fi
           if [[ "$b_present" -eq 1 ]]; then status component_b complete; elif [[ "$b_count" -gt 0 || "${#trace_names[@]}" -gt 0 ]]; then status component_b partial; else status component_b missing; fi
+          if [[ "$c18_count" -eq 1 ]]; then
+            status component_c18 present
+            c18_file="$raw/$c18_name"
+            if [[ "$(head -n 1 "$c18_file")" == schema=c18-error-v1
+              && "$(field "$c18_file" snapshot_pid)" == "$c18_pid"
+              && "$(field "$c18_file" context_pid)" == "$c18_pid"
+              && "$(field "$c18_file" context_ppid)" =~ ^[0-9]+$
+              && "$(field "$c18_file" pid)" == "$c18_pid"
+              && "$(field "$c18_file" context_size)" =~ ^[0-9]+$
+              && "$(field "$c18_file" error_size)" =~ ^[0-9]+$
+              && "$(field "$c18_file" raw)" == IError
+              && "$(field "$c18_file" path)" == os.v
+              && "$(field "$c18_file" module)" == os
+              && "$(field "$c18_file" typekey)" == os.IError
+              && "$(field "$c18_file" source_count)" =~ ^[0-9]+$
+              && "$(field "$c18_file" source_hash)" =~ ^[0-9]+$
+              && "$(field "$c18_file" source_indices)" == *:chan_option_result.v:*
+              && "$(field "$c18_file" source_indices)" == *:os.v:os*
+              && "$(field "$c18_file" args_count)" =~ ^[0-9]+$
+              && "$(field "$c18_file" args_recorded)" =~ ^[0-9]+$
+              && "$(field "$c18_file" args_total_bytes)" =~ ^[0-9]+$
+              && "$(field "$c18_file" args_encoded_bytes)" =~ ^[0-9]+$
+              && "$(field "$c18_file" jobs)" =~ ^[0-9]+$
+              && "$(field "$c18_file" bounds)" =~ ^[0-9]+(,[0-9]+)+$
+              && "$(grep -Ec '^partial-[0-9]+:count=[0-9]+:hash=[0-9]+:IError=(true|false):builtin\.IError=(true|false)$' "$c18_file")" -ge 1
+              && "$(grep -Ec '^merged-[0-9]+:count=[0-9]+:hash=[0-9]+:IError=(true|false):builtin\.IError=(true|false)$' "$c18_file")" -ge 1
+              && "$(grep -c '^schema=c18-context-v1$' "$c18_file")" -eq 1
+              && "$(grep -c '^phase=repeat-2-of-2$' "$c18_file")" -eq 2
+              && "$(grep -c '^---context---$' "$c18_file")" -eq 1
+              && "$(grep -c '^---error---$' "$c18_file")" -eq 1 ]]; then
+              status c18_snapshot_schema pass
+            else
+              status c18_snapshot_schema fail
+            fi
+          else
+            status component_c18 missing
+            status c18_snapshot_schema missing
+          fi
           for file in "${a_fixed[@]}"; do
             if [[ " ${actual[*]} " != *" $file "* ]]; then
               status "${file}_metadata" missing
@@ -820,6 +874,7 @@ jobs:
             [[ -f "$file" && ! -L "$file" && "$(stat -c %h "$file")" == 1 ]]
             size="$(stat -c %s "$file")"
             case "$name" in
+              c18-error-*.txt) [[ "$size" -ge 1 && "$size" -le 65536 ]] ;;
               trace-*.txt) [[ "$size" -ge 1 && "$size" -le 1024 ]] ;;
               *.txt) [[ "$size" -ge 1 && "$size" -le 4096 ]] ;;
               *.meta) [[ "$size" -ge 1 && "$size" -le 256 ]] ;;
@@ -854,6 +909,7 @@ jobs:
           set -euo pipefail
           raw="$RUNNER_TEMP/issue74-fastc-c14"
           stage="$RUNNER_TEMP/issue74-fastc-c14-upload"
+          context="$RUNNER_TEMP/issue74-fastc-c18-context"
           [[ -n "$RUNNER_TEMP" ]]
-          [[ "$raw" == "$RUNNER_TEMP/issue74-fastc-c14" && "$stage" == "$RUNNER_TEMP/issue74-fastc-c14-upload" ]]
-          rm -rf -- "$raw" "$stage"
+          [[ "$raw" == "$RUNNER_TEMP/issue74-fastc-c14" && "$stage" == "$RUNNER_TEMP/issue74-fastc-c14-upload" && "$context" == "$RUNNER_TEMP/issue74-fastc-c18-context" ]]
+          rm -rf -- "$raw" "$stage" "$context"
