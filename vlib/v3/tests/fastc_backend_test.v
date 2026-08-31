@@ -53,11 +53,8 @@ fn test_v_self_accepts_fastc_backend() {
 	root := os.join_path(os.vtmp_dir(), 'v_self_fastc_${os.getpid()}')
 	os.rmdir_all(root) or {}
 	os.mkdir_all(root) or { panic(err) }
-	mut keep_failed_repeat_root := false
 	defer {
-		if !keep_failed_repeat_root {
-			os.rmdir_all(root) or {}
-		}
+		os.rmdir_all(root) or {}
 	}
 	vflags_value_binary := os.join_path(root, 'v from x2 value')
 	vflags_value_build := run_with_v_environment(@VEXE, ['-exclude', 'x2', 'self', '-silent', '-o',
@@ -134,7 +131,6 @@ fn test_v_self_accepts_fastc_backend() {
 		repeated_build_args.insert(2, '-keepc')
 	}
 	repeated_build := run_with_v_environment(isolated_vexe, repeated_build_args, '', isolated_vexe)
-	keep_failed_repeat_root = repeated_build.exit_code != 0 && repeat2_diag
 	assert repeated_build.exit_code == 0, repeated_build.output
 	compiling_lines :=
 		repeated_build.output.split_into_lines().filter(it.contains('V self compiling'))

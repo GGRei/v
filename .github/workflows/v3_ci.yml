@@ -435,6 +435,28 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - name: Build V
         run: make -j4
+      - name: Prepare FastC repeat-2 C handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          runner_temp="${RUNNER_TEMP:-}"
+          github_env="${GITHUB_ENV:-}"
+          [[ -n "$runner_temp" && -n "$github_env" ]]
+          [[ -d "$runner_temp" && ! -L "$runner_temp" ]]
+          runner_real="$(realpath -e -- "$runner_temp")"
+          [[ "$runner_real" == "$runner_temp" ]]
+          source_dir="$runner_temp/issue74-fastc-repeat2-c21-source"
+          destination="$source_dir/repeat1.c"
+          [[ ! -e "$source_dir" && ! -L "$source_dir" ]]
+          umask 077
+          mkdir -m 0700 -- "$source_dir"
+          [[ -d "$source_dir" && ! -L "$source_dir" ]]
+          source_dir_real="$(realpath -e -- "$source_dir")"
+          [[ "$source_dir_real" == "$runner_real/issue74-fastc-repeat2-c21-source" ]]
+          [[ "$(stat -c %a "$source_dir")" == 700 ]]
+          [[ ! -e "$destination" && ! -L "$destination" ]]
+          printf 'ISSUE74_FASTC_REPEAT2_DIAG=1\n' >> "$github_env"
+          printf 'ISSUE74_FASTC_REPEAT2_C_DEST=%s\n' "$destination" >> "$github_env"
       - name: Run Issue 74 V3 owners
         shell: bash
         run: |
@@ -442,7 +464,6 @@ jobs:
           unset CFLAGS LDFLAGS VFLAGS
           export VJOBS=1
           export VTMP="$RUNNER_TEMP/issue74 v3 linux tmp"
-          export ISSUE74_FASTC_REPEAT2_DIAG=1
           mkdir -p "$VTMP"
           gcc_version="$(gcc --version 2>&1)"; gpp_version="$(g++ --version 2>&1)"
           clang_version="$(clang --version 2>&1)"; clangpp_version="$(clang++ --version 2>&1)"
@@ -531,61 +552,187 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          set -euo pipefail
-          search_root="$RUNNER_TEMP/issue74 v3 linux tmp"
-          stage="$RUNNER_TEMP/issue74-fastc-repeat2-c20"
-          [[ -n "$RUNNER_TEMP" && -d "$search_root" && ! -L "$search_root" ]]
-          runner_real="$(realpath -e -- "$RUNNER_TEMP")"
-          search_real="$(realpath -e -- "$search_root")"
-          [[ "$search_real" == "$runner_real"/* ]]
-          [[ ! -e "$stage" && ! -L "$stage" ]]
+          set -Eeuo pipefail
+          phase=precopy
+          trap 'rc=$?; printf "C21_COLLECTOR_ERR phase=%s line=%s rc=%s\n" "$phase" "$LINENO" "$rc" >&2; exit "$rc"' ERR
+          precopy_fail() {
+            printf 'C21_PRECOPY_FAIL id=%s\n' "$1" >&2
+            exit 1
+          }
+          copy_fail() {
+            printf 'C21_COPY_FAIL id=%s\n' "$1" >&2
+            exit 1
+          }
 
-          mapfile -d '' candidates < <(find "$search_root" -xdev -type f \
-            -name '.v.self-new.*.0.c' -path '*/v_self_fastc_*/isolated_vroot/*' -print0)
-          [[ "${#candidates[@]}" -eq 1 ]]
-          source_c="${candidates[0]}"
-          [[ -f "$source_c" && ! -L "$source_c" && "$(stat -c %h "$source_c")" == 1 ]]
-          [[ "$(basename "$(dirname "$source_c")")" == isolated_vroot ]]
-          [[ "$(basename "$(dirname "$(dirname "$source_c")")")" =~ ^v_self_fastc_[0-9]+$ ]]
-          [[ "$(basename "$source_c")" =~ ^\.v\.self-new\.[0-9]+\.0\.c$ ]]
-          source_real="$(realpath -e -- "$source_c")"
-          [[ "$source_real" == "$search_real"/* ]]
-          source_size="$(stat -c %s "$source_c")"
-          [[ "$source_size" -ge 1 && "$source_size" -lt 8388608 ]]
+          runner_temp="${RUNNER_TEMP:-}"
+          github_output="${GITHUB_OUTPUT:-}"
+          [[ -n "$runner_temp" ]] || precopy_fail runner-temp-empty
+          [[ -n "$github_output" ]] || precopy_fail github-output-empty
+          source_dir="$runner_temp/issue74-fastc-repeat2-c21-source"
+          source_c="$source_dir/repeat1.c"
+          stage="$runner_temp/issue74-fastc-repeat2-c21"
+          [[ "${ISSUE74_FASTC_REPEAT2_DIAG:-}" == 1 ]] || precopy_fail marker
+          [[ "${ISSUE74_FASTC_REPEAT2_C_DEST:-}" == "$source_c" ]] \
+            || precopy_fail destination-env
+          [[ -d "$runner_temp" ]] || precopy_fail runner-temp-not-directory
+          [[ ! -L "$runner_temp" ]] || precopy_fail runner-temp-symlink
+          runner_real="$(realpath -e -- "$runner_temp")" || precopy_fail runner-temp-realpath
+          [[ "$runner_real" == "$runner_temp" ]] || precopy_fail runner-temp-canonical
+          [[ -d "$source_dir" ]] || precopy_fail source-dir-not-directory
+          [[ ! -L "$source_dir" ]] || precopy_fail source-dir-symlink
+          source_dir_real="$(realpath -e -- "$source_dir")" || precopy_fail source-dir-realpath
+          [[ "$source_dir_real" == "$runner_real/issue74-fastc-repeat2-c21-source" ]] \
+            || precopy_fail source-dir-confinement
+          [[ "$(stat -c %a "$source_dir")" == 700 ]] || precopy_fail source-dir-mode
+          [[ ! -e "$stage" ]] || precopy_fail stage-already-exists
+          [[ ! -L "$stage" ]] || precopy_fail stage-symlink
+
+          [[ -f "$source_c" ]] || precopy_fail source-not-regular
+          [[ ! -L "$source_c" ]] || precopy_fail source-symlink
+          source_nlink="$(stat -c %h "$source_c")" || precopy_fail source-nlink-stat
+          [[ "$source_nlink" == 1 ]] || precopy_fail source-nlink
+          source_real="$(realpath -e -- "$source_c")" || precopy_fail source-realpath
+          [[ "$source_real" == "$source_dir_real/repeat1.c" ]] || precopy_fail source-confinement
+          source_size="$(stat -c %s "$source_c")" || precopy_fail source-size-stat
+          [[ "$source_size" -ge 1 && "$source_size" -lt 8388608 ]] || precopy_fail source-size
 
           umask 077
           mkdir "$stage"
-          cp -- "$source_c" "$stage/repeat1.c"
-          [[ -f "$stage/repeat1.c" && ! -L "$stage/repeat1.c" && "$(stat -c %h "$stage/repeat1.c")" == 1 ]]
-          source_sha="$(sha256sum "$source_c" | awk '{print $1}')"
-          copied_sha="$(sha256sum "$stage/repeat1.c" | awk '{print $1}')"
-          [[ "$source_sha" == "$copied_sha" && "$(stat -c %s "$stage/repeat1.c")" == "$source_size" ]]
-          printf 'repeat1.c,%s,%s\n' "$source_size" "$copied_sha" > "$stage/inventory.txt"
+          copied_c="$stage/repeat1.c"
+          cp -- "$source_c" "$copied_c"
+          [[ -f "$copied_c" ]] || copy_fail copy-not-regular
+          [[ ! -L "$copied_c" ]] || copy_fail copy-symlink
+          copied_nlink="$(stat -c %h "$copied_c")" || copy_fail copy-nlink-stat
+          [[ "$copied_nlink" == 1 ]] || copy_fail copy-nlink
+          source_sha="$(sha256sum "$source_c" | awk '{print $1}')" || copy_fail source-sha
+          copied_sha="$(sha256sum "$copied_c" | awk '{print $1}')" || copy_fail copy-sha
+          copied_size="$(stat -c %s "$copied_c")" || copy_fail copy-size-stat
+          [[ "$copied_size" == "$source_size" ]] || copy_fail copy-size
+          [[ "$copied_sha" == "$source_sha" ]] || copy_fail copy-sha-mismatch
+          printf 'has_c=true\n' >> "$github_output"
+          phase=postcopy
 
-          awk -v symbol=v3__gen__fastc__Parser_parse_if -v max_lines=320 -v max_bytes=65536 '
-            $0 ~ ("^[A-Za-z_].* " symbol "\\(.*\\) \\{$") { starts++; if (starts > 1) exit 42; active=1 }
-            active { line=$0 ORS; if (lines >= max_lines || bytes + length(line) > max_bytes) exit 43;
+          inventory_rc=0
+          if printf 'repeat1.c,%s,%s\n' "$copied_size" "$copied_sha" > "$stage/inventory.txt"; then
+            inventory_rc=0
+          else
+            inventory_rc=$?
+          fi
+
+          parser_rc=0
+          if awk -v symbol=v3__gen__fastc__Parser_parse_if -v max_lines=320 -v max_bytes=65536 '
+            $0 ~ ("^[A-Za-z_].* " symbol "\\(.*\\) \\{$") {
+              starts++; if (starts > 1) { status=42; exit }; active=1
+            }
+            active { line=$0 ORS;
+              if (lines >= max_lines || bytes + length(line) > max_bytes) { status=43; exit };
               printf "%s", line; lines++; bytes+=length(line); opens+=gsub(/\{/, "{"); closes+=gsub(/\}/, "}");
               if (opens > 0 && opens == closes) { done=1; active=0 } }
-            END { if (starts != 1 || !done) exit 44 }
-          ' "$stage/repeat1.c" > "$stage/parser-parse-if.txt"
-          sed -n '23846,23942p' "$stage/repeat1.c" > "$stage/line-23894.txt"
-          owner_log="$RUNNER_TEMP/v3-fastc-backend.log"
-          [[ -f "$owner_log" && ! -L "$owner_log" ]]
-          awk '/src\.c:[0-9]+: (at|by) |RUNTIME ERROR/ { if (lines < 64) print; lines++ }
-            END { if (lines < 1) exit 1 }' "$owner_log" > "$stage/stack.txt"
-          for evidence in inventory.txt parser-parse-if.txt line-23894.txt stack.txt; do
-            [[ -s "$stage/$evidence" && ! -L "$stage/$evidence" && "$(stat -c %h "$stage/$evidence")" == 1 ]]
+            END { if (status == 0 && (starts != 1 || !done)) status=44; exit status }
+          ' "$copied_c" > "$stage/parser-parse-if.txt"; then
+            parser_rc=0
+          else
+            parser_rc=$?
+          fi
+
+          window_rc=0
+          if awk -v first=23846 -v last=23942 -v max_bytes=32768 '
+            NR >= first && NR <= last {
+              line=$0 ORS; if (bytes + length(line) > max_bytes) { status=42; exit };
+              printf "%s", line; lines++; bytes+=length(line)
+            }
+            END { if (status == 0 && lines != last - first + 1) status=43; exit status }
+          ' "$copied_c" > "$stage/line-23894.txt"; then
+            window_rc=0
+          else
+            window_rc=$?
+          fi
+
+          owner_log="$runner_temp/v3-fastc-backend.log"
+          stack_rc=0
+          if [[ ! -f "$owner_log" || -L "$owner_log" ]]; then
+            stack_rc=50
+            printf 'owner-log-unavailable\n' > "$stage/stack.txt"
+          elif awk -v max_lines=64 -v max_bytes=16384 '
+            /src\.c:[0-9]+: (at|by) |RUNTIME ERROR/ {
+              line=$0 ORS; matches++;
+              if (lines >= max_lines || bytes + length(line) > max_bytes) { status=42; exit };
+              printf "%s", line; lines++; bytes+=length(line)
+            }
+            END { if (status == 0 && matches < 1) status=43; exit status }
+          ' "$owner_log" > "$stage/stack.txt"; then
+            stack_rc=0
+          else
+            stack_rc=$?
+          fi
+
+          check_evidence() {
+            local path="$1" max_bytes="$2" size nlink
+            [[ -f "$path" && ! -L "$path" ]] || return 51
+            nlink="$(stat -c %h "$path")" || return 52
+            [[ "$nlink" == 1 ]] || return 53
+            size="$(stat -c %s "$path")" || return 54
+            [[ "$size" -ge 1 && "$size" -le "$max_bytes" ]] || return 55
+          }
+          evidence_rc() {
+            if check_evidence "$1" "$2"; then
+              printf 0
+            else
+              printf '%s' "$?"
+            fi
+          }
+          evidence_size() {
+            if [[ -f "$1" && ! -L "$1" ]]; then
+              stat -c %s "$1" 2>/dev/null || printf 0
+            else
+              printf 0
+            fi
+          }
+
+          inventory_file_rc="$(evidence_rc "$stage/inventory.txt" 4096)"
+          parser_file_rc="$(evidence_rc "$stage/parser-parse-if.txt" 65536)"
+          window_file_rc="$(evidence_rc "$stage/line-23894.txt" 32768)"
+          stack_file_rc="$(evidence_rc "$stage/stack.txt" 16384)"
+          parser_size="$(evidence_size "$stage/parser-parse-if.txt")"
+          window_size="$(evidence_size "$stage/line-23894.txt")"
+          stack_size="$(evidence_size "$stage/stack.txt")"
+
+          overall_rc=0
+          for rc in "$inventory_rc" "$inventory_file_rc" "$parser_rc" "$parser_file_rc" \
+            "$window_rc" "$window_file_rc" "$stack_rc" "$stack_file_rc"; do
+            if [[ "$rc" != 0 ]]; then
+              overall_rc=1
+            fi
           done
-          [[ "$(stat -c %s "$stage/parser-parse-if.txt")" -le 65536 ]]
-          [[ "$(stat -c %s "$stage/line-23894.txt")" -le 32768 ]]
-          [[ "$(stat -c %s "$stage/stack.txt")" -le 16384 ]]
+          printf '%s\n' \
+            'schema=c21-v1' \
+            'has_c=true' \
+            "copy_size=$copied_size" \
+            "copy_sha256=$copied_sha" \
+            "inventory_rc=$inventory_rc" \
+            "inventory_file_rc=$inventory_file_rc" \
+            "parser_rc=$parser_rc" \
+            "parser_file_rc=$parser_file_rc" \
+            "parser_size=$parser_size" \
+            "window_rc=$window_rc" \
+            "window_file_rc=$window_file_rc" \
+            "window_size=$window_size" \
+            "stack_rc=$stack_rc" \
+            "stack_file_rc=$stack_file_rc" \
+            "stack_size=$stack_size" \
+            "overall_rc=$overall_rc" > "$stage/extraction-status.txt"
+          [[ -f "$stage/extraction-status.txt" && ! -L "$stage/extraction-status.txt" \
+            && "$(stat -c %h "$stage/extraction-status.txt")" == 1 \
+            && "$(stat -c %s "$stage/extraction-status.txt")" -le 4096 ]]
+          printf 'C21_EXTRACTION_STATUS parser=%s window=%s stack=%s overall=%s\n' \
+            "$parser_rc" "$window_rc" "$stack_rc" "$overall_rc" >&2
+          exit "$overall_rc"
       - name: Upload FastC repeat-2 C evidence
-        if: failure() && steps.collect-fastc-repeat2.outcome == 'success'
+        if: always() && steps.collect-fastc-repeat2.outputs.has_c == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: issue74-fastc-repeat2-c20
-          path: ${{ runner.temp }}/issue74-fastc-repeat2-c20
+          name: issue74-fastc-repeat2-c21
+          path: ${{ runner.temp }}/issue74-fastc-repeat2-c21
           if-no-files-found: error
           retention-days: 7
       - name: Cleanup FastC repeat-2 diagnostic files
@@ -594,7 +741,9 @@ jobs:
         run: |
           set -euo pipefail
           search_root="$RUNNER_TEMP/issue74 v3 linux tmp"
-          stage="$RUNNER_TEMP/issue74-fastc-repeat2-c20"
+          source_dir="$RUNNER_TEMP/issue74-fastc-repeat2-c21-source"
+          stage="$RUNNER_TEMP/issue74-fastc-repeat2-c21"
           [[ -n "$RUNNER_TEMP" && "$search_root" == "$RUNNER_TEMP/issue74 v3 linux tmp" ]]
-          [[ "$stage" == "$RUNNER_TEMP/issue74-fastc-repeat2-c20" ]]
-          rm -rf -- "$search_root" "$stage"
+          [[ "$source_dir" == "$RUNNER_TEMP/issue74-fastc-repeat2-c21-source" ]]
+          [[ "$stage" == "$RUNNER_TEMP/issue74-fastc-repeat2-c21" ]]
+          rm -rf -- "$search_root" "$source_dir" "$stage"
