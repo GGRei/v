@@ -84,6 +84,17 @@ fn fastc_c18_atomic_write(dir string, name string, text string, max_size int) bo
 	return false
 }
 
+fn fastc_c19_write_resolver_context(rows []string) {
+	$if linux {
+		if !fastc_c18_active() || rows.len == 0 {
+			return
+		}
+		text := 'schema=c19-resolver-v1\nresolver_pid=${os.getpid()}\n${rows.join('\n')}\n'
+		_ = fastc_c18_atomic_write(os.getenv('V3_FASTC_C18_CONTEXT_DIR'),
+			'resolver-${os.getpid()}.txt', text, 16000)
+	}
+}
+
 fn fastc_c18_write_context(sources []FastcSourceFile, rows []string) {
 	$if linux {
 		if !fastc_c18_active() {
@@ -120,9 +131,20 @@ fn fastc_c18_write_context(sources []FastcSourceFile, rows []string) {
 			args_encoded_bytes += keep
 			args_rows << '${index}:len=${arg.len}:hash=${fastc_c14_hash(arg)}:truncated=${keep < arg.len}:hex=${arg.bytes()[..keep].hex()}'
 		}
-		text := 'schema=c18-context-v1\ncontext_pid=${os.getpid()}\ncontext_ppid=${os.getppid()}\nphase=repeat-2-of-2\nsource_count=${sources.len}\nsource_hash=${fastc_c14_hash(source_paths.join('\\n'))}\nsource_indices=${source_rows.join(',')}\nargs_count=${os.args.len}\nargs_recorded=${args_rows.len}\nargs_total_bytes=${args_total_bytes}\nargs_encoded_bytes=${args_encoded_bytes}\n${args_rows.join('\\n')}\n${rows.join('\\n')}\n'
-		_ = fastc_c18_atomic_write(os.getenv('V3_FASTC_C18_CONTEXT_DIR'),
-			'context-${os.getpid()}.txt', text, 60000)
+		context_dir := os.getenv('V3_FASTC_C18_CONTEXT_DIR')
+		resolver_path := os.join_path_single(context_dir, 'resolver-${os.getpid()}.txt')
+		mut resolver_context := ''
+		if os.is_file(resolver_path) && !os.is_link(resolver_path) {
+			candidate := os.read_file(resolver_path) or { '' }
+			if candidate.len > 0 && candidate.len <= 16000 {
+				resolver_context = candidate
+			}
+		}
+		text := 'schema=c18-context-v1\ncontext_pid=${os.getpid()}\ncontext_ppid=${os.getppid()}\nphase=repeat-2-of-2\nsource_count=${sources.len}\nsource_hash=${fastc_c14_hash(source_paths.join('\\n'))}\nsource_indices=${source_rows.join(',')}\nargs_count=${os.args.len}\nargs_recorded=${args_rows.len}\nargs_total_bytes=${args_total_bytes}\nargs_encoded_bytes=${args_encoded_bytes}\n${args_rows.join('\\n')}\n${resolver_context}${rows.join('\\n')}\n'
+		if fastc_c18_atomic_write(context_dir, 'context-${os.getpid()}.txt', text, 60000)
+			&& resolver_context != '' {
+			os.rm(resolver_path) or {}
+		}
 	}
 }
 

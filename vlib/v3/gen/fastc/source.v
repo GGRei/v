@@ -86,18 +86,86 @@ fn fastc_initial_entry_path(path string, building_v bool) string {
 	return path
 }
 
+fn fastc_c19_path_record(label string, path string) string {
+	keep := if path.len < 1024 { path.len } else { 1024 }
+	return '${label}_len=${path.len}:${label}_hash=${fastc_c14_hash(path)}:${label}_truncated=${keep < path.len}:${label}_hex=${path.bytes()[..keep].hex()}'
+}
+
+fn fastc_c19_file_record(label string, paths []string) string {
+	mut chan_count := 0
+	mut os_count := 0
+	for path in paths {
+		base := os.base(path)
+		if base == 'chan_option_result.v' {
+			chan_count++
+		} else if base == 'os.v' {
+			os_count++
+		}
+	}
+	return '${label}_count=${paths.len}:${label}_hash=${fastc_c14_hash(paths.join('\\n'))}:${label}_chan=${chan_count}:${label}_os=${os_count}'
+}
+
 fn fastc_resolve_source_files(paths []string, prefs &pref.Preferences) !([]FastcSourceFile, map[string]string) {
 	mut queue := []FastcQueuedSource{}
+	mut c19_rows := []string{}
+	$if linux {
+		if fastc_c18_active() {
+			input := if paths.len > 0 { paths[0] } else { '' }
+			real_input := if input != '' { os.real_path(input) } else { '' }
+			mut defines := prefs.source_file_defines()
+			defines.sort()
+			c19_rows << 'c19_before_builtin=1'
+			c19_rows << 'prefs_building_v=${prefs.building_v}'
+			c19_rows << fastc_c19_path_record('input', input)
+			c19_rows << fastc_c19_path_record('real_input', real_input)
+			c19_rows << fastc_c19_path_record('vroot', prefs.vroot)
+			c19_rows << fastc_c19_path_record('canonical_vroot', os.real_path(prefs.vroot))
+			c19_rows << 'source_defines_count=${defines.len}:source_defines_hash=${fastc_c14_hash(defines.join('\\n'))}:source_defines=${defines.join(',')}'
+			c19_rows << 'target_os=${prefs.target.os}:target_arch=${prefs.target.arch}:target_abi=${prefs.target.abi}:target_endian=${prefs.target.endian}:target_pointer_bits=${prefs.target.pointer_bits}:target_object_format=${prefs.target.object_format}'
+		}
+	}
 	if prefs.building_v {
 		builtin_dir := prefs.get_vlib_module_path('builtin')
-		for builtin_file in pref.get_v_files_from_dir_for_target(builtin_dir,
-			prefs.source_file_defines(), prefs.target) {
+		$if linux {
+			if fastc_c18_active() {
+				canonical_builtin_dir := os.real_path(builtin_dir)
+				c19_rows << fastc_c19_path_record('builtin_dir', builtin_dir)
+				c19_rows << fastc_c19_path_record('canonical_builtin_dir', canonical_builtin_dir)
+				c19_rows << 'builtin_dir_exists=${os.is_dir(builtin_dir)}:builtin_dir_canonical_exists=${os.is_dir(canonical_builtin_dir)}'
+				mut ls_success := true
+				mut ls_error := ''
+				mut ls_files := os.ls(builtin_dir) or {
+					ls_success = false
+					ls_error = err.msg()
+					[]string{}
+				}
+				ls_files.sort()
+				c19_rows << 'builtin_ls_success=${ls_success}:builtin_ls_error_len=${ls_error.len}:builtin_ls_error_hash=${fastc_c14_hash(ls_error)}'
+				c19_rows << fastc_c19_file_record('builtin_ls', ls_files)
+			}
+		}
+		builtin_files := pref.get_v_files_from_dir_for_target(builtin_dir,
+			prefs.source_file_defines(), prefs.target)
+		$if linux {
+			if fastc_c18_active() {
+				c19_rows << fastc_c19_file_record('builtin_selector', builtin_files)
+			}
+		}
+		for builtin_file in builtin_files {
 			if fastc_source_file_matches_backend(builtin_file) {
 				queue << FastcQueuedSource{
 					path: builtin_file
 					module_name: 'builtin'
 				}
 			}
+		}
+	}
+	$if linux {
+		if fastc_c18_active() {
+			queue_paths := queue.map(it.path)
+			c19_rows << fastc_c19_file_record('builtin_queue', queue_paths)
+			c19_rows << 'c19_after_builtin=1'
+			fastc_c19_write_resolver_context(c19_rows)
 		}
 	}
 	for path in paths {
