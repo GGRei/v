@@ -1,9 +1,49 @@
 module fastc
 
+import os
 import v3.token
 
+fn (g &Parser) fastc_c14_trace(step string, stage string) {
+	$if linux {
+		dir := os.getenv('V3_FASTC_C14_DIR')
+		if dir == '' || os.getenv('V3_FASTC_C14_PHASE') != 'parse-for-runtime'
+			|| os.getenv('V3_FASTC_C14_BASENAME') != 'valid.v' || os.base(g.path) != 'valid.v'
+			|| !os.is_abs_path(dir) || !os.is_dir(dir) || os.is_link(dir)
+			|| os.real_path(dir) != dir {
+			return
+		}
+		if step !in ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'] {
+			return
+		}
+		pid := os.getpid()
+		name := 'trace-${pid}-${step}.txt'
+		path := os.join_path_single(dir, name)
+		tmp := os.join_path_single(dir, '.${name}.tmp')
+		if os.exists(path) || os.is_link(path) || os.exists(tmp) || os.is_link(tmp) {
+			return
+		}
+		last_type := if g.last_expression_type.len > 128 {
+			g.last_expression_type[..128]
+		} else {
+			g.last_expression_type
+		}
+		text := 'pid=${pid}\nphase=parse-for-runtime\nstep=${step}\nstage=${stage}\nbasename=${os.base(g.path)}\nmodule=${g.module_name}\ncurrent_function=${g.current_function}\nscanner_pos=${g.s.pos}\ntoken=${int(g.tok)}\ntoken_name=${g.tok.str()}\nliteral_len=${g.lit.len}\nliteral_hash=${fastc_c14_hash(g.lit)}\nlast_expression_type=${last_type}\nlast_expression_tokens=${g.last_expression.len}\nlocals=${g.locals.len}\nout_len=${g.out.len}\n'
+		if text.len < 1 || text.len > 1024 {
+			return
+		}
+		os.write_file(tmp, text) or { return }
+		if !os.is_file(tmp) || os.is_link(tmp) {
+			os.rm(tmp) or {}
+			return
+		}
+		os.mv(tmp, path) or { os.rm(tmp) or {} }
+	}
+}
+
 fn (mut g Parser) parse_for() !bool {
+	g.fastc_c14_trace('01', 'entry')
 	g.next()
+	g.fastc_c14_trace('02', 'after-next')
 	if g.tok == .lcbr {
 		g.next()
 		g.write_line('for (;;) {')
@@ -35,8 +75,10 @@ fn (mut g Parser) parse_for() !bool {
 		return false
 	}
 	if g.tok == .name || (g.tok == .key_shared && g.shared_token_is_identifier(.unknown)) {
+		g.fastc_c14_trace('03', 'name-branch')
 		name := g.lit
 		g.next()
+		g.fastc_c14_trace('04', 'name-read')
 		mut value_name := ''
 		mut value_is_mut := false
 		if g.tok == .comma {
@@ -54,12 +96,14 @@ fn (mut g Parser) parse_for() !bool {
 			g.next()
 		}
 		if g.tok == .key_in {
+			g.fastc_c14_trace('05', 'in-branch')
 			// `_` is the blank identifier: it never binds a local, so nested or
 			// sibling `for _ in ...` loops must not be seen as redeclarations.
 			if name != '_' && name in g.locals {
 				return g.unsupported('redeclaration of `${name}`')
 			}
 			g.next()
+			g.fastc_c14_trace('06', 'before-collection')
 			// A two-value for-in whose collection is an inline map literal
 			// (`for k, v in { 'a': 1, ... } { ... }`) opens with `{`; a plain
 			// read_expression would stop at that brace and infer an empty
@@ -71,6 +115,7 @@ fn (mut g Parser) parse_for() !bool {
 			}
 			start_expression_type := g.last_expression_type
 			start_expression := g.last_expression.clone()
+			g.fastc_c14_trace('07', 'after-collection')
 			if g.tok == .dotdot {
 				if item_is_mut || value_name != '' {
 					return g.unsupported('mutable or two-value range loop')
@@ -118,6 +163,7 @@ fn (mut g Parser) parse_for() !bool {
 			}
 			collection_type := fastc_normalize_inferred_type(start_expression_type)
 			collection_layout_type := g.underlying_alias_type(collection_type)
+			g.fastc_c14_trace('08', 'collection-normalized')
 			if item_is_mut {
 				if g.array_element_type(collection_layout_type) == none {
 					return g.unsupported('mutable iteration over non-array collection `${start}`')
@@ -183,6 +229,7 @@ fn (mut g Parser) parse_for() !bool {
 			is_raw_fixed_array := is_fixed_array && (start_expression.len > 1
 				|| (start_expression.len == 1
 				&& fastc_global_key(g.module_name, start_expression[0].lit) in g.globals))
+			g.fastc_c14_trace('09', 'element-ready')
 			g.next()
 			collection_name := g.temporary_name('collection')
 			is_ordinary_string := !g.selfhost && collection_layout_type == 'string'
@@ -225,6 +272,7 @@ fn (mut g Parser) parse_for() !bool {
 				'${collection_name}${access}${data_field}'
 			}
 			g.write_line('for (int ${index_name} = 0; ${index_name} < ${collection_length}; ${index_name}++) {')
+			g.fastc_c14_trace('10', 'loop-emitted')
 			g.indent++
 			actual_value_name := if value_name == '' { name } else { value_name }
 			if actual_value_name != '_' {
@@ -270,12 +318,14 @@ fn (mut g Parser) parse_for() !bool {
 				}
 			}
 			_ = g.parse_loop_block_body()!
+			g.fastc_c14_trace('11', 'body-done')
 			g.indent--
 			g.locals.delete(name)
 			if value_name != '' {
 				g.locals.delete(value_name)
 			}
 			g.write_line('}')
+			g.fastc_c14_trace('12', 'complete')
 			return false
 		}
 		if g.tok in [.decl_assign, .assign] {

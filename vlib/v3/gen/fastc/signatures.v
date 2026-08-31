@@ -1305,6 +1305,16 @@ fn fastc_scan_type(mut scan scanner.Scanner, first token.Token, path string, mod
 				base = 'voidptr'
 			}
 			if base == '' {
+				$if linux {
+					if os.getenv('V3_FASTC_C14_DIR') != ''
+						&& os.getenv('V3_FASTC_C14_PHASE') in ['repeat-1-of-2', 'repeat-2-of-2'] {
+						mut keys := declared_types.keys()
+						keys.sort()
+						mut ierror_keys := keys.filter(it.contains('IError'))
+						ierror_keys.sort()
+						fastc_c14_write('error.txt', 'pid=${os.getpid()}\nphase=${os.getenv("V3_FASTC_C14_PHASE")}\nraw=${raw_type}\npath=${os.base(path)}\nmodule=${module_name}\ntypekey=${type_key}\npos=${scan.pos}\nmap_match=${type_key in declared_types}\ndeclared_count=${keys.len}\ndeclared_hash=${fastc_c14_hash(keys.join("\\n"))}\nIError=${'IError' in declared_types}\nbuiltin.IError=${'builtin.IError' in declared_types}\nmatching_keys=${ierror_keys.join(",")}\n')
+					}
+				}
 				return error('fastc parser does not support undeclared type `${raw_type}` before `${tok.str()}` at byte ${scan.pos} in ${path}')
 			}
 		} else {
