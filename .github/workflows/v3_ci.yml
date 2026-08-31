@@ -567,10 +567,10 @@ jobs:
           trap c14_collect_error ERR
           [[ -n "$RUNNER_TEMP" && "$raw" == "$RUNNER_TEMP/issue74-fastc-c14" ]]
           [[ -d "$raw" && ! -L "$raw" && ! -e "$stage" && ! -L "$stage" ]]
-          a_fixed=(repeat-1-of-2-sources.txt repeat-1-of-2-declared.txt repeat-2-of-2-sources.txt repeat-2-of-2-error.txt gen1.c gen1.meta)
+          a_fixed=(repeat-1-of-2-sources.txt repeat-1-of-2-declared.txt repeat-2-of-2-sources.txt repeat-2-of-2-declared.txt repeat-2-of-2-error.txt gen1.c gen1.meta)
           b_fixed=(selfhost.c selfhost.meta)
           mapfile -t actual < <(find "$raw" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
-          [[ "${#actual[@]}" -ge 1 && "${#actual[@]}" -le 20 ]]
+          [[ "${#actual[@]}" -ge 1 && "${#actual[@]}" -le 21 ]]
           a_count=0
           b_count=0
           trace_names=()
@@ -586,7 +586,7 @@ jobs:
           a_present=0
           b_present=0
           if [[ "$a_count" -gt 0 ]]; then
-            [[ "$a_count" -eq 6 ]]
+            [[ "$a_count" -eq 7 ]]
             for name in "${a_fixed[@]}"; do
               [[ " ${actual[*]} " == *" $name "* ]]
             done
@@ -621,9 +621,15 @@ jobs:
             for file in repeat-1-of-2-sources.txt repeat-1-of-2-declared.txt gen1.meta; do
               [[ "$(field "$raw/$file" pid)" == "$p1" && "$(field "$raw/$file" phase)" == repeat-1-of-2 ]]
             done
-            for file in repeat-2-of-2-sources.txt repeat-2-of-2-error.txt; do
+            for file in repeat-2-of-2-sources.txt repeat-2-of-2-declared.txt repeat-2-of-2-error.txt; do
               [[ "$(field "$raw/$file" pid)" == "$p2" && "$(field "$raw/$file" phase)" == repeat-2-of-2 ]]
             done
+            declared="$raw/repeat-2-of-2-declared.txt"
+            mapfile -t declared_keys < <(awk -F= '{print $1}' "$declared" | sort)
+            [[ "${declared_keys[*]}" == "IError builtin.IError chunk count hash phase pid type_source worker" ]]
+            [[ "$(field "$declared" worker)" == merged && "$(field "$declared" chunk)" == all ]]
+            [[ "$(field "$declared" count)" =~ ^[0-9]+$ && "$(field "$declared" hash)" =~ ^[0-9]+$ ]]
+            [[ "$(field "$declared" IError)" =~ ^(true|false)$ && "$(field "$declared" builtin.IError)" =~ ^(true|false)$ ]]
           fi
           if [[ "$b_present" -eq 1 ]]; then
             [[ "$(field "$raw/selfhost.meta" pid)" =~ ^[0-9]+$ && "$(field "$raw/selfhost.meta" phase)" == selfhost-build ]]
@@ -679,12 +685,12 @@ jobs:
             ' "$1"
           }
           if [[ "$a_present" -eq 1 ]]; then
-            cat "$raw"/repeat-1-of-2-{sources,declared}.txt "$raw"/repeat-2-of-2-{sources,error}.txt > "$stage/a-manifest.txt"
+            cat "$raw"/repeat-1-of-2-{sources,declared}.txt "$raw/repeat-2-of-2-sources.txt" "$raw/repeat-2-of-2-declared.txt" "$raw/repeat-2-of-2-error.txt" > "$stage/a-manifest.txt"
             extract_definition "$raw/gen1.c" v3__gen__fastc__fastc_collect_declaration_indexes 220 16384 >> "$stage/a-manifest.txt"
             extract_definition "$raw/gen1.c" v3__gen__fastc__fastc_collect_declaration_chunk 220 16384 >> "$stage/a-manifest.txt"
             extract_definition "$raw/gen1.c" v3__gen__fastc__fastc_merge_declaration_partial 220 16384 >> "$stage/a-manifest.txt"
             cp "$raw/gen1.c" "$stage/gen1.c"
-            [[ "$(stat -c %s "$stage/a-manifest.txt")" -ge 1 && "$(stat -c %s "$stage/a-manifest.txt")" -le 53248 ]]
+            [[ "$(stat -c %s "$stage/a-manifest.txt")" -ge 1 && "$(stat -c %s "$stage/a-manifest.txt")" -le 57344 ]]
           fi
           if [[ "$b_present" -eq 1 ]]; then
             (cd "$raw" && sha256sum selfhost.c) > "$stage/b-manifest.txt"
@@ -707,7 +713,7 @@ jobs:
             [[ -f "$file" && ! -L "$file" && "$(stat -c %h "$file")" == 1 ]]
             size="$(stat -c %s "$file")"
             case "$file" in
-              *a-manifest.txt) [[ "$size" -ge 1 && "$size" -le 53248 ]] ;;
+              *a-manifest.txt) [[ "$size" -ge 1 && "$size" -le 57344 ]] ;;
               *b-manifest.txt) [[ "$size" -ge 1 && "$size" -le 81920 ]] ;;
               *b-trace.txt) [[ "$size" -ge 1 && "$size" -le 16384 ]] ;;
               *.c) [[ "$size" -ge 1 && "$size" -le 8388608 ]]; staged_c=$((staged_c + size)) ;;
