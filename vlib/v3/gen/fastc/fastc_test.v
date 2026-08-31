@@ -5879,6 +5879,61 @@ fn main() {
 	assert !c_source.contains('take(&(((values)[index])))'), c_source
 }
 
+fn test_selfhost_double_pointer_index_keeps_one_pointer_level() {
+	mut prefs := pref.new_preferences()
+	prefs.building_v = true
+	c_source := generate('module main
+
+struct Arguments {
+	values &&u8
+}
+
+struct Item {
+	value &u8
+}
+
+fn C.fastc_accept_pointer(&u8) int
+
+fn clone_direct(values &&u8, index int) int {
+	return unsafe { C.fastc_accept_pointer(values[index]) }
+}
+
+fn clone_member(arguments Arguments, index int) int {
+	return unsafe { C.fastc_accept_pointer(arguments.values[index]) }
+}
+
+fn clone_indexed_field(items &&Item, index int) int {
+	return unsafe { C.fastc_accept_pointer(items[index].value) }
+}
+
+fn clone_local(values &&u8, index int) int {
+	raw_arg := unsafe { values[index] }
+	return unsafe { C.fastc_accept_pointer(raw_arg) }
+}
+
+fn main() {
+	_ = clone_direct(unsafe { nil }, 0)
+	_ = clone_member(Arguments{ values: unsafe { nil } }, 0)
+	_ = clone_indexed_field(unsafe { nil }, 0)
+	_ = clone_local(unsafe { nil }, 0)
+}
+', 'selfhost_double_pointer_index.v', prefs) or { panic(err) }
+	compact := c_source.replace(' ', '').replace('\t', '').replace('\r', '').replace('\n', '').replace('(', '').replace(')', '')
+	assert compact.count('intclone_directu8**values,intindex{') == 1, c_source
+	assert compact.count('intclone_memberArgumentsarguments,intindex{') == 1, c_source
+	assert compact.count('intclone_indexed_fieldItem**items,intindex{') == 1, c_source
+	assert compact.count('intclone_localu8**values,intindex{') == 1, c_source
+	assert compact.count('fastc_accept_pointervalues[index]') == 1, c_source
+	assert compact.count('fastc_accept_pointerarguments.values[index]') == 1, c_source
+	assert compact.count('fastc_accept_pointeritems[index]->value') == 1, c_source
+	assert compact.contains('raw_arg=values[index]'), c_source
+	assert compact.count('fastc_accept_pointerraw_arg') == 1, c_source
+	assert !compact.contains('fastc_accept_pointer&values[index]'), c_source
+	assert !compact.contains('fastc_accept_pointer&arguments.values[index]'), c_source
+	assert !compact.contains('fastc_accept_pointer&items[index]->value'), c_source
+	assert !compact.contains('fastc_accept_pointer&raw_arg'), c_source
+}
+
 fn test_selfhost_selector_assignment_accepts_array_initializer() {
 	mut prefs := pref.new_preferences()
 	prefs.building_v = true
