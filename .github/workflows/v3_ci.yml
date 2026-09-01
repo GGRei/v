@@ -115,6 +115,22 @@ jobs:
             "${common[@]}" \
             -run-only "$driver_run_only" \
             vlib/v3/tests/driver_cli_test.v
+          c_v_header_tests=(
+            test_c_v_ordinary_header_owns_externs_in_serial_and_scoped_codegen
+          )
+          assert_exact_test_definitions vlib/v3/tests/c_v_header_owned_extern_test.v "${c_v_header_tests[@]}"
+          run_audited_test macos-v3-c-v-header-owned-extern 1 \
+            "${common[@]}" \
+            -run-only "${c_v_header_tests[0]}" \
+            vlib/v3/tests/c_v_header_owned_extern_test.v
+          preinclude_tests=(
+            test_preinclude_uncertain_macro_keeps_c_extern_prototype
+          )
+          assert_exact_test_definitions vlib/v3/tests/preinclude_uncertain_macro_test.v "${preinclude_tests[@]}"
+          run_audited_test macos-v3-preinclude-extern 1 \
+            "${common[@]}" \
+            -run-only "${preinclude_tests[0]}" \
+            vlib/v3/tests/preinclude_uncertain_macro_test.v
 
           git diff --exit-code
           git diff --cached --exit-code
@@ -131,6 +147,7 @@ jobs:
           - lane: ucrt64-gcc
             msystem: UCRT64
             package: mingw-w64-ucrt-x86_64-gcc
+            pkgconf_package: mingw-w64-ucrt-x86_64-pkgconf
             prefix: ucrt64
             cc: gcc
             cxx: g++
@@ -138,6 +155,7 @@ jobs:
           - lane: ucrt64-clang
             msystem: UCRT64
             package: mingw-w64-ucrt-x86_64-clang
+            pkgconf_package: mingw-w64-ucrt-x86_64-pkgconf
             prefix: ucrt64
             cc: clang
             cxx: clang++
@@ -145,6 +163,7 @@ jobs:
           - lane: clang64-clang
             msystem: CLANG64
             package: mingw-w64-clang-x86_64-clang
+            pkgconf_package: mingw-w64-clang-x86_64-pkgconf
             prefix: clang64
             cc: clang
             cxx: clang++
@@ -175,7 +194,7 @@ jobs:
           update: true
           path-type: minimal
           cache: false
-          install: ${{ matrix.package }}
+          install: ${{ matrix.package }} ${{ matrix.pkgconf_package }}
       - name: Test V1 and V3 with native Windows paths
         shell: pwsh
         run: |
@@ -184,6 +203,7 @@ jobs:
           $toolBin = Join-Path '${{ steps.msys2.outputs.msys2-location }}' '${{ matrix.prefix }}\bin'
           $ccPath = Join-Path $toolBin '${{ matrix.cc }}.exe'
           $cxxPath = Join-Path $toolBin '${{ matrix.cxx }}.exe'
+          $pkgConfigPath = Join-Path $toolBin 'pkg-config.exe'
           $env:Path = "$toolBin;$env:SystemRoot\System32;$env:SystemRoot"
 
           function Assert-ExactCompiler([string] $Name, [string] $Expected, [string] $Family) {
@@ -219,6 +239,27 @@ jobs:
 
           Assert-ExactCompiler '${{ matrix.cc }}' $ccPath '${{ matrix.family }}'
           Assert-ExactCompiler '${{ matrix.cxx }}' $cxxPath '${{ matrix.family }}'
+          if (-not (Test-Path -LiteralPath $pkgConfigPath -PathType Leaf)) {
+            throw "missing selected pkg-config executable: $pkgConfigPath"
+          }
+          $pkgConfigApplications = @(Get-Command pkg-config.exe -CommandType Application -All -ErrorAction Stop)
+          if ($pkgConfigApplications.Count -ne 1) {
+            throw "pkg-config lookup cardinality mismatch: Count=$($pkgConfigApplications.Count)"
+          }
+          $resolvedPkgConfig = $pkgConfigApplications[0].Source
+          if (-not [string]::Equals(
+              [IO.Path]::GetFullPath($resolvedPkgConfig),
+              [IO.Path]::GetFullPath($pkgConfigPath),
+              [StringComparison]::OrdinalIgnoreCase)) {
+            throw "pkg-config resolved to $resolvedPkgConfig instead of $pkgConfigPath"
+          }
+          $pkgConfigVersion = (& $pkgConfigPath --version 2>&1 | Out-String)
+          $pkgConfigCode = $LASTEXITCODE
+          Write-Host $pkgConfigVersion
+          if ($pkgConfigCode -ne 0 -or [string]::IsNullOrWhiteSpace($pkgConfigVersion) -or
+              $pkgConfigVersion -notmatch '[0-9]') {
+            throw "pkg-config preflight failed with exit code $pkgConfigCode"
+          }
           foreach ($name in @('CFLAGS', 'LDFLAGS', 'VFLAGS')) {
             Remove-Item "Env:$name" -ErrorAction SilentlyContinue
           }
@@ -282,7 +323,12 @@ jobs:
             'test_static_pkgconfig_mode_rejects_unsupported_drivers_and_lookalikes',
             'test_static_pkgconfig_mode_excludes_clang_msvc_driver_dialect',
             'test_static_pkgconfig_reresolution_replaces_compiler_owned_state',
-            'test_static_pkgconfig_file_define_selects_only_the_internal_variant')
+            'test_static_pkgconfig_file_define_selects_only_the_internal_variant',
+            'test_pkgconfig_executable_candidate_requires_absolute_regular_executable_exe',
+            'test_pkgconfig_executable_resolves_only_windows_exe',
+            'test_comptime_pkgconfig_value_uses_pkgconfig_runner')
+          Run-Owner -Label v3-parser-pkgconfig -Path 'vlib/v3/parser/comptime_pkgconfig_test.v' -Common $v3Common -Names @(
+            'test_comptime_pkgconfig_function_keeps_dollar_prefix')
           Run-Owner -Label v3-cflags -Path 'vlib/v3/driver/c_compiler_flags_test.v' -Common $v3Common -Names @(
             'test_v3_user_ldflags_are_final_and_do_not_change_dynamic_plan_when_absent',
             'test_v3_object_mode_ignores_link_only_user_flags',
@@ -298,7 +344,13 @@ jobs:
             'test_cache_extern_declaration_avoids_tgmath_macro_expansion',
             'test_pkgconfig_dynamic_argv_is_historically_byte_for_byte_unchanged',
             'test_pkgconfig_global_static_mode_inserts_one_static_option',
-            'test_local_pkgconfig_static_option_does_not_require_global_static_mode')
+            'test_local_pkgconfig_static_option_does_not_require_global_static_mode',
+            'test_pkgconfig_flags_use_resolved_pkgconfig_runner',
+            'test_c_v_ordinary_emitted_header_owns_only_same_file_c_externs',
+            'test_c_v_header_ownership_excludes_nonordinary_and_nonheader_directives',
+            'test_header_owned_c_extern_sources_reset_between_generations')
+          Run-Owner -Label v3-parallel-extern-owner -Path 'vlib/v3/gen/c/parallel_worker_test.v' -Common $v3Common -Names @(
+            'test_c_extern_scan_worker_clones_header_owned_sources')
           Run-Owner -Label v3-preamble -Path 'vlib/v3/gen/c/preamble_test.v' -Common $v3Common -Names @(
             'test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations',
             'test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions',
@@ -309,7 +361,8 @@ jobs:
             'test_non_windows_preamble_does_not_emit_windows_abi_fallbacks')
           Run-Owner -Label v3-fastc -Path 'vlib/v3/gen/fastc/fastc_test.v' -Common $v3Common -Names @(
             'test_source_resolver_uses_compiler_owned_file_defines',
-            'test_cpp_linker_directive_is_rejected_before_fastc_emits_c')
+            'test_cpp_linker_directive_is_rejected_before_fastc_emits_c',
+            'test_fastc_pkgconfig_flags_use_resolved_pkgconfig_runner')
           Run-Owner -Label v3-cache-compiler -Path 'vlib/v3/driver/cache_prune_test.v' -Common $v3Common -Names @(
             'test_v3_cache_compiler_keeps_family_and_uses_resolved_executable_for_probes')
           Run-Owner -Label v3-modulecache -Path 'vlib/v3/modulecache/modulecache_test.v' -Common $v3Common -Names @(
@@ -319,6 +372,7 @@ jobs:
           Run-Owner -Label v3-output-suffix -Path 'vlib/v3/driver/implicit_import_test.v' -Common $v3Common -Names @(
             'test_c_executable_bin_file_uses_target_postfix')
           Run-Owner -Label v3-driver-link -Path 'vlib/v3/tests/driver_cli_test.v' -Common $v3Common -Names @(
+            'test_driver_resolves_pkgconfig_executable_for_standalone_v3',
             'test_driver_static_pkgconfig_fact_ldflags_and_dynamic_c_invariance',
             'test_driver_cpp_linker_directive_is_exact_and_non_link_outputs_stay_c',
             'test_driver_cpp_linker_uses_final_cpp_driver_and_keeps_sources_c')
@@ -574,7 +628,12 @@ jobs:
             test_static_pkgconfig_mode_rejects_unsupported_drivers_and_lookalikes \
             test_static_pkgconfig_mode_excludes_clang_msvc_driver_dialect \
             test_static_pkgconfig_reresolution_replaces_compiler_owned_state \
-            test_static_pkgconfig_file_define_selects_only_the_internal_variant
+            test_static_pkgconfig_file_define_selects_only_the_internal_variant \
+            test_pkgconfig_executable_candidate_requires_absolute_regular_executable_exe \
+            test_pkgconfig_executable_resolves_only_windows_exe \
+            test_comptime_pkgconfig_value_uses_pkgconfig_runner
+          run_owner v3-parser-pkgconfig vlib/v3/parser/comptime_pkgconfig_test.v \
+            test_comptime_pkgconfig_function_keeps_dollar_prefix
           run_owner v3-cflags vlib/v3/driver/c_compiler_flags_test.v \
             test_v3_user_ldflags_are_final_and_do_not_change_dynamic_plan_when_absent \
             test_v3_object_mode_ignores_link_only_user_flags \
@@ -590,7 +649,13 @@ jobs:
             test_cache_extern_declaration_avoids_tgmath_macro_expansion \
             test_pkgconfig_dynamic_argv_is_historically_byte_for_byte_unchanged \
             test_pkgconfig_global_static_mode_inserts_one_static_option \
-            test_local_pkgconfig_static_option_does_not_require_global_static_mode
+            test_local_pkgconfig_static_option_does_not_require_global_static_mode \
+            test_pkgconfig_flags_use_resolved_pkgconfig_runner \
+            test_c_v_ordinary_emitted_header_owns_only_same_file_c_externs \
+            test_c_v_header_ownership_excludes_nonordinary_and_nonheader_directives \
+            test_header_owned_c_extern_sources_reset_between_generations
+          run_owner v3-parallel-extern-owner vlib/v3/gen/c/parallel_worker_test.v \
+            test_c_extern_scan_worker_clones_header_owned_sources
           run_owner v3-function-attributes vlib/v3/gen/c/attributes_test.v \
             test_noinline_attribute_is_preserved_for_generic_specialization \
             test_function_definition_attributes_are_composed_as_prefixes
@@ -615,7 +680,8 @@ jobs:
             test_selfhost_map_assignment_with_propagated_result \
             test_cpp_linker_directive_is_rejected_before_fastc_emits_c \
             test_selfhost_fixed_array_field_iteration_uses_element_pointer \
-            test_selfhost_or_block_with_multiline_struct_fallback_is_a_value
+            test_selfhost_or_block_with_multiline_struct_fallback_is_a_value \
+            test_fastc_pkgconfig_flags_use_resolved_pkgconfig_runner
           run_owner v3-cache-compiler vlib/v3/driver/cache_prune_test.v \
             test_cache_native_public_include_detects_external_function_implementation_macro \
             test_cache_native_public_include_replays_unconditional_external_definition \
@@ -634,8 +700,14 @@ jobs:
             test_fastc_backend_parses_directly_to_c_without_ast_fallback
           run_owner v3-module-cache-integration vlib/v3/tests/module_cache_test.v \
             test_pkgconfig_mode_cache_isolated_across_dynamic_static_dynamic_sequence \
-            test_cpp_linker_requirement_survives_import_cache_true_false_true_sequence
+            test_cpp_linker_requirement_survives_import_cache_true_false_true_sequence \
+            test_module_cache_reuses_and_invalidates_whole_program_cgen_plan
+          run_owner v3-c-v-header-owned-extern vlib/v3/tests/c_v_header_owned_extern_test.v \
+            test_c_v_ordinary_header_owns_externs_in_serial_and_scoped_codegen
+          run_owner v3-preinclude-extern vlib/v3/tests/preinclude_uncertain_macro_test.v \
+            test_preinclude_uncertain_macro_keeps_c_extern_prototype
           run_owner v3-driver-cli vlib/v3/tests/driver_cli_test.v \
+            test_driver_resolves_pkgconfig_executable_for_standalone_v3 \
             test_driver_static_pkgconfig_fact_ldflags_and_dynamic_c_invariance \
             test_driver_cpp_linker_directive_is_exact_and_non_link_outputs_stay_c \
             test_driver_cpp_linker_uses_final_cpp_driver_and_keeps_sources_c
