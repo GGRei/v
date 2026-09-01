@@ -2652,37 +2652,38 @@ fn main() {
 }
 ')
 	cache_dir := os.join_path(root, 'cache')
+	base_command := 'V3CACHE=${os.quoted_path(cache_dir)} ${os.quoted_path(v3_bin)} -gc none -d no_backtrace'
 
 	dynamic_cold_output := os.join_path(root, 'dynamic-cold')
 	dynamic_cold :=
-		os.execute('V3CACHE=${os.quoted_path(cache_dir)} ${os.quoted_path(v3_bin)} -o ${os.quoted_path(dynamic_cold_output)} ${os.quoted_path(main_file)}')
+		os.execute('${base_command} -o ${os.quoted_path(dynamic_cold_output)} ${os.quoted_path(main_file)}')
 	assert dynamic_cold.exit_code == 0, dynamic_cold.output
 	assert run_module_cache_binary(dynamic_cold_output) == '41'
 
 	dynamic_warm_output := os.join_path(root, 'dynamic-warm')
 	dynamic_warm :=
-		os.execute('V3CACHE=${os.quoted_path(cache_dir)} ${os.quoted_path(v3_bin)} -o ${os.quoted_path(dynamic_warm_output)} ${os.quoted_path(main_file)}')
+		os.execute('${base_command} -o ${os.quoted_path(dynamic_warm_output)} ${os.quoted_path(main_file)}')
 	assert dynamic_warm.exit_code == 0, dynamic_warm.output
 	assert dynamic_warm.output.contains('cgen (cached)'), dynamic_warm.output
 	assert run_module_cache_binary(dynamic_warm_output) == '41'
 
 	static_cold_output := os.join_path(root, 'static-cold')
 	static_cold :=
-		os.execute('V3CACHE=${os.quoted_path(cache_dir)} ${os.quoted_path(v3_bin)} -ldflags -static -o ${os.quoted_path(static_cold_output)} ${os.quoted_path(main_file)}')
+		os.execute('${base_command} -ldflags -static -o ${os.quoted_path(static_cold_output)} ${os.quoted_path(main_file)}')
 	assert static_cold.exit_code == 0, static_cold.output
 	assert !static_cold.output.contains('cgen (cached)'), static_cold.output
 	assert run_module_cache_binary(static_cold_output) == '42'
 
 	static_warm_output := os.join_path(root, 'static-warm')
 	static_warm :=
-		os.execute('V3CACHE=${os.quoted_path(cache_dir)} ${os.quoted_path(v3_bin)} -ldflags -static -o ${os.quoted_path(static_warm_output)} ${os.quoted_path(main_file)}')
+		os.execute('${base_command} -ldflags -static -o ${os.quoted_path(static_warm_output)} ${os.quoted_path(main_file)}')
 	assert static_warm.exit_code == 0, static_warm.output
 	assert static_warm.output.contains('cgen (cached)'), static_warm.output
 	assert run_module_cache_binary(static_warm_output) == '42'
 
 	dynamic_again_output := os.join_path(root, 'dynamic-again')
 	dynamic_again :=
-		os.execute('V3CACHE=${os.quoted_path(cache_dir)} ${os.quoted_path(v3_bin)} -o ${os.quoted_path(dynamic_again_output)} ${os.quoted_path(main_file)}')
+		os.execute('${base_command} -o ${os.quoted_path(dynamic_again_output)} ${os.quoted_path(main_file)}')
 	assert dynamic_again.exit_code == 0, dynamic_again.output
 	assert dynamic_again.output.contains('cgen (cached)'), dynamic_again.output
 	assert run_module_cache_binary(dynamic_again_output) == '41'
@@ -2753,7 +2754,7 @@ fn test_cpp_linker_requirement_survives_import_cache_true_false_true_sequence() 
 	write_module_cache_file(root, 'main.v',
 		'module main\n\nimport bridge\n\nfn main() {\n\tprintln(bridge.value())\n}\n')
 	cache_dir := os.join_path(root, 'cache')
-	base_command := 'PATH=${os.quoted_path(toolchain_path)} CFLAGS= LDFLAGS= VFLAGS= V3CACHE=${os.quoted_path(cache_dir)} ${os.quoted_path(v3_bin)} -showcc'
+	base_command := 'PATH=${os.quoted_path(toolchain_path)} CFLAGS= LDFLAGS= VFLAGS= V3CACHE=${os.quoted_path(cache_dir)} ${os.quoted_path(v3_bin)} -gc none -d no_backtrace -showcc'
 
 	cpp_cold_output := os.join_path(root, 'cpp-cold')
 	cpp_cold :=
