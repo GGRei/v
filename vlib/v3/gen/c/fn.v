@@ -1641,7 +1641,7 @@ fn (g &FlatGen) fn_decl_attributes(node_id flat.NodeId) []string {
 	return []string{}
 }
 
-fn (g &FlatGen) fn_decl_c_attribute(node_id flat.NodeId) string {
+fn (g &FlatGen) fn_decl_gnu_attribute_prefix(node_id flat.NodeId) string {
 	if int(node_id) < 0 || g.ccompiler == 'msvc' {
 		return ''
 	}
@@ -1658,7 +1658,7 @@ fn (g &FlatGen) fn_decl_c_attribute(node_id flat.NodeId) string {
 	if c_attrs.len == 0 {
 		return ''
 	}
-	return ' __attribute__((${c_attrs.join(', ')}))'
+	return '__attribute__((${c_attrs.join(', ')})) '
 }
 
 fn (g &FlatGen) fn_decl_msvc_noinline_prefix(node_id flat.NodeId) string {
@@ -4470,6 +4470,7 @@ fn (mut g FlatGen) gen_fn_in_module(node_id flat.NodeId, node flat.Node, module_
 	} else {
 		ret_type := g.fn_node_return_type(node, module_name)
 		g.set_cur_fn_ret(ret_type)
+		g.write(g.fn_decl_gnu_attribute_prefix(node_id))
 		g.write(g.fn_decl_msvc_noinline_prefix(node_id))
 		if export_name := g.export_fn_name_in_module(module_name, node.value) {
 			if export_name == generated_fn_name {
@@ -4485,7 +4486,7 @@ fn (mut g FlatGen) gen_fn_in_module(node_id flat.NodeId, node flat.Node, module_
 		g.write(generated_fn_name)
 		g.write('(')
 		g.write_fn_node_params(node)
-		g.writeln(')${g.fn_decl_c_attribute(node_id)} {')
+		g.writeln(') {')
 	}
 	// All generated temporary identifiers are function-local. Reset immediately
 	// before emitting the body so lookup/preparation work cannot affect spelling.
