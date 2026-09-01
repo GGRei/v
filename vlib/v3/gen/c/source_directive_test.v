@@ -168,7 +168,11 @@ fn test_c_v_header_ownership_excludes_nonordinary_and_nonheader_directives() {
 	}
 
 	for implementation in source_implementations {
+		mut ast := &flat.FlatAst{}
+		mut tc := types.TypeChecker.new(ast)
 		mut source_include_g := FlatGen.new()
+		source_include_g.a = ast
+		source_include_g.tc = &tc
 		source_include_g.collect_c_directive('main', flat.Node{
 			kind:  .directive
 			value: 'include'

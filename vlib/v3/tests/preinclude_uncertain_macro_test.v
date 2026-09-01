@@ -17,7 +17,7 @@ fn test_preinclude_uncertain_macro_keeps_c_extern_prototype() {
 		os.write_file(source, 'module main
 
 #preinclude "${header}"
-#flag ${implementation}
+#flag "${implementation}"
 
 fn C.compiler_api(int) int
 
