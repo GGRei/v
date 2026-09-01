@@ -278,6 +278,24 @@ fn fastc_canonical_vroot(vroot string) string {
 	return os.real_path(vroot)
 }
 
+fn fastc_is_v3_entry(real_input string) bool {
+	$if windows {
+		if real_input.starts_with(r'\\') || real_input.starts_with('//') {
+			return false
+		}
+		return real_input.replace('\\', '/').ends_with('/vlib/v3/v3.v')
+	} $else {
+		return real_input.ends_with('/vlib/v3/v3.v')
+	}
+}
+
+fn fastc_vroot_for_input(current_vroot string, real_input string, building_v bool) string {
+	if !building_v {
+		return current_vroot
+	}
+	return os.dir(os.dir(os.dir(real_input)))
+}
+
 fn fastc_tcc_backtrace_enabled(target_os string, target_arch string) bool {
 	return !(target_os == 'macos' && target_arch == 'arm64')
 }
@@ -376,13 +394,11 @@ pub fn run(args []string) {
 		fail('fastc output path `${output}` aliases input source `${input}`')
 	}
 	mut prefs := pref.new_preferences()
-	if prefs.vroot == '' && real_input.ends_with('/vlib/v3/v3.v') {
-		prefs.vroot = os.dir(os.dir(os.dir(real_input)))
-	}
+	prefs.building_v = fastc_is_v3_entry(real_input)
+	prefs.vroot = fastc_vroot_for_input(prefs.vroot, real_input, prefs.building_v)
 	prefs.vroot = fastc_canonical_vroot(prefs.vroot)
 	prefs.backend = 'fastc'
 	prefs.ccompiler = 'tinyc'
-	prefs.building_v = real_input.ends_with('/vlib/v3/v3.v')
 	prefs.selfhost = prefs.building_v
 	prefs.user_defines = ['fastc_selfhost', 'v3_backend', 'skip_arm64', 'skip_wasm', 'skip_eval']
 	backtrace_enabled := fastc_tcc_backtrace_enabled(prefs.normalized_target_os(), prefs.target.arch)

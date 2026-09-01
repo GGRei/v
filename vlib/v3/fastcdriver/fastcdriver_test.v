@@ -22,6 +22,47 @@ fn test_fastc_canonical_vroot_resolves_symlinked_checkout() {
 	assert fastc_canonical_vroot(linked_root) == os.real_path(real_root)
 }
 
+fn test_fastc_is_v3_entry_accepts_exact_native_entry() {
+	assert fastc_is_v3_entry('/checkout/vlib/v3/v3.v')
+	$if windows {
+		assert fastc_is_v3_entry(r'C:\checkout\vlib\v3\v3.v')
+		assert fastc_is_v3_entry(r'D:\checkout\vlib\v3\v3.v')
+		assert !fastc_is_v3_entry(r'\\server\share\vlib\v3\v3.v')
+		assert !fastc_is_v3_entry('//server/share/vlib/v3/v3.v')
+		assert !fastc_is_v3_entry(r'\\?\UNC\server\share\vlib\v3\v3.v')
+		assert !fastc_is_v3_entry(r'\\?\C:\checkout\vlib\v3\v3.v')
+	} $else {
+		assert !fastc_is_v3_entry(r'C:\checkout\vlib\v3\v3.v')
+		assert !fastc_is_v3_entry(r'D:\checkout\vlib\v3\v3.v')
+	}
+	assert !fastc_is_v3_entry('/checkout/vlib/v3/v3.v.bak')
+	assert !fastc_is_v3_entry('/checkout/vlib/v3/not_v3.v')
+	assert !fastc_is_v3_entry(r'C:\checkout\vlib\v3\v3.v.bak')
+	assert !fastc_is_v3_entry(r'C:\checkout\vlib\v3\not_v3.v')
+}
+
+fn test_fastc_vroot_for_input_replaces_nonempty_only_when_building_v() {
+	root := os.join_path(os.temp_dir(), 'fastc_vroot_for_input_${os.getpid()}')
+	real_root := os.join_path(root, 'checkout')
+	real_entry := os.join_path(real_root, 'vlib', 'v3', 'v3.v')
+	os.mkdir_all(os.dir(real_entry)) or { panic(err) }
+	os.write_file(real_entry, 'module main\n') or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	canonical_entry := os.real_path(real_entry)
+	wrong_nonempty := os.join_path(root, 'wrong')
+	assert fastc_vroot_for_input(wrong_nonempty, canonical_entry,
+		fastc_is_v3_entry(canonical_entry)) == os.real_path(real_root)
+	lookalike := '${canonical_entry}.bak'
+	assert fastc_vroot_for_input(wrong_nonempty, lookalike, fastc_is_v3_entry(lookalike)) == wrong_nonempty
+	$if windows {
+		unc_entry := r'\\server\share\vlib\v3\v3.v'
+		assert !fastc_is_v3_entry(unc_entry)
+		assert fastc_vroot_for_input(wrong_nonempty, unc_entry, fastc_is_v3_entry(unc_entry)) == wrong_nonempty
+	}
+}
+
 fn test_fastc_parse_bench_child_output() {
 	sample := fastc_parse_bench_child_output('notice\nfastc-bench-child 50123 170 64516\n') or {
 		assert false, 'expected benchmark sample'
