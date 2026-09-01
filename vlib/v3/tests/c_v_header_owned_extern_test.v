@@ -49,7 +49,7 @@ fn test_c_v_ordinary_header_owns_externs_in_serial_and_scoped_codegen() {
 		os.write_file(source, 'module main
 
 #include "${header}"
-#flag ${implementation}
+#flag "${implementation}"
 
 fn C.issue74_v37_header_api(&char) int
 

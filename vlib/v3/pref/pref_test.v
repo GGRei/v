@@ -81,6 +81,7 @@ fn test_comptime_pkgconfig_value_uses_pkgconfig_runner() {
 	old_pkgconfig_path := os.getenv_opt('PKG_CONFIG_PATH')
 	old_pkgconfig_defaults := os.getenv_opt('PKG_CONFIG_PATH_DEFAULTS')
 	old_path := os.getenv('PATH')
+	mut tool_root := ''
 	defer {
 		if value := old_pkgconfig_path {
 			os.setenv('PKG_CONFIG_PATH', value, true)
@@ -93,23 +94,23 @@ fn test_comptime_pkgconfig_value_uses_pkgconfig_runner() {
 			os.unsetenv('PKG_CONFIG_PATH_DEFAULTS')
 		}
 		os.setenv('PATH', old_path, true)
+		if tool_root.len > 0 {
+			os.rmdir_all(tool_root) or {}
+		}
 	}
 	os.setenv('PKG_CONFIG_PATH', fixture_dir, true)
 	os.unsetenv('PKG_CONFIG_PATH_DEFAULTS')
 	$if !windows {
-		root := os.join_path(os.vtmp_dir(), 'v3_pref_pkgconfig_runner_${os.getpid()}')
-		os.rmdir_all(root) or {}
-		os.mkdir_all(root) or { panic(err) }
-		defer {
-			os.rmdir_all(root) or {}
-		}
-		tool := os.join_path(root, 'pkg-config')
+		tool_root = os.join_path(os.vtmp_dir(), 'v3_pref_pkgconfig_runner_${os.getpid()}')
+		os.rmdir_all(tool_root) or {}
+		os.mkdir_all(tool_root) or { panic(err) }
+		tool := os.join_path(tool_root, 'pkg-config')
 		os.write_file(tool,
 			'#!/bin/sh\n[ "$1" = "--exists" ] && [ "$2" = "mixed-case-dynamic-sentinel-74" ]\n') or {
 			panic(err)
 		}
 		os.chmod(tool, 0o700) or { panic(err) }
-		os.setenv('PATH', root, true)
+		os.setenv('PATH', tool_root, true)
 	}
 	assert comptime_pkgconfig_value('mixed-case-dynamic-sentinel-74')
 	assert !comptime_pkgconfig_value('issue74-v37-missing')

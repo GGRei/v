@@ -12,6 +12,7 @@ fn test_fastc_pkgconfig_flags_use_resolved_pkgconfig_runner() {
 		'static_pkgconfig')
 	old_pkgconfig_path := os.getenv_opt('PKG_CONFIG_PATH')
 	old_path := os.getenv('PATH')
+	mut tool_root := ''
 	defer {
 		if value := old_pkgconfig_path {
 			os.setenv('PKG_CONFIG_PATH', value, true)
@@ -19,22 +20,22 @@ fn test_fastc_pkgconfig_flags_use_resolved_pkgconfig_runner() {
 			os.unsetenv('PKG_CONFIG_PATH')
 		}
 		os.setenv('PATH', old_path, true)
+		if tool_root.len > 0 {
+			os.rmdir_all(tool_root) or {}
+		}
 	}
 	os.setenv('PKG_CONFIG_PATH', fixture_dir, true)
 	$if !windows {
-		root := os.join_path(os.vtmp_dir(), 'v3_fastc_pkgconfig_runner_${os.getpid()}')
-		os.rmdir_all(root) or {}
-		os.mkdir_all(root) or { panic(err) }
-		defer {
-			os.rmdir_all(root) or {}
-		}
-		tool := os.join_path(root, 'pkg-config')
+		tool_root = os.join_path(os.vtmp_dir(), 'v3_fastc_pkgconfig_runner_${os.getpid()}')
+		os.rmdir_all(tool_root) or {}
+		os.mkdir_all(tool_root) or { panic(err) }
+		tool := os.join_path(tool_root, 'pkg-config')
 		os.write_file(tool,
 			'#!/bin/sh\n[ "$1" = "--cflags" ] && [ "$2" = "--libs" ] || exit 1\necho "-DISSUE74_DYNAMIC_SENTINEL -Wl,--issue74-dynamic-sentinel"\n') or {
 			panic(err)
 		}
 		os.chmod(tool, 0o700) or { panic(err) }
-		os.setenv('PATH', root, true)
+		os.setenv('PATH', tool_root, true)
 	}
 	flags := fastc_pkgconfig_flags('mixed-case-dynamic-sentinel-74') or { panic(err) }
 	assert '-DISSUE74_DYNAMIC_SENTINEL' in flags
