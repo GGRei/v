@@ -318,3 +318,124 @@ jobs:
         run: v run ci/macos_ci.vsh test_password_input
       - name: Test readline
         run: v run ci/macos_ci.vsh test_readline
+
+  issue74-v1-macos-clang:
+    name: Issue 74 V1 causal tests (macOS Clang)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build V
+        env:
+          V_MACOS_V3_NO_FALLBACK: 0
+        run: make -j4
+      - name: Run Issue 74 V1 owners
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+          cc_path="$(command -v clang)"
+          cpp_path="$(command -v clang++)"
+          cc_version="$($cc_path --version)"
+          cpp_version="$($cpp_path --version)"
+          [[ "$cc_version" == *clang* && "$cc_version" != *clang-cl* ]]
+          [[ "$cpp_version" == *clang* && "$cpp_version" != *clang-cl* ]]
+          unset CFLAGS LDFLAGS VFLAGS
+          export VJOBS=1
+          export VTMP="$RUNNER_TEMP/issue74 v1 macos tmp"
+          mkdir -p "$VTMP"
+
+          assert_defs() {
+            local file="$1"; shift
+            local name count
+            for name in "$@"; do
+              count="$(awk -v expected="fn ${name}() {" '$0 == expected { n++ } END { print n + 0 }' "$file")"
+              [[ "$count" == 1 ]] || { echo "definition count ${file}:${name}=${count}" >&2; return 1; }
+            done
+          }
+          run_owner() {
+            local label="$1" file="$2"; shift 2
+            local names=("$@") csv log code tee_code summary_count pipeline_status
+            assert_defs "$file" "${names[@]}"
+            csv="$(IFS=,; printf '%s' "${names[*]}")"
+            log="$RUNNER_TEMP/${label}.log"
+            set +e
+            ./v -old-compiler -cc "$cc_path" -c++ "$cpp_path" -no-retry-compilation \
+              -silent test -run-only "$csv" "$file" 2>&1 | tee "$log"
+            pipeline_status=("${PIPESTATUS[@]}")
+            code="${pipeline_status[0]}"
+            tee_code="${pipeline_status[1]}"
+            set -e
+            [[ "$code" == 0 ]] || { echo "$label failed with exit code $code" >&2; return 1; }
+            [[ "$tee_code" == 0 ]] || { echo "$label log write failed with exit code $tee_code" >&2; return 1; }
+            summary_count="$(awk -v needle='1 passed, 1 total' '{ rest=$0; while ((at=index(rest, needle)) > 0) { count++; rest=substr(rest, at + length(needle)) } } END { print count + 0 }' "$log")"
+            [[ "$summary_count" == 1 ]] || { echo "$label summary count=$summary_count" >&2; return 1; }
+            if grep -Eqi '(^|[^[:alnum:]_])0[[:space:]]+total([^[:alnum:]_]|$)|no tests found|skipped|skipping|panic' "$log"; then
+              echo "$label emitted a forbidden no-op/failure marker" >&2
+              return 1
+            fi
+          }
+
+          run_owner macos-routing cmd/v/macos_v3_test.v \
+            test_macos_v3_relevant_command_selects_user_compilation_and_tests \
+            test_macos_v3_fastc_rejects_incompatible_preferences
+          run_owner v1-cc vlib/v/builder/cc_test.v \
+            test_cc_from_string_keeps_historical_clang_cl_classification \
+            test_resolved_tcc_wrapper_recomputes_pkgconfig_mode_as_dynamic \
+            test_resolved_gnu_wrappers_keep_pkgconfig_mode_static \
+            test_cpp_linker_c_source_args_wrap_only_c_sources \
+            test_cpp_linker_marker_removes_only_lto_and_c_language_standard_tokens \
+            test_cpp_linker_rejects_msvc_driver_mode_from_environment_flags \
+            test_cpp_linker_forces_generated_c_but_not_object_inputs \
+            test_cpp_linker_driver_classifier_fails_closed_for_unknown_commands \
+            test_cpp_linker_preserves_objective_c_for_generated_darwin_source \
+            test_no_cpp_linker_keeps_legacy_objective_c_generated_source_args \
+            test_cpp_linker_does_not_change_builds_without_directive
+          run_owner v1-pkgconfig vlib/v/checker/pkgconfig_static_mode_test.v \
+            test_static_pkgconfig_segment_stays_ordered_after_target \
+            test_explicit_static_directive_uses_ordered_transport_without_global_static_cflag \
+            test_package_without_options_keeps_historical_dynamic_defaults
+          run_owner v1-owned-values vlib/v/pref/compiler_owned_values_test.v \
+            test_static_pkgconfig_compiler_owned_names_are_narrowly_reserved
+          run_owner v1-pref vlib/v/pref/pref_test.v \
+            test_static_pkgconfig_compiler_value_filters_reserved_conditional_files \
+            test_pkgconfig_mode_salts_cache_without_salt_for_all_ldflags \
+            test_msvc_style_clang_never_activates_static_pkgconfig_fact_or_file \
+            test_gnu_style_clang_and_driver_mode_lookalike_keep_static_pkgconfig \
+            test_static_pkgconfig_compiler_value_exact_token_matrix \
+            test_static_pkgconfig_compiler_value_rejects_static_lookalikes \
+            test_other_v_namespaced_compile_values_remain_user_controlled
+          run_owner v1-comptime vlib/v/tests/comptime/comptime_static_pkgconfig_value_test.v \
+            test_static_pkgconfig_compiler_value_is_canonical_in_a_dynamic_build \
+            test_static_pkgconfig_compiler_owned_names_cannot_be_overridden
+          run_owner v1-checker vlib/v/checker/linker_directive_test.v \
+            test_linker_cplusplus_is_idempotent test_linker_cplusplus_in_inactive_branch_is_ignored \
+            test_linker_rejects_every_value_except_exact_cplusplus
+          run_owner v1-fake-link vlib/v/builder/pkgconfig_link_segment_test.v \
+            test_cpp_linker_fake_driver_direct_rsp_prod_and_parallel_paths \
+            test_cpp_linker_rejects_unsupported_or_missing_final_drivers
+          run_owner v1-real-link vlib/v/builder/linker_directive_integration_test.v \
+            test_cpp_linker_real_drivers_keep_c_inputs_and_supply_their_runtime \
+            test_cpp_linker_compile_only_paths_do_not_probe_the_cpp_driver \
+            test_cpp_linker_cross_target_executable_reports_before_driver_selection
+
+          fmt_log="$RUNNER_TEMP/issue74-fmt.log"
+          assert_defs vlib/v/fmt/fmt_keep_test.v test_fmt
+          set +e
+          VTEST_ONLY=fmt_keep_test.v,linker_directive_keep.vv \
+            ./v -old-compiler -cc "$cc_path" -no-retry-compilation -no-parallel -nocache -gc none -silent test \
+              -run-only test_fmt vlib/v/fmt/fmt_keep_test.v 2>&1 | tee "$fmt_log"
+          fmt_pipeline_status=("${PIPESTATUS[@]}")
+          fmt_code="${fmt_pipeline_status[0]}"
+          fmt_tee_code="${fmt_pipeline_status[1]}"
+          set -e
+          [[ "$fmt_code" == 0 ]]
+          [[ "$fmt_tee_code" == 0 ]]
+          fmt_summary_count="$(awk -v needle='1 passed, 1 total' '{ rest=$0; while ((at=index(rest, needle)) > 0) { count++; rest=substr(rest, at + length(needle)) } } END { print count + 0 }' "$fmt_log")"
+          [[ "$fmt_summary_count" == 1 ]]
+          if grep -Eqi '(^|[^[:alnum:]_])0[[:space:]]+total([^[:alnum:]_]|$)|no tests found|skipped|skipping|panic' "$fmt_log"; then
+            exit 1
+          fi
+          git diff --exit-code
+          git diff --cached --exit-code
+          [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
