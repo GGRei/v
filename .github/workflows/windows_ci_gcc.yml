@@ -302,13 +302,15 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $gitApplications = @(Get-Command git.exe -CommandType Application -All -ErrorAction Stop)
-          if ($gitApplications.Count -ne 1) {
-            throw "git.exe lookup cardinality mismatch: Count=$($gitApplications.Count)"
+          $expectedGit = Join-Path $env:ProgramFiles 'Git\cmd\git.exe'
+          if (-not (Test-Path -LiteralPath $expectedGit -PathType Leaf)) {
+            throw "missing canonical git.exe: $expectedGit"
           }
-          $git = [IO.Path]::GetFullPath($gitApplications[0].Source)
-          if (-not (Test-Path -LiteralPath $git -PathType Leaf)) {
-            throw "missing selected git.exe: $git"
+          $git = [IO.Path]::GetFullPath($expectedGit)
+          $gitVersion = (& $git --version 2>&1 | Out-String)
+          $gitCode = $LASTEXITCODE
+          if ($gitCode -ne 0 -or $gitVersion -notmatch '(?im)^git version \d') {
+            throw "canonical git.exe preflight failed with exit code $gitCode"
           }
           $gitBin = Split-Path -Parent $git
           $ambientGcc = (@(Get-Command gcc.exe -CommandType Application -All -ErrorAction Stop))[0].Source
@@ -316,6 +318,19 @@ jobs:
           $expectedGcc = Join-Path $toolBin 'gcc.exe'
           $expectedGpp = Join-Path $toolBin 'g++.exe'
           $env:Path = "$toolBin;$gitBin;$env:SystemRoot\System32;$env:SystemRoot"
+          $gitApplications = @(Get-Command git.exe -CommandType Application -All -ErrorAction Stop)
+          if ($gitApplications.Count -ne 1) {
+            throw "canonical git.exe lookup cardinality mismatch: Count=$($gitApplications.Count)"
+          }
+          $resolvedGit = $gitApplications[0].Source
+          if (-not [string]::Equals([IO.Path]::GetFullPath($resolvedGit), $git, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "git.exe resolved to $resolvedGit instead of $git"
+          }
+          $resolvedGitVersion = (& $resolvedGit --version 2>&1 | Out-String)
+          $resolvedGitCode = $LASTEXITCODE
+          if ($resolvedGitCode -ne 0 -or $resolvedGitVersion -notmatch '(?im)^git version \d') {
+            throw "resolved git.exe preflight failed with exit code $resolvedGitCode"
+          }
           function Resolve-Exact([string] $Name, [string] $Expected) {
             if (-not (Test-Path -LiteralPath $Expected -PathType Leaf)) {
               throw "missing selected compiler: $Expected"
