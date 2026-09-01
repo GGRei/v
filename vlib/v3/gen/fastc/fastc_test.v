@@ -4759,7 +4759,7 @@ fn fastc_test_expression_token(tok token.Token, lit string) FastcExpressionToken
 fn test_literal_membership_materializes_candidates_before_comparison() {
 	prefs := pref.new_preferences()
 	g := Parser{
-		prefs: &prefs
+		prefs: prefs
 		selfhost: true
 		s: scanner.new_scanner(prefs, .normal)
 		locals: {
@@ -6499,7 +6499,7 @@ fn main() {
 fn test_selfhost_fixed_array_elements_skip_dynamic_inner_array_initialization() {
 	prefs := pref.new_preferences()
 	g := Parser{
-		prefs: &prefs
+		prefs: prefs
 		s: scanner.new_scanner(prefs, .normal)
 		struct_fields: {
 			'array': {
