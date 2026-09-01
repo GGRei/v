@@ -176,8 +176,9 @@ fn (mut g Parser) parse_for() !bool {
 					return g.unsupported('for-in collection `${start}` of type `${collection_type}`')
 				}
 			}
-			fixed_length := fastc_fixed_array_length(collection_layout_type.trim_right('*')) or {
-				''
+			mut fixed_length := ''
+			if value := fastc_fixed_array_length(collection_layout_type.trim_right('*')) {
+				fixed_length = value
 			}
 			is_fixed_array := fixed_length != ''
 			is_raw_fixed_array := is_fixed_array && (start_expression.len > 1
