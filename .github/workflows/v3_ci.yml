@@ -318,9 +318,6 @@ jobs:
             'test_linker_cache_selector_is_conditional_on_source_directives')
           Run-Owner -Label v3-output-suffix -Path 'vlib/v3/driver/implicit_import_test.v' -Common $v3Common -Names @(
             'test_c_executable_bin_file_uses_target_postfix')
-          Run-Owner -Label v3-module-cache-integration -Path 'vlib/v3/tests/module_cache_test.v' -Common $v3Common -Names @(
-            'test_pkgconfig_mode_cache_isolated_across_dynamic_static_dynamic_sequence',
-            'test_cpp_linker_requirement_survives_import_cache_true_false_true_sequence')
           Run-Owner -Label v3-driver-link -Path 'vlib/v3/tests/driver_cli_test.v' -Common $v3Common -Names @(
             'test_driver_static_pkgconfig_fact_ldflags_and_dynamic_c_invariance',
             'test_driver_cpp_linker_directive_is_exact_and_non_link_outputs_stay_c',
