@@ -16,6 +16,105 @@ fn test_detect_vroot_from_binary_path() {
 	assert detect_vroot_from(v3_bin) == vroot
 }
 
+fn test_pkgconfig_executable_candidate_requires_absolute_regular_executable_exe() {
+	abs_exe := os.join_path(os.vtmp_dir(), 'pkg config', 'pkg-config.EXE')
+	assert pkgconfig_executable_from_candidate(abs_exe, true, true, true) == abs_exe
+	for candidate in [
+		['pkg-config.exe', 'false', 'true', 'true'],
+		[os.join_path(os.vtmp_dir(), 'pkg-config.bat'), 'true', 'true', 'true'],
+		[os.join_path(os.vtmp_dir(), 'pkg-config.cmd'), 'true', 'true', 'true'],
+		[os.join_path(os.vtmp_dir(), 'pkg-config'), 'true', 'true', 'true'],
+		[os.join_path(os.vtmp_dir(), 'pkg-config.exe'), 'true', 'false', 'true'],
+		[os.join_path(os.vtmp_dir(), 'pkg-config.exe'), 'true', 'true', 'false'],
+	] {
+		assert pkgconfig_executable_from_candidate(candidate[0], candidate[1] == 'true',
+			candidate[2] == 'true', candidate[3] == 'true') == pkgconfig_executable_name
+	}
+}
+
+fn test_pkgconfig_executable_resolves_only_windows_exe() {
+	$if windows {
+		root := os.join_path(os.vtmp_dir(), 'v3 pkgconfig executable ${os.getpid()}')
+		os.rmdir_all(root) or {}
+		os.mkdir_all(root) or { panic(err) }
+		defer {
+			os.rmdir_all(root) or {}
+		}
+		old_path := os.getenv('PATH')
+		defer {
+			os.setenv('PATH', old_path, true)
+		}
+		batch_dir := os.join_path(root, 'first batch script')
+		cmd_dir := os.join_path(root, 'command script')
+		extensionless_dir := os.join_path(root, 'extensionless tool')
+		empty_dir := os.join_path(root, 'empty path')
+		second := os.join_path(root, 'second executable')
+		third := os.join_path(root, 'third executable')
+		for dir in [batch_dir, cmd_dir, extensionless_dir, empty_dir, second, third] {
+			os.mkdir_all(dir) or { panic(err) }
+		}
+		os.write_file(os.join_path(batch_dir, 'pkg-config.bat'), '@exit /b 0\n') or { panic(err) }
+		os.write_file(os.join_path(cmd_dir, 'pkg-config.cmd'), '@exit /b 0\n') or { panic(err) }
+		os.write_file(os.join_path(extensionless_dir, 'pkg-config'), '') or { panic(err) }
+		second_exe := os.join_path(second, 'pkg-config.exe')
+		third_exe := os.join_path(third, 'pkg-config.exe')
+		os.write_file(second_exe, '') or { panic(err) }
+		os.write_file(third_exe, '') or { panic(err) }
+
+		os.setenv('PATH', '${batch_dir}${os.path_delimiter}${second}${os.path_delimiter}${third}',
+			true)
+		assert pkgconfig_executable() == os.real_path(second_exe)
+		os.setenv('PATH', '${third}${os.path_delimiter}${second}', true)
+		assert pkgconfig_executable() == os.real_path(third_exe)
+		for dir in [batch_dir, cmd_dir, extensionless_dir, empty_dir] {
+			os.setenv('PATH', dir, true)
+			assert pkgconfig_executable() == pkgconfig_executable_name
+		}
+	} $else {
+		assert pkgconfig_executable() == pkgconfig_executable_name
+	}
+}
+
+fn test_comptime_pkgconfig_value_uses_pkgconfig_runner() {
+	fixture_dir := os.join_path(@VEXEROOT, 'vlib', 'v', 'pkgconfig', 'testdata',
+		'static_pkgconfig')
+	old_pkgconfig_path := os.getenv_opt('PKG_CONFIG_PATH')
+	old_pkgconfig_defaults := os.getenv_opt('PKG_CONFIG_PATH_DEFAULTS')
+	old_path := os.getenv('PATH')
+	defer {
+		if value := old_pkgconfig_path {
+			os.setenv('PKG_CONFIG_PATH', value, true)
+		} else {
+			os.unsetenv('PKG_CONFIG_PATH')
+		}
+		if value := old_pkgconfig_defaults {
+			os.setenv('PKG_CONFIG_PATH_DEFAULTS', value, true)
+		} else {
+			os.unsetenv('PKG_CONFIG_PATH_DEFAULTS')
+		}
+		os.setenv('PATH', old_path, true)
+	}
+	os.setenv('PKG_CONFIG_PATH', fixture_dir, true)
+	os.unsetenv('PKG_CONFIG_PATH_DEFAULTS')
+	$if !windows {
+		root := os.join_path(os.vtmp_dir(), 'v3_pref_pkgconfig_runner_${os.getpid()}')
+		os.rmdir_all(root) or {}
+		os.mkdir_all(root) or { panic(err) }
+		defer {
+			os.rmdir_all(root) or {}
+		}
+		tool := os.join_path(root, 'pkg-config')
+		os.write_file(tool,
+			'#!/bin/sh\n[ "$1" = "--exists" ] && [ "$2" = "mixed-case-dynamic-sentinel-74" ]\n') or {
+			panic(err)
+		}
+		os.chmod(tool, 0o700) or { panic(err) }
+		os.setenv('PATH', root, true)
+	}
+	assert comptime_pkgconfig_value('mixed-case-dynamic-sentinel-74')
+	assert !comptime_pkgconfig_value('issue74-v37-missing')
+}
+
 fn test_get_module_path_resolves_alias_and_submodule() {
 	root := os.join_path(os.temp_dir(), 'v3_pref_module_alias_${os.getpid()}')
 	os.rmdir_all(root) or {}

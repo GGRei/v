@@ -2320,6 +2320,7 @@ fn (g &FlatGen) configure_c_extern_scan_worker(mut worker FlatGen) {
 	worker.possibly_active_c_macros = g.possibly_active_c_macros.clone()
 	worker.inlined_c_static_fns = g.inlined_c_static_fns.clone()
 	worker.cache_omitted_c_fns = g.cache_omitted_c_fns.clone()
+	worker.header_owned_c_extern_sources = g.header_owned_c_extern_sources.clone()
 }
 
 fn (mut g FlatGen) publish_c_extern_type_discoveries(worker &FlatGen) {

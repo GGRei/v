@@ -274,7 +274,7 @@ fn fastc_pkgconfig_flags(raw string) ![]string {
 	}
 	mut args := ['--cflags', '--libs']
 	args << packages
-	result := cmdexec.run('pkg-config', args)
+	result := pref.run_pkgconfig(args)
 	if result.exit_code != 0 {
 		return error('fastc parser cannot resolve `#pkgconfig ${raw}`: ${result.output.trim_space()}')
 	}

@@ -401,6 +401,7 @@ mut:
 	possibly_active_c_macros       map[string]bool
 	inlined_c_static_fns           map[string]bool
 	cache_omitted_c_fns            map[string]bool
+	header_owned_c_extern_sources  map[string]bool
 	preserved_header_files_seen    map[string]bool
 	preserved_header_scan_results  map[string]CHeaderMacroState
 	preserved_macro_files_seen     map[string]bool
@@ -1113,6 +1114,7 @@ pub fn FlatGen.new() FlatGen {
 		possibly_active_c_macros:        map[string]bool{}
 		inlined_c_static_fns:            map[string]bool{}
 		cache_omitted_c_fns:             map[string]bool{}
+		header_owned_c_extern_sources:   map[string]bool{}
 		preserved_header_files_seen:     map[string]bool{}
 		preserved_header_scan_results:   map[string]CHeaderMacroState{}
 		preserved_macro_files_seen:      map[string]bool{}
@@ -2946,6 +2948,7 @@ pub fn (mut g FlatGen) gen_with_used_options(a &flat.FlatAst, used_fns map[strin
 	g.possibly_active_c_macros.clear()
 	g.inlined_c_static_fns.clear()
 	g.cache_omitted_c_fns.clear()
+	g.reset_header_owned_c_extern_sources()
 	g.preserved_header_files_seen.clear()
 	g.preserved_header_scan_results.clear()
 	g.preserved_macro_files_seen.clear()
@@ -4780,6 +4783,7 @@ fn (mut g FlatGen) collect_c_directive(module_name string, node flat.Node, sourc
 			g.collect_preserved_c_structs(c_preserved_system_include_struct_names(include_arg))
 			g.collect_preserved_c_typedef_names(c_preserved_system_include_typedef_names(include_arg))
 			g.add_c_directive(module_name, '#include ${include_arg}', before_import)
+			g.mark_header_owned_c_extern_source(source_file, node.value, include_arg)
 			return true
 		}
 		// Resolved angle headers already have a compiler search path. Preserve the
@@ -4788,6 +4792,7 @@ fn (mut g FlatGen) collect_c_directive(module_name string, node flat.Node, sourc
 		if trimmed_space(include_arg).starts_with('<')
 			&& g.collect_preserved_header_tree(include_arg, source_file, include_dirs) {
 			g.add_c_directive(module_name, '#include ${include_arg}', before_import)
+			g.mark_header_owned_c_extern_source(source_file, node.value, include_arg)
 			return true
 		}
 		if header := c_inline_header_text_scoped(include_arg, g.compiler_vroot, source_file,
@@ -4841,9 +4846,11 @@ fn (mut g FlatGen) collect_c_directive(module_name string, node flat.Node, sourc
 			}
 			if header_text.len > 0 && scoped_native_header_path.len == 0 {
 				g.add_c_directive_at(module_name, header_text, before_import, late_source)
+				g.mark_header_owned_c_extern_source(source_file, node.value, include_arg)
 			} else if scoped_native_header_path.len > 0 {
 				g.add_c_directive(module_name,
 					c_native_source_context_include(scoped_native_header_path), before_import)
+				g.mark_header_owned_c_extern_source(source_file, node.value, include_arg)
 			}
 		} else if c_should_preserve_uninlined_include(include_arg) || (g.cache_split
 			&& include_arg in ['<mach/mach.h>', '<mach/task.h>', '<mach/mach_time.h>']) {
@@ -4854,6 +4861,7 @@ fn (mut g FlatGen) collect_c_directive(module_name string, node flat.Node, sourc
 			g.collect_preserved_c_structs(c_preserved_system_include_struct_names(include_arg))
 			g.collect_preserved_c_typedef_names(c_preserved_system_include_typedef_names(include_arg))
 			g.add_c_directive(module_name, '#include ${include_arg}', before_import)
+			g.mark_header_owned_c_extern_source(source_file, node.value, include_arg)
 		}
 		return true
 	}
@@ -4865,6 +4873,37 @@ fn (mut g FlatGen) collect_c_directive(module_name string, node flat.Node, sourc
 		return true
 	}
 	return false
+}
+
+fn c_extern_source_key(source_file string) string {
+	return source_file.replace('\\', '/')
+}
+
+fn c_include_arg_has_source_suffix(include_arg string) bool {
+	clean := trimmed_space(include_arg)
+	if clean.len < 3 {
+		return false
+	}
+	path := if (clean[0] == `"` && clean[clean.len - 1] == `"`)
+		|| (clean[0] == `<` && clean[clean.len - 1] == `>`) {
+		clean[1..clean.len - 1]
+	} else {
+		clean
+	}
+	return path.ends_with('.c') || path.ends_with('.m') || path.ends_with('.mm')
+}
+
+fn (mut g FlatGen) mark_header_owned_c_extern_source(source_file string, directive_name string, include_arg string) {
+	key := c_extern_source_key(source_file)
+	if directive_name != 'include' || !key.ends_with('.c.v')
+		|| c_include_arg_has_source_suffix(include_arg) {
+		return
+	}
+	g.header_owned_c_extern_sources[key] = true
+}
+
+fn (mut g FlatGen) reset_header_owned_c_extern_sources() {
+	g.header_owned_c_extern_sources.clear()
 }
 
 // c_builtin_abi_helper_header_paths are the superseded helper headers whose
@@ -11389,7 +11428,7 @@ fn c_pkgconfig_flags(raw string, pkgconfig_mode pref.PkgConfigMode) []string {
 	if args.len == 0 {
 		return []string{}
 	}
-	result := cmdexec.run('pkg-config', args)
+	result := pref.run_pkgconfig(args)
 	if result.exit_code != 0 {
 		return []string{}
 	}

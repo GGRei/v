@@ -106,6 +106,121 @@ fn test_unscanned_preserved_header_only_suppresses_known_symbols() {
 	assert g.should_emit_c_extern_decl_from_file('unrelated_api', os.join_path(root, 'other.v'))
 }
 
+fn test_c_v_ordinary_emitted_header_owns_only_same_file_c_externs() {
+	root := os.join_path(os.vtmp_dir(), 'v3_c_v_header_owner_${os.getpid()}')
+	os.rmdir_all(root) or {}
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	header := os.join_path(root, 'api.h')
+	source := os.join_path(root, 'main.c.v')
+	other_source := os.join_path(root, 'other.c.v')
+	os.write_file(header,
+		'#define V37_DECLARE(name) int name(const char *value)\nV37_DECLARE(issue74_v37_header_api);\n') or {
+		panic(err)
+	}
+	os.write_file(source, 'module main\n') or { panic(err) }
+	os.write_file(other_source, 'module main\n') or { panic(err) }
+
+	mut g := FlatGen.new()
+	g.collect_c_directive('main', flat.Node{
+		kind:  .directive
+		value: 'include'
+		typ:   '"${header}"'
+	}, source, false)
+
+	key := c_extern_source_key(source)
+	assert g.header_owned_c_extern_sources[key]
+	assert 'issue74_v37_header_api' !in g.inlined_c_declared_fns
+	assert !g.should_emit_c_extern_decl_from_file('unrelated_header_api', source)
+	assert g.should_emit_c_extern_decl_from_file('unrelated_header_api', other_source)
+}
+
+fn test_c_v_header_ownership_excludes_nonordinary_and_nonheader_directives() {
+	root := os.join_path(os.vtmp_dir(), 'v3_c_v_header_exclusions_${os.getpid()}')
+	os.rmdir_all(root) or {}
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	header := os.join_path(root, 'api.h')
+	c_v_source := os.join_path(root, 'main.c.v')
+	ordinary_source := os.join_path(root, 'main.v')
+	os.write_file(header, 'int header_api(void);\n') or { panic(err) }
+	mut source_implementations := []string{}
+	for extension in ['c', 'm', 'mm'] {
+		implementation := os.join_path(root, 'impl.${extension}')
+		os.write_file(implementation, 'int implementation_api(void) { return 1; }\n') or {
+			panic(err)
+		}
+		source_implementations << implementation
+	}
+
+	for directive_name in ['preinclude', 'postinclude', 'insert'] {
+		mut g := FlatGen.new()
+		g.collect_c_directive('main', flat.Node{
+			kind:  .directive
+			value: directive_name
+			typ:   '"${header}"'
+		}, c_v_source, false)
+		assert !g.header_owned_c_extern_sources[c_extern_source_key(c_v_source)]
+		assert g.should_emit_c_extern_decl_from_file('unrelated_api', c_v_source)
+	}
+
+	for implementation in source_implementations {
+		mut source_include_g := FlatGen.new()
+		source_include_g.collect_c_directive('main', flat.Node{
+			kind:  .directive
+			value: 'include'
+			typ:   '"${implementation}"'
+		}, c_v_source, false)
+		assert !source_include_g.header_owned_c_extern_sources[c_extern_source_key(c_v_source)]
+		assert source_include_g.should_emit_c_extern_decl_from_file('unrelated_api', c_v_source)
+	}
+
+	mut ordinary_g := FlatGen.new()
+	ordinary_g.collect_c_directive('main', flat.Node{
+		kind:  .directive
+		value: 'include'
+		typ:   '"${header}"'
+	}, ordinary_source, false)
+	assert !ordinary_g.header_owned_c_extern_sources[c_extern_source_key(ordinary_source)]
+	assert ordinary_g.should_emit_c_extern_decl_from_file('unrelated_api', ordinary_source)
+
+	mut headerless_g := FlatGen.new()
+	assert !headerless_g.header_owned_c_extern_sources[c_extern_source_key(c_v_source)]
+	assert headerless_g.should_emit_c_extern_decl_from_file('unrelated_api', c_v_source)
+
+	empty_header := os.join_path(root, 'empty.h')
+	os.write_file(empty_header, '') or { panic(err) }
+	mut empty_header_g := FlatGen.new()
+	empty_header_g.collect_c_directive('main', flat.Node{
+		kind:  .directive
+		value: 'include'
+		typ:   '"${empty_header}"'
+	}, c_v_source, false)
+	assert !empty_header_g.header_owned_c_extern_sources[c_extern_source_key(c_v_source)]
+	assert empty_header_g.should_emit_c_extern_decl_from_file('unrelated_api', c_v_source)
+
+	inactive_target := if pref.host_target().os == 'windows' { 'linux' } else { 'windows' }
+	mut inactive_g := FlatGen.new()
+	inactive_g.collect_c_directive('main', flat.Node{
+		kind:  .directive
+		value: 'include'
+		typ:   '${inactive_target} "${header}"'
+	}, c_v_source, false)
+	assert !inactive_g.header_owned_c_extern_sources[c_extern_source_key(c_v_source)]
+	assert inactive_g.should_emit_c_extern_decl_from_file('unrelated_api', c_v_source)
+}
+
+fn test_header_owned_c_extern_sources_reset_between_generations() {
+	mut g := FlatGen.new()
+	g.header_owned_c_extern_sources['/tmp/main.c.v'] = true
+	g.reset_header_owned_c_extern_sources()
+	assert g.header_owned_c_extern_sources.len == 0
+}
+
 fn test_preinclude_carries_macro_state_to_later_preincludes() {
 	root := os.join_path(os.vtmp_dir(), 'v3_preinclude_macro_state_${os.getpid()}')
 	os.rmdir_all(root) or {}
@@ -712,6 +827,40 @@ fn test_pkgconfig_dynamic_argv_is_historically_byte_for_byte_unchanged() {
 		'pangoft2',
 		'freetype2',
 	]
+}
+
+fn test_pkgconfig_flags_use_resolved_pkgconfig_runner() {
+	fixture_dir := os.join_path(@VEXEROOT, 'vlib', 'v', 'pkgconfig', 'testdata',
+		'static_pkgconfig')
+	old_pkgconfig_path := os.getenv_opt('PKG_CONFIG_PATH')
+	old_path := os.getenv('PATH')
+	defer {
+		if value := old_pkgconfig_path {
+			os.setenv('PKG_CONFIG_PATH', value, true)
+		} else {
+			os.unsetenv('PKG_CONFIG_PATH')
+		}
+		os.setenv('PATH', old_path, true)
+	}
+	os.setenv('PKG_CONFIG_PATH', fixture_dir, true)
+	$if !windows {
+		root := os.join_path(os.vtmp_dir(), 'v3_c_pkgconfig_runner_${os.getpid()}')
+		os.rmdir_all(root) or {}
+		os.mkdir_all(root) or { panic(err) }
+		defer {
+			os.rmdir_all(root) or {}
+		}
+		tool := os.join_path(root, 'pkg-config')
+		os.write_file(tool,
+			'#!/bin/sh\n[ "$1" = "--cflags" ] && [ "$2" = "--libs" ] || exit 1\necho "-DISSUE74_DYNAMIC_SENTINEL -Wl,--issue74-dynamic-sentinel"\n') or {
+			panic(err)
+		}
+		os.chmod(tool, 0o700) or { panic(err) }
+		os.setenv('PATH', root, true)
+	}
+	flags := c_pkgconfig_flags('mixed-case-dynamic-sentinel-74', .dynamic)
+	assert '-DISSUE74_DYNAMIC_SENTINEL' in flags
+	assert '-Wl,--issue74-dynamic-sentinel' in flags
 }
 
 fn test_pkgconfig_global_static_mode_inserts_one_static_option() {

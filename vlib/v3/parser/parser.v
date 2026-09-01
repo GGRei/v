@@ -3,7 +3,6 @@ module parser
 import os
 import strconv
 import strings
-import v3.cmdexec
 import v3.flat
 import v3.pref
 import v3.scanner
@@ -5426,7 +5425,7 @@ fn eval_pkgconfig_cond(cond string) bool {
 	if !is_safe_pkgconfig_name(name) {
 		return false
 	}
-	result := cmdexec.run('pkg-config', ['--exists', name])
+	result := pref.run_pkgconfig(['--exists', name])
 	return result.exit_code == 0
 }
 

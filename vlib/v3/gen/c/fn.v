@@ -16881,6 +16881,9 @@ fn (g &FlatGen) c_extern_decl_is_cached_object_fallback(cfn string) bool {
 }
 
 fn (g &FlatGen) should_emit_c_extern_decl_from_file(cfn string, source_file string) bool {
+	if g.header_owned_c_extern_sources[c_extern_source_key(source_file)] {
+		return false
+	}
 	// builtin/cfns.c.v declares the static vschannel helper supplied by its C header.
 	// A user C.request declaration is unrelated and still needs an extern prototype.
 	if cfn == 'request' && source_file.replace('\\', '/').ends_with('/builtin/cfns.c.v') {

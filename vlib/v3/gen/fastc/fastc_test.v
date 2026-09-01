@@ -7,6 +7,40 @@ import v3.pref
 import v3.scanner
 import v3.token
 
+fn test_fastc_pkgconfig_flags_use_resolved_pkgconfig_runner() {
+	fixture_dir := os.join_path(@VEXEROOT, 'vlib', 'v', 'pkgconfig', 'testdata',
+		'static_pkgconfig')
+	old_pkgconfig_path := os.getenv_opt('PKG_CONFIG_PATH')
+	old_path := os.getenv('PATH')
+	defer {
+		if value := old_pkgconfig_path {
+			os.setenv('PKG_CONFIG_PATH', value, true)
+		} else {
+			os.unsetenv('PKG_CONFIG_PATH')
+		}
+		os.setenv('PATH', old_path, true)
+	}
+	os.setenv('PKG_CONFIG_PATH', fixture_dir, true)
+	$if !windows {
+		root := os.join_path(os.vtmp_dir(), 'v3_fastc_pkgconfig_runner_${os.getpid()}')
+		os.rmdir_all(root) or {}
+		os.mkdir_all(root) or { panic(err) }
+		defer {
+			os.rmdir_all(root) or {}
+		}
+		tool := os.join_path(root, 'pkg-config')
+		os.write_file(tool,
+			'#!/bin/sh\n[ "$1" = "--cflags" ] && [ "$2" = "--libs" ] || exit 1\necho "-DISSUE74_DYNAMIC_SENTINEL -Wl,--issue74-dynamic-sentinel"\n') or {
+			panic(err)
+		}
+		os.chmod(tool, 0o700) or { panic(err) }
+		os.setenv('PATH', root, true)
+	}
+	flags := fastc_pkgconfig_flags('mixed-case-dynamic-sentinel-74') or { panic(err) }
+	assert '-DISSUE74_DYNAMIC_SENTINEL' in flags
+	assert '-Wl,--issue74-dynamic-sentinel' in flags
+}
+
 fn test_selfhost_shared_keyword_local_is_preserved() {
 	mut prefs := pref.new_preferences()
 	prefs.building_v = true

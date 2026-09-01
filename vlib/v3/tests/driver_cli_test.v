@@ -1946,6 +1946,59 @@ pub fn value() int {
 	assert run.output.trim_space() == '42'
 }
 
+fn test_driver_resolves_pkgconfig_executable_for_standalone_v3() {
+	root := os.join_path(os.vtmp_dir(), 'v3_driver_pkgconfig_executable_${os.getpid()}')
+	os.rmdir_all(root) or {}
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	v3_bin := build_driver_cli_v3(root)
+	package_name := 'issue74-v37-standalone'
+	os.write_file(os.join_path(root, '${package_name}.pc'), 'Name: ${package_name}\nDescription: V3 standalone pkg-config resolver fixture\nVersion: 1.0.0\nCflags: -DISSUE74_V37_STANDALONE=1\n') or {
+		panic(err)
+	}
+	source := os.join_path(root, 'main.v')
+	os.write_file(source, 'module main
+
+#pkgconfig ${package_name}
+#if !defined(ISSUE74_V37_STANDALONE)
+#error ISSUE74_V37_STANDALONE missing
+#endif
+
+fn main() {
+	println(\'standalone pkg-config resolved\')
+}
+') or {
+		panic(err)
+	}
+	mut environment := os.environ()
+	environment['VFLAGS'] = ''
+	environment['VOSARGS'] = ''
+	environment['PKG_CONFIG_PATH'] = root
+	environment['PKG_CONFIG_PATH_DEFAULTS'] = ''
+	$if !windows {
+		tool := os.join_path(root, 'pkg-config')
+		os.write_file(tool,
+			'#!/bin/sh\n[ "$1" = "--cflags" ] && [ "$2" = "--libs" ] && [ "$3" = "issue74-v37-standalone" ] || exit 1\necho "-DISSUE74_V37_STANDALONE=1"\n') or {
+			panic(err)
+		}
+		os.chmod(tool, 0o700) or { panic(err) }
+		old_path := environment['PATH']
+		environment['PATH'] = root + os.path_delimiter + old_path
+	}
+	mut output := os.join_path(root, 'main')
+	$if windows {
+		output += '.exe'
+	}
+	compile := run_driver_with_environment(v3_bin, ['-silent', '-no-parallel', '-nocache', '-o',
+		output, source], environment)
+	assert compile.exit_code == 0, compile.output
+	run := cmdexec.run(output, [])
+	assert run.exit_code == 0, run.output
+	assert run.output == 'standalone pkg-config resolved\n', run.output
+}
+
 fn test_driver_static_pkgconfig_fact_ldflags_and_dynamic_c_invariance() {
 	root := os.join_path(os.vtmp_dir(), 'v3_driver_static_pkgconfig_${os.getpid()}')
 	os.rmdir_all(root) or {}

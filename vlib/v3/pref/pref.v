@@ -1081,6 +1081,34 @@ pub fn comptime_optional_flag_value(p &Preferences, name string) bool {
 	return name in p.user_defines
 }
 
+const pkgconfig_executable_name = 'pkg-config'
+
+fn pkgconfig_executable_from_candidate(candidate string, is_absolute bool, is_regular bool, is_executable bool) string {
+	if is_absolute && is_regular && is_executable
+		&& os.file_ext(candidate).to_lower_ascii() == '.exe' {
+		return candidate
+	}
+	return pkgconfig_executable_name
+}
+
+fn pkgconfig_executable() string {
+	$if windows {
+		candidate := os.find_abs_path_of_executable(pkgconfig_executable_name) or {
+			return pkgconfig_executable_name
+		}
+		candidate_stat := os.lstat(candidate) or { return pkgconfig_executable_name }
+		return pkgconfig_executable_from_candidate(candidate, os.is_abs_path(candidate),
+			candidate_stat.get_filetype() == .regular, os.is_executable(candidate))
+	}
+	return pkgconfig_executable_name
+}
+
+// run_pkgconfig executes pkg-config with an exact argument vector. On Windows,
+// a directly executable pkg-config.exe is resolved before CreateProcess is used.
+pub fn run_pkgconfig(args []string) os.Result {
+	return cmdexec.run(pkgconfig_executable(), args)
+}
+
 // comptime_pkgconfig_value supports comptime pkgconfig value handling for pref.
 pub fn comptime_pkgconfig_value(name string) bool {
 	packages := cmdexec.split_args(name) or { return false }
@@ -1089,6 +1117,6 @@ pub fn comptime_pkgconfig_value(name string) bool {
 	}
 	mut args := ['--exists']
 	args << packages
-	result := cmdexec.run('pkg-config', args)
+	result := run_pkgconfig(args)
 	return result.exit_code == 0
 }

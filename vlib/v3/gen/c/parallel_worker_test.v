@@ -55,6 +55,17 @@ fn test_scoped_parallel_worker_reuses_preselected_functions_and_c_extern_refs() 
 	assert w.c_extern_refs_ready
 }
 
+fn test_c_extern_scan_worker_clones_header_owned_sources() {
+	mut g, _ := parallel_worker_test_gen(true)
+	g.header_owned_c_extern_sources['/tmp/main.c.v'] = true
+	mut worker := g.new_parallel_worker(1)
+	g.configure_c_extern_scan_worker(mut worker)
+	assert worker.header_owned_c_extern_sources['/tmp/main.c.v']
+	assert !worker.should_emit_c_extern_decl_from_file('worker_header_api', '/tmp/main.c.v')
+	worker.header_owned_c_extern_sources['/tmp/worker.c.v'] = true
+	assert '/tmp/worker.c.v' !in g.header_owned_c_extern_sources
+}
+
 fn test_parallel_worker_shares_precomputed_const_short_index() {
 	mut g, _ := parallel_worker_test_gen(true)
 	g.const_vals = {
