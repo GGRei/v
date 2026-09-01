@@ -352,15 +352,28 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $clApplications = @(Get-Command cl.exe -CommandType Application -All -ErrorAction Stop)
-          $clangClApplications = @(Get-Command clang-cl.exe -CommandType Application -All -ErrorAction Stop)
-          if ($clApplications.Count -ne 1 -or $clangClApplications.Count -ne 1) {
-            throw "MSVC compiler lookup cardinality mismatch: cl=$($clApplications.Count) clang-cl=$($clangClApplications.Count)"
+          if ($clApplications.Count -ne 1) {
+            throw "MSVC compiler lookup cardinality mismatch: cl=$($clApplications.Count)"
           }
           $cl = $clApplications[0].Source
-          $clangCl = $clangClApplications[0].Source
           $expectedCl = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\cl.exe'
           if (-not (Test-Path -LiteralPath $expectedCl -PathType Leaf) -or -not [string]::Equals([IO.Path]::GetFullPath($cl), [IO.Path]::GetFullPath($expectedCl), [StringComparison]::OrdinalIgnoreCase)) {
             throw "cl.exe resolved to $cl instead of $expectedCl"
+          }
+          $expectedClangCl = Join-Path $env:VCINSTALLDIR 'Tools\Llvm\x64\bin\clang-cl.exe'
+          if (-not (Test-Path -LiteralPath $expectedClangCl -PathType Leaf)) {
+            throw "missing canonical clang-cl.exe: $expectedClangCl"
+          }
+          $expectedClangClFullPath = [IO.Path]::GetFullPath($expectedClangCl)
+          $clangClApplications = @(Get-Command clang-cl.exe -CommandType Application -All -ErrorAction Stop | Where-Object {
+            [string]::Equals([IO.Path]::GetFullPath($_.Source), $expectedClangClFullPath, [StringComparison]::OrdinalIgnoreCase)
+          })
+          if ($clangClApplications.Count -ne 1) {
+            throw "canonical clang-cl.exe lookup cardinality mismatch: Count=$($clangClApplications.Count) Expected=$expectedClangClFullPath"
+          }
+          $clangCl = $clangClApplications[0].Source
+          if (-not [string]::Equals([IO.Path]::GetFullPath($clangCl), $expectedClangClFullPath, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "clang-cl.exe resolved to $clangCl instead of $expectedClangClFullPath"
           }
           Write-Host "cl.exe: $cl"
           Write-Host "clang-cl.exe: $clangCl"
