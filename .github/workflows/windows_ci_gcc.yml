@@ -302,12 +302,20 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $git = (@(Get-Command git.exe -CommandType Application -All -ErrorAction Stop))[0].Source
+          $gitApplications = @(Get-Command git.exe -CommandType Application -All -ErrorAction Stop)
+          if ($gitApplications.Count -ne 1) {
+            throw "git.exe lookup cardinality mismatch: Count=$($gitApplications.Count)"
+          }
+          $git = [IO.Path]::GetFullPath($gitApplications[0].Source)
+          if (-not (Test-Path -LiteralPath $git -PathType Leaf)) {
+            throw "missing selected git.exe: $git"
+          }
+          $gitBin = Split-Path -Parent $git
           $ambientGcc = (@(Get-Command gcc.exe -CommandType Application -All -ErrorAction Stop))[0].Source
           $toolBin = Split-Path -Parent $ambientGcc
           $expectedGcc = Join-Path $toolBin 'gcc.exe'
           $expectedGpp = Join-Path $toolBin 'g++.exe'
-          $env:Path = "$toolBin;$env:SystemRoot\System32;$env:SystemRoot"
+          $env:Path = "$toolBin;$gitBin;$env:SystemRoot\System32;$env:SystemRoot"
           function Resolve-Exact([string] $Name, [string] $Expected) {
             if (-not (Test-Path -LiteralPath $Expected -PathType Leaf)) {
               throw "missing selected compiler: $Expected"
