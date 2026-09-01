@@ -590,6 +590,27 @@ fn test_sokol_header_does_not_select_objective_c_on_linux() {
 	], false, linux)
 }
 
+fn test_sokol_gfx_header_does_not_select_objective_c_on_windows_backends() {
+	windows := pref.target_from('windows', 'amd64') or { panic(err) }
+	header := os.join_path(@VEXEROOT, 'thirdparty', 'sokol', 'sokol_gfx.h')
+	assert !cache_native_input_path_needs_objective_c(header, [
+		'-DSOKOL_GLCORE',
+		'-USOKOL_D3D11',
+		'-USOKOL_GLES3',
+		'-USOKOL_METAL',
+		'-USOKOL_VULKAN',
+		'-USOKOL_WGPU',
+	], false, windows)
+	assert !cache_native_input_path_needs_objective_c(header, [
+		'-DSOKOL_D3D11',
+		'-USOKOL_GLCORE',
+		'-USOKOL_GLES3',
+		'-USOKOL_METAL',
+		'-USOKOL_VULKAN',
+		'-USOKOL_WGPU',
+	], false, windows)
+}
+
 fn test_x11_system_headers_preserve_external_structs() {
 	assert 'XGetWindowAttributes' in c_preserved_system_include_declared_fns('<X11/Xlib.h>')
 	assert 'XCreateSimpleWindow' in c_preserved_system_include_declared_fns('<X11/Xlib.h>')

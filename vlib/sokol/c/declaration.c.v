@@ -28,10 +28,10 @@ $if sokol_wayland ? {
 
 $if windows {
 	$if sokol_d3d11 ? {
-		#flag windows -DSOKOL_D3D11
+		#flag windows -DSOKOL_D3D11 -USOKOL_GLCORE -USOKOL_GLES3 -USOKOL_METAL -USOKOL_VULKAN -USOKOL_WGPU
 		#flag windows -ld3d11 -ldxgi
 	} $else {
-		#flag windows -DSOKOL_GLCORE
+		#flag windows -DSOKOL_GLCORE -USOKOL_D3D11 -USOKOL_GLES3 -USOKOL_METAL -USOKOL_VULKAN -USOKOL_WGPU
 		#flag windows -lopengl32
 	}
 	$if msvc {

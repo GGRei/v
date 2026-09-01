@@ -142,6 +142,12 @@ fn cflags_have_define(output string, define string) bool {
 		|| cflags.contains('\n/D ${define}\n') || cflags.contains('\n/D${define}\n')
 }
 
+fn cflags_have_undef(output string, define string) bool {
+	cflags := normalized_cflags(output)
+	return cflags.contains('\n-U ${define}\n') || cflags.contains('\n-U${define}\n')
+		|| cflags.contains('\n/U ${define}\n') || cflags.contains('\n/U${define}\n')
+}
+
 fn cflags_have_link_flag(output string, lib string) bool {
 	cflags := normalized_cflags(output).to_lower()
 	lib_lower := lib.to_lower()
@@ -215,10 +221,10 @@ fn test_windows_sokol_backend_flags_are_exclusive_in_declaration() {
 	expected := [
 		'$if windows {',
 		'\t$if sokol_d3d11 ? {',
-		'\t\t#flag windows -DSOKOL_D3D11',
+		'\t\t#flag windows -DSOKOL_D3D11 -USOKOL_GLCORE -USOKOL_GLES3 -USOKOL_METAL -USOKOL_VULKAN -USOKOL_WGPU',
 		'\t\t#flag windows -ld3d11 -ldxgi',
 		'\t} $else {',
-		'\t\t#flag windows -DSOKOL_GLCORE',
+		'\t\t#flag windows -DSOKOL_GLCORE -USOKOL_D3D11 -USOKOL_GLES3 -USOKOL_METAL -USOKOL_VULKAN -USOKOL_WGPU',
 		'\t\t#flag windows -lopengl32',
 		'\t}',
 	].join('\n')
@@ -271,7 +277,11 @@ fn test_windows_sokol_default_backend_cflags_remain_glcore() {
 	}
 	cflags := dump_windows_sokol_gfx_cflags([]) or { return }
 	assert cflags_have_define(cflags, 'SOKOL_GLCORE'), cflags
-	assert !cflags_have_define(cflags, 'SOKOL_D3D11'), cflags
+	for alternative in ['SOKOL_D3D11', 'SOKOL_GLES3', 'SOKOL_METAL', 'SOKOL_VULKAN',
+		'SOKOL_WGPU'] {
+		assert !cflags_have_define(cflags, alternative), cflags
+		assert cflags_have_undef(cflags, alternative), cflags
+	}
 	assert cflags_have_link_flag(cflags, 'opengl32'), cflags
 	assert !cflags_have_link_flag(cflags, 'd3d11'), cflags
 	assert !cflags_have_link_flag(cflags, 'dxgi'), cflags
@@ -284,7 +294,11 @@ fn test_windows_sokol_d3d11_backend_cflags_select_only_d3d11() {
 	}
 	cflags := dump_windows_sokol_gfx_cflags(['-d', 'sokol_d3d11']) or { return }
 	assert cflags_have_define(cflags, 'SOKOL_D3D11'), cflags
-	assert !cflags_have_define(cflags, 'SOKOL_GLCORE'), cflags
+	for alternative in ['SOKOL_GLCORE', 'SOKOL_GLES3', 'SOKOL_METAL', 'SOKOL_VULKAN',
+		'SOKOL_WGPU'] {
+		assert !cflags_have_define(cflags, alternative), cflags
+		assert cflags_have_undef(cflags, alternative), cflags
+	}
 	assert cflags_have_link_flag(cflags, 'd3d11'), cflags
 	assert cflags_have_link_flag(cflags, 'dxgi'), cflags
 	assert !cflags_have_link_flag(cflags, 'opengl32'), cflags
