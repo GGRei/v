@@ -591,6 +591,9 @@ jobs:
             test_pkgconfig_dynamic_argv_is_historically_byte_for_byte_unchanged \
             test_pkgconfig_global_static_mode_inserts_one_static_option \
             test_local_pkgconfig_static_option_does_not_require_global_static_mode
+          run_owner v3-function-attributes vlib/v3/gen/c/attributes_test.v \
+            test_noinline_attribute_is_preserved_for_generic_specialization \
+            test_function_definition_attributes_are_composed_as_prefixes
           run_owner v3-preamble vlib/v3/gen/c/preamble_test.v \
             test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations \
             test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions \
