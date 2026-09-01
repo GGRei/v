@@ -10469,7 +10469,7 @@ fn test_failed_generic_placeholder_block_unwinds_local_scope() {
 	mut file := file_set.add_file('failed_generic_scope.v', source.len)
 	file.index_lines_without_digest(source)
 	mut g := Parser{
-		prefs: &prefs
+		prefs: prefs
 		selfhost: true
 		in_generic_placeholder: true
 		locals: {
