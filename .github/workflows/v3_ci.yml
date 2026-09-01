@@ -371,11 +371,34 @@ jobs:
             'test_linker_cache_selector_is_conditional_on_source_directives')
           Run-Owner -Label v3-output-suffix -Path 'vlib/v3/driver/implicit_import_test.v' -Common $v3Common -Names @(
             'test_c_executable_bin_file_uses_target_postfix')
-          Run-Owner -Label v3-driver-link -Path 'vlib/v3/tests/driver_cli_test.v' -Common $v3Common -Names @(
-            'test_driver_resolves_pkgconfig_executable_for_standalone_v3',
-            'test_driver_static_pkgconfig_fact_ldflags_and_dynamic_c_invariance',
-            'test_driver_cpp_linker_directive_is_exact_and_non_link_outputs_stay_c',
-            'test_driver_cpp_linker_uses_final_cpp_driver_and_keeps_sources_c')
+          $testCcEnvName = 'ISSUE74_V3_DRIVER_TEST_CC'
+          $testCxxEnvName = 'ISSUE74_V3_DRIVER_TEST_CXX'
+          $testCcEnvPath = "Env:$testCcEnvName"
+          $testCxxEnvPath = "Env:$testCxxEnvName"
+          $oldTestCcPresent = Test-Path -LiteralPath $testCcEnvPath
+          $oldTestCxxPresent = Test-Path -LiteralPath $testCxxEnvPath
+          $oldTestCc = if ($oldTestCcPresent) { (Get-Item -LiteralPath $testCcEnvPath).Value } else { $null }
+          $oldTestCxx = if ($oldTestCxxPresent) { (Get-Item -LiteralPath $testCxxEnvPath).Value } else { $null }
+          try {
+            Set-Item -LiteralPath $testCcEnvPath -Value $ccPath
+            Set-Item -LiteralPath $testCxxEnvPath -Value $cxxPath
+            Run-Owner -Label v3-driver-link -Path 'vlib/v3/tests/driver_cli_test.v' -Common $v3Common -Names @(
+              'test_driver_resolves_pkgconfig_executable_for_standalone_v3',
+              'test_driver_static_pkgconfig_fact_ldflags_and_dynamic_c_invariance',
+              'test_driver_cpp_linker_directive_is_exact_and_non_link_outputs_stay_c',
+              'test_driver_cpp_linker_uses_final_cpp_driver_and_keeps_sources_c')
+          } finally {
+            if ($oldTestCcPresent) {
+              Set-Item -LiteralPath $testCcEnvPath -Value $oldTestCc
+            } else {
+              Remove-Item -LiteralPath $testCcEnvPath -ErrorAction SilentlyContinue
+            }
+            if ($oldTestCxxPresent) {
+              Set-Item -LiteralPath $testCxxEnvPath -Value $oldTestCxx
+            } else {
+              Remove-Item -LiteralPath $testCxxEnvPath -ErrorAction SilentlyContinue
+            }
+          }
 
           & $git diff --exit-code
           if ($LASTEXITCODE -ne 0) {

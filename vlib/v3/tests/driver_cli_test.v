@@ -1991,8 +1991,46 @@ fn main() {
 	$if windows {
 		output += '.exe'
 	}
-	compile := run_driver_with_environment(v3_bin, ['-silent', '-no-parallel', '-nocache', '-o',
-		output, source], environment)
+	mut compile_args := ['-silent', '-no-parallel', '-nocache']
+	$if windows {
+		mut selected_c := ''
+		mut selected_cpp := ''
+		mut selected_c_set := false
+		mut selected_cpp_set := false
+		if value := os.getenv_opt('ISSUE74_V3_DRIVER_TEST_CC') {
+			selected_c = value
+			selected_c_set = true
+		}
+		if value := os.getenv_opt('ISSUE74_V3_DRIVER_TEST_CXX') {
+			selected_cpp = value
+			selected_cpp_set = true
+		}
+		if selected_c_set || selected_cpp_set {
+			assert selected_c_set && selected_cpp_set,
+				'ISSUE74 V3 driver test compiler paths must be set together'
+			assert selected_c.len > 0 && selected_cpp.len > 0,
+				'ISSUE74 V3 driver test compiler paths must not be empty'
+			assert os.is_abs_path(selected_c) && os.is_abs_path(selected_cpp),
+				'ISSUE74 V3 driver test compiler paths must be absolute'
+			assert os.is_file(selected_c) && os.is_file(selected_cpp),
+				'ISSUE74 V3 driver test compiler paths must be files'
+			c_family := v3_cpp_test_gnu_driver_family(selected_c)
+			cpp_family := v3_cpp_test_gnu_driver_family(selected_cpp)
+			assert c_family.len > 0 && c_family == cpp_family,
+				'ISSUE74 V3 driver test compiler paths must be a matching GNU family'
+		} else {
+			pairs := v3_cpp_linker_driver_pairs()
+			if pairs.len > 0 {
+				selected_c = pairs[0].c
+				selected_cpp = pairs[0].cpp
+			}
+		}
+		if selected_c.len > 0 {
+			compile_args << ['-no-retry-compilation', '-cc', selected_c, '-c++', selected_cpp]
+		}
+	}
+	compile_args << ['-o', output, source]
+	compile := run_driver_with_environment(v3_bin, compile_args, environment)
 	assert compile.exit_code == 0, compile.output
 	run := cmdexec.run(output, [])
 	assert run.exit_code == 0, run.output
