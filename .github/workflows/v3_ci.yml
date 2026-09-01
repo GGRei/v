@@ -351,6 +351,12 @@ jobs:
             'test_header_owned_c_extern_sources_reset_between_generations')
           Run-Owner -Label v3-parallel-extern-owner -Path 'vlib/v3/gen/c/parallel_worker_test.v' -Common $v3Common -Names @(
             'test_c_extern_scan_worker_clones_header_owned_sources')
+          Run-Owner -Label v3-sokol-objective-c -Path 'vlib/v3/gen/c/names_test.v' -Common $v3Common -Names @(
+            'test_sokol_gfx_header_does_not_select_objective_c_on_windows_backends')
+          Run-Owner -Label v3-sokol-windows-backends -Path 'vlib/sokol/gfx/windows_backend_flags_test.v' -Common $v3Common -Names @(
+            'test_windows_sokol_backend_flags_are_exclusive_in_declaration',
+            'test_windows_sokol_default_backend_cflags_remain_glcore',
+            'test_windows_sokol_d3d11_backend_cflags_select_only_d3d11')
           Run-Owner -Label v3-preamble -Path 'vlib/v3/gen/c/preamble_test.v' -Common $v3Common -Names @(
             'test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations',
             'test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions',
