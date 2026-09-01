@@ -286,6 +286,133 @@ jobs:
             '{"example":"multiwindow","status":"PASS","cleanup":"complete"}' \
             ./gg_multiwindow_gcc.exe
 
+  issue74-v1-windows-gcc:
+    name: Issue 74 V1 causal tests (Windows GCC)
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build V with GCC
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\makev.bat -gcc
+          if ($LASTEXITCODE -ne 0) { throw "makev.bat failed: $LASTEXITCODE" }
+      - name: Run Issue 74 V1 owners
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $git = (@(Get-Command git.exe -CommandType Application -All -ErrorAction Stop))[0].Source
+          $ambientGcc = (@(Get-Command gcc.exe -CommandType Application -All -ErrorAction Stop))[0].Source
+          $toolBin = Split-Path -Parent $ambientGcc
+          $expectedGcc = Join-Path $toolBin 'gcc.exe'
+          $expectedGpp = Join-Path $toolBin 'g++.exe'
+          $env:Path = "$toolBin;$env:SystemRoot\System32;$env:SystemRoot"
+          function Resolve-Exact([string] $Name, [string] $Expected) {
+            if (-not (Test-Path -LiteralPath $Expected -PathType Leaf)) {
+              throw "missing selected compiler: $Expected"
+            }
+            $apps = @(Get-Command "$Name.exe" -CommandType Application -All -ErrorAction Stop)
+            if ($apps.Count -ne 1) {
+              throw "compiler lookup cardinality mismatch: Name=$Name Count=$($apps.Count)"
+            }
+            $resolved = $apps[0].Source
+            if (-not [string]::Equals([IO.Path]::GetFullPath($resolved), [IO.Path]::GetFullPath($Expected), [StringComparison]::OrdinalIgnoreCase)) {
+              throw "$Name resolved to $resolved instead of $Expected"
+            }
+            return $resolved
+          }
+          $gcc = Resolve-Exact gcc $expectedGcc
+          $gpp = Resolve-Exact g++ $expectedGpp
+          $gccVersion = (& $gcc --version 2>&1 | Out-String); $gccCode = $LASTEXITCODE
+          $gppVersion = (& $gpp --version 2>&1 | Out-String); $gppCode = $LASTEXITCODE
+          if ($gccCode -ne 0 -or $gppCode -ne 0 -or $gccVersion -notmatch '(?i)(gcc|free software foundation|mingw)' -or $gppVersion -notmatch '(?i)(gcc|free software foundation|mingw)' -or $gccVersion -match '(?i)clang' -or $gppVersion -match '(?i)clang' -or (Split-Path -Parent $gcc) -cne (Split-Path -Parent $gpp)) { throw 'GCC/G++ identity mismatch' }
+          foreach ($name in @('CFLAGS', 'LDFLAGS', 'VFLAGS')) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+          $env:VJOBS = '1'
+          $env:VTMP = Join-Path $env:RUNNER_TEMP 'issue74 v1 windows gcc tmp'
+          [void](New-Item -ItemType Directory -Force -Path $env:VTMP)
+
+          function Assert-Defs([string] $Path, [string[]] $Names) {
+            $lines = [IO.File]::ReadAllLines((Join-Path $env:GITHUB_WORKSPACE $Path))
+            foreach ($name in $Names) {
+              $count = @($lines | Where-Object { $_ -ceq "fn $name() {" }).Count
+              if ($count -ne 1) { throw "definition count ${Path}:${name}=$count" }
+            }
+          }
+          function Run-Owner([string] $Label, [string] $Path, [string[]] $Names) {
+            Assert-Defs $Path $Names
+            $log = Join-Path $env:RUNNER_TEMP "$Label.log"
+            $args = @('-old-compiler', '-cc', $gcc, '-c++', $gpp, '-no-retry-compilation', '-silent', 'test', '-run-only', ($Names -join ','), $Path)
+            & .\v.exe @args 2>&1 | Tee-Object -FilePath $log
+            $code = $LASTEXITCODE
+            if ($code -ne 0) { throw "$Label failed: $code" }
+            $text = [IO.File]::ReadAllText($log)
+            $summary = '1 passed, 1 total'
+            if (([regex]::Matches($text, [regex]::Escape($summary))).Count -ne 1) {
+              throw "$Label summary cardinality mismatch: $summary"
+            }
+            if ($text -match '(?im)\b0\s+total\b|no tests found|skipped|skipping|panic') {
+              throw "$Label emitted a forbidden no-op/failure marker"
+            }
+          }
+
+          Run-Owner v1-cc 'vlib/v/builder/cc_test.v' @(
+            'test_cc_from_string_keeps_historical_clang_cl_classification',
+            'test_resolved_tcc_wrapper_recomputes_pkgconfig_mode_as_dynamic',
+            'test_resolved_gnu_wrappers_keep_pkgconfig_mode_static',
+            'test_cpp_linker_c_source_args_wrap_only_c_sources',
+            'test_cpp_linker_marker_removes_only_lto_and_c_language_standard_tokens',
+            'test_cpp_linker_rejects_msvc_driver_mode_from_environment_flags',
+            'test_cpp_linker_forces_generated_c_but_not_object_inputs',
+            'test_cpp_linker_driver_classifier_fails_closed_for_unknown_commands',
+            'test_cpp_linker_preserves_objective_c_for_generated_darwin_source',
+            'test_no_cpp_linker_keeps_legacy_objective_c_generated_source_args',
+            'test_cpp_linker_does_not_change_builds_without_directive')
+          Run-Owner v1-pkgconfig 'vlib/v/checker/pkgconfig_static_mode_test.v' @(
+            'test_static_pkgconfig_segment_stays_ordered_after_target',
+            'test_explicit_static_directive_uses_ordered_transport_without_global_static_cflag',
+            'test_package_without_options_keeps_historical_dynamic_defaults')
+          Run-Owner v1-owned 'vlib/v/pref/compiler_owned_values_test.v' @('test_static_pkgconfig_compiler_owned_names_are_narrowly_reserved')
+          Run-Owner v1-pref 'vlib/v/pref/pref_test.v' @(
+            'test_static_pkgconfig_compiler_value_filters_reserved_conditional_files',
+            'test_pkgconfig_mode_salts_cache_without_salt_for_all_ldflags',
+            'test_msvc_style_clang_never_activates_static_pkgconfig_fact_or_file',
+            'test_gnu_style_clang_and_driver_mode_lookalike_keep_static_pkgconfig',
+            'test_static_pkgconfig_compiler_value_exact_token_matrix',
+            'test_static_pkgconfig_compiler_value_rejects_static_lookalikes',
+            'test_other_v_namespaced_compile_values_remain_user_controlled')
+          Run-Owner v1-comptime 'vlib/v/tests/comptime/comptime_static_pkgconfig_value_test.v' @(
+            'test_static_pkgconfig_compiler_value_is_canonical_in_a_dynamic_build',
+            'test_static_pkgconfig_compiler_owned_names_cannot_be_overridden')
+          Run-Owner v1-checker 'vlib/v/checker/linker_directive_test.v' @(
+            'test_linker_cplusplus_is_idempotent', 'test_linker_cplusplus_in_inactive_branch_is_ignored',
+            'test_linker_rejects_every_value_except_exact_cplusplus')
+          Run-Owner v1-fake-link 'vlib/v/builder/pkgconfig_link_segment_test.v' @(
+            'test_windows_gnu_static_pkgconfig_converts_only_bare_import_libs',
+            'test_windows_gnu_static_pkgconfig_quotes_spaced_wl_before_import_conversion',
+            'test_windows_gnu_static_pkgconfig_preserves_quoted_direct_lib_in_direct_link',
+            'test_windows_gnu_static_pkgconfig_preserves_quoted_direct_lib_in_response_file',
+            'test_cpp_linker_fake_driver_direct_rsp_prod_and_parallel_paths',
+            'test_cpp_linker_rejects_unsupported_or_missing_final_drivers',
+            'test_pkgconfig_windows_fake_compiler_group_alias_final_argv')
+          Run-Owner v1-real-link 'vlib/v/builder/linker_directive_integration_test.v' @(
+            'test_cpp_linker_real_drivers_keep_c_inputs_and_supply_their_runtime',
+            'test_cpp_linker_compile_only_paths_do_not_probe_the_cpp_driver',
+            'test_cpp_linker_cross_target_executable_reports_before_driver_selection')
+
+          $oldVTestOnly = [Environment]::GetEnvironmentVariable('VTEST_ONLY')
+          $env:VTEST_ONLY = 'fmt_keep_test.v,linker_directive_keep.vv'
+          $fmtLog = Join-Path $env:RUNNER_TEMP 'issue74-fmt.log'
+          Assert-Defs 'vlib/v/fmt/fmt_keep_test.v' @('test_fmt')
+          & .\v.exe -old-compiler -cc $gcc -no-retry-compilation -no-parallel -nocache -gc none -silent test -run-only test_fmt vlib/v/fmt/fmt_keep_test.v 2>&1 | Tee-Object -FilePath $fmtLog
+          $fmtCode = $LASTEXITCODE; $fmtText = [IO.File]::ReadAllText($fmtLog)
+          if ($fmtCode -ne 0 -or ([regex]::Matches($fmtText, [regex]::Escape('1 passed, 1 total'))).Count -ne 1 -or $fmtText -match '(?im)\b0\s+total\b|no tests found|skipped|skipping|panic') { throw 'formatter owner failed' }
+          if ($null -eq $oldVTestOnly) { Remove-Item Env:VTEST_ONLY -ErrorAction SilentlyContinue } else { $env:VTEST_ONLY = $oldVTestOnly }
+          & $git diff --exit-code; if ($LASTEXITCODE -ne 0) { throw 'tracked files changed' }
+          & $git diff --cached --exit-code; if ($LASTEXITCODE -ne 0) { throw 'index changed' }
+          $status = (& $git status --porcelain=v1 --untracked-files=all | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $status.Length -ne 0) { throw "dirty worktree: $status" }
+
   gcc-multiwindow:
     runs-on: windows-2025
     timeout-minutes: 150
