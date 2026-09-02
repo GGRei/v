@@ -230,7 +230,7 @@ fn test_v3_windows_tcc_fls_def_stays_between_native_inputs_and_user_libraries() 
 		user_pos := flags.index('-luser')
 		assert atomic_pos >= 0 && atomic_pos < fls_pos
 		assert fls_pos < user_pos
-		assert flags.count(fls_def) == 1
+		assert flags.count(it == fls_def) == 1
 	}
 	source_pos := args.index('src.c')
 	fls_pos := args.index(fls_def)
