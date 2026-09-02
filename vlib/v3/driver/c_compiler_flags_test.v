@@ -225,15 +225,15 @@ fn test_v3_windows_tcc_fls_def_stays_between_native_inputs_and_user_libraries() 
 	args := plan.compiler_args('out', ['src.c'], ['atomic.o', fls_def])
 	dump_flags := plan.all_flags(['atomic.o', fls_def])
 	for flags in [args, dump_flags] {
-		atomic_pos := flags.index('atomic.o') or { -1 }
-		fls_pos := flags.index(fls_def) or { -1 }
-		user_pos := flags.index('-luser') or { -1 }
+		atomic_pos := flags.index('atomic.o')
+		fls_pos := flags.index(fls_def)
+		user_pos := flags.index('-luser')
 		assert atomic_pos >= 0 && atomic_pos < fls_pos
 		assert fls_pos < user_pos
 		assert flags.count(fls_def) == 1
 	}
-	source_pos := args.index('src.c') or { -1 }
-	fls_pos := args.index(fls_def) or { -1 }
+	source_pos := args.index('src.c')
+	fls_pos := args.index(fls_def)
 	assert source_pos >= 0 && source_pos < fls_pos
 
 	driver_source := os.read_file(os.join_path(os.dir(@FILE), 'driver.v')) or { panic(err) }
