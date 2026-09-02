@@ -338,10 +338,13 @@ fn test_headerless_windows_tcc_tracks_atomic_header_macros() {
 	system_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
 	system_g.set_ccompiler('tinyc')
 	system_g.add_c_directive('main', '#include <stdio.h>', false)
-	system_g.emit_windows_tcc_atomic_header()
+	system_g.preamble()
+	system_code := system_g.sb.str()
+	assert !system_code.contains('#include "thirdparty/stdatomic/win/atomic.h"'), system_code
+	assert !system_g.windows_tcc_atomic_emitted
 	assert system_g.inlined_c_active_macros.len == 0
 	assert !system_g.should_emit_c_extern_decl('atomic_thread_fence')
-	assert 'wcslen' !in system_g.inlined_c_declared_fns
+	assert 'wcslen' in system_g.inlined_c_declared_fns
 	assert !system_g.should_emit_c_extern_decl('wcslen')
 
 	mut non_tcc_g := FlatGen.new()
@@ -353,6 +356,124 @@ fn test_headerless_windows_tcc_tracks_atomic_header_macros() {
 	assert non_tcc_g.inlined_c_active_macros.len == 0
 	assert non_tcc_g.should_emit_c_extern_decl('atomic_thread_fence')
 	assert non_tcc_g.should_emit_c_extern_decl('wcslen')
+}
+
+fn test_headerless_windows_emits_exact_stat_platform_struct() {
+	mut a := flat.FlatAst.new()
+	mut tc := types.TypeChecker.new(&a)
+	stat_fields := [
+		types.StructField{
+			name: 'st_dev'
+			typ:  types.Type(types.u32_)
+		},
+		types.StructField{
+			name: 'st_ino'
+			typ:  types.Type(types.u16_)
+		},
+		types.StructField{
+			name: 'st_mode'
+			typ:  types.Type(types.u16_)
+		},
+		types.StructField{
+			name: 'st_nlink'
+			typ:  types.Type(types.u16_)
+		},
+		types.StructField{
+			name: 'st_uid'
+			typ:  types.Type(types.u16_)
+		},
+		types.StructField{
+			name: 'st_gid'
+			typ:  types.Type(types.u16_)
+		},
+		types.StructField{
+			name: 'st_rdev'
+			typ:  types.Type(types.u32_)
+		},
+		types.StructField{
+			name: 'st_size'
+			typ:  types.Type(types.u64_)
+		},
+		types.StructField{
+			name: 'st_atime'
+			typ:  types.Type(types.i64_)
+		},
+		types.StructField{
+			name: 'st_mtime'
+			typ:  types.Type(types.i64_)
+		},
+		types.StructField{
+			name: 'st_ctime'
+			typ:  types.Type(types.i64_)
+		},
+	]
+	assert stat_fields.len == 11
+	tc.structs['C.__stat64'] = stat_fields
+
+	for compiler in ['tinyc', 'gcc', 'clang', 'msvc'] {
+		mut g := FlatGen.new()
+		g.a = &a
+		g.tc = &tc
+		g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+		g.set_ccompiler(compiler)
+		g.register_struct_decl_info('C.__stat64', 'C.__stat64', 'os',
+			'/virtual/vlib/os/os_structs_stat_windows.c.v', flat.Node{
+			value: '__stat64'
+		})
+		assert !g.skip_builtin_struct('C.__stat64'), compiler
+		if compiler == 'tinyc' {
+			g.emit_struct('C.__stat64')
+			c_code := g.sb.str()
+			expected := 'struct __stat64 {\n\tu32 st_dev;\n\tu16 st_ino;\n\tu16 st_mode;\n\tu16 st_nlink;\n\tu16 st_uid;\n\tu16 st_gid;\n\tu32 st_rdev;\n\tu64 st_size;\n\ti64 st_atime;\n\ti64 st_mtime;\n\ti64 st_ctime;\n};'
+			assert c_code.count(expected) == 1, c_code
+			assert c_code.count('struct __stat64;') == 0, c_code
+		}
+
+		mut system_g := FlatGen.new()
+		system_g.a = &a
+		system_g.tc = &tc
+		system_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+		system_g.set_ccompiler(compiler)
+		system_g.add_c_directive('main', '#include <stdio.h>', false)
+		system_g.register_struct_decl_info('C.__stat64', 'C.__stat64', 'os',
+			'/virtual/vlib/os/os_structs_stat_windows.c.v', flat.Node{
+			value: '__stat64'
+		})
+		assert system_g.skip_builtin_struct('C.__stat64'), compiler
+	}
+
+	mut linux_g := FlatGen.new()
+	linux_g.a = &a
+	linux_g.tc = &tc
+	linux_g.set_target(pref.target_from('linux', 'amd64') or { panic(err) })
+	linux_g.set_ccompiler('tinyc')
+	linux_g.register_struct_decl_info('C.__stat64', 'C.__stat64', 'os',
+		'/virtual/vlib/os/os_structs_stat_windows.c.v', flat.Node{
+		value: '__stat64'
+	})
+	assert linux_g.skip_builtin_struct('C.__stat64')
+
+	mut wrong_source_g := FlatGen.new()
+	wrong_source_g.a = &a
+	wrong_source_g.tc = &tc
+	wrong_source_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	wrong_source_g.set_ccompiler('tinyc')
+	wrong_source_g.register_struct_decl_info('C.__stat64', 'C.__stat64', 'os',
+		'/virtual/vlib/os/unrelated_windows.c.v', flat.Node{
+		value: '__stat64'
+	})
+	assert wrong_source_g.skip_builtin_struct('C.__stat64')
+
+	mut wrong_name_g := FlatGen.new()
+	wrong_name_g.a = &a
+	wrong_name_g.tc = &tc
+	wrong_name_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	wrong_name_g.set_ccompiler('tinyc')
+	wrong_name_g.register_struct_decl_info('C.OtherStat', 'C.OtherStat', 'os',
+		'/virtual/vlib/os/os_structs_stat_windows.c.v', flat.Node{
+		value: 'OtherStat'
+	})
+	assert wrong_name_g.skip_builtin_struct('C.OtherStat')
 }
 
 fn test_windows_headers_guard_conditional_nls_and_vista_externs() {

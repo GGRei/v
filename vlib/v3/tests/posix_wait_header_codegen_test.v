@@ -549,6 +549,17 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	for name in crt_referenced {
 		assert crt_partition[name], name
 	}
+	stat_body := 'struct __stat64 {\n\tu32 st_dev;\n\tu16 st_ino;\n\tu16 st_mode;\n\tu16 st_nlink;\n\tu16 st_uid;\n\tu16 st_gid;\n\tu32 st_rdev;\n\tu64 st_size;\n\ti64 st_atime;\n\ti64 st_mtime;\n\ti64 st_ctime;\n};'
+	stat_init := '(struct __stat64){'
+	for generated_code in [c_code, fallback_program.c_code] {
+		assert generated_code.count(stat_body) == 1, generated_code
+		assert generated_code.count(stat_init) == 1, generated_code
+		assert generated_code.count('struct __stat64;') == 0, generated_code
+		assert generated_code.count('typedef struct __stat64 __stat64;') == 0, generated_code
+		body_pos := generated_code.index(stat_body) or { -1 }
+		init_pos := generated_code.index(stat_init) or { -1 }
+		assert body_pos >= 0 && body_pos < init_pos, generated_code
+	}
 	assert wait_header_generated_extern_count(c_code, 'atomic_thread_fence') == 0
 	assert wait_header_generated_extern_count(fallback_program.c_code, 'atomic_thread_fence') == 0
 	good_wstat := 'i32 _wstat(u16* path, struct _stat* buffer);'

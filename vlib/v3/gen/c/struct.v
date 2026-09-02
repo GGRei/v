@@ -5066,10 +5066,17 @@ fn (g &FlatGen) skip_builtin_struct(name string) bool {
 			return true
 		}
 		if info := g.struct_decl_infos[name] {
+			declaration_file := info.file.replace('\\', '/')
+			emit_headerless_windows_stat := name == 'C.__stat64' && g.target.os == 'windows'
+				&& !g.c_directives_use_system_libc()
+				&& (declaration_file.ends_with('/os/os_structs_stat_windows.c.v')
+				|| declaration_file == 'os_structs_stat_windows.c.v')
 			// Platform binding files describe types supplied by their C/Objective-C
 			// headers. Emitting a fallback body can redefine Objective-C classes such
 			// as NSFont, while V1 deliberately leaves these declarations header-owned.
-			if info.file.ends_with('.c.v') {
+			// The exact Windows stat binding is the exception in a headerless unit: its
+			// existing field layout supplies the otherwise incomplete `struct __stat64`.
+			if info.file.ends_with('.c.v') && !emit_headerless_windows_stat {
 				return true
 			}
 		}
