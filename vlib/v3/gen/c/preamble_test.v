@@ -876,6 +876,66 @@ fn test_headerless_windows_non_tcc_keeps_local_sdk_fallbacks() {
 	assert !g.should_emit_c_extern_decl('SetUnhandledExceptionFilter')
 }
 
+fn test_headerless_windows_non_tcc_emits_early_runtime_providers() {
+	thread_start_alias := 'typedef DWORD (WINAPI *PTHREAD_START_ROUTINE)(void*);'
+	lpthread_start_alias := 'typedef PTHREAD_START_ROUTINE LPTHREAD_START_ROUTINE;'
+	timezone_alias := 'typedef struct _TIME_ZONE_INFORMATION TIME_ZONE_INFORMATION;'
+	expected_fns := [
+		'AcquireSRWLockExclusive',
+		'ReleaseSRWLockExclusive',
+	]
+	assert c_headerless_windows_early_runtime_declared_fns == expected_fns
+	for compiler in ['gcc', 'clang', 'msvc'] {
+		mut g := FlatGen.new()
+		g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+		g.set_ccompiler(compiler)
+		g.preamble()
+		c_code := g.sb.str()
+		for declaration in [thread_start_alias, lpthread_start_alias, timezone_alias] {
+			assert c_code.count(declaration) == 1, '${compiler}: ${declaration}'
+		}
+		thread_start_pos := c_code.index(thread_start_alias) or { -1 }
+		lpthread_start_pos := c_code.index(lpthread_start_alias) or { -1 }
+		timezone_pos := c_code.index(timezone_alias) or { -1 }
+		assert thread_start_pos >= 0 && thread_start_pos < lpthread_start_pos, compiler
+		assert lpthread_start_pos < timezone_pos, compiler
+		for name in expected_fns {
+			declaration := 'void WINAPI ${name}(void*);'
+			assert c_code.count(declaration) == 1, '${compiler}: ${name}'
+			assert name in g.inlined_c_declared_fns, '${compiler}: ${name}'
+			assert !g.should_emit_c_extern_decl(name), '${compiler}: ${name}'
+		}
+		assert g.should_emit_c_extern_decl('AcquireSRWLockShared'), compiler
+	}
+
+	mut tcc_g := FlatGen.new()
+	tcc_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	tcc_g.set_ccompiler('tinyc')
+	tcc_g.preamble()
+	tcc_code := tcc_g.sb.str()
+	for declaration in [thread_start_alias, lpthread_start_alias, timezone_alias] {
+		assert !tcc_code.contains(declaration), declaration
+	}
+	for name in expected_fns {
+		assert !tcc_code.contains('void WINAPI ${name}(void*);'), name
+	}
+
+	for compiler in ['tinyc', 'gcc', 'clang', 'msvc'] {
+		mut system_g := FlatGen.new()
+		system_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+		system_g.set_ccompiler(compiler)
+		system_g.add_c_directive('main', '#include <stdio.h>', false)
+		system_g.preamble()
+		system_code := system_g.sb.str()
+		for declaration in [thread_start_alias, lpthread_start_alias, timezone_alias] {
+			assert !system_code.contains(declaration), '${compiler}: ${declaration}'
+		}
+		for name in expected_fns {
+			assert !system_code.contains('void WINAPI ${name}(void*);'), '${compiler}: ${name}'
+		}
+	}
+}
+
 fn test_headerless_windows_non_tcc_without_builtins_keeps_aligned_externs_owned_by_source() {
 	mut ast := &flat.FlatAst{}
 	mut tc := types.TypeChecker.new(ast)
@@ -914,6 +974,11 @@ fn test_non_windows_preamble_does_not_emit_windows_abi_fallbacks() {
 		'PTOP_LEVEL_EXCEPTION_FILTER',
 		'LPTOP_LEVEL_EXCEPTION_FILTER',
 		'SetUnhandledExceptionFilter(',
+		'PTHREAD_START_ROUTINE',
+		'LPTHREAD_START_ROUTINE',
+		'TIME_ZONE_INFORMATION',
+		'AcquireSRWLockExclusive(',
+		'ReleaseSRWLockExclusive(',
 	] {
 		assert !c_code.contains(declaration), declaration
 	}

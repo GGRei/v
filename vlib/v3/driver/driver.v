@@ -2263,7 +2263,12 @@ struct V3TccResourceFlags {
 }
 
 fn v3_tcc_resource_flags(vroot string) V3TccResourceFlags {
-	tcc_root_dir := os.join_path(vroot, 'thirdparty', 'tcc')
+	resource_vroot := if vroot.len > 0 && !os.is_abs_path(vroot) {
+		os.abs_path(vroot)
+	} else {
+		vroot
+	}
+	tcc_root_dir := os.join_path(resource_vroot, 'thirdparty', 'tcc')
 	tcc_lib_dir := os.join_path_single(tcc_root_dir, 'lib')
 	tcc_nested_dir := os.join_path_single(tcc_lib_dir, 'tcc')
 	install_dir := if os.is_dir(tcc_nested_dir) { tcc_nested_dir } else { tcc_lib_dir }

@@ -628,6 +628,51 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	assert crt_referenced.len == 15
 	assert crt_owned.len == if uses_tcc_atomic_header { 1 } else { 0 }
 	assert crt_generated.len == if uses_tcc_atomic_header { 14 } else { 15 }
+	thread_start_alias := 'typedef DWORD (WINAPI *PTHREAD_START_ROUTINE)(void*);'
+	lpthread_start_alias := 'typedef PTHREAD_START_ROUTINE LPTHREAD_START_ROUTINE;'
+	timezone_alias := 'typedef struct _TIME_ZONE_INFORMATION TIME_ZONE_INFORMATION;'
+	for generated_code in [c_code, fallback_program.c_code] {
+		thread_helper_pos := generated_code.index('static inline int v_sync_thread_create_detached') or {
+			-1
+		}
+		closure_helper_pos := generated_code.index('V_CLOSURE_STATIC_INLINE void v_closure_init_once') or {
+			-1
+		}
+		timezone_extern := wait_header_generated_extern_line(generated_code,
+			'SystemTimeToTzSpecificLocalTime')
+		assert thread_helper_pos >= 0, generated_code
+		assert closure_helper_pos >= 0, generated_code
+		if uses_tcc_atomic_header {
+			assert generated_code.count(thread_start_alias) == 0, generated_code
+			assert generated_code.count(lpthread_start_alias) == 0, generated_code
+			assert generated_code.count(timezone_alias) == 0, generated_code
+			assert timezone_extern == '', generated_code
+			for name in ['AcquireSRWLockExclusive', 'ReleaseSRWLockExclusive'] {
+				prototype := 'void WINAPI ${name}(void*);'
+				assert generated_code.count(prototype) == 1, generated_code
+				prototype_pos := generated_code.index(prototype) or { -1 }
+				assert prototype_pos > closure_helper_pos, generated_code
+			}
+		} else {
+			assert generated_code.count(thread_start_alias) == 1, generated_code
+			assert generated_code.count(lpthread_start_alias) == 1, generated_code
+			assert generated_code.count(timezone_alias) == 1, generated_code
+			thread_start_pos := generated_code.index(thread_start_alias) or { -1 }
+			lpthread_start_pos := generated_code.index(lpthread_start_alias) or { -1 }
+			timezone_pos := generated_code.index(timezone_alias) or { -1 }
+			timezone_extern_pos := generated_code.index(timezone_extern) or { -1 }
+			assert thread_start_pos >= 0 && thread_start_pos < lpthread_start_pos, generated_code
+			assert lpthread_start_pos < thread_helper_pos, generated_code
+			assert timezone_extern.len > 0, generated_code
+			assert timezone_pos >= 0 && timezone_pos < timezone_extern_pos, generated_code
+			for name in ['AcquireSRWLockExclusive', 'ReleaseSRWLockExclusive'] {
+				prototype := 'void WINAPI ${name}(void*);'
+				assert generated_code.count(prototype) == 1, generated_code
+				prototype_pos := generated_code.index(prototype) or { -1 }
+				assert prototype_pos >= 0 && prototype_pos < closure_helper_pos, generated_code
+			}
+		}
+	}
 	mut crt_partition := map[string]bool{}
 	for name in sdk_owned {
 		expected_count := if uses_tcc_atomic_header { 0 } else { 1 }
@@ -715,8 +760,8 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 			assert !fallback_program.c_code.contains(fallback_guard), fallback_line
 		}
 	}
-	// Neither headerless compiler route selects the system-libc preamble or owns
-	// these Vista APIs.
+	// Headerless routes do not select the system-libc preamble. All Vista APIs remain
+	// present exactly once; non-TCC emits the two early runtime providers above.
 	for name in wait_header_windows_vista_fns() {
 		default_line := wait_header_generated_extern_line(c_code, name)
 		fallback_line := wait_header_generated_extern_line(fallback_program.c_code, name)

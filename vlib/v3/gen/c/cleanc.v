@@ -18564,6 +18564,7 @@ fn (mut g FlatGen) headerless_libc_preamble() {
 	g.writeln('#endif')
 	if !g.uses_windows_tcc_atomic_header() {
 		g.headerless_windows_sdk_types()
+		g.headerless_windows_early_runtime_decls()
 	}
 	g.writeln('#if defined(__MINGW32__) || defined(__MINGW64__) || (defined(__clang__) && (defined(_WIN32) || defined(_WIN64)))')
 	g.writeln('typedef struct _iobuf FILE;')
@@ -19105,6 +19106,11 @@ fn (mut g FlatGen) headerless_windows_sdk_types() {
 	g.writeln('typedef int BOOL;')
 	g.writeln('typedef void* HANDLE;')
 	g.writeln('#endif')
+	if g.target.os == 'windows' {
+		g.writeln('typedef DWORD (WINAPI *PTHREAD_START_ROUTINE)(void*);')
+		g.writeln('typedef PTHREAD_START_ROUTINE LPTHREAD_START_ROUTINE;')
+		g.writeln('typedef struct _TIME_ZONE_INFORMATION TIME_ZONE_INFORMATION;')
+	}
 	g.writeln('#if !defined(_SECURITY_ATTRIBUTES_DEFINED) && !defined(_SECURITY_ATTRIBUTES)')
 	g.writeln('#define _SECURITY_ATTRIBUTES_DEFINED')
 	g.writeln('typedef struct SECURITY_ATTRIBUTES { DWORD nLength; void* lpSecurityDescriptor; BOOL bInheritHandle; } SECURITY_ATTRIBUTES;')
@@ -19114,6 +19120,21 @@ fn (mut g FlatGen) headerless_windows_sdk_types() {
 	g.writeln('typedef struct OVERLAPPED { uintptr_t Internal; uintptr_t InternalHigh; union { struct { DWORD Offset; DWORD OffsetHigh; }; void* Pointer; }; HANDLE hEvent; } OVERLAPPED;')
 	g.writeln('#endif')
 	g.writeln('#endif')
+}
+
+const c_headerless_windows_early_runtime_declared_fns = [
+	'AcquireSRWLockExclusive',
+	'ReleaseSRWLockExclusive',
+]
+
+fn (mut g FlatGen) headerless_windows_early_runtime_decls() {
+	if g.target.os != 'windows' || g.uses_windows_tcc_atomic_header() {
+		return
+	}
+	g.collect_preserved_c_fns(c_headerless_windows_early_runtime_declared_fns)
+	for name in c_headerless_windows_early_runtime_declared_fns {
+		g.writeln('void WINAPI ${name}(void*);')
+	}
 }
 
 fn (mut g FlatGen) headerless_stdarg_decls() {

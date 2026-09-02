@@ -43,6 +43,74 @@ fn test_v3_explicit_tcc_flag_plan_restores_native_local_prefix() {
 	}
 }
 
+fn test_v3_tcc_resource_flags_absolutizes_only_relative_nonempty_vroot() {
+	old_cwd := os.getwd()
+	root := os.join_path(os.vtmp_dir(), 'v3 tcc resource flags ${os.getpid()}')
+	caller_cwd := os.join_path(root, 'caller cwd')
+	distinct_build_cwd := os.join_path(root, 'distinct build cwd')
+	relative_vroot := os.join_path('relative vroot', 'with spaces')
+	relative_include_dir := os.join_path(caller_cwd, relative_vroot, 'thirdparty', 'tcc',
+		'lib', 'include')
+	absolute_anchor := os.join_path(root, 'absolute spelling anchor')
+	absolute_physical_vroot := os.join_path(root, 'absolute vroot with spaces')
+	absolute_vroot := os.join_path(absolute_anchor, '..', 'absolute vroot with spaces')
+	absolute_include_dir := os.join_path(absolute_physical_vroot, 'thirdparty', 'tcc',
+		'lib', 'include')
+	os.rmdir_all(root) or {}
+	defer {
+		os.chdir(old_cwd) or { panic(err) }
+		os.rmdir_all(root) or {}
+	}
+	os.mkdir_all(relative_include_dir) or { panic(err) }
+	os.mkdir_all(absolute_anchor) or { panic(err) }
+	os.mkdir_all(absolute_include_dir) or { panic(err) }
+	os.mkdir_all(distinct_build_cwd) or { panic(err) }
+
+	os.chdir(caller_cwd) or { panic(err) }
+	caller_wd := os.getwd()
+	relative_flags := v3_tcc_resource_flags(relative_vroot)
+	expected_relative_vroot := os.join_path(caller_wd, relative_vroot)
+	expected_relative_lib := os.join_path(expected_relative_vroot, 'thirdparty', 'tcc',
+		'lib')
+	expected_relative_include := os.join_path_single(expected_relative_lib, 'include')
+	assert relative_flags.install_dir == expected_relative_lib
+	assert relative_flags.base_arg == '-B${expected_relative_lib}'
+	assert relative_flags.include_arg == '-I${expected_relative_include}'
+	assert relative_flags.library_arg == '-L${expected_relative_lib}'
+	relative_paths := [
+		relative_flags.install_dir,
+		relative_flags.base_arg[2..],
+		relative_flags.include_arg[2..],
+		relative_flags.library_arg[2..],
+	]
+	for path in relative_paths {
+		assert os.is_abs_path(path)
+	}
+
+	empty_flags := v3_tcc_resource_flags('')
+	empty_lib := os.join_path('thirdparty', 'tcc', 'lib')
+	assert empty_flags.install_dir == empty_lib
+	assert empty_flags.base_arg == '-B${empty_lib}'
+	assert empty_flags.include_arg == '-I${os.join_path_single(empty_lib, 'include')}'
+	assert empty_flags.library_arg == '-L${empty_lib}'
+	assert !os.is_abs_path(empty_flags.install_dir)
+
+	assert os.is_abs_path(absolute_vroot)
+	assert absolute_vroot != os.abs_path(absolute_vroot)
+	absolute_flags := v3_tcc_resource_flags(absolute_vroot)
+	absolute_lib := os.join_path(absolute_vroot, 'thirdparty', 'tcc', 'lib')
+	assert absolute_flags.install_dir == absolute_lib
+	assert absolute_flags.base_arg == '-B${absolute_lib}'
+	assert absolute_flags.include_arg == '-I${os.join_path_single(absolute_lib, 'include')}'
+	assert absolute_flags.library_arg == '-L${absolute_lib}'
+
+	os.chdir(distinct_build_cwd) or { panic(err) }
+	assert os.getwd() != caller_wd
+	for path in relative_paths {
+		assert os.is_dir(path)
+	}
+}
+
 fn test_add_v3_tcc_compat_defines() {
 	mut macos_arm64 := []string{}
 	add_v3_tcc_compat_defines(mut macos_arm64, 'macos', 'arm64', false, true)
