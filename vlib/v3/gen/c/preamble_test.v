@@ -880,6 +880,7 @@ fn test_headerless_windows_non_tcc_emits_early_runtime_providers() {
 	thread_start_alias := 'typedef DWORD (WINAPI *PTHREAD_START_ROUTINE)(void*);'
 	lpthread_start_alias := 'typedef PTHREAD_START_ROUTINE LPTHREAD_START_ROUTINE;'
 	timezone_alias := 'typedef struct _TIME_ZONE_INFORMATION TIME_ZONE_INFORMATION;'
+	wide_console_alias := '#ifndef ScrollConsoleScreenBuffer\n#define ScrollConsoleScreenBuffer ScrollConsoleScreenBufferW\n#endif'
 	expected_fns := [
 		'AcquireSRWLockExclusive',
 		'ReleaseSRWLockExclusive',
@@ -897,8 +898,12 @@ fn test_headerless_windows_non_tcc_emits_early_runtime_providers() {
 		thread_start_pos := c_code.index(thread_start_alias) or { -1 }
 		lpthread_start_pos := c_code.index(lpthread_start_alias) or { -1 }
 		timezone_pos := c_code.index(timezone_alias) or { -1 }
+		wide_console_pos := c_code.index(wide_console_alias) or { -1 }
 		assert thread_start_pos >= 0 && thread_start_pos < lpthread_start_pos, compiler
 		assert lpthread_start_pos < timezone_pos, compiler
+		assert c_code.count(wide_console_alias) == 1, compiler
+		assert timezone_pos < wide_console_pos, compiler
+		assert 'ScrollConsoleScreenBuffer' !in g.inlined_c_active_macros, compiler
 		for name in expected_fns {
 			declaration := 'void WINAPI ${name}(void*);'
 			assert c_code.count(declaration) == 1, '${compiler}: ${name}'
@@ -913,6 +918,8 @@ fn test_headerless_windows_non_tcc_emits_early_runtime_providers() {
 	tcc_g.set_ccompiler('tinyc')
 	tcc_g.preamble()
 	tcc_code := tcc_g.sb.str()
+	assert !tcc_code.contains(wide_console_alias), tcc_code
+	assert 'ScrollConsoleScreenBuffer' !in tcc_g.inlined_c_active_macros
 	for declaration in [thread_start_alias, lpthread_start_alias, timezone_alias] {
 		assert !tcc_code.contains(declaration), declaration
 	}
@@ -927,6 +934,8 @@ fn test_headerless_windows_non_tcc_emits_early_runtime_providers() {
 		system_g.add_c_directive('main', '#include <stdio.h>', false)
 		system_g.preamble()
 		system_code := system_g.sb.str()
+		assert !system_code.contains(wide_console_alias), compiler
+		assert 'ScrollConsoleScreenBuffer' !in system_g.inlined_c_active_macros, compiler
 		for declaration in [thread_start_alias, lpthread_start_alias, timezone_alias] {
 			assert !system_code.contains(declaration), '${compiler}: ${declaration}'
 		}
@@ -977,6 +986,7 @@ fn test_non_windows_preamble_does_not_emit_windows_abi_fallbacks() {
 		'PTHREAD_START_ROUTINE',
 		'LPTHREAD_START_ROUTINE',
 		'TIME_ZONE_INFORMATION',
+		'#define ScrollConsoleScreenBuffer ScrollConsoleScreenBufferW',
 		'AcquireSRWLockExclusive(',
 		'ReleaseSRWLockExclusive(',
 	] {

@@ -49,8 +49,10 @@ fn test_v3_tcc_resource_flags_absolutizes_only_relative_nonempty_vroot() {
 	caller_cwd := os.join_path(root, 'caller cwd')
 	distinct_build_cwd := os.join_path(root, 'distinct build cwd')
 	relative_vroot := os.join_path('relative vroot', 'with spaces')
-	relative_include_dir := os.join_path(caller_cwd, relative_vroot, 'thirdparty', 'tcc',
-		'lib', 'include')
+	relative_tcc_root := os.join_path(caller_cwd, relative_vroot, 'thirdparty', 'tcc')
+	relative_lib_dir := os.join_path_single(relative_tcc_root, 'lib')
+	relative_include_dir := os.join_path_single(relative_tcc_root, 'include')
+	relative_winapi_include_dir := os.join_path_single(relative_include_dir, 'winapi')
 	absolute_anchor := os.join_path(root, 'absolute spelling anchor')
 	absolute_physical_vroot := os.join_path(root, 'absolute vroot with spaces')
 	absolute_vroot := os.join_path(absolute_anchor, '..', 'absolute vroot with spaces')
@@ -61,7 +63,8 @@ fn test_v3_tcc_resource_flags_absolutizes_only_relative_nonempty_vroot() {
 		os.chdir(old_cwd) or { panic(err) }
 		os.rmdir_all(root) or {}
 	}
-	os.mkdir_all(relative_include_dir) or { panic(err) }
+	os.mkdir_all(relative_lib_dir) or { panic(err) }
+	os.mkdir_all(relative_winapi_include_dir) or { panic(err) }
 	os.mkdir_all(absolute_anchor) or { panic(err) }
 	os.mkdir_all(absolute_include_dir) or { panic(err) }
 	os.mkdir_all(distinct_build_cwd) or { panic(err) }
@@ -72,15 +75,19 @@ fn test_v3_tcc_resource_flags_absolutizes_only_relative_nonempty_vroot() {
 	expected_relative_vroot := os.join_path(caller_wd, relative_vroot)
 	expected_relative_lib := os.join_path(expected_relative_vroot, 'thirdparty', 'tcc',
 		'lib')
-	expected_relative_include := os.join_path_single(expected_relative_lib, 'include')
+	expected_relative_include := os.join_path(expected_relative_vroot, 'thirdparty', 'tcc',
+		'include')
+	expected_relative_winapi_include := os.join_path_single(expected_relative_include, 'winapi')
 	assert relative_flags.install_dir == expected_relative_lib
 	assert relative_flags.base_arg == '-B${expected_relative_lib}'
 	assert relative_flags.include_arg == '-I${expected_relative_include}'
+	assert relative_flags.winapi_include_arg == '-I${expected_relative_winapi_include}'
 	assert relative_flags.library_arg == '-L${expected_relative_lib}'
 	relative_paths := [
 		relative_flags.install_dir,
 		relative_flags.base_arg[2..],
 		relative_flags.include_arg[2..],
+		relative_flags.winapi_include_arg[2..],
 		relative_flags.library_arg[2..],
 	]
 	for path in relative_paths {
@@ -92,6 +99,7 @@ fn test_v3_tcc_resource_flags_absolutizes_only_relative_nonempty_vroot() {
 	assert empty_flags.install_dir == empty_lib
 	assert empty_flags.base_arg == '-B${empty_lib}'
 	assert empty_flags.include_arg == '-I${os.join_path_single(empty_lib, 'include')}'
+	assert empty_flags.winapi_include_arg == ''
 	assert empty_flags.library_arg == '-L${empty_lib}'
 	assert !os.is_abs_path(empty_flags.install_dir)
 
@@ -102,6 +110,7 @@ fn test_v3_tcc_resource_flags_absolutizes_only_relative_nonempty_vroot() {
 	assert absolute_flags.install_dir == absolute_lib
 	assert absolute_flags.base_arg == '-B${absolute_lib}'
 	assert absolute_flags.include_arg == '-I${os.join_path_single(absolute_lib, 'include')}'
+	assert absolute_flags.winapi_include_arg == ''
 	assert absolute_flags.library_arg == '-L${absolute_lib}'
 
 	os.chdir(distinct_build_cwd) or { panic(err) }

@@ -19110,6 +19110,10 @@ fn (mut g FlatGen) headerless_windows_sdk_types() {
 		g.writeln('typedef DWORD (WINAPI *PTHREAD_START_ROUTINE)(void*);')
 		g.writeln('typedef PTHREAD_START_ROUTINE LPTHREAD_START_ROUTINE;')
 		g.writeln('typedef struct _TIME_ZONE_INFORMATION TIME_ZONE_INFORMATION;')
+		// V1 defines UNICODE before windows.h; keep this headerless console call on the same export.
+		g.writeln('#ifndef ScrollConsoleScreenBuffer')
+		g.writeln('#define ScrollConsoleScreenBuffer ScrollConsoleScreenBufferW')
+		g.writeln('#endif')
 	}
 	g.writeln('#if !defined(_SECURITY_ATTRIBUTES_DEFINED) && !defined(_SECURITY_ATTRIBUTES)')
 	g.writeln('#define _SECURITY_ATTRIBUTES_DEFINED')

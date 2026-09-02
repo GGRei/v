@@ -2256,10 +2256,11 @@ fn add_v3_default_linker_flags(mut flags []string, target_os string, is_o bool) 
 }
 
 struct V3TccResourceFlags {
-	install_dir string
-	base_arg    string
-	include_arg string
-	library_arg string
+	install_dir        string
+	base_arg           string
+	include_arg        string
+	winapi_include_arg string
+	library_arg        string
 }
 
 fn v3_tcc_resource_flags(vroot string) V3TccResourceFlags {
@@ -2277,11 +2278,13 @@ fn v3_tcc_resource_flags(vroot string) V3TccResourceFlags {
 	if !os.is_dir(include_dir) && os.is_dir(tcc_root_include_dir) {
 		include_dir = tcc_root_include_dir
 	}
+	winapi_include_dir := os.join_path_single(include_dir, 'winapi')
 	return V3TccResourceFlags{
-		install_dir: install_dir
-		base_arg:    '-B${install_dir}'
-		include_arg: '-I${include_dir}'
-		library_arg: '-L${install_dir}'
+		install_dir:        install_dir
+		base_arg:           '-B${install_dir}'
+		include_arg:        '-I${include_dir}'
+		winapi_include_arg: if os.is_dir(winapi_include_dir) { '-I${winapi_include_dir}' } else { '' }
+		library_arg:        '-L${install_dir}'
 	}
 }
 
@@ -2323,7 +2326,11 @@ fn v3_c_compiler_flag_plan(options V3CCompilerFlagOptions) V3CCompilerFlagPlan {
 	if options.explicit_tcc {
 		tcc_resources := v3_tcc_resource_flags(options.vroot)
 		tcc_includes = tcc_resources.include_arg
-		before_inputs << [tcc_resources.base_arg, tcc_resources.include_arg, tcc_resources.library_arg]
+		before_inputs << [tcc_resources.base_arg, tcc_resources.include_arg]
+		if tcc_resources.winapi_include_arg.len > 0 {
+			before_inputs << tcc_resources.winapi_include_arg
+		}
+		before_inputs << tcc_resources.library_arg
 		before_inputs << v3_tcc_host_system_flags(options.target_os)
 		if v3_tcc_backtrace_enabled(options.target_os, options.target_arch, options.is_shared) {
 			before_inputs << '-bt25'
@@ -8025,7 +8032,11 @@ fn compile_v3_fastc_source(source string, bin_file string, prefs &pref.Preferenc
 	os.write_file(source_file, source) or { return V3FastCCompileResult{} }
 	tcc_resources := v3_tcc_resource_flags(prefs.vroot)
 	mut cc_args := environment_c_flags.clone()
-	cc_args << ['-std=gnu11', tcc_resources.base_arg, tcc_resources.include_arg, tcc_resources.library_arg]
+	cc_args << ['-std=gnu11', tcc_resources.base_arg, tcc_resources.include_arg]
+	if tcc_resources.winapi_include_arg.len > 0 {
+		cc_args << tcc_resources.winapi_include_arg
+	}
+	cc_args << tcc_resources.library_arg
 	cc_args << v3_tcc_host_system_flags(prefs.normalized_target_os())
 	cc_args << source_c_flags
 	cc_args << '-w'
@@ -11798,8 +11809,11 @@ pub fn run(args []string) {
 			tcc_dir := os.join_path_single(os.join_path_single(prefs.vroot, 'thirdparty'), 'tcc')
 			tcc_path := os.join_path_single(tcc_dir, 'tcc.exe')
 			tcc_resources := v3_tcc_resource_flags(prefs.vroot)
-			mut tcc_args := [c_standard, tcc_resources.base_arg, tcc_resources.include_arg,
-				tcc_resources.library_arg, '-w', '-Werror=implicit-function-declaration']
+			mut tcc_args := [c_standard, tcc_resources.base_arg, tcc_resources.include_arg]
+			if tcc_resources.winapi_include_arg.len > 0 {
+				tcc_args << tcc_resources.winapi_include_arg
+			}
+			tcc_args << [tcc_resources.library_arg, '-w', '-Werror=implicit-function-declaration']
 			tcc_args << v3_tcc_host_system_flags(prefs.normalized_target_os())
 			if v3_tcc_backtrace_enabled(prefs.normalized_target_os(),
 				prefs.normalized_target_arch(), is_shared)
@@ -11879,7 +11893,11 @@ pub fn run(args []string) {
 			if pic_flag.len > 0 {
 				tcc_args << pic_flag
 			}
-			tcc_args << [tcc_resources.base_arg, tcc_resources.include_arg, tcc_resources.library_arg]
+			tcc_args << [tcc_resources.base_arg, tcc_resources.include_arg]
+			if tcc_resources.winapi_include_arg.len > 0 {
+				tcc_args << tcc_resources.winapi_include_arg
+			}
+			tcc_args << tcc_resources.library_arg
 			tcc_args << v3_tcc_host_system_flags(prefs.normalized_target_os())
 			if v3_tcc_backtrace_enabled(prefs.normalized_target_os(),
 				prefs.normalized_target_arch(), is_shared)

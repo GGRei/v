@@ -631,6 +631,7 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	thread_start_alias := 'typedef DWORD (WINAPI *PTHREAD_START_ROUTINE)(void*);'
 	lpthread_start_alias := 'typedef PTHREAD_START_ROUTINE LPTHREAD_START_ROUTINE;'
 	timezone_alias := 'typedef struct _TIME_ZONE_INFORMATION TIME_ZONE_INFORMATION;'
+	wide_console_alias := '#ifndef ScrollConsoleScreenBuffer\n#define ScrollConsoleScreenBuffer ScrollConsoleScreenBufferW\n#endif'
 	for generated_code in [c_code, fallback_program.c_code] {
 		thread_helper_pos := generated_code.index('static inline int v_sync_thread_create_detached') or {
 			-1
@@ -643,6 +644,7 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 		assert thread_helper_pos >= 0, generated_code
 		assert closure_helper_pos >= 0, generated_code
 		if uses_tcc_atomic_header {
+			assert !generated_code.contains(wide_console_alias), generated_code
 			assert generated_code.count(thread_start_alias) == 0, generated_code
 			assert generated_code.count(lpthread_start_alias) == 0, generated_code
 			assert generated_code.count(timezone_alias) == 0, generated_code
@@ -654,15 +656,18 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 				assert prototype_pos > closure_helper_pos, generated_code
 			}
 		} else {
+			assert generated_code.count(wide_console_alias) == 1, generated_code
 			assert generated_code.count(thread_start_alias) == 1, generated_code
 			assert generated_code.count(lpthread_start_alias) == 1, generated_code
 			assert generated_code.count(timezone_alias) == 1, generated_code
 			thread_start_pos := generated_code.index(thread_start_alias) or { -1 }
 			lpthread_start_pos := generated_code.index(lpthread_start_alias) or { -1 }
 			timezone_pos := generated_code.index(timezone_alias) or { -1 }
+			wide_console_pos := generated_code.index(wide_console_alias) or { -1 }
 			timezone_extern_pos := generated_code.index(timezone_extern) or { -1 }
 			assert thread_start_pos >= 0 && thread_start_pos < lpthread_start_pos, generated_code
 			assert lpthread_start_pos < thread_helper_pos, generated_code
+			assert wide_console_pos >= 0, generated_code
 			assert timezone_extern.len > 0, generated_code
 			assert timezone_pos >= 0 && timezone_pos < timezone_extern_pos, generated_code
 			for name in ['AcquireSRWLockExclusive', 'ReleaseSRWLockExclusive'] {
@@ -679,6 +684,16 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 		assert wait_header_generated_extern_count(c_code, name) == expected_count, name
 		assert wait_header_generated_extern_count(fallback_program.c_code, name) == expected_count,
 			name
+	}
+	if !uses_tcc_atomic_header {
+		for generated_code in [c_code, fallback_program.c_code] {
+			alias_pos := generated_code.index(wide_console_alias) or { -1 }
+			extern_line := wait_header_generated_extern_line(generated_code,
+				'ScrollConsoleScreenBuffer')
+			extern_pos := generated_code.index(extern_line) or { -1 }
+			assert alias_pos >= 0 && alias_pos < extern_pos, generated_code
+			assert !generated_code.contains('ScrollConsoleScreenBufferA'), generated_code
+		}
 	}
 	for name in crt_owned {
 		assert name in crt_referenced, name
