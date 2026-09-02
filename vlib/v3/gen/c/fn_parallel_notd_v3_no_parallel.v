@@ -2312,7 +2312,6 @@ fn (mut g FlatGen) c_extern_forward_decls_scoped() {
 fn (g &FlatGen) configure_c_extern_scan_worker(mut worker FlatGen) {
 	worker.target = g.target
 	worker.needs_shared_runtime = g.needs_shared_runtime
-	worker.windows_system_libc_requested = g.windows_system_libc_requested
 	worker.preinclude_directives = g.preinclude_directives
 	worker.c_directives = g.c_directives
 	worker.inlined_c_fns = g.inlined_c_fns.clone()

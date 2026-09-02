@@ -1,4 +1,3 @@
-import crypto.sha256
 import os
 
 const wait_header_vexe = @VEXE
@@ -6,8 +5,6 @@ const wait_header_tests_dir = os.dir(@FILE)
 const wait_header_v3_dir = os.dir(wait_header_tests_dir)
 const wait_header_vlib_dir = os.dir(wait_header_v3_dir)
 const wait_header_v3_src = os.join_path(wait_header_v3_dir, 'v3.v')
-const wait_header_c_diagnostic_max_line_bytes = 2048
-const wait_header_c_diagnostic_max_file_bytes = u64(8 * 1024 * 1024)
 
 struct WaitHeaderProgram {
 	c_code string
@@ -24,128 +21,6 @@ fn wait_header_execute_without_vflags(command string) os.Result {
 		os.unsetenv('VFLAGS')
 	}
 	return result
-}
-
-fn wait_header_c_error_line(output string) ?int {
-	mut matches := []int{}
-	for line in output.split_into_lines() {
-		trimmed := line.trim_space()
-		if !trimmed.starts_with('src.c:') {
-			continue
-		}
-		rest := trimmed['src.c:'.len..]
-		separator_idx := rest.index(':') or { continue }
-		raw_line := rest[..separator_idx]
-		if raw_line.len == 0 {
-			continue
-		}
-		mut digits_only := true
-		for ch in raw_line {
-			if ch < `0` || ch > `9` {
-				digits_only = false
-				break
-			}
-		}
-		if !digits_only {
-			continue
-		}
-		line_number := raw_line.int()
-		if line_number > 0 {
-			matches << line_number
-		}
-	}
-	if matches.len != 1 {
-		return none
-	}
-	return matches[0]
-}
-
-fn wait_header_bounded_c_line(line string, line_number int) string {
-	prefix := '${line_number}: '
-	if prefix.len >= wait_header_c_diagnostic_max_line_bytes {
-		return prefix[..wait_header_c_diagnostic_max_line_bytes]
-	}
-	available := wait_header_c_diagnostic_max_line_bytes - prefix.len
-	if line.len <= available {
-		return prefix + line
-	}
-	suffix := ' [truncated]'
-	if available <= suffix.len {
-		return prefix + suffix[..available]
-	}
-	return prefix + line[..available - suffix.len] + suffix
-}
-
-fn wait_header_c_error_window(c_code string, line_number int) ?string {
-	lines := c_code.split_into_lines()
-	if line_number <= 0 || line_number > lines.len {
-		return none
-	}
-	mut first := line_number - 12
-	if first < 1 {
-		first = 1
-	}
-	mut last := line_number + 12
-	if last > lines.len {
-		last = lines.len
-	}
-	mut window := []string{cap: last - first + 1}
-	for number := first; number <= last; number++ {
-		window << wait_header_bounded_c_line(lines[number - 1], number)
-	}
-	return window.join('\n')
-}
-
-fn wait_header_execute_with_keepc_diagnostics(command string, name string) (os.Result, string) {
-	root := os.join_path(os.temp_dir(), 'v3_wait_header_keepc_${name}_${os.getpid()}')
-	os.rmdir_all(root) or {}
-	os.mkdir_all(root) or { panic(err) }
-	old_vtmp := os.getenv_opt('VTMP')
-	os.setenv('VTMP', root, true)
-	defer {
-		if vtmp := old_vtmp {
-			os.setenv('VTMP', vtmp, true)
-		} else {
-			os.unsetenv('VTMP')
-		}
-		os.rmdir_all(root) or {}
-	}
-	result := wait_header_execute_without_vflags(command)
-	if result.exit_code == 0 {
-		return result, ''
-	}
-	entries := os.ls(root) or {
-		return result, '\nkeepc diagnostic could not list the retained-C directory: ${err}'
-	}
-	kept_files := entries.filter(it.ends_with('.tmp.c')
-		&& os.is_file(os.join_path(root, it)))
-	if kept_files.len != 1 {
-		return result, '\nkeepc diagnostic expected exactly one retained C file, found ${kept_files.len}'
-	}
-	kept_path := os.join_path(root, kept_files[0])
-	if os.is_link(kept_path) {
-		return result, '\nkeepc diagnostic retained C path is a symbolic link'
-	}
-	kept_stat := os.lstat(kept_path) or {
-		return result, '\nkeepc diagnostic could not inspect the retained C file: ${err}'
-	}
-	if kept_stat.get_filetype() != .regular {
-		return result, '\nkeepc diagnostic retained C path is not a regular file'
-	}
-	if kept_stat.size < 1 || kept_stat.size >= wait_header_c_diagnostic_max_file_bytes {
-		return result, '\nkeepc diagnostic retained C size ${kept_stat.size} is outside 1..<${wait_header_c_diagnostic_max_file_bytes}'
-	}
-	c_code := os.read_file(kept_path) or {
-		return result, '\nkeepc diagnostic could not read the retained C file: ${err}'
-	}
-	line_number := wait_header_c_error_line(result.output) or {
-		return result, '\nkeepc diagnostic expected exactly one strict src.c:N location'
-	}
-	window := wait_header_c_error_window(c_code, line_number) or {
-		return result, '\nkeepc diagnostic source line ${line_number} is outside 1..${c_code.count('\n') + 1}'
-	}
-	detail := '\nkeepc diagnostic sha256=${sha256.hexhash(c_code)} line=${line_number}\n${window}'
-	return result, detail
 }
 
 fn wait_header_build_v3() string {
@@ -169,24 +44,6 @@ fn wait_header_compile(v3_bin string, name string, source string) WaitHeaderProg
 	os.rm(out + '.c') or {}
 	compile := wait_header_execute_without_vflags('${v3_bin} -b c -o ${out} ${src}')
 	assert compile.exit_code == 0, compile.output
-	gen_c := wait_header_execute_without_vflags('${v3_bin} -b c -o ${out}.c ${src}')
-	assert gen_c.exit_code == 0, gen_c.output
-	return WaitHeaderProgram{
-		c_code: os.read_file(out + '.c') or { panic(err) }
-		out:    out
-	}
-}
-
-fn wait_header_compile_with_keepc_diagnostics(v3_bin string, name string, source string) WaitHeaderProgram {
-	pid := os.getpid()
-	src := os.join_path(os.temp_dir(), 'v3_wait_header_${name}_${pid}.v')
-	out := os.join_path(os.temp_dir(), 'v3_wait_header_${name}_${pid}')
-	os.write_file(src, source) or { panic(err) }
-	os.rm(out) or {}
-	os.rm(out + '.c') or {}
-	compile, compile_detail := wait_header_execute_with_keepc_diagnostics('${v3_bin} -b c -keepc -o ${out} ${src}',
-		name)
-	assert compile.exit_code == 0, compile.output + compile_detail
 	gen_c := wait_header_execute_without_vflags('${v3_bin} -b c -o ${out}.c ${src}')
 	assert gen_c.exit_code == 0, gen_c.output
 	return WaitHeaderProgram{
@@ -237,7 +94,7 @@ fn wait_header_generated_extern_line(c_code string, name string) string {
 	return ''
 }
 
-fn wait_header_windows_central_fns() []string {
+fn wait_header_windows_sdk_owned_fns() []string {
 	return [
 		'FileTimeToSystemTime',
 		'GetConsoleMode',
@@ -254,6 +111,11 @@ fn wait_header_windows_central_fns() []string {
 		'Sleep',
 		'SystemTimeToTzSpecificLocalTime',
 		'WriteConsoleW',
+	]
+}
+
+fn wait_header_windows_crt_generated_fns() []string {
+	return [
 		'_chsize_s',
 		'_dup',
 		'_dup2',
@@ -293,7 +155,10 @@ fn wait_header_windows_vista_fns() []string {
 
 fn wait_header_windows_system_owner_source(cflags string) string {
 	mut refs := []string{}
-	for name in wait_header_windows_central_fns() {
+	for name in wait_header_windows_sdk_owned_fns() {
+		refs << '\t_ = voidptr(&C.${name})'
+	}
+	for name in wait_header_windows_crt_generated_fns() {
 		refs << '\t_ = voidptr(&C.${name})'
 	}
 	for name in wait_header_windows_nls_fns() {
@@ -625,34 +490,46 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 		return
 	}
 	v3_bin := wait_header_build_v3()
-	default_program := wait_header_compile_with_keepc_diagnostics(v3_bin,
-		'windows_system_header_owners_default', wait_header_windows_system_owner_source(''))
+	default_program := wait_header_compile(v3_bin, 'windows_system_header_owners_default',
+		wait_header_windows_system_owner_source(''))
 	fallback_program := wait_header_compile(v3_bin, 'windows_system_header_owners_fallback',
 		wait_header_windows_system_owner_source('#flag -DNONLS\n#flag -D_WIN32_WINNT=0x0502'))
 	c_code := default_program.c_code
-	for header in ['direct.h', 'fcntl.h', 'sys/stat.h', 'windows.h', 'synchapi.h'] {
-		assert c_code.count('#include <${header}>') == 1, header
-	}
-	assert c_code.contains('#define _WIN32_WINNT 0x0600'), c_code
-	assert c_code.contains('struct __stat64'), c_code
-	assert !c_code.contains('typedef struct __stat64 __stat64;'), c_code
-	assert c_code.count('typedef struct _FILETIME _FILETIME;') == 1, c_code
-	assert c_code.contains('_O_BINARY'), c_code
-	for name in wait_header_windows_central_fns() {
+	for name in wait_header_windows_sdk_owned_fns() {
 		assert wait_header_generated_extern_count(c_code, name) == 0, name
 		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 0, name
 	}
-	assert !c_code.contains('_stat* buffer'), c_code
-	assert !fallback_program.c_code.contains('_stat* buffer'), fallback_program.c_code
+	for name in wait_header_windows_crt_generated_fns() {
+		assert wait_header_generated_extern_count(c_code, name) == 1, name
+		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 1, name
+	}
+	good_wstat := 'i32 _wstat(u16* path, struct _stat* buffer);'
+	bad_wstat := 'i32 _wstat(u16* path, _stat* buffer);'
+	assert wait_header_generated_extern_line(c_code, '_wstat') == good_wstat, c_code
+	assert wait_header_generated_extern_line(fallback_program.c_code, '_wstat') == good_wstat,
+		fallback_program.c_code
+	assert c_code.count(good_wstat) == 1, c_code
+	assert fallback_program.c_code.count(good_wstat) == 1, fallback_program.c_code
+	assert c_code.count(bad_wstat) == 0, c_code
+	assert fallback_program.c_code.count(bad_wstat) == 0, fallback_program.c_code
 	for name in wait_header_windows_nls_fns() {
 		line := wait_header_generated_extern_line(fallback_program.c_code, name)
 		assert line.contains(' WINAPI ${name}('), line
 		assert fallback_program.c_code.contains('#ifdef NONLS\n${line}\n#endif'), line
 	}
+	// The headerless TinyCC atomic compatibility header owns SDK103, but none of
+	// these Vista APIs, and it does not select the system-libc preamble.
 	for name in wait_header_windows_vista_fns() {
-		line := wait_header_generated_extern_line(fallback_program.c_code, name)
-		assert line.contains(' WINAPI ${name}('), line
-		assert fallback_program.c_code.contains('#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${line}\n#endif'), line
+		default_line := wait_header_generated_extern_line(c_code, name)
+		fallback_line := wait_header_generated_extern_line(fallback_program.c_code, name)
+		assert default_line.contains(' WINAPI ${name}('), default_line
+		assert fallback_line.contains(' WINAPI ${name}('), fallback_line
+		assert wait_header_generated_extern_count(c_code, name) == 1, name
+		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 1, name
+		assert !c_code.contains('#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${default_line}\n#endif'),
+			default_line
+		assert !fallback_program.c_code.contains('#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${fallback_line}\n#endif'),
+			fallback_line
 	}
 	wide_line := wait_header_generated_extern_line(fallback_program.c_code, 'WideCharToMultiByte')
 	assert wide_line.contains('int*'), wide_line
@@ -662,8 +539,6 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 		assert line.starts_with('u8 WINAPI '), line
 	}
 	assert fallback_program.c_code.contains('#flag') == false
-	assert fallback_program.c_code.contains('struct __stat64'), fallback_program.c_code
-	assert !fallback_program.c_code.contains('typedef struct __stat64 __stat64;'), fallback_program.c_code
 }
 
 fn test_windows_sdk_types_are_emitted_before_extern_prototypes() {

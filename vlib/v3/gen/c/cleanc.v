@@ -411,7 +411,6 @@ mut:
 	initial_c_flags                []string
 	c_flags                        []string
 	use_system_stdint              bool
-	windows_system_libc_requested  bool
 	libc_compat_fns                map[string]bool
 	tc                             &types.TypeChecker = unsafe { nil }
 	has_builtins                   bool
@@ -2959,7 +2958,6 @@ pub fn (mut g FlatGen) gen_with_used_options(a &flat.FlatAst, used_fns map[strin
 	g.inlined_c_typedef_names.clear()
 	g.c_flags = []string{}
 	g.use_system_stdint = false
-	g.windows_system_libc_requested = false
 	g.libc_compat_fns.clear()
 	g.modules.clear()
 	g.fn_ptr_types.clear()
@@ -3084,7 +3082,6 @@ pub fn (mut g FlatGen) gen_with_used_options(a &flat.FlatAst, used_fns map[strin
 	g.has_builtins = g.tc.has_builtins
 	g.precompute_shared_alias_pointer_shorts()
 	g.collect_gen_info(effective_no_parallel)
-	g.preseed_preamble_ownership()
 	g.precompute_const_short_index()
 	g.precompute_local_global_suffix_names()
 	g.preintern_json_encode_strings()
@@ -4717,18 +4714,6 @@ fn (mut g FlatGen) collect_c_directive(module_name string, node flat.Node, sourc
 		// builtin_abi_decls(); also including them would redefine the helpers.
 		if c_include_arg_is_builtin_abi_helper(include_arg, g.compiler_vroot) {
 			return true
-		}
-		if g.target.os == 'windows' && node.value == 'include'
-			&& c_target_active_windows_system_libc_header(include_arg)
-			&& c_include_requests_system_libc(module_name, include_arg) {
-			local_context := g.native_source_contexts[module_name] or {
-				[]NativeSourceContextDirective{}
-			}
-			context_directives := g.ordered_native_source_context(module_name, local_context)
-			if !c_native_source_context_definitely_inactive(context_directives, g.c_flags,
-				g.c99_mode, g.target, g.native_source_context_has_macro_inputs(module_name)) {
-				g.windows_system_libc_requested = true
-			}
 		}
 		include_dirs := c_flag_include_dirs(g.c_flags)
 		// `#insert` is an explicit request to inline the source text. Delay only
@@ -18294,22 +18279,7 @@ fn (mut g FlatGen) preamble() {
 	g.writeln('')
 }
 
-fn c_include_requests_system_libc(module_name string, include_arg string) bool {
-	arg := trimmed_space(include_arg)
-	if arg.len == 0 || arg == '<sys/ptrace.h>' {
-		return false
-	}
-	// Closure/thread helpers use the standalone headerless declarations. Keep
-	// their exact exemptions while allowing unrelated builtin headers to select
-	// the system preamble.
-	if module_name in ['builtin', 'builtin.closure', 'closure']
-		&& arg in ['<pthread.h>', '<sys/mman.h>', '<synchapi.h>'] {
-		return false
-	}
-	return true
-}
-
-fn (g &FlatGen) collected_c_directives_use_system_libc() bool {
+fn (g &FlatGen) c_directives_use_system_libc() bool {
 	for directive in g.preinclude_directives {
 		for line in directive.split_into_lines() {
 			clean := trimmed_space(line)
@@ -18323,10 +18293,17 @@ fn (g &FlatGen) collected_c_directives_use_system_libc() bool {
 			clean := trimmed_space(line)
 			if c_directive_name(clean) in ['include', 'import'] {
 				arg := c_directive_arg(clean)
+				// Closure/thread runtime helpers are implemented against the standalone
+				// declarations in headerless_libc_preamble(). Do not let unrelated
+				// builtin headers (for example <gc.h>) inherit this exemption.
+				if directive.module in ['builtin', 'builtin.closure', 'closure']
+					&& arg in ['<pthread.h>', '<sys/mman.h>', '<synchapi.h>'] {
+					continue
+				}
 				// A quoted local header can include system headers itself. Emit the
 				// system preamble first so its declarations do not conflict with the
 				// standalone declarations from the headerless preamble.
-				if c_include_requests_system_libc(directive.module, arg) {
+				if arg.len > 0 && arg != '<sys/ptrace.h>' {
 					return true
 				}
 			}
@@ -18335,50 +18312,9 @@ fn (g &FlatGen) collected_c_directives_use_system_libc() bool {
 	return false
 }
 
-fn (g &FlatGen) c_directives_use_system_libc() bool {
-	return (g.target.os == 'windows' && g.windows_system_libc_requested)
-		|| g.collected_c_directives_use_system_libc()
-}
-
-const c_target_active_system_libc_headers = [
-	'assert.h',
-	'ctype.h',
-	'errno.h',
-	'float.h',
-	'inttypes.h',
-	'limits.h',
-	'math.h',
-	'setjmp.h',
-	'signal.h',
-	'stdbool.h',
-	'stddef.h',
-	'stdint.h',
-	'time.h',
-	'wchar.h',
-]
-
-const c_target_active_windows_system_libc_headers = [
-	'io.h',
-	'direct.h',
-	'fcntl.h',
-	'process.h',
-	'sys/stat.h',
-	'windows.h',
-	'synchapi.h',
-]
-
-fn c_target_active_windows_system_libc_header(include_arg string) bool {
-	clean := trimmed_space(include_arg)
-	if clean.len < 3 || clean[0] != `<` || clean[clean.len - 1] != `>` {
-		return false
-	}
-	header := clean[1..clean.len - 1]
-	return header == 'stdatomic.h' || header in c_target_active_system_libc_headers
-		|| header in c_target_active_windows_system_libc_headers
-}
-
 fn (mut g FlatGen) system_libc_headers() {
-	for header in c_target_active_system_libc_headers {
+	for header in ['assert.h', 'ctype.h', 'errno.h', 'float.h', 'inttypes.h', 'limits.h', 'math.h',
+		'setjmp.h', 'signal.h', 'stdbool.h', 'stddef.h', 'stdint.h', 'time.h', 'wchar.h'] {
 		g.writeln('#include <${header}>')
 	}
 	// GCC's Objective-C frontend does not implement the C11 `_Atomic` qualifier,
@@ -18398,14 +18334,16 @@ fn (mut g FlatGen) system_libc_headers() {
 	g.writeln('#include <sys/event.h>')
 	g.writeln('#endif')
 	g.writeln('#ifdef _WIN32')
-	for header in c_target_active_windows_system_libc_headers {
-		if header == 'windows.h' {
-			g.writeln('#ifndef _WIN32_WINNT')
-			g.writeln('#define _WIN32_WINNT 0x0600')
-			g.writeln('#endif')
-		}
-		g.writeln('#include <${header}>')
-	}
+	g.writeln('#include <io.h>')
+	g.writeln('#include <direct.h>')
+	g.writeln('#include <fcntl.h>')
+	g.writeln('#include <process.h>')
+	g.writeln('#include <sys/stat.h>')
+	g.writeln('#ifndef _WIN32_WINNT')
+	g.writeln('#define _WIN32_WINNT 0x0600')
+	g.writeln('#endif')
+	g.writeln('#include <windows.h>')
+	g.writeln('#include <synchapi.h>')
 	g.writeln('#else')
 	for header in ['dirent.h', 'dlfcn.h', 'fcntl.h', 'netdb.h', 'netinet/in.h', 'pthread.h',
 		'arpa/inet.h', 'netinet/tcp.h', 'semaphore.h', 'sys/ioctl.h', 'sys/mman.h', 'sys/resource.h',
@@ -18427,12 +18365,8 @@ fn (mut g FlatGen) system_libc_headers() {
 	g.writeln('')
 }
 
-fn (mut g FlatGen) collect_headerless_libc_preamble_ownership() {
+fn (mut g FlatGen) system_libc_preamble() {
 	g.collect_preserved_c_fns(c_headerless_libc_declared_fns)
-}
-
-fn (mut g FlatGen) collect_system_libc_preamble_ownership() {
-	g.collect_headerless_libc_preamble_ownership()
 	g.collect_preserved_c_fns([
 		'kevent',
 		'kqueue',
@@ -18455,21 +18389,6 @@ fn (mut g FlatGen) collect_system_libc_preamble_ownership() {
 		// local bare-name alias because the SDK typedef is named FILETIME.
 		g.collect_preserved_c_structs(['__stat64', '_FILETIME'])
 	}
-}
-
-fn (mut g FlatGen) preseed_preamble_ownership() {
-	if g.c_directives_use_system_libc() {
-		g.collect_system_libc_preamble_ownership()
-		return
-	}
-	g.collect_headerless_libc_preamble_ownership()
-	if g.uses_windows_tcc_atomic_header() {
-		g.collect_windows_tcc_atomic_header_ownership()
-	}
-}
-
-fn (mut g FlatGen) system_libc_preamble() {
-	g.collect_system_libc_preamble_ownership()
 	g.writeln('#ifdef _WIN32')
 	g.writeln('typedef struct { HANDLE handle; void* context; } __v_thread;')
 	g.writeln('static bool __v_thread_equal(__v_thread a, __v_thread b) { return a.handle == b.handle; }')
@@ -18580,7 +18499,7 @@ fn (mut g FlatGen) headerless_darwin_pthread_alias(alias string, typ string, gua
 }
 
 fn (mut g FlatGen) headerless_libc_preamble() {
-	g.collect_headerless_libc_preamble_ownership()
+	g.collect_preserved_c_fns(c_headerless_libc_declared_fns)
 	g.writeln(c_stdint_header_text())
 	g.writeln('#ifndef NULL')
 	g.writeln('#define NULL ((void*)0)')
@@ -20913,10 +20832,6 @@ const c_headerless_windows_tcc_sdk_declared_fns = [
 	'WriteFile',
 ]
 
-fn (mut g FlatGen) collect_windows_tcc_atomic_header_ownership() {
-	g.collect_preserved_c_fns(c_headerless_windows_tcc_sdk_declared_fns)
-}
-
 fn (mut g FlatGen) emit_windows_tcc_atomic_header() {
 	if g.windows_tcc_atomic_emitted {
 		return
@@ -20925,7 +20840,7 @@ fn (mut g FlatGen) emit_windows_tcc_atomic_header() {
 		os.join_path(g.compiler_vroot, 'thirdparty', 'stdatomic', 'win', 'atomic.h').replace('\\', '/')
 	g.writeln('#include "${header}"')
 	if !g.c_directives_use_system_libc() {
-		g.collect_windows_tcc_atomic_header_ownership()
+		g.collect_preserved_c_fns(c_headerless_windows_tcc_sdk_declared_fns)
 	}
 	g.windows_tcc_atomic_emitted = true
 }

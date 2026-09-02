@@ -17248,7 +17248,7 @@ fn (mut g FlatGen) c_extern_decl_line(node flat.Node, cfn string) string {
 	}
 	sb.write_string(cfn)
 	sb.write_u8(`(`)
-	sb.write_string(g.c_extern_decl_params(node))
+	sb.write_string(g.c_extern_decl_params(node, cfn))
 	sb.write_string(');')
 	return sb.str()
 }
@@ -17428,7 +17428,7 @@ const c_winapi_extern_symbols = {
 	'WriteFile':                     true
 }
 
-fn (mut g FlatGen) c_extern_decl_params(node flat.Node) string {
+fn (mut g FlatGen) c_extern_decl_params(node flat.Node, cfn string) string {
 	if node.children_count == 0 {
 		return 'void'
 	}
@@ -17450,7 +17450,13 @@ fn (mut g FlatGen) c_extern_decl_params(node flat.Node) string {
 			continue
 		}
 		pt := g.tc.parse_type(raw_typ)
-		mut ct := g.c_extern_param_c_type(pt)
+		mut ct := if g.target.os == 'windows' && cfn == '_wstat'
+			&& g.tc.cur_file.replace('\\', '/').ends_with('/builtin/cfns.c.v')
+			&& raw_typ.trim_space() == '&C._stat' {
+			'struct _stat*'
+		} else {
+			g.c_extern_param_c_type(pt)
+		}
 		if ct.starts_with('fn_ptr:') {
 			ct = g.resolve_fn_ptr_type(ct)
 		}
