@@ -165,8 +165,7 @@ fn wait_header_has_include_directive(c_code string) bool {
 fn wait_header_generated_extern_count(c_code string, name string) int {
 	mut count := 0
 	for line in c_code.split_into_lines() {
-		clean := line.trim_space()
-		if line == clean && clean.ends_with(');') && clean.contains('${name}(') {
+		if wait_header_generated_extern_name(line) == name {
 			count++
 		}
 	}
@@ -175,12 +174,23 @@ fn wait_header_generated_extern_count(c_code string, name string) int {
 
 fn wait_header_generated_extern_line(c_code string, name string) string {
 	for line in c_code.split_into_lines() {
-		clean := line.trim_space()
-		if line == clean && clean.ends_with(');') && clean.contains('${name}(') {
-			return clean
+		if wait_header_generated_extern_name(line) == name {
+			return line
 		}
 	}
 	return ''
+}
+
+fn wait_header_generated_extern_name(line string) string {
+	clean := line.trim_space()
+	if line != clean || !clean.ends_with(');') {
+		return ''
+	}
+	open := clean.index_u8(`(`)
+	if open <= 0 {
+		return ''
+	}
+	return clean[..open].all_after_last(' ').trim_left('*')
 }
 
 fn wait_header_windows_sdk_owned_fns() []string {

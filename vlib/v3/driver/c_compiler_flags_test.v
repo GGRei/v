@@ -146,6 +146,24 @@ fn test_v3_default_linker_flags() {
 	assert v3_default_linker_flags('linux', true) == []
 }
 
+fn test_v3_explicit_tcc_skips_only_windows_libm() {
+	mut windows_tcc := []string{}
+	add_v3_default_linker_flags(mut windows_tcc, 'windows', false, true)
+	assert windows_tcc == []
+
+	mut windows_native := []string{}
+	add_v3_default_linker_flags(mut windows_native, 'windows', false, false)
+	assert windows_native == ['-lm']
+
+	mut linux_tcc := []string{}
+	add_v3_default_linker_flags(mut linux_tcc, 'linux', false, true)
+	assert linux_tcc == ['-lm', '-lpthread']
+
+	mut windows_tcc_object := []string{}
+	add_v3_default_linker_flags(mut windows_tcc_object, 'windows', true, true)
+	assert windows_tcc_object == []
+}
+
 fn test_v3_cpp_linker_wraps_only_implicit_c_sources() {
 	args := ['-std=gnu11', '-o', 'app', 'generated.c', 'support.o', '-x', 'c++', 'explicit.c',
 		'-x', 'none', 'extra.c', '-xc++', 'compact.c', '-xnone', 'final.c', 'native.C',
@@ -323,7 +341,7 @@ fn test_v3_cgen_metadata_roundtrips_native_link_requirements() {
 
 fn test_v3_default_linker_flags_do_not_duplicate_existing_flags() {
 	mut flags := ['-lpthread', '-lm']
-	add_v3_default_linker_flags(mut flags, 'linux', false)
+	add_v3_default_linker_flags(mut flags, 'linux', false, false)
 	assert flags == ['-lpthread', '-lm']
 }
 
@@ -350,6 +368,22 @@ fn test_v3_user_ldflags_are_final_and_do_not_change_dynamic_plan_when_absent() {
 		'-lfixture_final',
 	]
 	assert static_plan.after_inputs.last() == '-lfixture_final'
+
+	explicit_tcc := v3_c_compiler_flag_plan(V3CCompilerFlagOptions{
+		dependencies:         ['-lpublic', '-lprivate']
+		environment_ld_flags: ['-lenvironment']
+		user_ld_flags:        ['-lfixture_first', '-lfixture_final']
+		target_os:            'windows'
+		explicit_tcc:         true
+	})
+	assert explicit_tcc.after_inputs == [
+		'-lpublic',
+		'-lprivate',
+		'-lenvironment',
+		'-lfixture_first',
+		'-lfixture_final',
+	]
+	assert explicit_tcc.after_inputs.last() == '-lfixture_final'
 }
 
 fn test_v3_object_mode_ignores_link_only_user_flags() {

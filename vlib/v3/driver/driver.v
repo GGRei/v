@@ -2247,8 +2247,12 @@ fn v3_default_linker_flags(target_os string, is_o bool) []string {
 	return flags
 }
 
-fn add_v3_default_linker_flags(mut flags []string, target_os string, is_o bool) {
+fn add_v3_default_linker_flags(mut flags []string, target_os string, is_o bool, explicit_tcc bool) {
 	for flag in v3_default_linker_flags(target_os, is_o) {
+		// Windows TCC resolves math through the CRT; its bundled SDK has no libm.
+		if explicit_tcc && target_os == 'windows' && flag == '-lm' {
+			continue
+		}
 		if flag !in flags {
 			flags << flag
 		}
@@ -2357,7 +2361,8 @@ fn v3_c_compiler_flag_plan(options V3CCompilerFlagOptions) V3CCompilerFlagPlan {
 		before_inputs << ['-flat_namespace', '-undefined', 'dynamic_lookup']
 	}
 	mut after_inputs := options.dependencies.clone()
-	add_v3_default_linker_flags(mut after_inputs, options.target_os, options.is_o)
+	add_v3_default_linker_flags(mut after_inputs, options.target_os, options.is_o,
+		options.explicit_tcc)
 	if !options.is_o {
 		after_inputs << options.environment_ld_flags
 		after_inputs << options.user_ld_flags
@@ -8053,7 +8058,9 @@ fn compile_v3_fastc_source(source string, bin_file string, prefs &pref.Preferenc
 		// outside libc on Linux with glibc before 2.34 and on the BSDs.
 		cc_args << '-lpthread'
 	}
-	cc_args << '-lm'
+	if prefs.normalized_target_os() != 'windows' {
+		cc_args << '-lm'
+	}
 	cc_args << environment_ld_flags
 	command := cmdexec.display(tcc_path, cc_args)
 	result := cmdexec.run_in(tcc_path, cc_args, build_dir)
@@ -11832,7 +11839,8 @@ pub fn run(args []string) {
 			tcc_args << tcc_native_c_source_flags(resolved_c_flags)
 			tcc_args << cached_dev_dylib
 			tcc_args << tcc_dynamic_link_flags(resolved_c_flags)
-			add_v3_default_linker_flags(mut tcc_args, prefs.normalized_target_os(), is_o)
+			add_v3_default_linker_flags(mut tcc_args, prefs.normalized_target_os(), is_o,
+				true)
 			program_source_identity := '${prefix_source_identity}\n${modulecache.file_signature(tcc_main_file)}\n${if cached_program_body_source.len > 0 {
 				modulecache.file_signature(cached_program_body_source)
 			} else {
@@ -11921,7 +11929,8 @@ pub fn run(args []string) {
 				tcc_args << atomic_s
 			}
 			tcc_args << resolved_c_flags
-			add_v3_default_linker_flags(mut tcc_args, prefs.normalized_target_os(), is_o)
+			add_v3_default_linker_flags(mut tcc_args, prefs.normalized_target_os(), is_o,
+				true)
 			if !is_o {
 				tcc_args << environment_ld_flags
 			}
