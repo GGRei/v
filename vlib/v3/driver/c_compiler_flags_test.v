@@ -134,6 +134,10 @@ fn test_v3_windows_tcc_fls_def_is_content_addressed_race_safe_and_link_only() {
 		os.rmdir_all(root) or {}
 	}
 	os.rmdir_all(root) or {}
+	os.mkdir_all(root) or { panic(err) }
+	root_stat := os.lstat(root) or { panic(err) }
+	assert root_stat.get_filetype() == .directory
+	assert !os.is_link(root)
 
 	for gate in [
 		v3_windows_tcc_fls_def_input_in_dir('linux', true, false, cache_dir) or { panic(err) },
@@ -179,6 +183,37 @@ fn test_v3_windows_tcc_fls_def_is_content_addressed_race_safe_and_link_only() {
 	assert v3_windows_tcc_fls_def_input_in_dir('windows', true, false, cache_dir) or {
 		panic(err)
 	} == first
+
+	file_cache_dir := os.join_path(root, 'file cache')
+	os.write_file(file_cache_dir, 'not a directory') or { panic(err) }
+	if _ := v3_windows_tcc_fls_def_input_in_dir('windows', true, false, file_cache_dir) {
+		assert false, 'a regular file must not be accepted as the FLS cache directory'
+	} else {
+		assert err.msg().contains('failed to create Windows TCC FLS cache directory')
+	}
+	assert os.read_file(file_cache_dir) or { panic(err) } == 'not a directory'
+
+	missing_cache_dir := os.join_path(root, 'missing parent', 'cache')
+	if _ := v3_windows_tcc_fls_def_input_in_dir('windows', true, false, missing_cache_dir) {
+		assert false, 'the FLS cache directory parent must already exist'
+	} else {
+		assert err.msg().contains('failed to create Windows TCC FLS cache directory')
+	}
+	assert !os.exists(os.dir(missing_cache_dir))
+
+	$if !windows {
+		cache_target := os.join_path(root, 'cache link target')
+		os.mkdir(cache_target) or { panic(err) }
+		cache_link := os.join_path(root, 'cache link')
+		os.symlink(cache_target, cache_link) or { panic(err) }
+		if _ := v3_windows_tcc_fls_def_input_in_dir('windows', true, false, cache_link) {
+			assert false, 'a linked FLS cache directory must be rejected'
+		} else {
+			assert err.msg().contains('failed to create Windows TCC FLS cache directory')
+		}
+		cache_target_entries := os.ls(cache_target) or { panic(err) }
+		assert cache_target_entries.len == 0
+	}
 
 	invalid_dir := os.join_path(root, 'invalid cache')
 	os.mkdir_all(invalid_dir) or { panic(err) }

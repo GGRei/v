@@ -2284,12 +2284,34 @@ fn v3_windows_tcc_fls_def_is_exact(path string) bool {
 	return content == v3_windows_tcc_fls_def_content
 }
 
+fn v3_windows_tcc_fls_cache_dir_is_exact(path string) bool {
+	stat := os.lstat(path) or { return false }
+	return stat.get_filetype() == .directory && !os.is_link(path)
+}
+
+fn v3_windows_tcc_ensure_fls_cache_dir(path string) ! {
+	if v3_windows_tcc_fls_cache_dir_is_exact(path) {
+		return
+	}
+	os.mkdir(path) or {
+		// A concurrent process can win the atomic leaf-directory creation. Accept
+		// only that exact, real directory; files, links and other failures stay fatal.
+		if v3_windows_tcc_fls_cache_dir_is_exact(path) {
+			return
+		}
+		return error('failed to create Windows TCC FLS cache directory ${path}: ${err.msg()}')
+	}
+	if !v3_windows_tcc_fls_cache_dir_is_exact(path) {
+		return error('created Windows TCC FLS cache directory is invalid: ${path}')
+	}
+}
+
 fn v3_windows_tcc_fls_def_input_in_dir(target_os string, explicit_tcc bool, is_o bool, cache_dir string) !string {
 	if target_os != 'windows' || !explicit_tcc || is_o {
 		return ''
 	}
 	absolute_cache_dir := os.abs_path(cache_dir)
-	os.mkdir_all(absolute_cache_dir)!
+	v3_windows_tcc_ensure_fls_cache_dir(absolute_cache_dir)!
 	final_path := v3_windows_tcc_fls_def_path(absolute_cache_dir)
 	if _ := os.lstat(final_path) {
 		if v3_windows_tcc_fls_def_is_exact(final_path) {
