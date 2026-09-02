@@ -609,11 +609,36 @@ jobs:
           Run-V3Owner tcc-preamble 'vlib/v3/gen/c/preamble_test.v' @(
             'test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations',
             'test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions',
-            'test_windows_tcc_atomic_header_guards_only_conditional_nls_externs',
+            'test_windows_headers_guard_conditional_nls_and_vista_externs',
             'test_system_libc_windows_tcc_atomic_header_does_not_preserve_sdk_functions',
             'test_headerless_windows_non_tcc_keeps_local_sdk_fallbacks',
             'test_headerless_windows_non_tcc_without_builtins_keeps_aligned_externs_owned_by_source',
             'test_non_windows_preamble_does_not_emit_windows_abi_fallbacks')
+          $waitHeaderCcEnvName = 'ISSUE74_V3_WAIT_HEADER_CC'
+          $waitHeaderCxxEnvName = 'ISSUE74_V3_WAIT_HEADER_CXX'
+          $waitHeaderCcEnvPath = "Env:$waitHeaderCcEnvName"
+          $waitHeaderCxxEnvPath = "Env:$waitHeaderCxxEnvName"
+          $oldWaitHeaderCcPresent = Test-Path -LiteralPath $waitHeaderCcEnvPath
+          $oldWaitHeaderCxxPresent = Test-Path -LiteralPath $waitHeaderCxxEnvPath
+          $oldWaitHeaderCc = if ($oldWaitHeaderCcPresent) { (Get-Item -LiteralPath $waitHeaderCcEnvPath).Value } else { $null }
+          $oldWaitHeaderCxx = if ($oldWaitHeaderCxxPresent) { (Get-Item -LiteralPath $waitHeaderCxxEnvPath).Value } else { $null }
+          try {
+            Set-Item -LiteralPath $waitHeaderCcEnvPath -Value $tcc
+            Set-Item -LiteralPath $waitHeaderCxxEnvPath -Value $tcc
+            Run-V3Owner tcc-windows-system-header-codegen 'vlib/v3/tests/posix_wait_header_codegen_test.v' @(
+              'test_windows_system_headers_own_crt_externs_and_native_tags')
+          } finally {
+            if ($oldWaitHeaderCcPresent) {
+              Set-Item -LiteralPath $waitHeaderCcEnvPath -Value $oldWaitHeaderCc
+            } else {
+              Remove-Item -LiteralPath $waitHeaderCcEnvPath -ErrorAction SilentlyContinue
+            }
+            if ($oldWaitHeaderCxxPresent) {
+              Set-Item -LiteralPath $waitHeaderCxxEnvPath -Value $oldWaitHeaderCxx
+            } else {
+              Remove-Item -LiteralPath $waitHeaderCxxEnvPath -ErrorAction SilentlyContinue
+            }
+          }
           Run-V3Owner tcc-output-suffix 'vlib/v3/driver/implicit_import_test.v' @(
             'test_c_executable_bin_file_uses_target_postfix')
           Run-V3Owner tcc-fastcdriver 'vlib/v3/fastcdriver/fastcdriver_test.v' @(

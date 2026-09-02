@@ -370,8 +370,31 @@ jobs:
             'test_non_windows_preamble_does_not_emit_windows_abi_fallbacks')
           Run-Owner -Label v3-windows-native-c-types -Path 'vlib/v3/types/c_type_cache_identity_test.v' -Common $v3Common -Names @(
             'test_c_type_renders_windows_stat_tag_without_inventing_typedef')
-          Run-Owner -Label v3-windows-system-header-codegen -Path 'vlib/v3/tests/posix_wait_header_codegen_test.v' -Common $v3Common -Names @(
-            'test_windows_system_headers_own_crt_externs_and_native_tags')
+          $waitHeaderCcEnvName = 'ISSUE74_V3_WAIT_HEADER_CC'
+          $waitHeaderCxxEnvName = 'ISSUE74_V3_WAIT_HEADER_CXX'
+          $waitHeaderCcEnvPath = "Env:$waitHeaderCcEnvName"
+          $waitHeaderCxxEnvPath = "Env:$waitHeaderCxxEnvName"
+          $oldWaitHeaderCcPresent = Test-Path -LiteralPath $waitHeaderCcEnvPath
+          $oldWaitHeaderCxxPresent = Test-Path -LiteralPath $waitHeaderCxxEnvPath
+          $oldWaitHeaderCc = if ($oldWaitHeaderCcPresent) { (Get-Item -LiteralPath $waitHeaderCcEnvPath).Value } else { $null }
+          $oldWaitHeaderCxx = if ($oldWaitHeaderCxxPresent) { (Get-Item -LiteralPath $waitHeaderCxxEnvPath).Value } else { $null }
+          try {
+            Set-Item -LiteralPath $waitHeaderCcEnvPath -Value $ccPath
+            Set-Item -LiteralPath $waitHeaderCxxEnvPath -Value $cxxPath
+            Run-Owner -Label v3-windows-system-header-codegen -Path 'vlib/v3/tests/posix_wait_header_codegen_test.v' -Common $v3Common -Names @(
+              'test_windows_system_headers_own_crt_externs_and_native_tags')
+          } finally {
+            if ($oldWaitHeaderCcPresent) {
+              Set-Item -LiteralPath $waitHeaderCcEnvPath -Value $oldWaitHeaderCc
+            } else {
+              Remove-Item -LiteralPath $waitHeaderCcEnvPath -ErrorAction SilentlyContinue
+            }
+            if ($oldWaitHeaderCxxPresent) {
+              Set-Item -LiteralPath $waitHeaderCxxEnvPath -Value $oldWaitHeaderCxx
+            } else {
+              Remove-Item -LiteralPath $waitHeaderCxxEnvPath -ErrorAction SilentlyContinue
+            }
+          }
           Run-Owner -Label v3-fastc -Path 'vlib/v3/gen/fastc/fastc_test.v' -Common $v3Common -Names @(
             'test_source_resolver_uses_compiler_owned_file_defines',
             'test_cpp_linker_directive_is_rejected_before_fastc_emits_c',

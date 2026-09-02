@@ -7,8 +7,14 @@ const wait_header_vlib_dir = os.dir(wait_header_v3_dir)
 const wait_header_v3_src = os.join_path(wait_header_v3_dir, 'v3.v')
 
 struct WaitHeaderProgram {
-	c_code string
-	out    string
+	c_code          string
+	out             string
+	compiler_family string
+}
+
+struct WaitHeaderCompilerRoute {
+	suffix string
+	family string
 }
 
 fn wait_header_execute_without_vflags(command string) os.Result {
@@ -35,6 +41,86 @@ fn wait_header_build_v3() string {
 	return v3_bin
 }
 
+fn wait_header_compiler_name_family(path string, is_cpp bool) string {
+	name := os.file_name(path).to_lower_ascii()
+	if is_cpp {
+		return match name {
+			'g++.exe', 'g++' { 'gcc' }
+			'clang++.exe', 'clang++' { 'clang' }
+			'tcc.exe', 'tcc' { 'tcc' }
+			else { '' }
+		}
+	}
+	return match name {
+		'gcc.exe', 'gcc' { 'gcc' }
+		'clang.exe', 'clang' { 'clang' }
+		'tcc.exe', 'tcc' { 'tcc' }
+		else { '' }
+	}
+}
+
+fn wait_header_compiler_family(path string, is_cpp bool) string {
+	expected := wait_header_compiler_name_family(path, is_cpp)
+	if expected == '' {
+		return ''
+	}
+	version_arg := if expected == 'tcc' { '-v' } else { '--version' }
+	version := os.execute('${os.quoted_path(path)} ${version_arg}')
+	if version.exit_code != 0 {
+		return ''
+	}
+	text := version.output.to_lower_ascii()
+	actual := if text.contains('clang') && !text.contains('clang-cl') {
+		'clang'
+	} else if text.contains('gcc') || text.contains('free software foundation')
+		|| text.contains('mingw') {
+		'gcc'
+	} else if text.contains('tiny c compiler') || text.contains('tcc version') {
+		'tcc'
+	} else {
+		''
+	}
+	return if actual == expected { actual } else { '' }
+}
+
+fn wait_header_compiler_route() WaitHeaderCompilerRoute {
+	mut cc := ''
+	mut cxx := ''
+	mut cc_set := false
+	mut cxx_set := false
+	if value := os.getenv_opt('ISSUE74_V3_WAIT_HEADER_CC') {
+		cc = value
+		cc_set = true
+	}
+	if value := os.getenv_opt('ISSUE74_V3_WAIT_HEADER_CXX') {
+		cxx = value
+		cxx_set = true
+	}
+	if !cc_set && !cxx_set {
+		mut historical_family := ''
+		$if windows {
+			historical_family = 'tcc'
+		}
+		return WaitHeaderCompilerRoute{
+			family: historical_family
+		}
+	}
+	assert cc_set && cxx_set, 'Issue 74 wait-header compiler paths must be set together'
+	assert cc.len > 0 && cxx.len > 0, 'Issue 74 wait-header compiler paths must not be empty'
+	assert os.is_abs_path(cc) && os.is_abs_path(cxx),
+		'Issue 74 wait-header compiler paths must be absolute'
+	assert os.is_file(cc) && os.is_file(cxx),
+		'Issue 74 wait-header compiler paths must be files'
+	cc_family := wait_header_compiler_family(cc, false)
+	cxx_family := wait_header_compiler_family(cxx, true)
+	assert cc_family.len > 0 && cc_family == cxx_family,
+		'Issue 74 wait-header compiler paths must be a matching GCC, Clang, or TCC family'
+	return WaitHeaderCompilerRoute{
+		suffix: ' -no-retry-compilation -cc ${os.quoted_path(cc)} -c++ ${os.quoted_path(cxx)}'
+		family: cc_family
+	}
+}
+
 fn wait_header_compile(v3_bin string, name string, source string) WaitHeaderProgram {
 	pid := os.getpid()
 	src := os.join_path(os.temp_dir(), 'v3_wait_header_${name}_${pid}.v')
@@ -42,13 +128,15 @@ fn wait_header_compile(v3_bin string, name string, source string) WaitHeaderProg
 	os.write_file(src, source) or { panic(err) }
 	os.rm(out) or {}
 	os.rm(out + '.c') or {}
-	compile := wait_header_execute_without_vflags('${v3_bin} -b c -o ${out} ${src}')
+	route := wait_header_compiler_route()
+	compile := wait_header_execute_without_vflags('${v3_bin}${route.suffix} -b c -o ${out} ${src}')
 	assert compile.exit_code == 0, compile.output
-	gen_c := wait_header_execute_without_vflags('${v3_bin} -b c -o ${out}.c ${src}')
+	gen_c := wait_header_execute_without_vflags('${v3_bin}${route.suffix} -b c -o ${out}.c ${src}')
 	assert gen_c.exit_code == 0, gen_c.output
 	return WaitHeaderProgram{
-		c_code: os.read_file(out + '.c') or { panic(err) }
-		out:    out
+		c_code:          os.read_file(out + '.c') or { panic(err) }
+		out:             out
+		compiler_family: route.family
 	}
 }
 
@@ -58,7 +146,8 @@ fn wait_header_gen_c(v3_bin string, name string, source string) string {
 	c_path := os.join_path(os.temp_dir(), 'v3_wait_header_${name}_${pid}.c')
 	os.write_file(src, source) or { panic(err) }
 	os.rm(c_path) or {}
-	compile := wait_header_execute_without_vflags('${v3_bin} -b c -o ${c_path} ${src}')
+	route := wait_header_compiler_route()
+	compile := wait_header_execute_without_vflags('${v3_bin}${route.suffix} -b c -o ${c_path} ${src}')
 	assert compile.exit_code == 0, compile.output
 	return os.read_file(c_path) or { panic(err) }
 }
@@ -518,18 +607,33 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	fallback_program := wait_header_compile(v3_bin, 'windows_system_header_owners_fallback',
 		wait_header_windows_system_owner_source('#flag -DNONLS\n#flag -D_WIN32_WINNT=0x0502'))
 	c_code := default_program.c_code
+	assert default_program.compiler_family in ['tcc', 'gcc', 'clang'],
+		default_program.compiler_family
+	assert fallback_program.compiler_family == default_program.compiler_family,
+		fallback_program.compiler_family
+	uses_tcc_atomic_header := default_program.compiler_family == 'tcc'
 	sdk_owned := wait_header_windows_sdk_owned_fns()
 	crt_referenced := wait_header_windows_crt_referenced_fns()
-	crt_owned := wait_header_windows_atomic_crt_owned_fns()
-	crt_generated := wait_header_windows_crt_generated_fns()
+	crt_owned := if uses_tcc_atomic_header {
+		wait_header_windows_atomic_crt_owned_fns()
+	} else {
+		[]string{}
+	}
+	crt_generated := if uses_tcc_atomic_header {
+		wait_header_windows_crt_generated_fns()
+	} else {
+		crt_referenced.clone()
+	}
 	assert sdk_owned.len == 15
 	assert crt_referenced.len == 15
-	assert crt_owned.len == 1
-	assert crt_generated.len == 14
+	assert crt_owned.len == if uses_tcc_atomic_header { 1 } else { 0 }
+	assert crt_generated.len == if uses_tcc_atomic_header { 14 } else { 15 }
 	mut crt_partition := map[string]bool{}
 	for name in sdk_owned {
-		assert wait_header_generated_extern_count(c_code, name) == 0, name
-		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 0, name
+		expected_count := if uses_tcc_atomic_header { 0 } else { 1 }
+		assert wait_header_generated_extern_count(c_code, name) == expected_count, name
+		assert wait_header_generated_extern_count(fallback_program.c_code, name) == expected_count,
+			name
 	}
 	for name in crt_owned {
 		assert name in crt_referenced, name
@@ -552,6 +656,7 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	stat_body := 'struct __stat64 {\n\tu32 st_dev;\n\tu16 st_ino;\n\tu16 st_mode;\n\tu16 st_nlink;\n\tu16 st_uid;\n\tu16 st_gid;\n\tu32 st_rdev;\n\tu64 st_size;\n\ti64 st_atime;\n\ti64 st_mtime;\n\ti64 st_ctime;\n};'
 	stat_init := '(struct __stat64){'
 	filetime_alias := 'typedef struct _FILETIME _FILETIME;'
+	filetime_body := 'struct _FILETIME {\n\tu32 dwLowDateTime;\n\tu32 dwHighDateTime;\n};'
 	filetime_init := '(_FILETIME){'
 	for generated_code in [c_code, fallback_program.c_code] {
 		assert generated_code.count(stat_body) == 1, generated_code
@@ -561,16 +666,29 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 		body_pos := generated_code.index(stat_body) or { -1 }
 		init_pos := generated_code.index(stat_init) or { -1 }
 		assert body_pos >= 0 && body_pos < init_pos, generated_code
-		assert generated_code.count(filetime_alias) == 1, generated_code
-		assert generated_code.count('struct _FILETIME {') == 0, generated_code
+		expected_aliases := if uses_tcc_atomic_header { 1 } else { 2 }
+		expected_bodies := if uses_tcc_atomic_header { 0 } else { 1 }
+		assert generated_code.count(filetime_alias) == expected_aliases, generated_code
+		assert generated_code.count(filetime_body) == expected_bodies, generated_code
 		assert generated_code.count('struct _FILETIME;') == 0, generated_code
 		assert generated_code.count(filetime_init) == 1, generated_code
-		filetime_alias_pos := generated_code.index(filetime_alias) or { -1 }
+		first_filetime_alias_pos := generated_code.index(filetime_alias) or { -1 }
+		last_filetime_alias_pos := generated_code.last_index(filetime_alias) or { -1 }
 		filetime_init_pos := generated_code.index(filetime_init) or { -1 }
-		assert filetime_alias_pos >= 0 && filetime_alias_pos < filetime_init_pos, generated_code
+		assert first_filetime_alias_pos >= 0 && first_filetime_alias_pos <= last_filetime_alias_pos,
+			generated_code
+		if uses_tcc_atomic_header {
+			assert last_filetime_alias_pos < filetime_init_pos, generated_code
+		} else {
+			filetime_body_pos := generated_code.index(filetime_body) or { -1 }
+			assert first_filetime_alias_pos < last_filetime_alias_pos, generated_code
+			assert last_filetime_alias_pos < filetime_body_pos
+				&& filetime_body_pos < filetime_init_pos, generated_code
+		}
 	}
-	assert wait_header_generated_extern_count(c_code, 'atomic_thread_fence') == 0
-	assert wait_header_generated_extern_count(fallback_program.c_code, 'atomic_thread_fence') == 0
+	expected_fence_externs := if uses_tcc_atomic_header { 0 } else { 1 }
+	assert wait_header_generated_extern_count(c_code, 'atomic_thread_fence') == expected_fence_externs
+	assert wait_header_generated_extern_count(fallback_program.c_code, 'atomic_thread_fence') == expected_fence_externs
 	good_wstat := 'i32 _wstat(u16* path, struct _stat* buffer);'
 	bad_wstat := 'i32 _wstat(u16* path, _stat* buffer);'
 	assert wait_header_generated_extern_line(c_code, '_wstat') == good_wstat, c_code
@@ -581,12 +699,24 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	assert c_code.count(bad_wstat) == 0, c_code
 	assert fallback_program.c_code.count(bad_wstat) == 0, fallback_program.c_code
 	for name in wait_header_windows_nls_fns() {
-		line := wait_header_generated_extern_line(fallback_program.c_code, name)
-		assert line.contains(' WINAPI ${name}('), line
-		assert fallback_program.c_code.contains('#ifdef NONLS\n${line}\n#endif'), line
+		default_line := wait_header_generated_extern_line(c_code, name)
+		fallback_line := wait_header_generated_extern_line(fallback_program.c_code, name)
+		assert default_line.contains(' WINAPI ${name}('), default_line
+		assert fallback_line.contains(' WINAPI ${name}('), fallback_line
+		assert wait_header_generated_extern_count(c_code, name) == 1, name
+		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 1, name
+		default_guard := '#ifdef NONLS\n${default_line}\n#endif'
+		fallback_guard := '#ifdef NONLS\n${fallback_line}\n#endif'
+		if uses_tcc_atomic_header {
+			assert c_code.contains(default_guard), default_line
+			assert fallback_program.c_code.contains(fallback_guard), fallback_line
+		} else {
+			assert !c_code.contains(default_guard), default_line
+			assert !fallback_program.c_code.contains(fallback_guard), fallback_line
+		}
 	}
-	// The headerless TinyCC atomic compatibility header owns SDK103, but none of
-	// these Vista APIs, and it does not select the system-libc preamble.
+	// Neither headerless compiler route selects the system-libc preamble or owns
+	// these Vista APIs.
 	for name in wait_header_windows_vista_fns() {
 		default_line := wait_header_generated_extern_line(c_code, name)
 		fallback_line := wait_header_generated_extern_line(fallback_program.c_code, name)
@@ -599,12 +729,16 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 		assert !fallback_program.c_code.contains('#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${fallback_line}\n#endif'),
 			fallback_line
 	}
-	wide_line := wait_header_generated_extern_line(fallback_program.c_code, 'WideCharToMultiByte')
-	assert wide_line.contains('int*'), wide_line
-	assert !wide_line.contains('bool*'), wide_line
-	for name in ['TryAcquireSRWLockExclusive', 'TryAcquireSRWLockShared'] {
-		line := wait_header_generated_extern_line(fallback_program.c_code, name)
-		assert line.starts_with('u8 WINAPI '), line
+	for generated_code in [c_code, fallback_program.c_code] {
+		wide_line := wait_header_generated_extern_line(generated_code, 'WideCharToMultiByte')
+		assert wide_line.contains('int*'), wide_line
+		assert !wide_line.contains('bool*'), wide_line
+	}
+	for generated_code in [c_code, fallback_program.c_code] {
+		for name in ['TryAcquireSRWLockExclusive', 'TryAcquireSRWLockShared'] {
+			line := wait_header_generated_extern_line(generated_code, name)
+			assert line.starts_with('u8 WINAPI '), line
+		}
 	}
 	assert fallback_program.c_code.contains('#flag') == false
 }
