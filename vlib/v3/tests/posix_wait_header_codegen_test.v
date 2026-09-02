@@ -759,6 +759,15 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	expected_fence_externs := if uses_tcc_atomic_header { 0 } else { 1 }
 	assert wait_header_generated_extern_count(c_code, 'atomic_thread_fence') == expected_fence_externs
 	assert wait_header_generated_extern_count(fallback_program.c_code, 'atomic_thread_fence') == expected_fence_externs
+	if uses_tcc_atomic_header {
+		for generated_code in [c_code, fallback_program.c_code] {
+			assert !generated_code.contains('_V_atomic_thread_fence'), generated_code
+			assert generated_code.contains('thirdparty/stdatomic/win/atomic.h'), generated_code
+			for name in ['FlsAlloc', 'FlsGetValue', 'FlsSetValue'] {
+				assert generated_code.contains('${name}('), name
+			}
+		}
+	}
 	good_wstat := 'i32 _wstat(u16* path, struct _stat* buffer);'
 	bad_wstat := 'i32 _wstat(u16* path, _stat* buffer);'
 	assert wait_header_generated_extern_line(c_code, '_wstat') == good_wstat, c_code

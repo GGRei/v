@@ -337,19 +337,41 @@ fn test_headerless_windows_tcc_tracks_atomic_header_macros() {
 	for name in expected_macros {
 		assert g.inlined_c_active_macros[name], name
 	}
+	g.atomic_thread_fence_compat_decls()
+	headerless_code := g.sb.after(0)
+	assert headerless_code == first_output
+	assert headerless_code.count('#include "thirdparty/stdatomic/win/atomic.h"') == 1
+	assert !headerless_code.contains('_V_atomic_thread_fence')
 
+	mut system_ast := &flat.FlatAst{}
+	mut system_tc := types.TypeChecker.new(system_ast)
 	mut system_g := FlatGen.new()
+	system_g.a = system_ast
+	system_g.tc = &system_tc
 	system_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
 	system_g.set_ccompiler('tinyc')
+	system_g.has_builtins = true
 	system_g.add_c_directive('main', '#include <stdio.h>', false)
 	system_g.preamble()
+	system_before_fence := system_g.sb.str()
+	system_g.atomic_thread_fence_compat_decls()
 	system_code := system_g.sb.str()
+	assert system_code == system_before_fence
+	assert system_code.contains('#include <stdatomic.h>'), system_code
 	assert !system_code.contains('#include "thirdparty/stdatomic/win/atomic.h"'), system_code
+	assert !system_code.contains('_V_atomic_thread_fence'), system_code
 	assert !system_g.windows_tcc_atomic_emitted
 	assert system_g.inlined_c_active_macros.len == 0
 	assert !system_g.should_emit_c_extern_decl('atomic_thread_fence')
 	assert 'wcslen' in system_g.inlined_c_declared_fns
 	assert !system_g.should_emit_c_extern_decl('wcslen')
+	system_g.builtin_abi_decls()
+	system_builtin_code := system_g.sb.str()
+	assert system_builtin_code.contains('#include <stdatomic.h>'), system_builtin_code
+	assert system_builtin_code.count('thirdparty/stdatomic/win/atomic.h') == 1,
+		system_builtin_code
+	assert system_g.windows_tcc_atomic_emitted
+	assert !system_builtin_code.contains('_V_atomic_thread_fence'), system_builtin_code
 
 	mut non_tcc_g := FlatGen.new()
 	non_tcc_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
@@ -1128,6 +1150,14 @@ fn test_builtin_abi_decls_reuse_tcc_x64_stdatomic_fence_declaration() {
 	c_code := g.sb.str()
 	assert c_code.contains('#define atomic_thread_fence(order) __atomic_thread_fence(order)')
 	assert !c_code.contains('extern void __atomic_thread_fence(int order);')
+
+	mut linux_g := FlatGen.new()
+	linux_g.set_target(pref.target_from('linux', 'amd64') or { panic(err) })
+	linux_g.set_ccompiler('tinyc')
+	linux_g.atomic_thread_fence_compat_decls()
+	linux_code := linux_g.sb.str()
+	assert linux_code.contains('(defined(__x86_64__) && defined(_WIN32))'), linux_code
+	assert linux_code.count('_V_atomic_thread_fence') == 3, linux_code
 }
 
 fn test_builtin_heap_tracking_fallbacks_do_not_redefine_user_hooks() {

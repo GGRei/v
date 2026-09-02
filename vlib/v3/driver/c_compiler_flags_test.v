@@ -4,6 +4,13 @@ import os
 import v3.pref
 import v3.types
 
+fn stage_windows_tcc_fls_def_for_test(cache_dir string, start chan bool) string {
+	_ := <-start
+	return v3_windows_tcc_fls_def_input_in_dir('windows', true, false, cache_dir) or {
+		return 'error: ${err.msg()}'
+	}
+}
+
 fn test_v3_tcc_backtrace_enabled() {
 	assert !v3_tcc_backtrace_enabled('macos', 'arm64', false)
 	assert v3_tcc_backtrace_enabled('macos', 'amd64', false)
@@ -118,6 +125,120 @@ fn test_v3_tcc_resource_flags_absolutizes_only_relative_nonempty_vroot() {
 	for path in relative_paths {
 		assert os.is_dir(path)
 	}
+}
+
+fn test_v3_windows_tcc_fls_def_is_content_addressed_race_safe_and_link_only() {
+	root := os.join_path(os.vtmp_dir(), 'v3 windows tcc fls ${os.getpid()}')
+	cache_dir := os.join_path(root, 'shared cache')
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	os.rmdir_all(root) or {}
+
+	for gate in [
+		v3_windows_tcc_fls_def_input_in_dir('linux', true, false, cache_dir) or { panic(err) },
+		v3_windows_tcc_fls_def_input_in_dir('windows', false, false, cache_dir) or {
+			panic(err)
+		},
+		v3_windows_tcc_fls_def_input_in_dir('windows', true, true, cache_dir) or { panic(err) },
+	] {
+		assert gate == ''
+	}
+	assert !os.exists(cache_dir)
+
+	expected_content := 'LIBRARY kernel32.dll\nEXPORTS\nFlsAlloc\nFlsGetValue\nFlsSetValue\n'
+	expected_digest := 'f247dfbecd121c6a3229b38f088cce1f8cc0537fff489c2e3251b2bd4d180c0f'
+	assert v3_windows_tcc_fls_def_content == expected_content
+	assert os.file_name(v3_windows_tcc_fls_def_path(cache_dir)) == 'v3_windows_tcc_fls_${expected_digest}.def'
+	worker_count := 8
+	start := chan bool{cap: worker_count}
+	mut workers := []thread string{cap: worker_count}
+	for _ in 0 .. worker_count {
+		workers << spawn stage_windows_tcc_fls_def_for_test(cache_dir, start)
+	}
+	for _ in 0 .. worker_count {
+		start <- true
+	}
+	mut published_paths := []string{cap: worker_count}
+	for worker in workers {
+		published_paths << worker.wait()
+	}
+	first := published_paths[0]
+	for path in published_paths {
+		assert !path.starts_with('error:'), path
+		assert path == first
+	}
+	assert os.is_abs_path(first)
+	assert first == os.abs_path(v3_windows_tcc_fls_def_path(cache_dir))
+	assert os.read_file(first) or { panic(err) } == expected_content
+	stat := os.lstat(first) or { panic(err) }
+	assert stat.get_filetype() == .regular
+	assert stat.size == u64(v3_windows_tcc_fls_def_content.len)
+	assert !os.is_link(first)
+	assert os.ls(cache_dir) or { panic(err) } == [os.file_name(first)]
+	assert v3_windows_tcc_fls_def_input_in_dir('windows', true, false, cache_dir) or {
+		panic(err)
+	} == first
+
+	invalid_dir := os.join_path(root, 'invalid cache')
+	os.mkdir_all(invalid_dir) or { panic(err) }
+	invalid_path := v3_windows_tcc_fls_def_path(invalid_dir)
+	os.write_file(invalid_path, 'invalid') or { panic(err) }
+	mut rejected_invalid := false
+	if _ := v3_windows_tcc_fls_def_input_in_dir('windows', true, false, invalid_dir) {
+		assert false, 'an invalid preexisting FLS import file must be rejected'
+	} else {
+		rejected_invalid = true
+		assert err.msg().contains('refusing invalid cached Windows TCC FLS import file')
+	}
+	assert rejected_invalid
+	assert os.read_file(invalid_path) or { panic(err) } == 'invalid'
+
+	$if !windows {
+		link_dir := os.join_path(root, 'link cache')
+		os.mkdir_all(link_dir) or { panic(err) }
+		target := os.join_path(root, 'link target')
+		os.write_file(target, v3_windows_tcc_fls_def_content) or { panic(err) }
+		link_path := v3_windows_tcc_fls_def_path(link_dir)
+		os.symlink(target, link_path) or { panic(err) }
+		if _ := v3_windows_tcc_fls_def_input_in_dir('windows', true, false, link_dir) {
+			assert false, 'a linked FLS import destination must be rejected'
+		} else {
+			assert err.msg().contains('refusing invalid cached Windows TCC FLS import file')
+		}
+	}
+}
+
+fn test_v3_windows_tcc_fls_def_stays_between_native_inputs_and_user_libraries() {
+	root := os.join_path(os.vtmp_dir(), 'v3_windows_tcc_fls_order_${os.getpid()}')
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	os.rmdir_all(root) or {}
+	fls_def := v3_windows_tcc_fls_def_input_in_dir('windows', true, false, root) or {
+		panic(err)
+	}
+	plan := V3CCompilerFlagPlan{
+		before_inputs: ['-std=gnu11']
+		after_inputs:  ['-luser']
+	}
+	args := plan.compiler_args('out', ['src.c'], ['atomic.o', fls_def])
+	dump_flags := plan.all_flags(['atomic.o', fls_def])
+	for flags in [args, dump_flags] {
+		atomic_pos := flags.index('atomic.o') or { -1 }
+		fls_pos := flags.index(fls_def) or { -1 }
+		user_pos := flags.index('-luser') or { -1 }
+		assert atomic_pos >= 0 && atomic_pos < fls_pos
+		assert fls_pos < user_pos
+		assert flags.count(fls_def) == 1
+	}
+	source_pos := args.index('src.c') or { -1 }
+	fls_pos := args.index(fls_def) or { -1 }
+	assert source_pos >= 0 && source_pos < fls_pos
+
+	driver_source := os.read_file(os.join_path(os.dir(@FILE), 'driver.v')) or { panic(err) }
+	// One definition plus the main, FastC, cached-dev and full-TCC link routes.
+	assert driver_source.count('v3_windows_tcc_fls_def_input(') == 5
 }
 
 fn test_add_v3_tcc_compat_defines() {

@@ -21002,6 +21002,15 @@ fn (mut g FlatGen) atomic_builtin_compat_decls() {
 }
 
 fn (mut g FlatGen) atomic_thread_fence_compat_decls() {
+	if g.uses_windows_tcc_atomic_header() {
+		// Headerless Windows TCC uses V's compatibility header; system-libc mode
+		// has already emitted <stdatomic.h>. Preserve either real provider instead
+		// of overriding its inline fence with an unlinked _V_ shim.
+		if !g.c_directives_use_system_libc() {
+			g.emit_windows_tcc_atomic_header()
+		}
+		return
+	}
 	g.writeln('#ifndef memory_order_relaxed')
 	g.writeln('#define memory_order_relaxed 0')
 	g.writeln('#define memory_order_acquire 2')

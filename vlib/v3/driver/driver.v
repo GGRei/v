@@ -2267,6 +2267,67 @@ struct V3TccResourceFlags {
 	library_arg        string
 }
 
+const v3_windows_tcc_fls_def_content = 'LIBRARY kernel32.dll\nEXPORTS\nFlsAlloc\nFlsGetValue\nFlsSetValue\n'
+
+fn v3_windows_tcc_fls_def_path(cache_dir string) string {
+	digest := sha256.hexhash(v3_windows_tcc_fls_def_content)
+	return os.join_path_single(cache_dir, 'v3_windows_tcc_fls_${digest}.def')
+}
+
+fn v3_windows_tcc_fls_def_is_exact(path string) bool {
+	stat := os.lstat(path) or { return false }
+	if stat.get_filetype() != .regular || os.is_link(path)
+		|| stat.size != u64(v3_windows_tcc_fls_def_content.len) {
+		return false
+	}
+	content := os.read_file(path) or { return false }
+	return content == v3_windows_tcc_fls_def_content
+}
+
+fn v3_windows_tcc_fls_def_input_in_dir(target_os string, explicit_tcc bool, is_o bool, cache_dir string) !string {
+	if target_os != 'windows' || !explicit_tcc || is_o {
+		return ''
+	}
+	absolute_cache_dir := os.abs_path(cache_dir)
+	os.mkdir_all(absolute_cache_dir)!
+	final_path := v3_windows_tcc_fls_def_path(absolute_cache_dir)
+	if _ := os.lstat(final_path) {
+		if v3_windows_tcc_fls_def_is_exact(final_path) {
+			return os.abs_path(final_path)
+		}
+		return error('refusing invalid cached Windows TCC FLS import file ${final_path}')
+	} else {
+		if err.code() != 2 {
+			return error('failed to inspect cached Windows TCC FLS import file ${final_path}: ${err.msg()}')
+		}
+	}
+	temporary_path := '${final_path}.tmp.${tempname.unique_token()}'
+	defer {
+		os.rm(temporary_path) or {}
+	}
+	os.write_file(temporary_path, v3_windows_tcc_fls_def_content)!
+	if !v3_windows_tcc_fls_def_is_exact(temporary_path) {
+		return error('failed to verify staged Windows TCC FLS import file ${temporary_path}')
+	}
+	os.mv(temporary_path, final_path, overwrite: false) or {
+		// On Windows a concurrent publisher wins the rename. Accept only the exact,
+		// regular, non-link content-addressed destination; every other collision fails.
+		if v3_windows_tcc_fls_def_is_exact(final_path) {
+			return os.abs_path(final_path)
+		}
+		return error('failed to publish Windows TCC FLS import file ${final_path}: ${err.msg()}')
+	}
+	if !v3_windows_tcc_fls_def_is_exact(final_path) {
+		return error('published Windows TCC FLS import file is invalid: ${final_path}')
+	}
+	return os.abs_path(final_path)
+}
+
+fn v3_windows_tcc_fls_def_input(target_os string, explicit_tcc bool, is_o bool) !string {
+	cache_dir := os.join_path(os.vtmp_dir(), 'v3_thirdparty_objs')
+	return v3_windows_tcc_fls_def_input_in_dir(target_os, explicit_tcc, is_o, cache_dir)
+}
+
 fn v3_tcc_resource_flags(vroot string) V3TccResourceFlags {
 	resource_vroot := if vroot.len > 0 && !os.is_abs_path(vroot) {
 		os.abs_path(vroot)
@@ -8052,6 +8113,15 @@ fn compile_v3_fastc_source(source string, bin_file string, prefs &pref.Preferenc
 		cc_args << '-g'
 	}
 	cc_args << ['-o', 'out', 'src.c']
+	fls_def := v3_windows_tcc_fls_def_input(prefs.normalized_target_os(), true, false) or {
+		return V3FastCCompileResult{
+			command: tcc_path
+			output:  err.msg()
+		}
+	}
+	if fls_def.len > 0 {
+		cc_args << fls_def
+	}
 	cc_args << user_c_flags
 	if uses_threads {
 		// The emitted spawn runtime calls pthread functions, which live
@@ -11325,6 +11395,15 @@ pub fn run(args []string) {
 				native_support_inputs << atomic_input
 			}
 		}
+		fls_def := v3_windows_tcc_fls_def_input(prefs.normalized_target_os(), explicit_tcc,
+			is_o) or {
+			eprintln(err.msg())
+			cleanup_c_build_dir(cc_dir)
+			exit(1)
+		}
+		if fls_def.len > 0 {
+			native_support_inputs << fls_def
+		}
 		if dump_c_flags.len > 0 {
 			mut dump_support_flags := v3_c_source_mode_flags(needs_objective_c)
 			dump_support_flags << native_support_inputs
@@ -11837,6 +11916,15 @@ pub fn run(args []string) {
 				tcc_args << atomic_s
 			}
 			tcc_args << tcc_native_c_source_flags(resolved_c_flags)
+			fls_def := v3_windows_tcc_fls_def_input(prefs.normalized_target_os(), true,
+				is_o) or {
+				eprintln(err.msg())
+				cleanup_c_build_dir(cc_dir)
+				exit(1)
+			}
+			if fls_def.len > 0 {
+				tcc_args << fls_def
+			}
 			tcc_args << cached_dev_dylib
 			tcc_args << tcc_dynamic_link_flags(resolved_c_flags)
 			add_v3_default_linker_flags(mut tcc_args, prefs.normalized_target_os(), is_o,
@@ -11927,6 +12015,15 @@ pub fn run(args []string) {
 			atomic_s := tcc_atomic_arg(prefs, tcc_path, tcc_resources.include_arg)
 			if atomic_s.len > 0 {
 				tcc_args << atomic_s
+			}
+			fls_def := v3_windows_tcc_fls_def_input(prefs.normalized_target_os(), true,
+				is_o) or {
+				eprintln(err.msg())
+				cleanup_c_build_dir(cc_dir)
+				exit(1)
+			}
+			if fls_def.len > 0 {
+				tcc_args << fls_def
 			}
 			tcc_args << resolved_c_flags
 			add_v3_default_linker_flags(mut tcc_args, prefs.normalized_target_os(), is_o,
