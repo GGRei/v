@@ -210,6 +210,7 @@ fn wait_header_windows_sdk_owned_fns() []string {
 		'Sleep',
 		'SystemTimeToTzSpecificLocalTime',
 		'WriteConsoleW',
+		'WriteFile',
 	]
 }
 
@@ -624,6 +625,20 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	assert fallback_program.compiler_family == default_program.compiler_family,
 		fallback_program.compiler_family
 	uses_tcc_atomic_header := default_program.compiler_family == 'tcc'
+	builtin_windows_source := os.read_file(os.join_path(wait_header_vlib_dir, 'builtin',
+		'builtin_windows.c.v')) or { panic(err) }
+	process_windows_source := os.read_file(os.join_path(wait_header_vlib_dir, 'os',
+		'process_windows.c.v')) or { panic(err) }
+	compact_builtin_source := builtin_windows_source.replace('\t', '').replace(' ', '').replace('\r',
+		'').replace('\n', '')
+	compact_process_source := process_windows_source.replace('\t', '').replace(' ', '').replace('\r',
+		'').replace('\n', '')
+	assert compact_builtin_source.count('C.WriteConsoleW(console_handle,wide_ptr,C.DWORD(remaining_chars),voidptr(&chars_written),nil)') == 2,
+		'WriteConsoleW source call count'
+	assert compact_builtin_source.count('C.WriteFile(handle,ptr,C.DWORD(chunk),voidptr(&written),nil)') == 1,
+		'builtin WriteFile source call count'
+	assert compact_process_source.count('C.WriteFile(rhandle,_s.str,u32(_s.len),voidptr(&bytes_write),0)') == 1,
+		'os WriteFile source call count'
 	for generated_code in [c_code, fallback_program.c_code] {
 		compact_calls := generated_code.replace('\t', '').replace(' ', '').replace('\r', '').replace('\n',
 			'')
@@ -646,10 +661,23 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 		] {
 			assert !compact_calls.contains(rejected), rejected
 		}
-		assert compact_calls.count('WriteConsoleW(console_handle,wide_ptr,') == 2,
-			'WriteConsoleW source call count'
-		assert compact_calls.count('WriteFile(handle,ptr,') == 1, 'builtin WriteFile source call count'
-		assert compact_calls.count('WriteFile(rhandle,_s.str,') == 1, 'os WriteFile source call count'
+		assert compact_calls.count('WriteConsoleW(console_handle,wide_ptr,') == 1,
+			'active WriteConsoleW backend call count'
+		write_console_line := wait_header_generated_extern_line(generated_code, 'WriteConsoleW')
+		write_file_line := wait_header_generated_extern_line(generated_code, 'WriteFile')
+		if uses_tcc_atomic_header {
+			assert write_console_line == '', generated_code
+			assert write_file_line == '', generated_code
+		} else {
+			assert write_console_line == 'bool WINAPI WriteConsoleW(void*, u16*, u32, DWORD*, void*);',
+				write_console_line
+			assert write_file_line == 'bool WINAPI WriteFile(void*, u8*, u32, DWORD*, void*);',
+				write_file_line
+		}
+		assert !generated_code.contains('bool WINAPI WriteConsoleW(void*, u16*, u32, u32*, void*);'),
+			generated_code
+		assert !generated_code.contains('bool WINAPI WriteFile(void*, u8*, u32, u32*, void*);'),
+			generated_code
 	}
 	sdk_owned := wait_header_windows_sdk_owned_fns()
 	crt_referenced := wait_header_windows_crt_referenced_fns()
@@ -663,7 +691,7 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	} else {
 		crt_referenced.clone()
 	}
-	assert sdk_owned.len == 15
+	assert sdk_owned.len == 16
 	assert crt_referenced.len == 15
 	assert crt_owned.len == if uses_tcc_atomic_header { 1 } else { 0 }
 	assert crt_generated.len == if uses_tcc_atomic_header { 14 } else { 15 }

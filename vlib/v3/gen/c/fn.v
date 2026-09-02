@@ -17428,6 +17428,15 @@ const c_winapi_extern_symbols = {
 	'WriteFile':                     true
 }
 
+const c_windows_dword_pointer_param_3_externs = ['WriteConsoleW', 'WriteFile']
+
+fn c_windows_native_extern_param_type(cfn string, logical_param_idx int) string {
+	if logical_param_idx == 3 && cfn in c_windows_dword_pointer_param_3_externs {
+		return 'DWORD*'
+	}
+	return ''
+}
+
 fn (mut g FlatGen) c_extern_decl_params(node flat.Node, cfn string) string {
 	if node.children_count == 0 {
 		return 'void'
@@ -17450,7 +17459,15 @@ fn (mut g FlatGen) c_extern_decl_params(node flat.Node, cfn string) string {
 			continue
 		}
 		pt := g.tc.parse_type(raw_typ)
-		mut ct := if g.target.os == 'windows' && cfn == '_wstat'
+		logical_param_idx := parts.len
+		windows_native_ct := if g.target.os == 'windows' {
+			c_windows_native_extern_param_type(cfn, logical_param_idx)
+		} else {
+			''
+		}
+		mut ct := if windows_native_ct.len > 0 {
+			windows_native_ct
+		} else if g.target.os == 'windows' && cfn == '_wstat'
 			&& g.tc.cur_file.replace('\\', '/').ends_with('/builtin/cfns.c.v')
 			&& raw_typ.trim_space() == '&C._stat' {
 			'struct _stat*'

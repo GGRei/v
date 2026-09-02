@@ -14,7 +14,7 @@ fn test_cached_directive_text_preserves_cpp_linker_requirement() {
 }
 
 fn test_linker_cache_selector_is_conditional_on_source_directives() {
-	assert cache_format == 'v3-module-cache-62'
+	assert cache_format == 'v3-module-cache-63'
 	assert source_signature_cache_format == 'v3-source-signature-cache-4'
 	assert source_uses_linker_directive('module main\n#linker c++\nfn main() {}\n')
 	assert source_uses_linker_directive('module main\n# linker c++\nfn main() {}\n')
