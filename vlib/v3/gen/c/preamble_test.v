@@ -353,9 +353,9 @@ fn test_headerless_windows_tcc_tracks_atomic_header_macros() {
 	system_g.has_builtins = true
 	system_g.add_c_directive('main', '#include <stdio.h>', false)
 	system_g.preamble()
-	system_before_fence := system_g.sb.str()
+	system_before_fence := system_g.sb.after(0)
 	system_g.atomic_thread_fence_compat_decls()
-	system_code := system_g.sb.str()
+	system_code := system_g.sb.after(0)
 	assert system_code == system_before_fence
 	assert system_code.contains('#include <stdatomic.h>'), system_code
 	assert !system_code.contains('#include "thirdparty/stdatomic/win/atomic.h"'), system_code
@@ -366,7 +366,7 @@ fn test_headerless_windows_tcc_tracks_atomic_header_macros() {
 	assert 'wcslen' in system_g.inlined_c_declared_fns
 	assert !system_g.should_emit_c_extern_decl('wcslen')
 	system_g.builtin_abi_decls()
-	system_builtin_code := system_g.sb.str()
+	system_builtin_code := system_g.sb.after(0)
 	assert system_builtin_code.contains('#include <stdatomic.h>'), system_builtin_code
 	assert system_builtin_code.count('thirdparty/stdatomic/win/atomic.h') == 1,
 		system_builtin_code
