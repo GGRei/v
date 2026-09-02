@@ -27,7 +27,8 @@ fn (mut r Readline) set_raw_mode(keep_processed_input bool) {
 		return
 	}
 	stdin_handle := C.GetStdHandle(C.STD_INPUT_HANDLE)
-	if stdin_handle == C.INVALID_HANDLE_VALUE || !C.GetConsoleMode(stdin_handle, &r.orig_stdin_mode) {
+	if stdin_handle == C.INVALID_HANDLE_VALUE
+		|| !C.GetConsoleMode(stdin_handle, voidptr(&r.orig_stdin_mode)) {
 		r.is_tty = false
 		r.is_raw = false
 		return

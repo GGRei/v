@@ -82,7 +82,7 @@ fn is_terminal(fd int) int {
 		if isnil(handle) || handle == voidptr(-1) {
 			return 0
 		}
-		if !C.GetConsoleMode(handle, &mode) {
+		if !C.GetConsoleMode(handle, voidptr(&mode)) {
 			return 0
 		}
 		return int(mode)
@@ -136,7 +136,7 @@ fn write_buf_to_console(fd int, buf &u8, buf_len int) bool {
 		mut wide_ptr := wide_buf
 		for remaining_chars > 0 {
 			mut chars_written := C.DWORD(0)
-			if !C.WriteConsoleW(console_handle, wide_ptr, C.DWORD(remaining_chars), &chars_written, nil)
+			if !C.WriteConsoleW(console_handle, wide_ptr, C.DWORD(remaining_chars), voidptr(&chars_written), nil)
 				|| chars_written == 0 {
 				return false
 			}
@@ -157,7 +157,7 @@ fn write_buf_to_console_kernel32(fd int, buf &u8, buf_len int) bool {
 		return false
 	}
 	mut mode := C.DWORD(0)
-	if !C.GetConsoleMode(console_handle, &mode) {
+	if !C.GetConsoleMode(console_handle, voidptr(&mode)) {
 		return false
 	}
 	unsafe {
@@ -186,7 +186,7 @@ fn write_buf_to_console_kernel32(fd int, buf &u8, buf_len int) bool {
 		mut wide_ptr := wide_buf
 		for remaining_chars > 0 {
 			mut chars_written := C.DWORD(0)
-			if !C.WriteConsoleW(console_handle, wide_ptr, C.DWORD(remaining_chars), &chars_written, nil)
+			if !C.WriteConsoleW(console_handle, wide_ptr, C.DWORD(remaining_chars), voidptr(&chars_written), nil)
 				|| chars_written == 0 {
 				return false
 			}
@@ -226,7 +226,7 @@ fn write_buf_to_fd_kernel32_status(fd int, buf &u8, buf_len int) int {
 				remaining_bytes
 			}
 			mut written := C.DWORD(0)
-			if !C.WriteFile(handle, ptr, C.DWORD(chunk), &written, nil) {
+			if !C.WriteFile(handle, ptr, C.DWORD(chunk), voidptr(&written), nil) {
 				return 3
 			}
 			if written == 0 {

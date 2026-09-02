@@ -303,6 +303,8 @@ ${refs.join('\n')}
 	mut mutex := sync.new_mutex()
 	mutex.lock()
 	mutex.unlock()
+	mut semaphore := sync.new_semaphore()
+	_ = semaphore.timed_wait(1)
 	width, height := term.get_terminal_size()
 	_ = width
 	_ = height
@@ -622,6 +624,33 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	assert fallback_program.compiler_family == default_program.compiler_family,
 		fallback_program.compiler_family
 	uses_tcc_atomic_header := default_program.compiler_family == 'tcc'
+	for generated_code in [c_code, fallback_program.c_code] {
+		compact_calls := generated_code.replace('\t', '').replace(' ', '').replace('\r', '').replace('\n',
+			'')
+		for expected in [
+			'GetConsoleMode(osfh,(void*)(&mode))',
+			'QueryPerformanceCounter((void*)(&counter))',
+			'QueryPerformanceFrequency((void*)(&frequency))',
+			'SystemTimeToTzSpecificLocalTime(NULL,(void*)(&st_utc),(void*)(&st_local))',
+			'FileTimeToSystemTime(&ft_utc,(void*)(&st_utc))',
+			'(DWORD*)(void*)(&chars_written)',
+		] {
+			assert compact_calls.contains(expected), expected
+		}
+		for rejected in [
+			'GetConsoleMode(osfh,(u32*)((void*)(&mode)))',
+			'QueryPerformanceCounter((u64*)((void*)',
+			'QueryPerformanceFrequency((u64*)((void*)',
+			'SystemTimeToTzSpecificLocalTime(NULL,(time__SystemTime*)((void*)',
+			'FileTimeToSystemTime(&ft_utc,(time__SystemTime*)((void*)',
+		] {
+			assert !compact_calls.contains(rejected), rejected
+		}
+		assert compact_calls.count('WriteConsoleW(console_handle,wide_ptr,') == 2,
+			'WriteConsoleW source call count'
+		assert compact_calls.count('WriteFile(handle,ptr,') == 1, 'builtin WriteFile source call count'
+		assert compact_calls.count('WriteFile(rhandle,_s.str,') == 1, 'os WriteFile source call count'
+	}
 	sdk_owned := wait_header_windows_sdk_owned_fns()
 	crt_referenced := wait_header_windows_crt_referenced_fns()
 	crt_owned := if uses_tcc_atomic_header {

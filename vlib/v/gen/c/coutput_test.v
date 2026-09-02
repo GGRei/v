@@ -527,8 +527,9 @@ fn main() {
 	assert !compilation.output.contains('u32 tmp = ((u32)(0));')
 	assert compilation.output.contains('C__DWORD chars_written = ((C__DWORD)(0));')
 	assert !compilation.output.contains('u32 chars_written = ((u32)(0));')
-	assert compilation.output.contains('WriteConsoleW(console_handle, wide_ptr, ((C__DWORD)(remaining_chars)), &chars_written, ((void*)0))')
-	assert !compilation.output.contains('WriteConsoleW(console_handle, wide_ptr, ((u32)(remaining_chars)), &chars_written, ((void*)0))')
+	assert compilation.output.contains('WriteConsoleW(console_handle, wide_ptr, ((C__DWORD)(remaining_chars)), ((void*)(&chars_written)), ((void*)0))')
+	assert !compilation.output.contains('WriteConsoleW(console_handle, wide_ptr, ((C__DWORD)(remaining_chars)), &chars_written, ((void*)0))')
+	assert !compilation.output.contains('WriteConsoleW(console_handle, wide_ptr, ((u32)(remaining_chars)), ((void*)(&chars_written)), ((void*)0))')
 	assert compilation.output.contains('VirtualProtect(ptr, size, PAGE_EXECUTE_READ, &tmp);')
 	assert compilation.output.contains('VirtualProtect(ptr, size, PAGE_READWRITE, &tmp);')
 }

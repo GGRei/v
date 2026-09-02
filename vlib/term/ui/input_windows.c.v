@@ -47,7 +47,7 @@ pub fn init(cfg Config) &Context {
 		panic('could not get stdin handle')
 	}
 	// save the current input mode, to be restored on exit
-	if !C.GetConsoleMode(stdin_handle, &stdin_at_startup) {
+	if !C.GetConsoleMode(stdin_handle, voidptr(&stdin_at_startup)) {
 		panic('could not get stdin console mode')
 	}
 

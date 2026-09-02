@@ -1522,7 +1522,33 @@ fn (mut t Transformer) transform_call_arg_for_named_param(arg_id flat.NodeId, pa
 	if call_name.starts_with('C.') && transform_param_type_is_void_pointer(param_type) {
 		return t.transform_expr(arg_id)
 	}
+	// An explicit source `voidptr(...)` is also the caller's ABI escape hatch for
+	// native pointer types represented by a V storage type. Do not re-wrap that
+	// intent in the declaration's non-C pointer type. Native `&C.Type` parameters
+	// retain their existing typed-alias path in C generation.
+	clean_param := param_type.trim_space()
+	resolved_param := t.normalize_type_alias(clean_param)
+	if call_name.starts_with('C.') && resolved_param.starts_with('&')
+		&& !clean_param.starts_with('&C.') && !resolved_param.starts_with('&C.')
+		&& t.call_arg_is_explicit_voidptr_cast(arg_id) {
+		return t.transform_expr(arg_id)
+	}
 	return t.transform_call_arg_for_param(arg_id, param_type)
+}
+
+fn (t &Transformer) call_arg_is_explicit_voidptr_cast(arg_id flat.NodeId) bool {
+	if int(arg_id) < 0 || int(arg_id) >= t.a.nodes.len {
+		return false
+	}
+	node := t.a.nodes[int(arg_id)]
+	if node.kind in [.paren, .expr_stmt] && node.children_count == 1 {
+		return t.call_arg_is_explicit_voidptr_cast(t.a.child(&node, 0))
+	}
+	if node.kind == .block && node.children_count > 0 {
+		return t.call_arg_is_explicit_voidptr_cast(t.a.child(&node, node.children_count - 1))
+	}
+	return node.kind == .cast_expr && node.children_count == 1 && node.pos.is_valid()
+		&& t.normalize_type_alias(node.value) == 'voidptr'
 }
 
 fn (mut t Transformer) transform_variadic_spread_arg_for_param(spread_id flat.NodeId, variadic_type types.Array, param_type string) flat.NodeId {

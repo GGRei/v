@@ -38,7 +38,7 @@ fn current_time() u64 {
 	unsafe {
 		$if windows {
 			tm := u64(0)
-			C.QueryPerformanceCounter(&tm)
+			C.QueryPerformanceCounter(voidptr(&tm))
 			return tm
 		} $else {
 			ts := C.timespec{}
