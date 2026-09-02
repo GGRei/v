@@ -54,3 +54,35 @@ fn test_c_type_cache_reuses_entry_for_equal_types() {
 	})
 	assert tc.c_type(first) == tc.c_type(again)
 }
+
+fn test_c_type_renders_windows_stat_tag_without_inventing_typedef() {
+	mut a := flat.FlatAst.new()
+	mut tc := TypeChecker.new(&a)
+	stat_type := Type(Struct{
+		name: 'C.__stat64'
+	})
+	tc.struct_files['C.__stat64'] = '/vroot/vlib/os/os_structs_stat_windows.c.v'
+	assert tc.c_type(stat_type) == 'struct __stat64'
+
+	// An explicit @[typedef] remains authoritative; the special case must not
+	// change unrelated C struct or typedef spellings.
+	mut typedef_ast := flat.FlatAst.new()
+	mut typedef_tc := TypeChecker.new(&typedef_ast)
+	typedef_tc.c_typedef_structs['C.__stat64'] = true
+	typedef_tc.struct_files['C.__stat64'] = '/vroot/vlib/os/os_structs_stat_windows.c.v'
+	assert typedef_tc.c_type(stat_type) == '__stat64'
+	assert typedef_tc.c_type(Type(Struct{
+		name: 'C.native_record'
+	})) == 'struct native_record'
+	assert typedef_tc.c_type(Type(Struct{
+		name: 'C._FILETIME'
+	})) == '_FILETIME'
+
+	mut linux_ast := flat.FlatAst.new()
+	mut linux_tc := TypeChecker.new(&linux_ast)
+	linux_tc.struct_files['C.__stat64'] = '/vroot/vlib/os/os_structs_stat_linux.c.v'
+	assert linux_tc.c_type(stat_type) == '__stat64'
+	mut unknown_ast := flat.FlatAst.new()
+	mut unknown_tc := TypeChecker.new(&unknown_ast)
+	assert unknown_tc.c_type(stat_type) == '__stat64'
+}

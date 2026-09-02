@@ -16501,7 +16501,7 @@ fn (mut g FlatGen) c_extern_forward_decls() {
 		g.tc.cur_file = decl.file
 		g.tc.cur_module = decl.module_name
 		node := g.a.nodes[decl.node_idx]
-		line := g.c_windows_tcc_nonls_extern_decl(name, g.c_possibly_active_macro_extern_decl(name, c_macro_safe_extern_decl(name,
+		line := g.c_windows_conditional_system_extern_decl(name, g.c_possibly_active_macro_extern_decl(name, c_macro_safe_extern_decl(name,
 			g.c_extern_decl_line(node, name))))
 		if g.c_extern_decl_is_cached_object_fallback(name) {
 			g.writeln('#ifndef V3CACHE_PROGRAM_UNIT')
@@ -16710,14 +16710,38 @@ fn (g &FlatGen) c_possibly_active_macro_extern_decl(cfn string, declaration stri
 	return '#ifndef ${cfn}\n${declaration}\n#endif'
 }
 
-// TinyCC's bundled atomic compatibility header includes <windows.h>. Its NLS
-// declarations are present unless NONLS is defined; keep V's fallback only in
-// the complementary preprocessor branch.
-fn (g &FlatGen) c_windows_tcc_nonls_extern_decl(cfn string, declaration string) string {
-	if g.uses_windows_tcc_atomic_header() && cfn in ['MultiByteToWideChar', 'WideCharToMultiByte'] {
+// Windows headers expose NLS APIs only without NONLS, and the SRW/condition APIs
+// only for _WIN32_WINNT >= 0x0600. Keep V's fallback declaration in the exact
+// complementary branch. TinyCC's bundled atomic compatibility header also pulls
+// in windows.h in otherwise headerless builds, so it shares the NLS guard.
+fn (g &FlatGen) c_windows_conditional_system_extern_decl(cfn string, declaration string) string {
+	if g.target.os == 'windows' && cfn in c_windows_nls_conditional_extern_fns
+		&& (g.c_directives_use_system_libc() || g.uses_windows_tcc_atomic_header()) {
 		return '#ifdef NONLS\n${declaration}\n#endif'
 	}
+	if g.target.os == 'windows' && g.c_directives_use_system_libc()
+		&& cfn in c_windows_vista_conditional_extern_fns {
+		return '#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${declaration}\n#endif'
+	}
 	return declaration
+}
+
+const c_windows_nls_conditional_extern_fns = {
+	'MultiByteToWideChar': true
+	'WideCharToMultiByte': true
+}
+
+const c_windows_vista_conditional_extern_fns = {
+	'AcquireSRWLockExclusive':     true
+	'AcquireSRWLockShared':        true
+	'InitializeConditionVariable': true
+	'InitializeSRWLock':           true
+	'ReleaseSRWLockExclusive':     true
+	'ReleaseSRWLockShared':        true
+	'SleepConditionVariableSRW':   true
+	'TryAcquireSRWLockExclusive':  true
+	'TryAcquireSRWLockShared':     true
+	'WakeConditionVariable':       true
 }
 
 fn (g &FlatGen) should_emit_c_extern_decl(cfn string) bool {
@@ -16882,7 +16906,13 @@ fn (g &FlatGen) c_extern_decl_is_cached_object_fallback(cfn string) bool {
 
 fn (g &FlatGen) should_emit_c_extern_decl_from_file(cfn string, source_file string) bool {
 	if g.header_owned_c_extern_sources[c_extern_source_key(source_file)] {
-		return false
+		// These Windows declarations are conditional inside their owning headers.
+		// Let them reach c_windows_conditional_system_extern_decl(), whose real C
+		// preprocessor guards cover NONLS and pre-Vista _WIN32_WINNT values.
+		if g.target.os != 'windows' || (cfn !in c_windows_nls_conditional_extern_fns
+			&& cfn !in c_windows_vista_conditional_extern_fns) {
+			return false
+		}
 	}
 	// builtin/cfns.c.v declares the static vschannel helper supplied by its C header.
 	// A user C.request declaration is unrelated and still needs an extern prototype.
@@ -17258,6 +17288,8 @@ fn c_winapi_wide_export_name(cfn string) string {
 }
 
 const c_winapi_extern_symbols = {
+	'AcquireSRWLockExclusive':       true
+	'AcquireSRWLockShared':          true
 	'AddVectoredExceptionHandler':   true
 	'CaptureStackBackTrace':         true
 	'CloseClipboard':                true
@@ -17329,6 +17361,7 @@ const c_winapi_extern_symbols = {
 	'HeapAlloc':                     true
 	'HeapFree':                      true
 	'InitializeConditionVariable':   true
+	'InitializeSRWLock':             true
 	'IsDebuggerPresent':             true
 	'LoadLibrary':                   true
 	'LoadLibraryW':                  true
@@ -17341,6 +17374,8 @@ const c_winapi_extern_symbols = {
 	'ReadConsoleInput':              true
 	'ReadConsoleW':                  true
 	'ReadFile':                      true
+	'ReleaseSRWLockExclusive':       true
+	'ReleaseSRWLockShared':          true
 	'RegCloseKey':                   true
 	'RegOpenKeyEx':                  true
 	'RegOpenKeyExW':                 true
@@ -17387,6 +17422,7 @@ const c_winapi_extern_symbols = {
 	'WSAAddressToStringA':           true
 	'WaitForSingleObject':           true
 	'WakeConditionVariable':         true
+	'WideCharToMultiByte':           true
 	'WriteConsole':                  true
 	'WriteConsoleW':                 true
 	'WriteFile':                     true

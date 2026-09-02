@@ -5108,7 +5108,6 @@ fn (g &FlatGen) skip_builtin_struct(name string) bool {
 }
 
 const c_system_header_struct_names = {
-	'__stat64':  true
 	'sigaction': true
 }
 

@@ -18335,8 +18335,15 @@ fn (mut g FlatGen) system_libc_headers() {
 	g.writeln('#endif')
 	g.writeln('#ifdef _WIN32')
 	g.writeln('#include <io.h>')
+	g.writeln('#include <direct.h>')
+	g.writeln('#include <fcntl.h>')
 	g.writeln('#include <process.h>')
+	g.writeln('#include <sys/stat.h>')
+	g.writeln('#ifndef _WIN32_WINNT')
+	g.writeln('#define _WIN32_WINNT 0x0600')
+	g.writeln('#endif')
 	g.writeln('#include <windows.h>')
+	g.writeln('#include <synchapi.h>')
 	g.writeln('#else')
 	for header in ['dirent.h', 'dlfcn.h', 'fcntl.h', 'netdb.h', 'netinet/in.h', 'pthread.h',
 		'arpa/inet.h', 'netinet/tcp.h', 'semaphore.h', 'sys/ioctl.h', 'sys/mman.h', 'sys/resource.h',
@@ -18372,7 +18379,16 @@ fn (mut g FlatGen) system_libc_preamble() {
 		'pthread_self',
 	])
 	g.collect_preserved_c_structs(c_preserved_system_include_struct_names('<mach/mach_time.h>'))
-	g.collect_preserved_c_structs(['__stat64', 'kevent', 'sigaction'])
+	g.collect_preserved_c_structs(['kevent', 'sigaction'])
+	if g.target.os == 'windows' {
+		// These functions are declared by the fixed Windows header set above. Keep
+		// the set independent of per-source header resolution: MinGW's implicit
+		// include directories are not necessarily present in V's -I search list.
+		g.collect_preserved_c_fns(c_windows_system_libc_declared_fns)
+		// Both are C tags. MinGW maps __stat64 to _stat64; _FILETIME needs a
+		// local bare-name alias because the SDK typedef is named FILETIME.
+		g.collect_preserved_c_structs(['__stat64', '_FILETIME'])
+	}
 	g.writeln('#ifdef _WIN32')
 	g.writeln('typedef struct { HANDLE handle; void* context; } __v_thread;')
 	g.writeln('static bool __v_thread_equal(__v_thread a, __v_thread b) { return a.handle == b.handle; }')
@@ -18420,6 +18436,42 @@ fn (mut g FlatGen) system_libc_preamble() {
 	g.writeln('static void* __v_thread_join(__v_thread thread) { void* result = NULL; int rc = pthread_join(thread.handle, &result); if (rc != 0) { fprintf(stderr, "V thread join failed: %d\\n", rc); abort(); } return result; }')
 	g.writeln('#endif')
 }
+
+// c_windows_system_libc_declared_fns is the exact unconditional function set
+// supplied by system_libc_headers() on Windows. NLS and SRW/condition-variable
+// APIs are deliberately excluded because their declarations are conditional.
+const c_windows_system_libc_declared_fns = [
+	'FileTimeToSystemTime',
+	'GetConsoleMode',
+	'GetConsoleScreenBufferInfo',
+	'GetCurrentProcessId',
+	'GetCurrentThreadId',
+	'GetStdHandle',
+	'GetSystemTimeAsFileTime',
+	'QueryPerformanceCounter',
+	'QueryPerformanceFrequency',
+	'ScrollConsoleScreenBuffer',
+	'SetConsoleCursorPosition',
+	'SetConsoleMode',
+	'Sleep',
+	'SystemTimeToTzSpecificLocalTime',
+	'WriteConsoleW',
+	'_chsize_s',
+	'_dup',
+	'_dup2',
+	'_get_osfhandle',
+	'_pipe',
+	'_setmode',
+	'_waccess',
+	'_wchdir',
+	'_wgetcwd',
+	'_wopen',
+	'_wrename',
+	'_wstat',
+	'_wstat64',
+	'wcslen',
+	'_wsystem',
+]
 
 fn (mut g FlatGen) thread_stack_size_definition() {
 	g.writeln('#ifndef V_THREAD_STACK_SIZE')

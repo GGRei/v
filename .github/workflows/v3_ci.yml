@@ -360,11 +360,18 @@ jobs:
           Run-Owner -Label v3-preamble -Path 'vlib/v3/gen/c/preamble_test.v' -Common $v3Common -Names @(
             'test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations',
             'test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions',
-            'test_windows_tcc_atomic_header_guards_only_conditional_nls_externs',
+            'test_windows_headers_guard_conditional_nls_and_vista_externs',
+            'test_windows_system_libc_owns_exact_header_backed_extern_sets',
+            'test_windows_system_libc_headers_define_fixed_crt_and_vista_contract',
+            'test_unresolved_windows_header_does_not_replace_central_system_ownership',
             'test_system_libc_windows_tcc_atomic_header_does_not_preserve_sdk_functions',
             'test_headerless_windows_non_tcc_keeps_local_sdk_fallbacks',
             'test_headerless_windows_non_tcc_without_builtins_keeps_aligned_externs_owned_by_source',
             'test_non_windows_preamble_does_not_emit_windows_abi_fallbacks')
+          Run-Owner -Label v3-windows-native-c-types -Path 'vlib/v3/types/c_type_cache_identity_test.v' -Common $v3Common -Names @(
+            'test_c_type_renders_windows_stat_tag_without_inventing_typedef')
+          Run-Owner -Label v3-windows-system-header-codegen -Path 'vlib/v3/tests/posix_wait_header_codegen_test.v' -Common $v3Common -Names @(
+            'test_windows_system_headers_own_crt_externs_and_native_tags')
           Run-Owner -Label v3-fastc -Path 'vlib/v3/gen/fastc/fastc_test.v' -Common $v3Common -Names @(
             'test_source_resolver_uses_compiler_owned_file_defines',
             'test_cpp_linker_directive_is_rejected_before_fastc_emits_c',
@@ -558,7 +565,10 @@ jobs:
           $preambleTests = @(
             'test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations',
             'test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions',
-            'test_windows_tcc_atomic_header_guards_only_conditional_nls_externs',
+            'test_windows_headers_guard_conditional_nls_and_vista_externs',
+            'test_windows_system_libc_owns_exact_header_backed_extern_sets',
+            'test_windows_system_libc_headers_define_fixed_crt_and_vista_contract',
+            'test_unresolved_windows_header_does_not_replace_central_system_ownership',
             'test_system_libc_windows_tcc_atomic_header_does_not_preserve_sdk_functions',
             'test_headerless_windows_non_tcc_keeps_local_sdk_fallbacks',
             'test_headerless_windows_non_tcc_without_builtins_keeps_aligned_externs_owned_by_source',
@@ -568,6 +578,14 @@ jobs:
           Invoke-AuditedVTest -Label msvc-preamble -Tail @(
             '-run-only', ($preambleTests -join ','),
             'vlib/v3/gen/c/preamble_test.v'
+          )
+          $nativeCTypeTests = @(
+            'test_c_type_renders_windows_stat_tag_without_inventing_typedef'
+          )
+          Assert-ExactTestDefinitions -Path 'vlib/v3/types/c_type_cache_identity_test.v' -Names $nativeCTypeTests
+          Invoke-AuditedVTest -Label msvc-windows-native-c-types -Tail @(
+            '-run-only', ($nativeCTypeTests -join ','),
+            'vlib/v3/types/c_type_cache_identity_test.v'
           )
           $suffixTests = @(
             'test_c_executable_bin_file_uses_target_postfix'
@@ -691,11 +709,16 @@ jobs:
           run_owner v3-preamble vlib/v3/gen/c/preamble_test.v \
             test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations \
             test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions \
-            test_windows_tcc_atomic_header_guards_only_conditional_nls_externs \
+            test_windows_headers_guard_conditional_nls_and_vista_externs \
+            test_windows_system_libc_owns_exact_header_backed_extern_sets \
+            test_windows_system_libc_headers_define_fixed_crt_and_vista_contract \
+            test_unresolved_windows_header_does_not_replace_central_system_ownership \
             test_system_libc_windows_tcc_atomic_header_does_not_preserve_sdk_functions \
             test_headerless_windows_non_tcc_keeps_local_sdk_fallbacks \
             test_headerless_windows_non_tcc_without_builtins_keeps_aligned_externs_owned_by_source \
             test_non_windows_preamble_does_not_emit_windows_abi_fallbacks
+          run_owner v3-windows-native-c-types vlib/v3/types/c_type_cache_identity_test.v \
+            test_c_type_renders_windows_stat_tag_without_inventing_typedef
           run_owner v3-fastcdriver vlib/v3/fastcdriver/fastcdriver_test.v \
             test_fastc_is_v3_entry_accepts_exact_native_entry \
             test_fastc_vroot_for_input_replaces_nonempty_only_when_building_v

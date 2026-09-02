@@ -16579,6 +16579,16 @@ fn (tc &TypeChecker) c_type_uncached(t Type) string {
 			if t.name in tc.c_typedef_structs {
 				return raw
 			}
+			// MinGW declares this as `struct __stat64` and maps that tag to
+			// `struct _stat64`; there is no bare __stat64 typedef. Restrict the
+			// spelling to the selected Windows platform binding.
+			if raw == '__stat64' {
+				declaration_file := (tc.struct_files[t.name] or { '' }).replace('\\', '/')
+				if declaration_file.ends_with('/os_structs_stat_windows.c.v')
+					|| declaration_file == 'os_structs_stat_windows.c.v' {
+					return 'struct __stat64'
+				}
+			}
 			if raw.ends_with('_s')
 				|| (raw.len > 0 && raw[0] >= `a` && raw[0] <= `z` && !raw.ends_with('_t')) {
 				return 'struct ${raw}'

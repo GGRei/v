@@ -73,6 +73,116 @@ fn wait_header_has_include_directive(c_code string) bool {
 	return false
 }
 
+fn wait_header_generated_extern_count(c_code string, name string) int {
+	mut count := 0
+	for line in c_code.split_into_lines() {
+		clean := line.trim_space()
+		if line == clean && clean.ends_with(');') && clean.contains('${name}(') {
+			count++
+		}
+	}
+	return count
+}
+
+fn wait_header_generated_extern_line(c_code string, name string) string {
+	for line in c_code.split_into_lines() {
+		clean := line.trim_space()
+		if line == clean && clean.ends_with(');') && clean.contains('${name}(') {
+			return clean
+		}
+	}
+	return ''
+}
+
+fn wait_header_windows_central_fns() []string {
+	return [
+		'FileTimeToSystemTime',
+		'GetConsoleMode',
+		'GetConsoleScreenBufferInfo',
+		'GetCurrentProcessId',
+		'GetCurrentThreadId',
+		'GetStdHandle',
+		'GetSystemTimeAsFileTime',
+		'QueryPerformanceCounter',
+		'QueryPerformanceFrequency',
+		'ScrollConsoleScreenBuffer',
+		'SetConsoleCursorPosition',
+		'SetConsoleMode',
+		'Sleep',
+		'SystemTimeToTzSpecificLocalTime',
+		'WriteConsoleW',
+		'_chsize_s',
+		'_dup',
+		'_dup2',
+		'_get_osfhandle',
+		'_pipe',
+		'_setmode',
+		'_waccess',
+		'_wchdir',
+		'_wgetcwd',
+		'_wopen',
+		'_wrename',
+		'_wstat',
+		'_wstat64',
+		'wcslen',
+		'_wsystem',
+	]
+}
+
+fn wait_header_windows_nls_fns() []string {
+	return ['MultiByteToWideChar', 'WideCharToMultiByte']
+}
+
+fn wait_header_windows_vista_fns() []string {
+	return [
+		'AcquireSRWLockExclusive',
+		'AcquireSRWLockShared',
+		'InitializeConditionVariable',
+		'InitializeSRWLock',
+		'ReleaseSRWLockExclusive',
+		'ReleaseSRWLockShared',
+		'SleepConditionVariableSRW',
+		'TryAcquireSRWLockExclusive',
+		'TryAcquireSRWLockShared',
+		'WakeConditionVariable',
+	]
+}
+
+fn wait_header_windows_system_owner_source(cflags string) string {
+	mut refs := []string{}
+	for name in wait_header_windows_central_fns() {
+		refs << '\t_ = voidptr(&C.${name})'
+	}
+	for name in wait_header_windows_nls_fns() {
+		refs << '\t_ = voidptr(&C.${name})'
+	}
+	for name in wait_header_windows_vista_fns() {
+		refs << '\t_ = voidptr(&C.${name})'
+	}
+	return 'module main
+
+import os
+import sync
+import term
+import time
+
+${cflags}
+
+fn main() {
+${refs.join('\n')}
+	mut mutex := sync.new_mutex()
+	mutex.lock()
+	mutex.unlock()
+	width, height := term.get_terminal_size()
+	_ = width
+	_ = height
+	_ = time.now()
+	stat_result := os.stat(\'.\') or { panic(err) }
+	_ = stat_result
+}
+'
+}
+
 fn test_os_import_uses_waitpid_without_headers() {
 	$if windows {
 		return
@@ -365,6 +475,50 @@ fn main() {
 	assert c_code.contains('int _waccess(u16*, int);'), c_code
 	assert c_code.contains('int _wchdir(u16*);'), c_code
 	assert c_code.contains('int _chsize_s(void*, u64);'), c_code
+}
+
+fn test_windows_system_headers_own_crt_externs_and_native_tags() {
+	$if !windows {
+		return
+	}
+	v3_bin := wait_header_build_v3()
+	default_program := wait_header_compile(v3_bin, 'windows_system_header_owners_default',
+		wait_header_windows_system_owner_source(''))
+	fallback_program := wait_header_compile(v3_bin, 'windows_system_header_owners_fallback',
+		wait_header_windows_system_owner_source('#flag -DNONLS\n#flag -D_WIN32_WINNT=0x0502'))
+	c_code := default_program.c_code
+	for header in ['direct.h', 'fcntl.h', 'sys/stat.h', 'windows.h', 'synchapi.h'] {
+		assert c_code.count('#include <${header}>') == 1, header
+	}
+	assert c_code.contains('#define _WIN32_WINNT 0x0600'), c_code
+	assert c_code.contains('struct __stat64'), c_code
+	assert !c_code.contains('typedef struct __stat64 __stat64;'), c_code
+	assert c_code.count('typedef struct _FILETIME _FILETIME;') == 1, c_code
+	assert c_code.contains('_O_BINARY'), c_code
+	for name in wait_header_windows_central_fns() {
+		assert wait_header_generated_extern_count(c_code, name) == 0, name
+		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 0, name
+	}
+	for name in wait_header_windows_nls_fns() {
+		line := wait_header_generated_extern_line(fallback_program.c_code, name)
+		assert line.contains(' WINAPI ${name}('), line
+		assert fallback_program.c_code.contains('#ifdef NONLS\n${line}\n#endif'), line
+	}
+	for name in wait_header_windows_vista_fns() {
+		line := wait_header_generated_extern_line(fallback_program.c_code, name)
+		assert line.contains(' WINAPI ${name}('), line
+		assert fallback_program.c_code.contains('#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${line}\n#endif'), line
+	}
+	wide_line := wait_header_generated_extern_line(fallback_program.c_code, 'WideCharToMultiByte')
+	assert wide_line.contains('int*'), wide_line
+	assert !wide_line.contains('bool*'), wide_line
+	for name in ['TryAcquireSRWLockExclusive', 'TryAcquireSRWLockShared'] {
+		line := wait_header_generated_extern_line(fallback_program.c_code, name)
+		assert line.starts_with('u8 WINAPI '), line
+	}
+	assert fallback_program.c_code.contains('#flag') == false
+	assert fallback_program.c_code.contains('struct __stat64'), fallback_program.c_code
+	assert !fallback_program.c_code.contains('typedef struct __stat64 __stat64;'), fallback_program.c_code
 }
 
 fn test_windows_sdk_types_are_emitted_before_extern_prototypes() {

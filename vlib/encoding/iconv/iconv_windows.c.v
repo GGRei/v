@@ -6,7 +6,7 @@ module iconv
 
 fn C.GetACP() i32
 fn C.GetOEMCP() i32
-fn C.WideCharToMultiByte(codepage u32, dwflags u32, src &u8, src_len i32, dst &u8, dst_len i32, default_char &u8, used_default_char &bool) i32
+fn C.WideCharToMultiByte(codepage u32, dwflags u32, src &u8, src_len i32, dst &u8, dst_len i32, default_char &u8, used_default_char &int) i32
 fn C.MultiByteToWideChar(codepage u32, dwflags u32, src &u8, src_len i32, dst &u8, dst_len i32) i32
 
 struct Codepage_Alias {

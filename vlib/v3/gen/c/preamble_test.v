@@ -226,32 +226,173 @@ fn test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions() {
 	assert g.inlined_c_declared_fns.len == expected.len
 }
 
-fn test_windows_tcc_atomic_header_guards_only_conditional_nls_externs() {
+fn test_windows_headers_guard_conditional_nls_and_vista_externs() {
 	declaration := 'int MultiByteToWideChar(void);'
 	mut g := FlatGen.new()
 	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
 	g.set_ccompiler('tinyc')
 	assert !g.c_directives_use_system_libc()
-	assert g.c_windows_tcc_nonls_extern_decl('MultiByteToWideChar', declaration) == '#ifdef NONLS\n${declaration}\n#endif'
-	assert g.c_windows_tcc_nonls_extern_decl('WideCharToMultiByte', declaration) == '#ifdef NONLS\n${declaration}\n#endif'
-	assert g.c_windows_tcc_nonls_extern_decl('GetConsoleMode', declaration) == declaration
+	assert g.c_windows_conditional_system_extern_decl('MultiByteToWideChar', declaration) == '#ifdef NONLS\n${declaration}\n#endif'
+	assert g.c_windows_conditional_system_extern_decl('WideCharToMultiByte', declaration) == '#ifdef NONLS\n${declaration}\n#endif'
+	assert g.c_windows_conditional_system_extern_decl('GetConsoleMode', declaration) == declaration
 	mut system_g := FlatGen.new()
 	system_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
 	system_g.set_ccompiler('tinyc')
 	system_g.add_c_directive('main', '#include <stdio.h>', false)
 	assert system_g.c_directives_use_system_libc()
 	for name in ['MultiByteToWideChar', 'WideCharToMultiByte'] {
-		assert system_g.c_windows_tcc_nonls_extern_decl(name, declaration) == '#ifdef NONLS\n${declaration}\n#endif'
+		assert system_g.c_windows_conditional_system_extern_decl(name, declaration) == '#ifdef NONLS\n${declaration}\n#endif'
+	}
+	system_g.set_ccompiler('gcc')
+	for name in ['MultiByteToWideChar', 'WideCharToMultiByte'] {
+		assert system_g.c_windows_conditional_system_extern_decl(name, declaration) == '#ifdef NONLS\n${declaration}\n#endif'
+	}
+	for name in c_windows_vista_conditional_extern_fns.keys() {
+		assert system_g.c_windows_conditional_system_extern_decl(name, declaration) == '#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${declaration}\n#endif'
 	}
 	g.set_ccompiler('gcc')
 	for name in ['MultiByteToWideChar', 'WideCharToMultiByte'] {
-		assert g.c_windows_tcc_nonls_extern_decl(name, declaration) == declaration
+		assert g.c_windows_conditional_system_extern_decl(name, declaration) == declaration
 	}
 	g.set_target(pref.target_from('linux', 'amd64') or { panic(err) })
 	g.set_ccompiler('tinyc')
 	for name in ['MultiByteToWideChar', 'WideCharToMultiByte'] {
-		assert g.c_windows_tcc_nonls_extern_decl(name, declaration) == declaration
+		assert g.c_windows_conditional_system_extern_decl(name, declaration) == declaration
 	}
+}
+
+fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
+	expected_central := [
+		'FileTimeToSystemTime',
+		'GetConsoleMode',
+		'GetConsoleScreenBufferInfo',
+		'GetCurrentProcessId',
+		'GetCurrentThreadId',
+		'GetStdHandle',
+		'GetSystemTimeAsFileTime',
+		'QueryPerformanceCounter',
+		'QueryPerformanceFrequency',
+		'ScrollConsoleScreenBuffer',
+		'SetConsoleCursorPosition',
+		'SetConsoleMode',
+		'Sleep',
+		'SystemTimeToTzSpecificLocalTime',
+		'WriteConsoleW',
+		'_chsize_s',
+		'_dup',
+		'_dup2',
+		'_get_osfhandle',
+		'_pipe',
+		'_setmode',
+		'_waccess',
+		'_wchdir',
+		'_wgetcwd',
+		'_wopen',
+		'_wrename',
+		'_wstat',
+		'_wstat64',
+		'wcslen',
+		'_wsystem',
+	]
+	expected_nls := ['MultiByteToWideChar', 'WideCharToMultiByte']
+	expected_vista := [
+		'AcquireSRWLockExclusive',
+		'AcquireSRWLockShared',
+		'InitializeConditionVariable',
+		'InitializeSRWLock',
+		'ReleaseSRWLockExclusive',
+		'ReleaseSRWLockShared',
+		'SleepConditionVariableSRW',
+		'TryAcquireSRWLockExclusive',
+		'TryAcquireSRWLockShared',
+		'WakeConditionVariable',
+	]
+	assert c_windows_system_libc_declared_fns == expected_central
+	assert c_windows_nls_conditional_extern_fns.keys().sorted() == expected_nls
+	assert c_windows_vista_conditional_extern_fns.keys().sorted() == expected_vista
+
+	mut central := map[string]bool{}
+	for name in expected_central {
+		assert name !in central, name
+		central[name] = true
+	}
+	assert central.len == 30
+	for name in expected_nls {
+		assert name !in central, name
+		assert c_extern_calling_convention(name) == 'WINAPI', name
+	}
+	for name in expected_vista {
+		assert name !in central, name
+		assert c_extern_calling_convention(name) == 'WINAPI', name
+	}
+
+	mut effective := central.clone()
+	assert '_wremove' in c_manual_stdlib_declared_fns
+	effective['_wremove'] = true
+	assert effective.len == 31
+
+	mut g := FlatGen.new()
+	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	g.add_c_directive('main', '#include <stdio.h>', false)
+	g.system_libc_preamble()
+	for name in expected_central {
+		assert !g.should_emit_c_extern_decl(name), name
+	}
+	assert !g.should_emit_c_extern_decl('_wremove')
+	for name in expected_nls {
+		assert g.should_emit_c_extern_decl(name), name
+	}
+	for name in expected_vista {
+		assert g.should_emit_c_extern_decl(name), name
+	}
+	owned_source := '/virtual/vlib/sync/sync_windows.c.v'
+	g.header_owned_c_extern_sources[c_extern_source_key(owned_source)] = true
+	for name in expected_nls {
+		assert g.should_emit_c_extern_decl_from_file(name, owned_source), name
+	}
+	for name in expected_vista {
+		assert g.should_emit_c_extern_decl_from_file(name, owned_source), name
+	}
+	assert !g.should_emit_c_extern_decl_from_file('unrelated_header_api', owned_source)
+	assert g.inlined_c_structs['__stat64']
+	assert g.inlined_c_structs['_FILETIME']
+	assert '__stat64' !in g.inlined_c_typedef_names
+	assert '_FILETIME' !in g.inlined_c_typedef_names
+}
+
+fn test_windows_system_libc_headers_define_fixed_crt_and_vista_contract() {
+	mut g := FlatGen.new()
+	g.system_libc_headers()
+	c_code := g.sb.str()
+	for header in ['io.h', 'direct.h', 'fcntl.h', 'process.h', 'sys/stat.h', 'windows.h',
+		'synchapi.h'] {
+		assert c_code.count('#include <${header}>') == 1, header
+	}
+	guard := '#ifndef _WIN32_WINNT\n#define _WIN32_WINNT 0x0600\n#endif\n#include <windows.h>\n#include <synchapi.h>'
+	assert c_code.contains(guard), c_code
+	stat_header_pos := c_code.index('#include <sys/stat.h>') or { -1 }
+	guard_pos := c_code.index(guard) or { -1 }
+	assert stat_header_pos >= 0 && stat_header_pos < guard_pos, c_code
+}
+
+fn test_unresolved_windows_header_does_not_replace_central_system_ownership() {
+	source := '/virtual/vlib/builtin/builtin_windows.c.v'
+	mut g := FlatGen.new()
+	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	g.collect_c_directive('builtin', flat.Node{
+		kind:  .directive
+		value: 'include'
+		typ:   '<issue74_v37_implicit_windows_header.h>'
+	}, source, false)
+	assert !g.header_owned_c_extern_sources[c_extern_source_key(source)]
+	assert g.should_emit_c_extern_decl_from_file('_waccess', source)
+
+	// A different directive selects the fixed system preamble. Its central
+	// metadata must own the symbol even though the source header was unresolved.
+	g.add_c_directive('main', '#include <stdio.h>', false)
+	g.system_libc_preamble()
+	assert !g.header_owned_c_extern_sources[c_extern_source_key(source)]
+	assert !g.should_emit_c_extern_decl_from_file('_waccess', source)
 }
 
 fn test_system_libc_windows_tcc_atomic_header_does_not_preserve_sdk_functions() {
@@ -264,6 +405,8 @@ fn test_system_libc_windows_tcc_atomic_header_does_not_preserve_sdk_functions() 
 	compat_include := '#include "thirdparty/stdatomic/win/atomic.h"'
 	before_output := g.sb.after(0)
 	assert before_output.contains('#include <windows.h>'), before_output
+	assert before_output.contains('#include <windows.h>\n#include <synchapi.h>'), before_output
+	assert before_output.contains('#ifndef _WIN32_WINNT\n#define _WIN32_WINNT 0x0600\n#endif'), before_output
 	assert !before_output.contains('int _putenv_s(const char *name, const char *value);'), before_output
 	assert !before_output.contains('struct _EXCEPTION_POINTERS;'), before_output
 	assert before_output.count(compat_include) == 0, before_output
