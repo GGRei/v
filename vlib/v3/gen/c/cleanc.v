@@ -20832,6 +20832,10 @@ const c_headerless_windows_tcc_sdk_declared_fns = [
 	'WriteFile',
 ]
 
+const c_headerless_windows_tcc_atomic_header_crt_declared_fns = [
+	'wcslen',
+]
+
 const c_headerless_windows_tcc_atomic_header_active_macros = [
 	'atomic_load_ptr',
 	'atomic_store_ptr',
@@ -20870,6 +20874,7 @@ fn (mut g FlatGen) emit_windows_tcc_atomic_header() {
 	if !g.c_directives_use_system_libc() {
 		g.collect_preserved_c_fns(c_headerless_windows_tcc_sdk_declared_fns)
 		if g.uses_windows_tcc_atomic_header() {
+			g.collect_preserved_c_fns(c_headerless_windows_tcc_atomic_header_crt_declared_fns)
 			for name in c_headerless_windows_tcc_atomic_header_active_macros {
 				g.inlined_c_active_macros[name] = true
 			}

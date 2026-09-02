@@ -81,7 +81,7 @@ fn test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations() {
 }
 
 fn test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions() {
-	expected := [
+	expected_sdk := [
 		'AddVectoredExceptionHandler',
 		'BeginUpdateResourceW',
 		'CloseHandle',
@@ -186,6 +186,7 @@ fn test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions() {
 		'WriteConsoleW',
 		'WriteFile',
 	]
+	expected_crt := ['wcslen']
 	sentinels := [
 		'SymInitialize',
 		'SymFromAddr',
@@ -201,18 +202,24 @@ fn test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions() {
 		'GetFinalPathNameByHandleW',
 		'CreateSymbolicLinkW',
 	]
-	assert expected.len == 103
-	assert 'GetCurrentProcessId' in expected
-	assert 'MultiByteToWideChar' !in expected
-	assert 'WideCharToMultiByte' !in expected
+	assert expected_sdk.len == 103
+	assert expected_crt.len == 1
+	assert expected_sdk.len + expected_crt.len == 104
+	assert 'GetCurrentProcessId' in expected_sdk
+	assert 'MultiByteToWideChar' !in expected_sdk
+	assert 'WideCharToMultiByte' !in expected_sdk
 	mut g := FlatGen.new()
 	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
 	g.set_ccompiler('tinyc')
 	assert !g.windows_tcc_atomic_emitted
 	g.emit_windows_tcc_atomic_header()
 	assert g.windows_tcc_atomic_emitted
-	assert g.inlined_c_declared_fns.len == expected.len
-	for name in expected {
+	assert g.inlined_c_declared_fns.len == expected_sdk.len + expected_crt.len
+	for name in expected_sdk {
+		assert name in g.inlined_c_declared_fns, name
+		assert !g.should_emit_c_extern_decl(name), name
+	}
+	for name in expected_crt {
 		assert name in g.inlined_c_declared_fns, name
 		assert !g.should_emit_c_extern_decl(name), name
 	}
@@ -223,7 +230,7 @@ fn test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions() {
 	first_output := g.sb.after(0)
 	g.emit_windows_tcc_atomic_header()
 	assert g.sb.after(0) == first_output
-	assert g.inlined_c_declared_fns.len == expected.len
+	assert g.inlined_c_declared_fns.len == expected_sdk.len + expected_crt.len
 }
 
 fn test_headerless_windows_tcc_tracks_atomic_header_macros() {
@@ -334,6 +341,8 @@ fn test_headerless_windows_tcc_tracks_atomic_header_macros() {
 	system_g.emit_windows_tcc_atomic_header()
 	assert system_g.inlined_c_active_macros.len == 0
 	assert !system_g.should_emit_c_extern_decl('atomic_thread_fence')
+	assert 'wcslen' !in system_g.inlined_c_declared_fns
+	assert !system_g.should_emit_c_extern_decl('wcslen')
 
 	mut non_tcc_g := FlatGen.new()
 	non_tcc_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
@@ -343,6 +352,7 @@ fn test_headerless_windows_tcc_tracks_atomic_header_macros() {
 	assert !non_tcc_code.contains('#include "thirdparty/stdatomic/win/atomic.h"'), non_tcc_code
 	assert non_tcc_g.inlined_c_active_macros.len == 0
 	assert non_tcc_g.should_emit_c_extern_decl('atomic_thread_fence')
+	assert non_tcc_g.should_emit_c_extern_decl('wcslen')
 }
 
 fn test_windows_headers_guard_conditional_nls_and_vista_externs() {

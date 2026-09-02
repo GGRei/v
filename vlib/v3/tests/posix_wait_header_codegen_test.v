@@ -114,7 +114,7 @@ fn wait_header_windows_sdk_owned_fns() []string {
 	]
 }
 
-fn wait_header_windows_crt_generated_fns() []string {
+fn wait_header_windows_crt_referenced_fns() []string {
 	return [
 		'_chsize_s',
 		'_dup',
@@ -130,6 +130,29 @@ fn wait_header_windows_crt_generated_fns() []string {
 		'_wstat',
 		'_wstat64',
 		'wcslen',
+		'_wsystem',
+	]
+}
+
+fn wait_header_windows_atomic_crt_owned_fns() []string {
+	return ['wcslen']
+}
+
+fn wait_header_windows_crt_generated_fns() []string {
+	return [
+		'_chsize_s',
+		'_dup',
+		'_dup2',
+		'_get_osfhandle',
+		'_pipe',
+		'_setmode',
+		'_waccess',
+		'_wchdir',
+		'_wgetcwd',
+		'_wopen',
+		'_wrename',
+		'_wstat',
+		'_wstat64',
 		'_wsystem',
 	]
 }
@@ -158,7 +181,7 @@ fn wait_header_windows_system_owner_source(cflags string) string {
 	for name in wait_header_windows_sdk_owned_fns() {
 		refs << '\t_ = voidptr(&C.${name})'
 	}
-	for name in wait_header_windows_crt_generated_fns() {
+	for name in wait_header_windows_crt_referenced_fns() {
 		refs << '\t_ = voidptr(&C.${name})'
 	}
 	for name in wait_header_windows_nls_fns() {
@@ -495,13 +518,36 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	fallback_program := wait_header_compile(v3_bin, 'windows_system_header_owners_fallback',
 		wait_header_windows_system_owner_source('#flag -DNONLS\n#flag -D_WIN32_WINNT=0x0502'))
 	c_code := default_program.c_code
-	for name in wait_header_windows_sdk_owned_fns() {
+	sdk_owned := wait_header_windows_sdk_owned_fns()
+	crt_referenced := wait_header_windows_crt_referenced_fns()
+	crt_owned := wait_header_windows_atomic_crt_owned_fns()
+	crt_generated := wait_header_windows_crt_generated_fns()
+	assert sdk_owned.len == 15
+	assert crt_referenced.len == 15
+	assert crt_owned.len == 1
+	assert crt_generated.len == 14
+	mut crt_partition := map[string]bool{}
+	for name in sdk_owned {
 		assert wait_header_generated_extern_count(c_code, name) == 0, name
 		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 0, name
 	}
-	for name in wait_header_windows_crt_generated_fns() {
+	for name in crt_owned {
+		assert name in crt_referenced, name
+		assert name !in crt_partition, name
+		crt_partition[name] = true
+		assert wait_header_generated_extern_count(c_code, name) == 0, name
+		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 0, name
+	}
+	for name in crt_generated {
+		assert name in crt_referenced, name
+		assert name !in crt_partition, name
+		crt_partition[name] = true
 		assert wait_header_generated_extern_count(c_code, name) == 1, name
 		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 1, name
+	}
+	assert crt_partition.len == crt_referenced.len
+	for name in crt_referenced {
+		assert crt_partition[name], name
 	}
 	assert wait_header_generated_extern_count(c_code, 'atomic_thread_fence') == 0
 	assert wait_header_generated_extern_count(fallback_program.c_code, 'atomic_thread_fence') == 0
