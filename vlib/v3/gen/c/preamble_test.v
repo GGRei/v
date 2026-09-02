@@ -40,7 +40,23 @@ fn test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations() {
 	mut g := FlatGen.new()
 	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
 	g.set_ccompiler('tinyc')
+	g.preseed_preamble_ownership()
+	assert !g.windows_tcc_atomic_emitted
+	for name in c_headerless_libc_declared_fns {
+		assert name in g.inlined_c_declared_fns, name
+	}
+	for name in c_headerless_windows_tcc_sdk_declared_fns {
+		assert name in g.inlined_c_declared_fns, name
+	}
+	for name in c_windows_nls_conditional_extern_fns.keys() {
+		assert name !in g.inlined_c_declared_fns, name
+	}
+	for name in c_windows_vista_conditional_extern_fns.keys() {
+		assert name !in g.inlined_c_declared_fns, name
+	}
+	owned_fn_count := g.inlined_c_declared_fns.len
 	g.preamble()
+	assert g.inlined_c_declared_fns.len == owned_fn_count
 	g.atomic_builtin_compat_decls()
 	c_code := g.sb.str()
 	compat_include := '#include "thirdparty/stdatomic/win/atomic.h"'
@@ -334,7 +350,23 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 	mut g := FlatGen.new()
 	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
 	g.add_c_directive('main', '#include <stdio.h>', false)
+	g.preseed_preamble_ownership()
+	for name in expected_central {
+		assert !g.should_emit_c_extern_decl(name), name
+	}
+	for name in expected_nls {
+		assert g.should_emit_c_extern_decl(name), name
+	}
+	for name in expected_vista {
+		assert g.should_emit_c_extern_decl(name), name
+	}
+	assert g.inlined_c_structs['__stat64']
+	assert g.inlined_c_structs['_FILETIME']
+	owned_fn_count := g.inlined_c_declared_fns.len
+	owned_struct_count := g.inlined_c_structs.len
 	g.system_libc_preamble()
+	assert g.inlined_c_declared_fns.len == owned_fn_count
+	assert g.inlined_c_structs.len == owned_struct_count
 	for name in expected_central {
 		assert !g.should_emit_c_extern_decl(name), name
 	}
@@ -361,9 +393,25 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 }
 
 fn test_windows_system_libc_headers_define_fixed_crt_and_vista_contract() {
+	assert c_target_active_system_libc_headers.len == 14
+	assert c_target_active_windows_system_libc_headers.len == 7
+	for header in c_target_active_system_libc_headers {
+		assert c_target_active_windows_system_libc_header('<${header}>'), header
+	}
+	for header in c_target_active_windows_system_libc_headers {
+		assert c_target_active_windows_system_libc_header('<${header}>'), header
+	}
+	assert c_target_active_windows_system_libc_header('<stdatomic.h>')
+	assert !c_target_active_windows_system_libc_header('<unistd.h>')
+	assert !c_target_active_windows_system_libc_header('<issue74_v37_unknown.h>')
+	assert !c_target_active_windows_system_libc_header('"io.h"')
 	mut g := FlatGen.new()
 	g.system_libc_headers()
 	c_code := g.sb.str()
+	for header in c_target_active_system_libc_headers {
+		assert c_code.count('#include <${header}>') == 1, header
+	}
+	assert c_code.count('#include <stdatomic.h>') == 1, c_code
 	windows_start := c_code.index('#ifdef _WIN32\n') or { panic(c_code) }
 	windows_end := c_code.index_after('\n#else\n', windows_start) or { panic(c_code) }
 	windows_code := c_code[windows_start..windows_end]
@@ -389,13 +437,105 @@ fn test_unresolved_windows_header_does_not_replace_central_system_ownership() {
 	}, source, false)
 	assert !g.header_owned_c_extern_sources[c_extern_source_key(source)]
 	assert g.should_emit_c_extern_decl_from_file('_waccess', source)
+	assert !g.windows_system_libc_requested
+	assert !g.c_directives_use_system_libc()
 
-	// A different directive selects the fixed system preamble. Its central
-	// metadata must own the symbol even though the source header was unresolved.
-	g.add_c_directive('main', '#include <stdio.h>', false)
-	g.system_libc_preamble()
+	// A known fixed Windows header can be implicit in the target compiler's search
+	// path even when V's bounded header scan cannot resolve it. Preserve that raw
+	// intent before the include is dropped.
+	g.collect_c_directive('builtin', flat.Node{
+		kind:  .directive
+		value: 'include'
+		typ:   '<io.h>'
+	}, source, false)
+	assert g.c_directives.len == 0
+	assert g.windows_system_libc_requested
+	assert g.c_directives_use_system_libc()
+	g.preseed_preamble_ownership()
 	assert !g.header_owned_c_extern_sources[c_extern_source_key(source)]
 	assert !g.should_emit_c_extern_decl_from_file('_waccess', source)
+	for name in c_windows_system_libc_declared_fns {
+		assert !g.should_emit_c_extern_decl(name), name
+	}
+	for name in c_windows_nls_conditional_extern_fns.keys() {
+		assert g.should_emit_c_extern_decl(name), name
+	}
+	for name in c_windows_vista_conditional_extern_fns.keys() {
+		assert g.should_emit_c_extern_decl(name), name
+	}
+	mut worker := FlatGen.new()
+	g.configure_c_extern_scan_worker(mut worker)
+	assert worker.windows_system_libc_requested
+	assert worker.c_directives_use_system_libc()
+	for name in c_windows_system_libc_declared_fns {
+		assert !worker.should_emit_c_extern_decl(name), name
+	}
+	nls_declaration := 'int WINAPI MultiByteToWideChar(void);'
+	assert worker.c_windows_conditional_system_extern_decl('MultiByteToWideChar',
+		nls_declaration) == '#ifdef NONLS\n${nls_declaration}\n#endif'
+	vista_declaration := 'u8 WINAPI TryAcquireSRWLockExclusive(void);'
+	assert worker.c_windows_conditional_system_extern_decl('TryAcquireSRWLockExclusive',
+		vista_declaration) == '#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${vista_declaration}\n#endif'
+
+	mut inactive_g := FlatGen.new()
+	inactive_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	inactive_g.collect_c_directive('main', flat.Node{
+		kind:  .directive
+		value: 'if'
+		typ:   '0'
+	}, source, false)
+	inactive_g.collect_c_directive('main', flat.Node{
+		kind:  .directive
+		value: 'include'
+		typ:   '<io.h>'
+	}, source, false)
+	assert !inactive_g.windows_system_libc_requested
+	assert !inactive_g.c_directives_use_system_libc()
+
+	mut maybe_g := FlatGen.new()
+	maybe_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	maybe_g.collect_c_directive('main', flat.Node{
+		kind:  .directive
+		value: 'if'
+		typ:   '_ISSUE74_V37_MAYBE_SYSTEM_HEADER'
+	}, source, false)
+	maybe_g.collect_c_directive('main', flat.Node{
+		kind:  .directive
+		value: 'include'
+		typ:   '<io.h>'
+	}, source, false)
+	assert maybe_g.windows_system_libc_requested
+	assert maybe_g.c_directives_use_system_libc()
+
+	mut insert_g := FlatGen.new()
+	insert_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	insert_g.collect_c_directive('main', flat.Node{
+		kind:  .directive
+		value: 'insert'
+		typ:   '<io.h>'
+	}, source, false)
+	assert !insert_g.windows_system_libc_requested
+	assert !insert_g.c_directives_use_system_libc()
+
+	mut linux_g := FlatGen.new()
+	linux_g.set_target(pref.target_from('linux', 'amd64') or { panic(err) })
+	linux_g.collect_c_directive('main', flat.Node{
+		kind:  .directive
+		value: 'include'
+		typ:   '<io.h>'
+	}, source, false)
+	assert !linux_g.windows_system_libc_requested
+	assert !linux_g.c_directives_use_system_libc()
+
+	mut closure_g := FlatGen.new()
+	closure_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	closure_g.collect_c_directive('builtin.closure', flat.Node{
+		kind:  .directive
+		value: 'include'
+		typ:   '<synchapi.h>'
+	}, source, false)
+	assert !closure_g.windows_system_libc_requested
+	assert !closure_g.c_directives_use_system_libc()
 }
 
 fn test_system_libc_windows_tcc_atomic_header_does_not_preserve_sdk_functions() {

@@ -642,6 +642,8 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 		assert wait_header_generated_extern_count(c_code, name) == 0, name
 		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 0, name
 	}
+	assert !c_code.contains('_stat* buffer'), c_code
+	assert !fallback_program.c_code.contains('_stat* buffer'), fallback_program.c_code
 	for name in wait_header_windows_nls_fns() {
 		line := wait_header_generated_extern_line(fallback_program.c_code, name)
 		assert line.contains(' WINAPI ${name}('), line
