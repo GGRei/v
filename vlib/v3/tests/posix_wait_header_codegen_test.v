@@ -551,6 +551,8 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	}
 	stat_body := 'struct __stat64 {\n\tu32 st_dev;\n\tu16 st_ino;\n\tu16 st_mode;\n\tu16 st_nlink;\n\tu16 st_uid;\n\tu16 st_gid;\n\tu32 st_rdev;\n\tu64 st_size;\n\ti64 st_atime;\n\ti64 st_mtime;\n\ti64 st_ctime;\n};'
 	stat_init := '(struct __stat64){'
+	filetime_alias := 'typedef struct _FILETIME _FILETIME;'
+	filetime_init := '(_FILETIME){'
 	for generated_code in [c_code, fallback_program.c_code] {
 		assert generated_code.count(stat_body) == 1, generated_code
 		assert generated_code.count(stat_init) == 1, generated_code
@@ -559,6 +561,13 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 		body_pos := generated_code.index(stat_body) or { -1 }
 		init_pos := generated_code.index(stat_init) or { -1 }
 		assert body_pos >= 0 && body_pos < init_pos, generated_code
+		assert generated_code.count(filetime_alias) == 1, generated_code
+		assert generated_code.count('struct _FILETIME {') == 0, generated_code
+		assert generated_code.count('struct _FILETIME;') == 0, generated_code
+		assert generated_code.count(filetime_init) == 1, generated_code
+		filetime_alias_pos := generated_code.index(filetime_alias) or { -1 }
+		filetime_init_pos := generated_code.index(filetime_init) or { -1 }
+		assert filetime_alias_pos >= 0 && filetime_alias_pos < filetime_init_pos, generated_code
 	}
 	assert wait_header_generated_extern_count(c_code, 'atomic_thread_fence') == 0
 	assert wait_header_generated_extern_count(fallback_program.c_code, 'atomic_thread_fence') == 0

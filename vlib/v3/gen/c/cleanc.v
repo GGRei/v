@@ -20873,6 +20873,10 @@ fn (mut g FlatGen) emit_windows_tcc_atomic_header() {
 	g.writeln('#include "${header}"')
 	if !g.c_directives_use_system_libc() {
 		g.collect_preserved_c_fns(c_headerless_windows_tcc_sdk_declared_fns)
+		// windows.h defines the `_FILETIME` tag, but exposes only FILETIME as a
+		// typedef. Preserve the tag so struct_decls() can add the bare alias used
+		// by the V Windows binding without re-emitting the SDK-owned body.
+		g.collect_preserved_c_structs(['_FILETIME'])
 		if g.uses_windows_tcc_atomic_header() {
 			g.collect_preserved_c_fns(c_headerless_windows_tcc_atomic_header_crt_declared_fns)
 			for name in c_headerless_windows_tcc_atomic_header_active_macros {

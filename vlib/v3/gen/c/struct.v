@@ -5071,12 +5071,18 @@ fn (g &FlatGen) skip_builtin_struct(name string) bool {
 				&& !g.c_directives_use_system_libc()
 				&& (declaration_file.ends_with('/os/os_structs_stat_windows.c.v')
 				|| declaration_file == 'os_structs_stat_windows.c.v')
+			emit_headerless_windows_filetime := name == 'C._FILETIME'
+				&& g.target.os == 'windows' && !g.c_directives_use_system_libc()
+				&& (declaration_file.ends_with('/time/time_windows.c.v')
+				|| declaration_file == 'time_windows.c.v')
 			// Platform binding files describe types supplied by their C/Objective-C
 			// headers. Emitting a fallback body can redefine Objective-C classes such
 			// as NSFont, while V1 deliberately leaves these declarations header-owned.
-			// The exact Windows stat binding is the exception in a headerless unit: its
-			// existing field layout supplies the otherwise incomplete `struct __stat64`.
-			if info.file.ends_with('.c.v') && !emit_headerless_windows_stat {
+			// The exact Windows stat and FILETIME bindings are the exceptions in a
+			// headerless unit: their existing field layouts supply otherwise unavailable
+			// platform types. TinyCC's atomic header is detected above and still wins.
+			if info.file.ends_with('.c.v') && !emit_headerless_windows_stat
+				&& !emit_headerless_windows_filetime {
 				return true
 			}
 		}

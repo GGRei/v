@@ -215,6 +215,8 @@ fn test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions() {
 	g.emit_windows_tcc_atomic_header()
 	assert g.windows_tcc_atomic_emitted
 	assert g.inlined_c_declared_fns.len == expected_sdk.len + expected_crt.len
+	assert g.inlined_c_structs['_FILETIME']
+	assert '_FILETIME' !in g.inlined_c_typedef_names
 	for name in expected_sdk {
 		assert name in g.inlined_c_declared_fns, name
 		assert !g.should_emit_c_extern_decl(name), name
@@ -231,6 +233,8 @@ fn test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions() {
 	g.emit_windows_tcc_atomic_header()
 	assert g.sb.after(0) == first_output
 	assert g.inlined_c_declared_fns.len == expected_sdk.len + expected_crt.len
+	assert g.inlined_c_structs['_FILETIME']
+	assert '_FILETIME' !in g.inlined_c_typedef_names
 }
 
 fn test_headerless_windows_tcc_tracks_atomic_header_macros() {
@@ -474,6 +478,126 @@ fn test_headerless_windows_emits_exact_stat_platform_struct() {
 		value: 'OtherStat'
 	})
 	assert wrong_name_g.skip_builtin_struct('C.OtherStat')
+}
+
+fn test_headerless_windows_emits_or_aliases_exact_filetime_platform_struct() {
+	mut a := flat.FlatAst.new()
+	mut tc := types.TypeChecker.new(&a)
+	filetime_fields := [
+		types.StructField{
+			name: 'dwLowDateTime'
+			typ:  types.Type(types.u32_)
+		},
+		types.StructField{
+			name: 'dwHighDateTime'
+			typ:  types.Type(types.u32_)
+		},
+	]
+	assert filetime_fields.len == 2
+	tc.structs['C._FILETIME'] = filetime_fields
+	alias := 'typedef struct _FILETIME _FILETIME;'
+	body := 'struct _FILETIME {\n\tu32 dwLowDateTime;\n\tu32 dwHighDateTime;\n};'
+
+	mut tinyc_g := FlatGen.new()
+	tinyc_g.a = &a
+	tinyc_g.tc = &tc
+	tinyc_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	tinyc_g.set_ccompiler('tinyc')
+	tinyc_g.register_struct_decl_info('C._FILETIME', 'C._FILETIME', 'time',
+		'/virtual/vlib/time/time_windows.c.v', flat.Node{
+		value: '_FILETIME'
+	})
+	tinyc_g.emit_windows_tcc_atomic_header()
+	assert tinyc_g.inlined_c_structs['_FILETIME']
+	assert '_FILETIME' !in tinyc_g.inlined_c_typedef_names
+	assert tinyc_g.skip_builtin_struct('C._FILETIME')
+	tinyc_g.gen_type_declaration_block()
+	tinyc_code := tinyc_g.sb.str()
+	assert tinyc_code.count(alias) == 1, tinyc_code
+	assert tinyc_code.count(body) == 0, tinyc_code
+	assert tinyc_code.count('struct _FILETIME {') == 0, tinyc_code
+	assert tinyc_code.count('struct _FILETIME;') == 0, tinyc_code
+	include_pos := tinyc_code.index('#include "thirdparty/stdatomic/win/atomic.h"') or { -1 }
+	alias_pos := tinyc_code.index(alias) or { -1 }
+	assert include_pos >= 0 && include_pos < alias_pos, tinyc_code
+
+	for compiler in ['gcc', 'clang', 'msvc'] {
+		mut g := FlatGen.new()
+		g.a = &a
+		g.tc = &tc
+		g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+		g.set_ccompiler(compiler)
+		g.register_struct_decl_info('C._FILETIME', 'C._FILETIME', 'time',
+			'/virtual/vlib/time/time_windows.c.v', flat.Node{
+			value: '_FILETIME'
+		})
+		assert '_FILETIME' !in g.inlined_c_structs, compiler
+		assert '_FILETIME' !in g.inlined_c_typedef_names, compiler
+		assert !g.skip_builtin_struct('C._FILETIME'), compiler
+		g.gen_type_declaration_block()
+		c_code := g.sb.str()
+		assert c_code.count(alias) == 2, c_code
+		assert c_code.count(body) == 1, c_code
+		assert c_code.count('struct _FILETIME {') == 1, c_code
+		body_pos := c_code.index(body) or { -1 }
+		first_alias_pos := c_code.index(alias) or { -1 }
+		last_alias_pos := c_code.last_index(alias) or { -1 }
+		assert first_alias_pos >= 0 && first_alias_pos < last_alias_pos, c_code
+		assert last_alias_pos < body_pos, c_code
+	}
+
+	for compiler in ['tinyc', 'gcc', 'clang', 'msvc'] {
+		mut system_g := FlatGen.new()
+		system_g.a = &a
+		system_g.tc = &tc
+		system_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+		system_g.set_ccompiler(compiler)
+		system_g.add_c_directive('main', '#include <stdio.h>', false)
+		system_g.system_libc_preamble()
+		system_g.register_struct_decl_info('C._FILETIME', 'C._FILETIME', 'time',
+			'/virtual/vlib/time/time_windows.c.v', flat.Node{
+			value: '_FILETIME'
+		})
+		assert system_g.skip_builtin_struct('C._FILETIME'), compiler
+		system_g.gen_type_declaration_block()
+		system_code := system_g.sb.str()
+		assert system_code.count(alias) == 1, system_code
+		assert system_code.count(body) == 0, system_code
+		assert system_code.count('struct _FILETIME {') == 0, system_code
+	}
+
+	mut linux_g := FlatGen.new()
+	linux_g.a = &a
+	linux_g.tc = &tc
+	linux_g.set_target(pref.target_from('linux', 'amd64') or { panic(err) })
+	linux_g.set_ccompiler('tinyc')
+	linux_g.register_struct_decl_info('C._FILETIME', 'C._FILETIME', 'time',
+		'/virtual/vlib/time/time_windows.c.v', flat.Node{
+		value: '_FILETIME'
+	})
+	assert linux_g.skip_builtin_struct('C._FILETIME')
+
+	mut wrong_source_g := FlatGen.new()
+	wrong_source_g.a = &a
+	wrong_source_g.tc = &tc
+	wrong_source_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	wrong_source_g.set_ccompiler('tinyc')
+	wrong_source_g.register_struct_decl_info('C._FILETIME', 'C._FILETIME', 'time',
+		'/virtual/vlib/time/unrelated_windows.c.v', flat.Node{
+		value: '_FILETIME'
+	})
+	assert wrong_source_g.skip_builtin_struct('C._FILETIME')
+
+	mut wrong_name_g := FlatGen.new()
+	wrong_name_g.a = &a
+	wrong_name_g.tc = &tc
+	wrong_name_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	wrong_name_g.set_ccompiler('tinyc')
+	wrong_name_g.register_struct_decl_info('C.OtherFileTime', 'C.OtherFileTime', 'time',
+		'/virtual/vlib/time/time_windows.c.v', flat.Node{
+		value: 'OtherFileTime'
+	})
+	assert wrong_name_g.skip_builtin_struct('C.OtherFileTime')
 }
 
 fn test_windows_headers_guard_conditional_nls_and_vista_externs() {
