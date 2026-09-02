@@ -11916,14 +11916,14 @@ pub fn run(args []string) {
 				tcc_args << atomic_s
 			}
 			tcc_args << tcc_native_c_source_flags(resolved_c_flags)
-			fls_def := v3_windows_tcc_fls_def_input(prefs.normalized_target_os(), true,
+			cached_dev_fls_def := v3_windows_tcc_fls_def_input(prefs.normalized_target_os(), true,
 				is_o) or {
 				eprintln(err.msg())
 				cleanup_c_build_dir(cc_dir)
 				exit(1)
 			}
-			if fls_def.len > 0 {
-				tcc_args << fls_def
+			if cached_dev_fls_def.len > 0 {
+				tcc_args << cached_dev_fls_def
 			}
 			tcc_args << cached_dev_dylib
 			tcc_args << tcc_dynamic_link_flags(resolved_c_flags)
@@ -12016,14 +12016,14 @@ pub fn run(args []string) {
 			if atomic_s.len > 0 {
 				tcc_args << atomic_s
 			}
-			fls_def := v3_windows_tcc_fls_def_input(prefs.normalized_target_os(), true,
+			full_tcc_fls_def := v3_windows_tcc_fls_def_input(prefs.normalized_target_os(), true,
 				is_o) or {
 				eprintln(err.msg())
 				cleanup_c_build_dir(cc_dir)
 				exit(1)
 			}
-			if fls_def.len > 0 {
-				tcc_args << fls_def
+			if full_tcc_fls_def.len > 0 {
+				tcc_args << full_tcc_fls_def
 			}
 			tcc_args << resolved_c_flags
 			add_v3_default_linker_flags(mut tcc_args, prefs.normalized_target_os(), is_o,
