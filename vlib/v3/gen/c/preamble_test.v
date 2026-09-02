@@ -364,9 +364,12 @@ fn test_windows_system_libc_headers_define_fixed_crt_and_vista_contract() {
 	mut g := FlatGen.new()
 	g.system_libc_headers()
 	c_code := g.sb.str()
+	windows_start := c_code.index('#ifdef _WIN32\n') or { panic(c_code) }
+	windows_end := c_code.index_after('\n#else\n', windows_start) or { panic(c_code) }
+	windows_code := c_code[windows_start..windows_end]
 	for header in ['io.h', 'direct.h', 'fcntl.h', 'process.h', 'sys/stat.h', 'windows.h',
 		'synchapi.h'] {
-		assert c_code.count('#include <${header}>') == 1, header
+		assert windows_code.count('#include <${header}>') == 1, header
 	}
 	guard := '#ifndef _WIN32_WINNT\n#define _WIN32_WINNT 0x0600\n#endif\n#include <windows.h>\n#include <synchapi.h>'
 	assert c_code.contains(guard), c_code
@@ -411,14 +414,41 @@ fn test_system_libc_windows_tcc_atomic_header_does_not_preserve_sdk_functions() 
 	assert !before_output.contains('struct _EXCEPTION_POINTERS;'), before_output
 	assert before_output.count(compat_include) == 0, before_output
 	assert !g.windows_tcc_atomic_emitted
-	assert 'GetConsoleMode' !in g.inlined_c_declared_fns
-	assert g.should_emit_c_extern_decl('GetConsoleMode')
+	for name in c_windows_system_libc_declared_fns {
+		assert name in g.inlined_c_declared_fns, name
+		assert !g.should_emit_c_extern_decl(name), name
+	}
+	for name in c_windows_nls_conditional_extern_fns.keys() {
+		assert name !in g.inlined_c_declared_fns, name
+		assert g.should_emit_c_extern_decl(name), name
+	}
+	for name in c_windows_vista_conditional_extern_fns.keys() {
+		assert name !in g.inlined_c_declared_fns, name
+		assert g.should_emit_c_extern_decl(name), name
+	}
+	for name in c_headerless_windows_tcc_sdk_declared_fns {
+		if name !in c_windows_system_libc_declared_fns {
+			assert name !in g.inlined_c_declared_fns, name
+		}
+	}
 	g.emit_windows_tcc_atomic_header()
 	assert g.windows_tcc_atomic_emitted
-	assert 'GetConsoleMode' !in g.inlined_c_declared_fns
-	assert g.should_emit_c_extern_decl('GetConsoleMode')
-	for name in c_headerless_windows_tcc_sdk_declared_fns {
+	for name in c_windows_system_libc_declared_fns {
+		assert name in g.inlined_c_declared_fns, name
+		assert !g.should_emit_c_extern_decl(name), name
+	}
+	for name in c_windows_nls_conditional_extern_fns.keys() {
 		assert name !in g.inlined_c_declared_fns, name
+		assert g.should_emit_c_extern_decl(name), name
+	}
+	for name in c_windows_vista_conditional_extern_fns.keys() {
+		assert name !in g.inlined_c_declared_fns, name
+		assert g.should_emit_c_extern_decl(name), name
+	}
+	for name in c_headerless_windows_tcc_sdk_declared_fns {
+		if name !in c_windows_system_libc_declared_fns {
+			assert name !in g.inlined_c_declared_fns, name
+		}
 	}
 	first_output := g.sb.after(0)
 	compat_pos := first_output.index(compat_include) or { -1 }
