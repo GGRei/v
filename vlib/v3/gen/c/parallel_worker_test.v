@@ -66,6 +66,17 @@ fn test_c_extern_scan_worker_clones_header_owned_sources() {
 	assert '/tmp/worker.c.v' !in g.header_owned_c_extern_sources
 }
 
+fn test_c_extern_scan_worker_clones_active_header_macros() {
+	mut g, _ := parallel_worker_test_gen(true)
+	g.inlined_c_active_macros['atomic_thread_fence'] = true
+	mut worker := g.new_parallel_worker(1)
+	g.configure_c_extern_scan_worker(mut worker)
+	assert worker.inlined_c_active_macros['atomic_thread_fence']
+	assert !worker.should_emit_c_extern_decl('atomic_thread_fence')
+	worker.inlined_c_active_macros['worker_only_macro'] = true
+	assert 'worker_only_macro' !in g.inlined_c_active_macros
+}
+
 fn test_parallel_worker_shares_precomputed_const_short_index() {
 	mut g, _ := parallel_worker_test_gen(true)
 	g.const_vals = {

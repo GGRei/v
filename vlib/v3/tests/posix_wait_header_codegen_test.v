@@ -503,6 +503,8 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 		assert wait_header_generated_extern_count(c_code, name) == 1, name
 		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 1, name
 	}
+	assert wait_header_generated_extern_count(c_code, 'atomic_thread_fence') == 0
+	assert wait_header_generated_extern_count(fallback_program.c_code, 'atomic_thread_fence') == 0
 	good_wstat := 'i32 _wstat(u16* path, struct _stat* buffer);'
 	bad_wstat := 'i32 _wstat(u16* path, _stat* buffer);'
 	assert wait_header_generated_extern_line(c_code, '_wstat') == good_wstat, c_code

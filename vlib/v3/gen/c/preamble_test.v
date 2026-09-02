@@ -226,6 +226,125 @@ fn test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions() {
 	assert g.inlined_c_declared_fns.len == expected.len
 }
 
+fn test_headerless_windows_tcc_tracks_atomic_header_macros() {
+	expected_macros := [
+		'atomic_load_ptr',
+		'atomic_store_ptr',
+		'atomic_compare_exchange_weak_ptr',
+		'atomic_compare_exchange_strong_ptr',
+		'atomic_exchange_ptr',
+		'atomic_fetch_add_ptr',
+		'atomic_fetch_sub_ptr',
+		'atomic_compare_exchange_weak_byte',
+		'atomic_exchange_byte',
+		'atomic_fetch_add_byte',
+		'atomic_fetch_sub_byte',
+		'atomic_compare_exchange_weak_u16',
+		'atomic_exchange_u16',
+		'atomic_fetch_add_u16',
+		'atomic_fetch_sub_u16',
+		'atomic_compare_exchange_weak_u32',
+		'atomic_exchange_u32',
+		'atomic_fetch_add_u32',
+		'atomic_fetch_sub_u32',
+		'atomic_compare_exchange_weak_u64',
+		'atomic_exchange_u64',
+		'atomic_fetch_add_u64',
+		'atomic_fetch_sub_u64',
+		'atomic_thread_fence',
+		'cpu_relax',
+	]
+	atomic_declarations := [
+		'atomic_load_ptr',
+		'atomic_store_ptr',
+		'atomic_compare_exchange_weak_ptr',
+		'atomic_compare_exchange_strong_ptr',
+		'atomic_exchange_ptr',
+		'atomic_fetch_add_ptr',
+		'atomic_fetch_sub_ptr',
+		'atomic_load_byte',
+		'atomic_store_byte',
+		'atomic_compare_exchange_weak_byte',
+		'atomic_compare_exchange_strong_byte',
+		'atomic_exchange_byte',
+		'atomic_fetch_add_byte',
+		'atomic_fetch_sub_byte',
+		'atomic_load_u16',
+		'atomic_store_u16',
+		'atomic_compare_exchange_weak_u16',
+		'atomic_compare_exchange_strong_u16',
+		'atomic_exchange_u16',
+		'atomic_fetch_add_u16',
+		'atomic_fetch_sub_u16',
+		'atomic_load_u32',
+		'atomic_store_u32',
+		'atomic_compare_exchange_weak_u32',
+		'atomic_compare_exchange_strong_u32',
+		'atomic_exchange_u32',
+		'atomic_fetch_add_u32',
+		'atomic_fetch_sub_u32',
+		'atomic_load_u64',
+		'atomic_store_u64',
+		'atomic_compare_exchange_weak_u64',
+		'atomic_compare_exchange_strong_u64',
+		'atomic_exchange_u64',
+		'atomic_fetch_add_u64',
+		'atomic_fetch_sub_u64',
+		'atomic_thread_fence',
+		'cpu_relax',
+	]
+	assert expected_macros.len == 25
+	assert atomic_declarations.len == 37
+	mut covered_declarations := map[string]bool{}
+	for name in expected_macros {
+		covered_declarations[name] = true
+	}
+	for name in atomic_declarations {
+		if name in c_static_helper_symbols {
+			covered_declarations[name] = true
+		}
+	}
+	assert covered_declarations.len == atomic_declarations.len
+	for name in atomic_declarations {
+		assert covered_declarations[name], name
+	}
+	mut g := FlatGen.new()
+	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	g.set_ccompiler('tinyc')
+	g.emit_windows_tcc_atomic_header()
+	assert g.inlined_c_active_macros.len == expected_macros.len
+	for name in expected_macros {
+		assert g.inlined_c_active_macros[name], name
+	}
+	for name in atomic_declarations {
+		assert !g.should_emit_c_extern_decl(name), name
+	}
+	first_output := g.sb.after(0)
+	g.emit_windows_tcc_atomic_header()
+	assert g.sb.after(0) == first_output
+	assert g.inlined_c_active_macros.len == expected_macros.len
+	for name in expected_macros {
+		assert g.inlined_c_active_macros[name], name
+	}
+
+	mut system_g := FlatGen.new()
+	system_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	system_g.set_ccompiler('tinyc')
+	system_g.add_c_directive('main', '#include <stdio.h>', false)
+	system_g.emit_windows_tcc_atomic_header()
+	assert system_g.inlined_c_active_macros.len == 0
+	assert !system_g.should_emit_c_extern_decl('atomic_thread_fence')
+
+	mut non_tcc_g := FlatGen.new()
+	non_tcc_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	non_tcc_g.set_ccompiler('gcc')
+	non_tcc_g.preamble()
+	non_tcc_code := non_tcc_g.sb.str()
+	assert !non_tcc_code.contains('#include "thirdparty/stdatomic/win/atomic.h"'), non_tcc_code
+	assert non_tcc_g.inlined_c_active_macros.len == 0
+	assert non_tcc_g.should_emit_c_extern_decl('atomic_thread_fence')
+}
+
 fn test_windows_headers_guard_conditional_nls_and_vista_externs() {
 	declaration := 'int MultiByteToWideChar(void);'
 	mut g := FlatGen.new()

@@ -20832,6 +20832,34 @@ const c_headerless_windows_tcc_sdk_declared_fns = [
 	'WriteFile',
 ]
 
+const c_headerless_windows_tcc_atomic_header_active_macros = [
+	'atomic_load_ptr',
+	'atomic_store_ptr',
+	'atomic_compare_exchange_weak_ptr',
+	'atomic_compare_exchange_strong_ptr',
+	'atomic_exchange_ptr',
+	'atomic_fetch_add_ptr',
+	'atomic_fetch_sub_ptr',
+	'atomic_compare_exchange_weak_byte',
+	'atomic_exchange_byte',
+	'atomic_fetch_add_byte',
+	'atomic_fetch_sub_byte',
+	'atomic_compare_exchange_weak_u16',
+	'atomic_exchange_u16',
+	'atomic_fetch_add_u16',
+	'atomic_fetch_sub_u16',
+	'atomic_compare_exchange_weak_u32',
+	'atomic_exchange_u32',
+	'atomic_fetch_add_u32',
+	'atomic_fetch_sub_u32',
+	'atomic_compare_exchange_weak_u64',
+	'atomic_exchange_u64',
+	'atomic_fetch_add_u64',
+	'atomic_fetch_sub_u64',
+	'atomic_thread_fence',
+	'cpu_relax',
+]
+
 fn (mut g FlatGen) emit_windows_tcc_atomic_header() {
 	if g.windows_tcc_atomic_emitted {
 		return
@@ -20841,6 +20869,11 @@ fn (mut g FlatGen) emit_windows_tcc_atomic_header() {
 	g.writeln('#include "${header}"')
 	if !g.c_directives_use_system_libc() {
 		g.collect_preserved_c_fns(c_headerless_windows_tcc_sdk_declared_fns)
+		if g.uses_windows_tcc_atomic_header() {
+			for name in c_headerless_windows_tcc_atomic_header_active_macros {
+				g.inlined_c_active_macros[name] = true
+			}
+		}
 	}
 	g.windows_tcc_atomic_emitted = true
 }
