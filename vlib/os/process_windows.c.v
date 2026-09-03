@@ -32,12 +32,35 @@ fn failed_cfn_report_error(ok bool, label string) {
 }
 
 fn close_valid_handle(p voidptr) {
+	$if issue74_v3_process_wait_trace ? {
+		eprintln('ISSUE74_PROCESS_WAIT helper.enter')
+		eprintln('ISSUE74_PROCESS_WAIT helper.cast.begin')
+	}
 	h := &&u32(p)
+	$if issue74_v3_process_wait_trace ? {
+		eprintln('ISSUE74_PROCESS_WAIT helper.cast.end')
+		eprintln('ISSUE74_PROCESS_WAIT helper.null-check.begin')
+	}
 	if *h != &u32(unsafe { nil }) {
+		$if issue74_v3_process_wait_trace ? {
+			eprintln('ISSUE74_PROCESS_WAIT helper.null-check.nonnull')
+			eprintln('ISSUE74_PROCESS_WAIT helper.CloseHandle.begin')
+		}
 		C.CloseHandle(*h)
+		$if issue74_v3_process_wait_trace ? {
+			eprintln('ISSUE74_PROCESS_WAIT helper.CloseHandle.end')
+			eprintln('ISSUE74_PROCESS_WAIT helper.zero.begin')
+		}
 		unsafe {
 			*h = &u32(nil)
 		}
+		$if issue74_v3_process_wait_trace ? {
+			eprintln('ISSUE74_PROCESS_WAIT helper.zero.end')
+		}
+	}
+	$if issue74_v3_process_wait_trace ? {
+		eprintln('ISSUE74_PROCESS_WAIT helper.null-check.end')
+		eprintln('ISSUE74_PROCESS_WAIT helper.exit')
 	}
 }
 
