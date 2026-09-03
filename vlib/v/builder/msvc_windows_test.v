@@ -45,6 +45,33 @@ fn test_msvc_string_flags_rewrites_obj_flags_through_cached_path() {
 	assert sflags.other_flags == ['"${expected_obj}"']
 }
 
+fn test_msvc_string_flags_selects_windows_libcrypto_without_legacy_crypto_name() {
+	mut builder := msvc_new_builder_for_args(['-cc', 'msvc', '-os', 'windows', '-m64',
+		msvc_hello_world_example()])
+	builder.table.cflags = [
+		cflag.CFlag{
+			mod:   'crypto_test'
+			os:    'windows'
+			name:  '-l'
+			value: 'libcrypto'
+		},
+		cflag.CFlag{
+			mod:   'crypto_test'
+			os:    'linux'
+			name:  '-l'
+			value: 'crypto'
+		},
+	]
+	selected := builder.get_os_cflags()
+	assert selected.len == 1
+	assert selected[0].os == 'windows'
+	assert selected[0].name == '-l'
+	assert selected[0].value == 'libcrypto'
+	sflags := builder.msvc_string_flags(selected)
+	assert sflags.real_libs == ['libcrypto.lib']
+	assert 'crypto.lib' !in sflags.real_libs
+}
+
 fn test_msvc_ordered_pkgconfig_linker_args_routes_static_paths_and_libs() {
 	mut builder := msvc_new_builder_for_args(['-cc', 'msvc', '-m64', msvc_hello_world_example()])
 	lib_dir := os.join_path(os.getwd(), 'msvc_pkgconfig_static_libs')

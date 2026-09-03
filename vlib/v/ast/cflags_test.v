@@ -49,6 +49,16 @@ fn test_parse_valid_cflags() {
 	}
 }
 
+fn test_parse_platform_partitioned_libcrypto_flags() {
+	mut t := ast.new_table()
+	parse_valid_flag(mut t, 'windows -l libcrypto')
+	parse_valid_flag(mut t, '-lcrypto')
+	assert t.cflags == [
+		make_flag('windows', '-l', 'libcrypto'),
+		make_flag(no_os, '-l', 'crypto'),
+	]
+}
+
 fn test_parse_invalid_cflags() {
 	mut t := ast.new_table()
 	// -I, -L, -l must have values

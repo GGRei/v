@@ -17,7 +17,9 @@ module slhdsa
 #flag darwin -L /opt/homebrew/opt/openssl/lib -I /opt/homebrew/opt/openssl/include
 
 #flag -I/usr/include/openssl
-#flag -lcrypto
+$if !windows {
+	#flag -lcrypto
+}
 
 #flag darwin -I/usr/local/opt/openssl/include
 #flag darwin -L/usr/local/opt/openssl/lib
