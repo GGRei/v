@@ -133,6 +133,43 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "pkg-config TCC isolation regression failed with exit code $LASTEXITCODE"
           }
+      - name: OpenSSL C modules use the native TCC import library name
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\v.exe -cc tcc -no-retry-compilation test -run-only test_windows_tcc_link_flags_select_libcrypto_without_legacy_crypto_name vlib\v\builder\msvc_windows_test.v
+          if ($LASTEXITCODE -ne 0) {
+            throw "TCC OpenSSL linker-token owner failed with exit code $LASTEXITCODE"
+          }
+          $libDir = 'C:\Program Files\OpenSSL\lib\VC\x64\MD'
+          $libcryptoDef = Get-Item -LiteralPath (Join-Path $libDir 'libcrypto.def') -Force -ErrorAction Stop
+          if ($libcryptoDef.PSIsContainer -or ($libcryptoDef.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "invalid libcrypto.def owner: $($libcryptoDef.FullName)"
+          }
+          foreach ($legacyLeaf in @('crypto.def', 'crypto.lib')) {
+            if (Test-Path -LiteralPath (Join-Path $libDir $legacyLeaf)) {
+              throw "legacy OpenSSL library owner unexpectedly exists: $legacyLeaf"
+            }
+          }
+          $source = Join-Path $env:RUNNER_TEMP 'openssl_tcc_library_name_owner.v'
+          $output = Join-Path $env:RUNNER_TEMP 'openssl_tcc_library_name_owner.exe'
+          @'
+          module main
+
+          import crypto.ecdsa as _
+          import x.crypto.mldsa as _
+          import x.crypto.slhdsa as _
+
+          fn main() {}
+          '@ | Set-Content -Encoding utf8 $source
+          .\v.exe -cc tcc -no-retry-compilation -o $output $source
+          if ($LASTEXITCODE -ne 0) {
+            throw "OpenSSL C module TCC link owner failed with exit code $LASTEXITCODE"
+          }
+          $outputItem = Get-Item -LiteralPath $output -Force -ErrorAction Stop
+          if ($outputItem.PSIsContainer -or ($outputItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "invalid OpenSSL C module TCC output: $($outputItem.FullName)"
+          }
       - name: All code is formatted
         run: v -silent test-cleancode
       - name: Test new v.c
