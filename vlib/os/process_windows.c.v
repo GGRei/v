@@ -251,19 +251,73 @@ fn (mut p Process) win_kill_pgroup() {
 }
 
 fn (mut p Process) win_wait() {
+	$if issue74_v3_process_wait_trace ? {
+		eprintln('ISSUE74_PROCESS_WAIT enter')
+	}
 	exit_code := u32(1)
+	$if issue74_v3_process_wait_trace ? {
+		eprintln('ISSUE74_PROCESS_WAIT cast.begin')
+	}
 	mut wdata := unsafe { &WProcess(p.wdata) }
+	$if issue74_v3_process_wait_trace ? {
+		eprintln('ISSUE74_PROCESS_WAIT cast.end')
+		eprintln('ISSUE74_PROCESS_WAIT null-check.begin')
+	}
 	if p.wdata != 0 {
+		$if issue74_v3_process_wait_trace ? {
+			eprintln('ISSUE74_PROCESS_WAIT nonnull.enter')
+			eprintln('ISSUE74_PROCESS_WAIT WaitForSingleObject.begin')
+		}
 		C.WaitForSingleObject(wdata.proc_info.h_process, C.INFINITE)
+		$if issue74_v3_process_wait_trace ? {
+			eprintln('ISSUE74_PROCESS_WAIT WaitForSingleObject.end')
+			eprintln('ISSUE74_PROCESS_WAIT GetExitCodeProcess.begin')
+		}
 		C.GetExitCodeProcess(wdata.proc_info.h_process, voidptr(&exit_code))
+		$if issue74_v3_process_wait_trace ? {
+			eprintln('ISSUE74_PROCESS_WAIT GetExitCodeProcess.end')
+			eprintln('ISSUE74_PROCESS_WAIT close.stdin-read.begin')
+		}
 		close_valid_handle(&wdata.child_stdin_read)
+		$if issue74_v3_process_wait_trace ? {
+			eprintln('ISSUE74_PROCESS_WAIT close.stdin-read.end')
+			eprintln('ISSUE74_PROCESS_WAIT close.stdout-write.begin')
+		}
 		close_valid_handle(&wdata.child_stdout_write)
+		$if issue74_v3_process_wait_trace ? {
+			eprintln('ISSUE74_PROCESS_WAIT close.stdout-write.end')
+			eprintln('ISSUE74_PROCESS_WAIT close.stderr-write.begin')
+		}
 		close_valid_handle(&wdata.child_stderr_write)
+		$if issue74_v3_process_wait_trace ? {
+			eprintln('ISSUE74_PROCESS_WAIT close.stderr-write.end')
+			eprintln('ISSUE74_PROCESS_WAIT close.process.begin')
+		}
 		close_valid_handle(&wdata.proc_info.h_process)
+		$if issue74_v3_process_wait_trace ? {
+			eprintln('ISSUE74_PROCESS_WAIT close.process.end')
+			eprintln('ISSUE74_PROCESS_WAIT close.thread.begin')
+		}
 		close_valid_handle(&wdata.proc_info.h_thread)
+		$if issue74_v3_process_wait_trace ? {
+			eprintln('ISSUE74_PROCESS_WAIT close.thread.end')
+			eprintln('ISSUE74_PROCESS_WAIT nonnull.exit')
+		}
+	}
+	$if issue74_v3_process_wait_trace ? {
+		eprintln('ISSUE74_PROCESS_WAIT null-check.end')
+		eprintln('ISSUE74_PROCESS_WAIT status.begin')
 	}
 	p.status = .exited
+	$if issue74_v3_process_wait_trace ? {
+		eprintln('ISSUE74_PROCESS_WAIT status.end')
+		eprintln('ISSUE74_PROCESS_WAIT code.begin')
+	}
 	p.code = int(exit_code)
+	$if issue74_v3_process_wait_trace ? {
+		eprintln('ISSUE74_PROCESS_WAIT code.end')
+		eprintln('ISSUE74_PROCESS_WAIT exit')
+	}
 }
 
 fn (mut p Process) win_is_alive() bool {
