@@ -632,10 +632,10 @@ fn test_v3_user_ldflags_are_final_and_do_not_change_dynamic_plan_when_absent() {
 	add_v3_windows_unicode_entrypoint_flag(mut non_windows, []string{}, 'linux', 'gcc', true,
 		false, false)
 	assert non_windows == []
-	mut shared := []string{}
-	add_v3_windows_unicode_entrypoint_flag(mut shared, []string{}, 'windows', 'gcc', true,
+	mut shared_flags := []string{}
+	add_v3_windows_unicode_entrypoint_flag(mut shared_flags, []string{}, 'windows', 'gcc', true,
 		true, false)
-	assert shared == []
+	assert shared_flags == []
 	mut object := []string{}
 	add_v3_windows_unicode_entrypoint_flag(mut object, []string{}, 'windows', 'gcc', true,
 		false, true)

@@ -2538,9 +2538,10 @@ fn v3_c_compiler_flag_plan(options V3CCompilerFlagOptions) V3CCompilerFlagPlan {
 	add_v3_default_linker_flags(mut after_inputs, options.target_os, options.is_o,
 		options.explicit_tcc)
 	if !options.is_o {
-		mut remaining_link_flags := options.environment_ld_flags.clone()
+		mut remaining_link_flags := before_inputs.clone()
+		remaining_link_flags << options.environment_ld_flags
 		remaining_link_flags << options.user_ld_flags
-		add_v3_windows_unicode_entrypoint_flag(mut after_inputs, before_inputs + remaining_link_flags,
+		add_v3_windows_unicode_entrypoint_flag(mut after_inputs, remaining_link_flags,
 			options.target_os, options.linker_family, options.emits_v3_main, options.is_shared,
 			options.is_o)
 		after_inputs << options.environment_ld_flags
