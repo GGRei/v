@@ -115,6 +115,14 @@ fn c_fn_body(c_source string, signature string) string {
 	return c_source[start..]
 }
 
+fn post_merge_c_main_signature() string {
+	return if os.user_os() == 'windows' {
+		'int wmain(int argc, wchar_t** argv)'
+	} else {
+		'int main(int argc, char** argv)'
+	}
+}
+
 fn write_project_file(root string, rel string, src string) {
 	path := os.join_path(root, rel)
 	os.mkdir_all(os.dir(path)) or { panic(err) }
@@ -2475,7 +2483,7 @@ fn main() {
 	out := run_good(v3_bin, 'for_mut_item_receiver_run', item_src)
 	assert out == '3\n4\n5\n2'
 	item_c := gen_c(v3_bin, 'for_mut_item_receiver_c', item_src)
-	item_main := c_fn_body(item_c, 'int main(')
+	item_main := c_fn_body(item_c, post_merge_c_main_signature())
 	assert item_main.len > 0, item_c
 	assert item_main.contains('Item* item ='), item_main
 	assert item_main.contains('__bump(item);'), item_main
@@ -2512,7 +2520,7 @@ fn main() {
 	}
 }
 ")
-	string_main := c_fn_body(string_c, 'int main(')
+	string_main := c_fn_body(string_c, post_merge_c_main_signature())
 	assert string_main.len > 0, string_c
 	assert string_main.contains('string* s ='), string_main
 	assert string_main.contains('string__free(s);'), string_main
@@ -3079,7 +3087,7 @@ fn main() {
 }
 '
 	c_source := gen_c(v3_bin, 'json_decode_aligned_pointer_field', source)
-	main_body := c_fn_body(c_source, 'int main(int argc, char** argv)')
+	main_body := c_fn_body(c_source, post_merge_c_main_signature())
 	assert main_body.contains('v3_aligned_memdup('), main_body
 	assert !main_body.contains('(Aligned*)memdup('), main_body
 	assert main_body.contains('v3_aligned_free(box.p)'), main_body
@@ -3107,7 +3115,7 @@ fn main() {
 }
 '
 	c_source := gen_c(v3_bin, 'aligned_alias_heap_cast', source)
-	main_body := c_fn_body(c_source, 'int main(int argc, char** argv)')
+	main_body := c_fn_body(c_source, post_merge_c_main_signature())
 	assert main_body.contains('(main__Aligned*)v3_aligned_memdup('), main_body
 	assert !main_body.contains('(main__Aligned*)memdup('), main_body
 	assert main_body.contains('v3_aligned_free(p)'), main_body
@@ -3143,7 +3151,7 @@ fn main() {
 	bool_encoded := run_good(v3_bin, 'json_encode_bool_without_str_helper', bool_source)
 	assert bool_encoded == '{"ok":true}\n{"ok":false}'
 	bool_c := gen_c(v3_bin, 'json_encode_bool_without_str_helper_c', bool_source)
-	main_body := c_fn_body(bool_c, 'int main(int argc, char** argv)')
+	main_body := c_fn_body(bool_c, post_merge_c_main_signature())
 	assert !main_body.contains('bool__str(')
 
 	encoded := run_good(v3_bin, 'json_encode_primitive_struct_fields', 'import json
@@ -3177,7 +3185,7 @@ fn main() {
 	}))
 }
 ')
-	omitempty_main := c_fn_body(omitempty_c, 'int main(int argc, char** argv)')
+	omitempty_main := c_fn_body(omitempty_c, post_merge_c_main_signature())
 	assert !omitempty_main.contains('json__encode(&(Payload)')
 	assert omitempty_main.contains('.omit')
 
@@ -3355,7 +3363,7 @@ fn main() {
 	out := run_good(v3_bin, 'json_encode_json_dash_label_skips_fast_path_field', source)
 	assert out == '{"age":4}'
 	c_source := gen_c(v3_bin, 'json_encode_json_dash_label_skips_fast_path_field_c', source)
-	main_body := c_fn_body(c_source, 'int main(int argc, char** argv)')
+	main_body := c_fn_body(c_source, post_merge_c_main_signature())
 	assert !main_body.contains('json__encode(&')
 	assert !main_body.contains('"-":')
 }
@@ -4523,7 +4531,7 @@ fn test_interface_cast_from_local_address_preserves_pointer_identity() {
 	v3_bin := build_v3()
 	source := 'interface Reader {\n\tget() int\n}\n\nstruct Box {\nmut:\n\tn int\n}\n\nfn (b &Box) get() int {\n\treturn b.n\n}\n\nfn main() {\n\tmut b := Box{\n\t\tn: 1\n\t}\n\tr := Reader(&b)\n\tb.n = 2\n\tprintln(int_str(r.get()))\n}\n'
 	c_source := gen_c(v3_bin, 'interface_local_address_identity', source)
-	main_body := c_fn_body(c_source, 'int main(int argc, char** argv)')
+	main_body := c_fn_body(c_source, post_merge_c_main_signature())
 	assert main_body.contains('._object = __iface_src_'), main_body
 	assert !main_body.contains('memdup(&b, sizeof(Box))'), main_body
 	out := run_good(v3_bin, 'interface_local_address_identity_run', source)
@@ -5730,7 +5738,7 @@ fn main() {
 }
 '
 	c_source := gen_c(v3_bin, 'interface_upcast_promoted_struct_field', source)
-	main_body := c_fn_body(c_source, 'int main(int argc, char** argv)')
+	main_body := c_fn_body(c_source, post_merge_c_main_signature())
 	assert main_body.contains('.name = child.name'), main_body
 	assert !main_body.contains('->name'), main_body
 	out := run_good(v3_bin, 'interface_upcast_promoted_struct_field_run', source)

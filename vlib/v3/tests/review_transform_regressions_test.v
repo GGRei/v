@@ -730,6 +730,14 @@ fn c_fn_body(c_source string, signature string) string {
 	return c_source[start..]
 }
 
+fn review_transform_c_main_signature() string {
+	return if os.user_os() == 'windows' {
+		'int wmain(int argc, wchar_t** argv) {'
+	} else {
+		'int main(int argc, char** argv) {'
+	}
+}
+
 fn write_project_file(root string, rel string, src string) {
 	path := os.join_path(root, rel)
 	os.mkdir_all(os.dir(path)) or { panic(err) }
@@ -2214,7 +2222,7 @@ fn main() {
 }
 '
 	c_source := gen_c_from_source(v3_bin, 'local_callback_initializer_field_hot_loop_c', source)
-	main_body := c_fn_body(c_source, 'int main(int argc, char** argv) {')
+	main_body := c_fn_body(c_source, review_transform_c_main_signature())
 	assert main_body.contains('closure__closure_try_destroy(__field_closure_'), main_body
 	make_body := c_fn_body(c_source, 'main__Holder main__make_holder(')
 	assert !make_body.contains('__field_closure_'), make_body
@@ -3008,7 +3016,7 @@ fn main() {
 }
 '
 	c_source := gen_c_from_source(v3_bin, 'branch_immediate_method_closures_c', source)
-	main_body := c_fn_body(c_source, 'int main(int argc, char** argv) {')
+	main_body := c_fn_body(c_source, review_transform_c_main_signature())
 	assert main_body.count('closure__closure_try_destroy(') >= 2, main_body
 	out := run_good(v3_bin, 'branch_immediate_method_closures', source)
 	assert out == '401980000'
@@ -3973,7 +3981,7 @@ fn main() {
 	gen := os.execute('${v3_bin} -nocache -ownership ${src_path} -b c -o ${c_path}')
 	assert gen.exit_code == 0, gen.output
 	c_source := os.read_file(c_path) or { panic(err) }
-	main_body := c_fn_body(c_source, 'int main(int argc, char** argv) {')
+	main_body := c_fn_body(c_source, review_transform_c_main_signature())
 	assert main_body.contains('((void*)&__method_receiver_'), main_body
 	assert main_body.contains('string__free(&((__method_receiver_'), main_body
 	assert !main_body.contains('&(make_holder())'), main_body
@@ -5215,7 +5223,7 @@ fn main() {
 }
 '
 	c_source := gen_c_from_source(v3_bin, 'optional_append_to_shared_array_autolock_c', source)
-	body := c_fn_body(c_source, 'int main(int argc, char** argv) {')
+	body := c_fn_body(c_source, review_transform_c_main_signature())
 	push_idx := body.index('array_push(') or { -1 }
 	assert push_idx >= 0, body
 	lock_idx := body[..push_idx].last_index('sync__RwMutex__lock(') or { -1 }
@@ -5623,7 +5631,7 @@ fn main() {
 }
 '
 	c_source := gen_c_from_source(v3_bin, 'array_bound_method_callbacks_c', source)
-	main_body := c_fn_body(c_source, 'int main(int argc, char** argv) {')
+	main_body := c_fn_body(c_source, review_transform_c_main_signature())
 	assert main_body.count('closure__closure_create_with_data(') == 2, main_body
 	assert main_body.contains('closure__closure_try_destroy(__filter_callback_'), main_body
 	assert main_body.contains('closure__closure_try_destroy(__map_callback_'), main_body
@@ -5710,7 +5718,7 @@ fn main() {
 }
 '
 	c_source := gen_c_from_source(v3_bin, 'array_branch_bound_method_callbacks_c', source)
-	main_body := c_fn_body(c_source, 'int main(int argc, char** argv) {')
+	main_body := c_fn_body(c_source, review_transform_c_main_signature())
 	assert main_body.count('closure__closure_try_destroy(') >= 2, main_body
 	out := run_good(v3_bin, 'array_branch_bound_method_callbacks', source)
 	assert out == '370000'
@@ -5748,7 +5756,7 @@ fn main() {
 }
 '
 	c_source := gen_c_from_source(v3_bin, 'nested_callback_array_field_hot_loop_c', source)
-	main_body := c_fn_body(c_source, 'int main(int argc, char** argv) {')
+	main_body := c_fn_body(c_source, review_transform_c_main_signature())
 	assert main_body.contains('closure__closure_try_destroy(__array_closure_'), main_body
 	out := run_good(v3_bin, 'nested_callback_array_field_hot_loop', source)
 	assert out == '1250025000'

@@ -6,6 +6,10 @@ const mixed_lock_v3_dir = os.dir(mixed_lock_tests_dir)
 const mixed_lock_vlib_dir = os.dir(mixed_lock_v3_dir)
 const mixed_lock_v3_src = os.join_path(mixed_lock_v3_dir, 'v3.v')
 
+fn mixed_lock_c_main_signature_prefix() string {
+	return if os.user_os() == 'windows' { 'int wmain(' } else { 'int main(' }
+}
+
 fn mixed_lock_build_v3() string {
 	v3_bin := os.join_path(os.temp_dir(), 'v3_mixed_lock_codegen_${os.getpid()}')
 	os.rm(v3_bin) or {}
@@ -42,7 +46,7 @@ fn main() {
 	}
 }
 ')
-	main_start := c_source.index('\nint main(') or { -1 }
+	main_start := c_source.index('\n${mixed_lock_c_main_signature_prefix()}') or { -1 }
 	assert main_start >= 0, c_source
 	main_tail := c_source[main_start..]
 	main_end := main_tail.index('\nvoid sync__') or { main_tail.len }

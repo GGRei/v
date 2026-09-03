@@ -5,6 +5,14 @@ const executable_cleanup_tests_dir = os.dir(@FILE)
 const executable_cleanup_v3_dir = os.dir(executable_cleanup_tests_dir)
 const executable_cleanup_v3_src = os.join_path(executable_cleanup_v3_dir, 'v3.v')
 
+fn executable_cleanup_c_main_signature() string {
+	return if os.user_os() == 'windows' {
+		'int wmain(int argc, wchar_t** argv) {'
+	} else {
+		'int main(int argc, char** argv) {'
+	}
+}
+
 fn executable_cleanup_compile_and_run(v3_bin string, root string, name string, suffix string,
 	source string) (os.Result, string) {
 	generated_c := executable_cleanup_generate_c(v3_bin, root, name, suffix, '', source)
@@ -123,7 +131,7 @@ pub fn answer() int {
 }
 ')
 	assert function_only_run.exit_code == 0, function_only_run.output
-	assert function_only_c.contains('int main(int argc, char** argv) {'), function_only_c
+	assert function_only_c.contains(executable_cleanup_c_main_signature()), function_only_c
 
 	no_main_source := os.join_path(root, 'no_main.v')
 	no_main_c_path := os.join_path(root, 'no_main.c')
@@ -185,6 +193,8 @@ pub fn start() int {
 }
 ")
 	assert !explicit_main_no_main_c.contains('int main(int argc, char** argv) {'), explicit_main_no_main_c
+	assert !explicit_main_no_main_c.contains('int wmain(int argc, wchar_t** argv) {'),
+		explicit_main_no_main_c
 	assert !explicit_main_no_main_c.contains('void main(void) {'), explicit_main_no_main_c
 	assert explicit_main_no_main_c.contains('main__main'), explicit_main_no_main_c
 
@@ -192,4 +202,6 @@ pub fn start() int {
 		'-d no_main', "println('not called')
 ")
 	assert !top_level_no_main_c.contains('int main(int argc, char** argv) {'), top_level_no_main_c
+	assert !top_level_no_main_c.contains('int wmain(int argc, wchar_t** argv) {'),
+		top_level_no_main_c
 }

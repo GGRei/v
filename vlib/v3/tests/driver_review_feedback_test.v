@@ -14,6 +14,14 @@ fn driver_review_environment() map[string]string {
 	return environment
 }
 
+fn driver_review_c_main_signature(target_os string) string {
+	return if target_os == 'windows' {
+		'int wmain(int argc, wchar_t** argv)'
+	} else {
+		'int main(int argc, char** argv)'
+	}
+}
+
 fn run_driver_review_process(program string, args []string, environment map[string]string) os.Result {
 	mut process := os.new_process(program)
 	process.set_args(args)
@@ -122,7 +130,7 @@ int main(void) {
 		cross_c_output, cross_c_source], driver_review_environment())
 	assert cross_c_compile.exit_code == 0, cross_c_compile.output
 	assert os.is_file(cross_c_output)
-	assert os.read_file(cross_c_output)!.contains('int main(int argc, char** argv)')
+	assert os.read_file(cross_c_output)!.contains(driver_review_c_main_signature(cross_target_os))
 
 	first_root := os.join_path(root, 'modules_first')
 	second_root := os.join_path(root, 'modules_second')
@@ -186,7 +194,8 @@ fn main() {
 	main_printfn_compile := run_driver_review_process(v3_bin, ['-silent', '-nocache', '-printfn',
 		'main__main', '-o', main_printfn_output, printfn_source], driver_review_environment())
 	assert main_printfn_compile.exit_code == 0, main_printfn_compile.output
-	assert main_printfn_compile.output.contains('int main(int argc, char** argv)'), main_printfn_compile.output
+	assert main_printfn_compile.output.contains(driver_review_c_main_signature(os.user_os())),
+		main_printfn_compile.output
 
 	js_source := os.join_path(root, 'alias.v')
 	os.write_file(js_source, "fn main() {\n\tprintln('js alias')\n}\n")!

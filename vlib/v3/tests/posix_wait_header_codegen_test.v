@@ -634,6 +634,60 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 		wait_header_windows_system_owner_source(''))
 	fallback_program := wait_header_compile(v3_bin, 'windows_system_header_owners_fallback',
 		wait_header_windows_system_owner_source('#flag -DNONLS\n#flag -D_WIN32_WINNT=0x0502'))
+	argv_program := wait_header_compile(v3_bin, 'windows_wide_runtime_arguments', "module main
+
+import os
+
+fn main() {
+	runtime_args := arguments()
+	assert runtime_args == os.args
+	assert runtime_args.len == 3
+	assert runtime_args[0].len > 0
+	assert runtime_args[1] == 'ascii-argument'
+	assert runtime_args[2] == 'héllo-世界'
+	println('windows-wide-argv-ok')
+}
+")
+	top_level_argv_program := wait_header_compile(v3_bin, 'windows_wide_top_level_arguments', "module main
+
+import os
+
+@[export: 'v3_argv_callback']
+pub fn argv_callback() {}
+
+runtime_args := arguments()
+assert runtime_args == os.args
+assert runtime_args.len == 3
+assert runtime_args[0].len > 0
+assert runtime_args[1] == 'ascii-argument'
+assert runtime_args[2] == 'héllo-世界'
+println('windows-wide-top-level-argv-ok')
+")
+	for generated_code in [default_program.c_code, fallback_program.c_code, argv_program.c_code,
+		top_level_argv_program.c_code] {
+		assert generated_code.count('int wmain(int argc, wchar_t** argv) {') == 1,
+			generated_code
+		assert !generated_code.contains('int main(int argc, char** argv) {'), generated_code
+		assert !generated_code.contains('wWinMain'), generated_code
+	}
+	unicode_argument := 'héllo-世界'
+	argv_run :=
+		wait_header_execute_without_vflags('${os.quoted_path(argv_program.out)} ascii-argument ${os.quoted_path(unicode_argument)}')
+	assert argv_run.exit_code == 0, argv_run.output
+	assert argv_run.output.trim_space() == 'windows-wide-argv-ok', argv_run.output
+	top_level_argv_run :=
+		wait_header_execute_without_vflags('${os.quoted_path(top_level_argv_program.out)} ascii-argument ${os.quoted_path(unicode_argument)}')
+	assert top_level_argv_run.exit_code == 0, top_level_argv_run.output
+	assert top_level_argv_run.output.trim_space() == 'windows-wide-top-level-argv-ok',
+		top_level_argv_run.output
+	assert top_level_argv_program.c_code.contains('if (g_main_argv == NULL) {'),
+		top_level_argv_program.c_code
+	fn_source := os.read_file(os.join_path(wait_header_v3_dir, 'gen', 'c', 'fn.v')) or {
+		panic(err)
+	}
+	assert fn_source.count('g.writeln(v3_c_main_signature(g.target.os))') == 3
+	assert fn_source.count("return 'int wmain(int argc, wchar_t** argv) {'") == 1
+	assert fn_source.count("return 'int main(int argc, char** argv) {'") == 1
 	c_code := default_program.c_code
 	assert default_program.compiler_family in ['tcc', 'gcc', 'clang'],
 		default_program.compiler_family

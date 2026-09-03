@@ -553,6 +553,25 @@ fn (g &FlatGen) has_no_main_module() bool {
 	return false
 }
 
+// emits_c_main reports the entrypoint decision made by gen_synthetic_main_after_fns and
+// gen_fn_in_module. The driver persists this fact with cached C output so linker startup
+// selection follows Cgen even for module no_main and postinclude-owned entrypoints.
+pub fn (g &FlatGen) emits_c_main() bool {
+	if g.suppress_main {
+		return false
+	}
+	if g.test_files.len > 0 || g.has_entry_main() {
+		return true
+	}
+	if g.is_shared {
+		return false
+	}
+	if g.top_level_stmts().len > 0 {
+		return true
+	}
+	return !g.object_file_mode && !g.has_no_main_module() && g.postinclude_directives.len == 0
+}
+
 fn (mut g FlatGen) gen_executable_cleanup_registration() {
 	if g.module_cleanup_fns.len > 0 {
 		g.writeln('atexit(_vcleanup);')
@@ -581,8 +600,10 @@ fn (mut g FlatGen) gen_no_main_runtime_init_caller() {
 	g.writeln('\tif (_v3_no_main_initialized) { return; }')
 	g.writeln('\t_v3_no_main_initialized = true;')
 	if g.has_builtins {
-		g.writeln('\tg_main_argc = 0;')
-		g.writeln('\tg_main_argv = NULL;')
+		g.writeln('\tif (g_main_argv == NULL) {')
+		g.writeln('\t\tg_main_argc = 0;')
+		g.writeln('\t\tg_main_argv = NULL;')
+		g.writeln('\t}')
 	}
 	g.gen_profile_startup_enable()
 	if g.runtime_init_is_needed() {
@@ -4453,7 +4474,7 @@ fn (mut g FlatGen) gen_fn_in_module(node_id flat.NodeId, node flat.Node, module_
 	fn_start_pos := g.sb.len
 	mut is_direct_no_main_export := false
 	if is_entry_main {
-		g.writeln('int main(int argc, char** argv) {')
+		g.writeln(v3_c_main_signature(g.target.os))
 		if g.has_builtins {
 			g.writeln('\tg_main_argc = argc;')
 			g.writeln('\tg_main_argv = argv;')
@@ -4666,6 +4687,14 @@ fn (mut g FlatGen) export_wrapper_arg_names(node flat.Node) []string {
 	return args
 }
 
+fn v3_c_main_signature(target_os string) string {
+	if target_os == 'windows' {
+		// builtin.arguments decodes g_main_argv as UTF-16 on Windows.
+		return 'int wmain(int argc, wchar_t** argv) {'
+	}
+	return 'int main(int argc, char** argv) {'
+}
+
 fn (mut g FlatGen) gen_top_level_main(stmts []TopLevelStmt) {
 	old_tc_file := g.tc.cur_file
 	old_tc_module := g.tc.cur_module
@@ -4723,7 +4752,7 @@ fn (mut g FlatGen) gen_top_level_main(stmts []TopLevelStmt) {
 	g.goto_label_c_names.clear()
 	g.goto_label_count = 0
 	fn_start_pos := g.sb.len
-	g.writeln('int main(int argc, char** argv) {')
+	g.writeln(v3_c_main_signature(g.target.os))
 	if g.has_builtins {
 		g.writeln('\tg_main_argc = argc;')
 		g.writeln('\tg_main_argv = argv;')
@@ -4822,7 +4851,7 @@ fn (mut g FlatGen) gen_test_main() {
 		g.writeln('}')
 		g.writeln('')
 	}
-	g.writeln('int main(int argc, char** argv) {')
+	g.writeln(v3_c_main_signature(g.target.os))
 	if g.has_builtins {
 		g.writeln('\tg_main_argc = argc;')
 		g.writeln('\tg_main_argv = argv;')

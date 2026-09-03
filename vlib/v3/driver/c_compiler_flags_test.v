@@ -363,18 +363,20 @@ fn test_v3_cpp_linker_wraps_only_implicit_c_sources() {
 }
 
 fn test_v3_native_source_compile_flags_keep_only_the_selected_language_standard() {
-	flags := ['-I', 'include dir', '-std=c++20', '-DVALUE=1', '-Wl,--as-needed', '-lfixture',
-		'native.c', 'native.cpp']
+	flags := ['-I', 'include dir', '-std=c++20', '-DVALUE=1', '-Wl,--as-needed', '-municode',
+		'-lfixture', 'native.c', 'native.cpp']
 	c_flags := v3_c_source_compile_flags(flags, '/source', 'c', '-std=gnu11')
 	assert '-std=gnu11' in c_flags
 	assert '-std=c++20' !in c_flags
 	assert '-Wl,--as-needed' !in c_flags
+	assert '-municode' in c_flags
 	assert '-lfixture' !in c_flags
 	assert !c_flags.any(it.ends_with('.c') || it.ends_with('.cpp'))
 	cpp_flags := v3_cpp_source_compile_flags(flags, '/source')
 	assert '-std=gnu11' !in cpp_flags
 	assert '-std=c++20' in cpp_flags
 	assert '-Wl,--as-needed' !in cpp_flags
+	assert '-municode' in cpp_flags
 	assert '-lfixture' !in cpp_flags
 	assert !cpp_flags.any(it.ends_with('.c') || it.ends_with('.cpp'))
 	c_args := v3_native_source_compile_args(['-std=c99', '-DBEFORE=1'], ['-DAFTER=1', '-std=c17'],
@@ -471,24 +473,24 @@ fn test_v3_cpp_linker_default_driver_follows_c_driver_family() {
 
 fn test_v3_cgen_metadata_roundtrips_native_link_requirements() {
 	for requires_cpp in [false, true] {
-		requirements := types.NativeLinkRequirements{
-			requires_cpp: requires_cpp
+		for emits_main in [false, true] {
+			requirements := types.NativeLinkRequirements{
+				requires_cpp: requires_cpp
+			}
+			encoded := encode_v3_cgen_metadata(['-DFIXTURE'], 'iface', 'prefix', requirements,
+				emits_main, []V3CachedTypeDiagnostic{})
+			decoded := decode_v3_cgen_metadata(encoded) or { panic('metadata did not decode') }
+			assert decoded.native_link_requirements.requires_cpp == requires_cpp
+			assert decoded.emits_main == emits_main
+			assert decoded.flags == ['-DFIXTURE']
+			assert encoded.starts_with('v3-cgen-metadata-v6\x00')
 		}
-		encoded := encode_v3_cgen_metadata(['-DFIXTURE'], 'iface', 'prefix', requirements,
-			[]V3CachedTypeDiagnostic{})
-		decoded := decode_v3_cgen_metadata(encoded) or { panic('metadata did not decode') }
-		assert decoded.native_link_requirements.requires_cpp == requires_cpp
-		assert decoded.flags == ['-DFIXTURE']
-		assert encoded.starts_with(if requires_cpp {
-			'v3-cgen-metadata-v5\x00'
-		} else {
-			'v3-cgen-metadata-v4\x00'
-		})
 	}
 	dynamic_requirements := types.NativeLinkRequirements{}
 	dynamic_metadata := encode_v3_cgen_metadata(['-DFIXTURE'], 'iface', 'prefix',
-		dynamic_requirements, []V3CachedTypeDiagnostic{})
-	assert dynamic_metadata == ['v3-cgen-metadata-v4', 'iface', 'prefix', '1', '-DFIXTURE', '0'].join('\x00')
+		dynamic_requirements, true, []V3CachedTypeDiagnostic{})
+	assert dynamic_metadata == ['v3-cgen-metadata-v6', 'iface', 'prefix', 'false', 'true',
+		'1', '-DFIXTURE', '0'].join('\x00')
 	assert v3_cgen_generation_signature(['-DFIXTURE'], dynamic_requirements) == '-DFIXTURE'
 	assert v3_cgen_generation_signature(['-DFIXTURE'], types.NativeLinkRequirements{
 		requires_cpp: true
@@ -540,13 +542,133 @@ fn test_v3_user_ldflags_are_final_and_do_not_change_dynamic_plan_when_absent() {
 		'-lfixture_final',
 	]
 	assert explicit_tcc.after_inputs.last() == '-lfixture_final'
+
+	windows_unicode := v3_c_compiler_flag_plan(V3CCompilerFlagOptions{
+		dependencies:         ['-lpublic']
+		environment_ld_flags: ['-lenvironment']
+		user_ld_flags:        ['-lfixture_final']
+		target_os:            'windows'
+		linker_family:        'clang'
+		emits_v3_main:        true
+	})
+	assert windows_unicode.after_inputs == [
+		'-lpublic',
+		'-lm',
+		'-municode',
+		'-lenvironment',
+		'-lfixture_final',
+	]
+	assert windows_unicode.after_inputs.count(it == '-municode') == 1
+	assert windows_unicode.after_inputs.last() == '-lfixture_final'
+	assert '-mwindows' !in windows_unicode.before_inputs
+	assert '-mwindows' !in windows_unicode.after_inputs
+
+	windows_tcc_unicode := v3_c_compiler_flag_plan(V3CCompilerFlagOptions{
+		dependencies:  ['-lpublic']
+		target_os:     'windows'
+		linker_family: 'tinyc'
+		explicit_tcc:  true
+		emits_v3_main: true
+	})
+	assert windows_tcc_unicode.after_inputs == ['-lpublic', '-municode']
+	assert v3_active_linker_family('c-driver-family', 'cpp-driver-family', true) == 'cpp-driver-family'
+	assert v3_active_linker_family('c-driver-family', 'cpp-driver-family', false) == 'c-driver-family'
+	last_target, last_target_valid := v3_last_explicit_compiler_target([
+		'--target=x86_64-pc-windows-msvc',
+		'-target',
+		'x86_64-w64-windows-gnu',
+	])
+	assert last_target == 'x86_64-w64-windows-gnu'
+	assert last_target_valid
+	missing_target, missing_target_valid := v3_last_explicit_compiler_target(['--target'])
+	assert missing_target == ''
+	assert !missing_target_valid
+	assert v3_windows_gnu_linker_target('x86_64-w64-mingw32')
+	assert v3_windows_gnu_linker_target('x86_64-pc-windows-gnu')
+	assert !v3_windows_gnu_linker_target('x86_64-pc-windows-msvc')
+	assert !v3_windows_gnu_linker_target('x86_64-unknown-linux-gnu')
+	assert v3_windows_unicode_linker_family('windows', 'clang.exe', 'clang', [
+		'--target=x86_64-w64-windows-gnu',
+	]) == 'clang'
+	assert v3_windows_unicode_linker_family('windows', 'clang++.exe', 'clang', [
+		'-target',
+		'x86_64-pc-windows-msvc',
+	]) == ''
+	assert v3_windows_unicode_linker_family('windows', 'c++.exe', 'cplusplus', [
+		'--target=x86_64-w64-mingw32',
+	]) == 'cplusplus'
+	assert v3_windows_unicode_linker_family('windows', 'clang-cl.exe', 'clang', [
+		'--target=x86_64-w64-windows-gnu',
+	]) == ''
+	assert v3_windows_unicode_linker_family('windows', 'clang-cl.exe', 'clang', [
+		'--driver-mode=gcc',
+		'--target=x86_64-w64-windows-gnu',
+	]) == 'clang'
+	assert v3_windows_unicode_linker_family('windows', 'clang.exe', 'clang', [
+		'--driver-mode=gcc',
+		'--driver-mode=cl',
+		'--target=x86_64-w64-windows-gnu',
+	]) == ''
+	assert v3_windows_unicode_linker_family('linux', 'clang', 'clang', [
+		'--target=x86_64-w64-windows-gnu',
+	]) == ''
+
+	for family in ['gcc', 'mingw', 'clang', 'cplusplus', 'tinyc'] {
+		mut flags := []string{}
+		add_v3_windows_unicode_entrypoint_flag(mut flags, []string{}, 'windows', family,
+			true, false, false)
+		assert flags == ['-municode'], family
+	}
+	mut msvc := []string{}
+	add_v3_windows_unicode_entrypoint_flag(mut msvc, []string{}, 'windows', 'msvc', true,
+		false, false)
+	assert msvc == []
+	assert v3_compiler_uses_msvc_driver_mode('clang-cl.exe', []string{}, []string{})
+	mut clang_cl := []string{}
+	add_v3_windows_unicode_entrypoint_flag(mut clang_cl, []string{}, 'windows', 'msvc',
+		true, false, false)
+	assert clang_cl == []
+	mut non_windows := []string{}
+	add_v3_windows_unicode_entrypoint_flag(mut non_windows, []string{}, 'linux', 'gcc', true,
+		false, false)
+	assert non_windows == []
+	mut shared := []string{}
+	add_v3_windows_unicode_entrypoint_flag(mut shared, []string{}, 'windows', 'gcc', true,
+		true, false)
+	assert shared == []
+	mut object := []string{}
+	add_v3_windows_unicode_entrypoint_flag(mut object, []string{}, 'windows', 'gcc', true,
+		false, true)
+	assert object == []
+	assert v3_link_plan_emits_main(true, false, false, false, false, false, false)
+	assert v3_link_plan_emits_main(true, true, true, false, false, false, false)
+	assert !v3_link_plan_emits_main(false, false, false, false, false, false, false)
+	assert !v3_link_plan_emits_main(true, true, false, false, false, false, false)
+	assert !v3_link_plan_emits_main(true, false, false, true, false, false, false)
+	assert !v3_link_plan_emits_main(true, false, false, false, true, false, false)
+	assert !v3_link_plan_emits_main(true, false, false, false, false, true, false)
+	assert !v3_link_plan_emits_main(true, false, false, false, false, false, true)
+	mut without_generated_main := []string{}
+	add_v3_windows_unicode_entrypoint_flag(mut without_generated_main, []string{}, 'windows',
+		'gcc', false, false, false)
+	assert without_generated_main == []
+	mut already_present := ['-lpublic']
+	add_v3_windows_unicode_entrypoint_flag(mut already_present, ['-municode'], 'windows',
+		'gcc', true, false, false)
+	assert already_present == ['-lpublic']
+
+	driver_source := os.read_file(os.join_path(os.dir(@FILE), 'driver.v')) or { panic(err) }
+	// One definition plus the normal, cached-dev and full-TCC link routes.
+	assert driver_source.count('add_v3_windows_unicode_entrypoint_flag(') == 4
 }
 
 fn test_v3_object_mode_ignores_link_only_user_flags() {
 	plan := v3_c_compiler_flag_plan(V3CCompilerFlagOptions{
 		user_ld_flags: ['-lfixture_final']
 		target_os:     'windows'
+		linker_family: 'gcc'
 		is_o:          true
+		emits_v3_main: true
 	})
 	assert plan.after_inputs == []
 }

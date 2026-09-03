@@ -153,6 +153,7 @@ struct V3CgenCacheMetadata {
 	interface_impl_signature string
 	prefix_source_identity   string
 	native_link_requirements types.NativeLinkRequirements
+	emits_main               bool
 	flags                    []string
 	diagnostics              []V3CachedTypeDiagnostic
 }
@@ -2172,6 +2173,7 @@ struct V3CCompilerFlagOptions {
 	vroot                string
 	target_os            string
 	target_arch          string
+	linker_family        string
 	pic_flag             string
 	is_prod              bool
 	no_prod_options      bool
@@ -2181,6 +2183,7 @@ struct V3CCompilerFlagOptions {
 	is_c_debug           bool
 	is_o                 bool
 	is_liveshared        bool
+	emits_v3_main        bool
 }
 
 struct V3CCompilerFlagPlan {
@@ -2256,6 +2259,94 @@ fn add_v3_default_linker_flags(mut flags []string, target_os string, is_o bool, 
 		if flag !in flags {
 			flags << flag
 		}
+	}
+}
+
+fn v3_link_plan_emits_main(cgen_emits_main bool, c_only bool, generates_c_project bool,
+	check_only bool, only_check_syntax bool, is_shared bool, is_o bool) bool {
+	return cgen_emits_main && (!c_only || generates_c_project) && !check_only
+		&& !only_check_syntax && !is_shared && !is_o
+}
+
+fn v3_active_linker_family(c_family string, validated_cpp_family string, link_with_cpp bool) string {
+	return if link_with_cpp { validated_cpp_family } else { c_family }
+}
+
+fn v3_last_explicit_compiler_target(args []string) (string, bool) {
+	mut target := ''
+	mut i := 0
+	for i < args.len {
+		clean := args[i].trim_space().trim('"\'')
+		if clean in ['--target', '-target'] {
+			if i + 1 >= args.len {
+				return '', false
+			}
+			target = args[i + 1].trim_space().trim('"\'')
+			if target.len == 0 {
+				return '', false
+			}
+			i += 2
+			continue
+		}
+		if clean.starts_with('--target=') || clean.starts_with('-target=') {
+			target = clean.all_after('=')
+			if target.len == 0 {
+				return '', false
+			}
+		}
+		i++
+	}
+	return target, true
+}
+
+fn v3_windows_gnu_linker_target(target string) bool {
+	lower := target.to_lower_ascii()
+	if lower.contains('msvc') {
+		return false
+	}
+	return lower.contains('mingw') || lower.contains('windows-gnu')
+}
+
+fn v3_windows_unicode_linker_family(target_os string, command string, family string, flags []string) string {
+	if target_os != 'windows' || family !in ['gcc', 'mingw', 'clang', 'cplusplus', 'tinyc']
+		|| v3_compiler_uses_msvc_driver_mode(command, flags, []) {
+		return ''
+	}
+	if family in ['gcc', 'mingw', 'tinyc'] {
+		return family
+	}
+	parts := v3_compiler_command_parts(command)
+	if parts.len == 0 {
+		return ''
+	}
+	mut target_flags := if parts.len > 1 { parts[1..].clone() } else { []string{} }
+	target_flags << flags
+	explicit_target, valid := v3_last_explicit_compiler_target(target_flags)
+	if !valid {
+		return ''
+	}
+	if explicit_target.len > 0 {
+		return if v3_windows_gnu_linker_target(explicit_target) { family } else { '' }
+	}
+	mut probe_args := if parts.len > 1 { parts[1..].clone() } else { []string{} }
+	probe_args << '-dumpmachine'
+	probe := cmdexec.run(parts[0], probe_args)
+	if probe.exit_code != 0 || !v3_windows_gnu_linker_target(probe.output.trim_space()) {
+		return ''
+	}
+	return family
+}
+
+fn add_v3_windows_unicode_entrypoint_flag(mut flags []string, other_flags []string,
+	target_os string, linker_family string, emits_v3_main bool, is_shared bool, is_o bool) {
+	if target_os != 'windows' || !emits_v3_main || is_shared || is_o
+		|| linker_family !in ['gcc', 'mingw', 'clang', 'cplusplus', 'tinyc'] {
+		return
+	}
+	// GNU-compatible Windows drivers and TCC need their wide CRT startup selected
+	// for the wmain emitted by V3. MSVC selects that startup from the entry symbol.
+	if '-municode' !in flags && '-municode' !in other_flags {
+		flags << '-municode'
 	}
 }
 
@@ -2447,6 +2538,11 @@ fn v3_c_compiler_flag_plan(options V3CCompilerFlagOptions) V3CCompilerFlagPlan {
 	add_v3_default_linker_flags(mut after_inputs, options.target_os, options.is_o,
 		options.explicit_tcc)
 	if !options.is_o {
+		mut remaining_link_flags := options.environment_ld_flags.clone()
+		remaining_link_flags << options.user_ld_flags
+		add_v3_windows_unicode_entrypoint_flag(mut after_inputs, before_inputs + remaining_link_flags,
+			options.target_os, options.linker_family, options.emits_v3_main, options.is_shared,
+			options.is_o)
 		after_inputs << options.environment_ld_flags
 		after_inputs << options.user_ld_flags
 	}
@@ -5225,13 +5321,9 @@ fn restore_v3_cache_external_inputs(mut state V3ModuleCacheState, user_files []s
 	return true
 }
 
-fn encode_v3_cgen_metadata(flags []string, interface_impl_signature string, prefix_source_identity string, native_link_requirements types.NativeLinkRequirements, diagnostics []V3CachedTypeDiagnostic) string {
-	mut parts := ['v3-cgen-metadata-v4', interface_impl_signature, prefix_source_identity,
-		flags.len.str()]
-	if native_link_requirements.requires_cpp {
-		parts = ['v3-cgen-metadata-v5', interface_impl_signature, prefix_source_identity, 'c++',
-			flags.len.str()]
-	}
+fn encode_v3_cgen_metadata(flags []string, interface_impl_signature string, prefix_source_identity string, native_link_requirements types.NativeLinkRequirements, emits_main bool, diagnostics []V3CachedTypeDiagnostic) string {
+	mut parts := ['v3-cgen-metadata-v6', interface_impl_signature, prefix_source_identity,
+		native_link_requirements.requires_cpp.str(), emits_main.str(), flags.len.str()]
 	parts << flags
 	parts << diagnostics.len.str()
 	for diagnostic in diagnostics {
@@ -5250,17 +5342,14 @@ fn encode_v3_cgen_metadata(flags []string, interface_impl_signature string, pref
 
 fn decode_v3_cgen_metadata(metadata string) ?V3CgenCacheMetadata {
 	parts := metadata.split('\x00')
-	mut requires_cpp := false
-	mut flag_count_index := 3
-	mut flags_index := 4
-	if parts.len >= 6 && parts[0] == 'v3-cgen-metadata-v5' && parts[3] == 'c++' {
-		requires_cpp = true
-		flag_count_index = 4
-		flags_index = 5
-	} else if parts.len < 5 || parts[0] != 'v3-cgen-metadata-v4' {
+	if parts.len < 7 || parts[0] != 'v3-cgen-metadata-v6'
+		|| parts[3] !in ['false', 'true'] || parts[4] !in ['false', 'true'] {
 		return none
 	}
-	flag_count := strconv.atoi(parts[flag_count_index]) or { return none }
+	requires_cpp := parts[3] == 'true'
+	emits_main := parts[4] == 'true'
+	flags_index := 6
+	flag_count := strconv.atoi(parts[5]) or { return none }
 	if flag_count < 0 || flags_index + flag_count >= parts.len {
 		return none
 	}
@@ -5305,6 +5394,7 @@ fn decode_v3_cgen_metadata(metadata string) ?V3CgenCacheMetadata {
 		native_link_requirements: types.NativeLinkRequirements{
 			requires_cpp: requires_cpp
 		}
+		emits_main:              emits_main
 		flags:                    parts[flags_index..flags_index + flag_count].clone()
 		diagnostics:              diagnostics
 	}
@@ -7920,8 +8010,25 @@ fn v3_compiler_uses_msvc_driver_mode(command string, c_flags []string, ld_flags 
 	} else {
 		''
 	}
-	return name.contains('clang-cl') || '--driver-mode=cl' in parts || '--driver-mode=cl' in c_flags
-		|| '--driver-mode=cl' in ld_flags
+	mut mode := ''
+	mut valid_mode := true
+	mut args := if parts.len > 1 { parts[1..].clone() } else { []string{} }
+	args << c_flags
+	args << ld_flags
+	for arg in args {
+		clean := arg.trim_space().trim('"\'')
+		if clean.starts_with('--driver-mode=') {
+			mode = clean.all_after('=').to_lower_ascii()
+			valid_mode = mode.len > 0
+		}
+	}
+	if !valid_mode {
+		return true
+	}
+	if mode.len > 0 {
+		return mode == 'cl'
+	}
+	return name.contains('clang-cl')
 }
 
 fn v3_compiler_is_available(command string) bool {
@@ -7939,9 +8046,9 @@ fn v3_compiler_is_available(command string) bool {
 	return false
 }
 
-fn validate_v3_cpp_linker(requirements types.NativeLinkRequirements, backend string, c_only bool, is_o bool, is_shared bool, generate_c_project string, target pref.Target, c_compiler string, cpp_compiler string, c_flags []string, ld_flags []string) ! {
+fn validate_v3_cpp_linker(requirements types.NativeLinkRequirements, backend string, c_only bool, is_o bool, is_shared bool, generate_c_project string, target pref.Target, c_compiler string, cpp_compiler string, c_flags []string, ld_flags []string) !string {
 	if !requirements.requires_cpp {
-		return
+		return ''
 	}
 	if generate_c_project.len > 0 {
 		return error('`#linker c++` does not support `-generate-c-project` yet')
@@ -7953,7 +8060,7 @@ fn validate_v3_cpp_linker(requirements types.NativeLinkRequirements, backend str
 		return error('`#linker c++` cannot combine `-shared` with object output (`-o file.o` or `-is_o`)')
 	}
 	if c_only || is_o {
-		return
+		return ''
 	}
 	host := pref.host_target()
 	if target.os != host.os || target.arch != host.arch {
@@ -7973,6 +8080,7 @@ fn validate_v3_cpp_linker(requirements types.NativeLinkRequirements, backend str
 	if c_family != cpp_family {
 		return error('`#linker c++` requires matching C and C++ driver families; got `${c_family}` and `${cpp_family}`')
 	}
+	return cpp_family
 }
 
 fn v3_tcc_fast_link_allowed(mode pref.PkgConfigMode, user_ld_flags []string) bool {
@@ -9743,7 +9851,7 @@ pub fn run(args []string) {
 	native_link_c_flags << user_c_flags
 	mut native_link_ld_flags := environment_ld_flags.clone()
 	native_link_ld_flags << user_ld_flags
-	validate_v3_cpp_linker(native_link_requirements, backend, c_only || check_only
+	validated_cpp_linker_family := validate_v3_cpp_linker(native_link_requirements, backend, c_only || check_only
 		|| only_check_syntax, is_o, is_shared, generate_c_project, prefs.target, c_compiler,
 		prefs.cppcompiler, native_link_c_flags, native_link_ld_flags) or {
 		eprintln(err.msg())
@@ -11155,6 +11263,7 @@ pub fn run(args []string) {
 		}
 		mut generated_c_flags := cgen_cache_metadata.flags.clone()
 		mut interface_impl_signature := cgen_cache_metadata.interface_impl_signature
+		mut cgen_emits_main := cgen_cache_metadata.emits_main
 		mut cgen_was_parallel := false
 		incremental_c_declarations := if incremental_cache_hit {
 			os.read_file(incremental_tcc_declarations_path) or {
@@ -11234,6 +11343,7 @@ pub fn run(args []string) {
 				cleanup_c_build_dir(cc_dir)
 				exit(1)
 			}
+			cgen_emits_main = g.emits_c_main()
 			cgen_was_parallel = g.was_parallel()
 			if !incremental_cache_hit {
 				scoped_generated_c_flags = g.c_flags()
@@ -11289,6 +11399,7 @@ pub fn run(args []string) {
 				cleanup_c_build_dir(cc_dir)
 				exit(1)
 			}
+			cgen_emits_main = g.emits_c_main()
 			cgen_was_parallel = g.was_parallel()
 			if !incremental_cache_hit {
 				generated_c_flags = g.c_flags()
@@ -11385,6 +11496,23 @@ pub fn run(args []string) {
 			}
 			b.step('C object cache')
 		}
+		planned_linker_driver := if link_with_cpp { prefs.cppcompiler } else { c_compiler }
+		mut effective_linker_target_flags := []string{}
+		effective_linker_target_flags << environment_c_flags
+		effective_linker_target_flags << target_args
+		effective_linker_target_flags << generated_c_flags
+		effective_linker_target_flags << environment_ld_flags
+		effective_linker_target_flags << user_ld_flags
+		base_linker_family := if v3_compiler_uses_msvc_driver_mode(planned_linker_driver,
+			effective_linker_target_flags, []) {
+			'msvc'
+		} else {
+			v3_active_linker_family(prefs.ccompiler, validated_cpp_linker_family, link_with_cpp)
+		}
+		active_linker_family := v3_windows_unicode_linker_family(prefs.normalized_target_os(),
+			planned_linker_driver, base_linker_family, effective_linker_target_flags)
+		emits_v3_main := v3_link_plan_emits_main(cgen_emits_main, c_only,
+			generate_c_project.len > 0, check_only, only_check_syntax, is_shared, is_o)
 		c_flag_plan := v3_c_compiler_flag_plan(V3CCompilerFlagOptions{
 			environment_c_flags:  environment_c_flags
 			environment_ld_flags: environment_ld_flags
@@ -11396,6 +11524,7 @@ pub fn run(args []string) {
 			vroot:                prefs.vroot
 			target_os:            prefs.normalized_target_os()
 			target_arch:          prefs.normalized_target_arch()
+			linker_family:        active_linker_family
 			pic_flag:             pic_flag
 			is_prod:              is_prod
 			no_prod_options:      no_prod_options
@@ -11405,6 +11534,7 @@ pub fn run(args []string) {
 			is_c_debug:           is_c_debug
 			is_o:                 is_o
 			is_liveshared:        is_liveshared
+			emits_v3_main:        emits_v3_main
 		})
 		mut native_support_inputs := []string{}
 		if explicit_tcc {
@@ -11656,7 +11786,7 @@ pub fn run(args []string) {
 						published_cgen_cache_input.generation_signature,
 						published_cgen_cache_input.dependency_inputs, generated_source, encode_v3_cgen_metadata(generated_c_flags,
 						interface_impl_signature, prefix_source_identity, native_link_requirements,
-						cached_checker_diagnostics)) or { modulecache.CgenEntry{} }
+						cgen_emits_main, cached_checker_diagnostics)) or { modulecache.CgenEntry{} }
 				}
 				if incremental_cache_restored && prepared_plan_entry.source.len > 0 {
 					stable_body_source := os.read_file(prepared_plan_entry.source) or {
@@ -11699,7 +11829,7 @@ pub fn run(args []string) {
 						prepared_cache.program_body_cache,
 						encode_cached_runtime_strings(generic_cache_runtime_strings), encode_v3_cgen_metadata(generated_c_flags,
 						interface_impl_signature, prefix_source_identity, native_link_requirements,
-						cached_checker_diagnostics)) or {}
+						cgen_emits_main, cached_checker_diagnostics)) or {}
 				}
 				if (!generic_cache_hit || incremental_cache_hit)
 					&& incremental_snapshot.declaration_signature.len > 0 {
@@ -11737,7 +11867,7 @@ pub fn run(args []string) {
 						prepared_cache.program_prefix_source, incremental_declarations,
 						incremental_tcc_declarations, prepared_cache.objects, encode_v3_cgen_metadata(generated_c_flags,
 						interface_impl_signature, prefix_source_identity, native_link_requirements,
-						cached_checker_diagnostics)) or {}
+						cgen_emits_main, cached_checker_diagnostics)) or {}
 				}
 			}
 			prealloc_scope_leave_for_v3(cache_prepare_scope)
@@ -11951,6 +12081,8 @@ pub fn run(args []string) {
 			tcc_args << tcc_dynamic_link_flags(resolved_c_flags)
 			add_v3_default_linker_flags(mut tcc_args, prefs.normalized_target_os(), is_o,
 				true)
+			add_v3_windows_unicode_entrypoint_flag(mut tcc_args, []string{},
+				prefs.normalized_target_os(), 'tinyc', emits_v3_main, is_shared, is_o)
 			program_source_identity := '${prefix_source_identity}\n${modulecache.file_signature(tcc_main_file)}\n${if cached_program_body_source.len > 0 {
 				modulecache.file_signature(cached_program_body_source)
 			} else {
@@ -12050,6 +12182,8 @@ pub fn run(args []string) {
 			tcc_args << resolved_c_flags
 			add_v3_default_linker_flags(mut tcc_args, prefs.normalized_target_os(), is_o,
 				true)
+			add_v3_windows_unicode_entrypoint_flag(mut tcc_args, environment_ld_flags,
+				prefs.normalized_target_os(), 'tinyc', emits_v3_main, is_shared, is_o)
 			if !is_o {
 				tcc_args << environment_ld_flags
 			}
