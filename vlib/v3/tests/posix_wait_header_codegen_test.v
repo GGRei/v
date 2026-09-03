@@ -162,6 +162,10 @@ fn wait_header_has_include_directive(c_code string) bool {
 	return false
 }
 
+fn wait_header_compact_source(source string) string {
+	return source.replace('\t', '').replace(' ', '').replace('\r', '').replace('\n', '')
+}
+
 fn wait_header_generated_extern_count(c_code string, name string) int {
 	mut count := 0
 	for line in c_code.split_into_lines() {
@@ -195,11 +199,14 @@ fn wait_header_generated_extern_name(line string) string {
 
 fn wait_header_windows_sdk_owned_fns() []string {
 	return [
+		'CreateDirectoryW',
 		'FileTimeToSystemTime',
 		'GetConsoleMode',
 		'GetConsoleScreenBufferInfo',
 		'GetCurrentProcessId',
 		'GetCurrentThreadId',
+		'GetFileAttributesW',
+		'GetLastError',
 		'GetStdHandle',
 		'GetSystemTimeAsFileTime',
 		'QueryPerformanceCounter',
@@ -209,9 +216,14 @@ fn wait_header_windows_sdk_owned_fns() []string {
 		'SetConsoleMode',
 		'Sleep',
 		'SystemTimeToTzSpecificLocalTime',
+		'WaitForSingleObject',
 		'WriteConsoleW',
 		'WriteFile',
 	]
+}
+
+fn wait_header_windows_tcc_insert_owned_fns() []string {
+	return ['GetFinalPathNameByHandleW']
 }
 
 fn wait_header_windows_crt_referenced_fns() []string {
@@ -279,6 +291,9 @@ fn wait_header_windows_vista_fns() []string {
 fn wait_header_windows_system_owner_source(cflags string) string {
 	mut refs := []string{}
 	for name in wait_header_windows_sdk_owned_fns() {
+		refs << '\t_ = voidptr(&C.${name})'
+	}
+	for name in wait_header_windows_tcc_insert_owned_fns() {
 		refs << '\t_ = voidptr(&C.${name})'
 	}
 	for name in wait_header_windows_crt_referenced_fns() {
@@ -625,23 +640,79 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	assert fallback_program.compiler_family == default_program.compiler_family,
 		fallback_program.compiler_family
 	uses_tcc_atomic_header := default_program.compiler_family == 'tcc'
+	cfns_source := os.read_file(os.join_path(wait_header_vlib_dir, 'builtin', 'cfns.c.v')) or {
+		panic(err)
+	}
+	cfns_tcc_source := os.read_file(os.join_path(wait_header_vlib_dir, 'builtin',
+		'cfns_windows_tcc.h')) or { panic(err) }
 	builtin_windows_source := os.read_file(os.join_path(wait_header_vlib_dir, 'builtin',
 		'builtin_windows.c.v')) or { panic(err) }
+	os_source := os.read_file(os.join_path(wait_header_vlib_dir, 'os', 'os.c.v')) or {
+		panic(err)
+	}
+	os_stat_windows_source := os.read_file(os.join_path(wait_header_vlib_dir, 'os',
+		'os_stat_windows.c.v')) or { panic(err) }
+	os_windows_source := os.read_file(os.join_path(wait_header_vlib_dir, 'os', 'os_windows.c.v')) or {
+		panic(err)
+	}
 	process_windows_source := os.read_file(os.join_path(wait_header_vlib_dir, 'os',
 		'process_windows.c.v')) or { panic(err) }
-	compact_builtin_source := builtin_windows_source.replace('\t', '').replace(' ', '').replace('\r',
-		'').replace('\n', '')
-	compact_process_source := process_windows_source.replace('\t', '').replace(' ', '').replace('\r',
-		'').replace('\n', '')
+	compact_cfns_source := wait_header_compact_source(cfns_source)
+	compact_cfns_tcc_source := wait_header_compact_source(cfns_tcc_source)
+	compact_builtin_source := wait_header_compact_source(builtin_windows_source)
+	compact_os_source := wait_header_compact_source(os_source)
+	compact_os_stat_windows_source := wait_header_compact_source(os_stat_windows_source)
+	compact_os_windows_source := wait_header_compact_source(os_windows_source)
+	compact_process_source := wait_header_compact_source(process_windows_source)
+	assert compact_cfns_source.count('fnC.GetFileAttributesW(lpFileName&u16)u32') == 1,
+		'GetFileAttributesW binding'
+	assert compact_cfns_source.count('fnC.CreateDirectory(&u16,voidptr)bool') == 1,
+		'CreateDirectory binding'
+	assert compact_cfns_source.count('fnC.WaitForSingleObject(voidptr,u32)u32') == 1,
+		'WaitForSingleObject binding'
+	assert compact_cfns_tcc_source.count('externDWORDWINAPIGetFinalPathNameByHandleW(void*hFile,unsignedshort*lpFilePath,DWORDnSize,DWORDdwFlags);') == 1,
+		'GetFinalPathNameByHandleW TCC provider'
+	assert compact_cfns_tcc_source.contains('#ifdef__TINYC__#ifndefGetFinalPathNameByHandleWexternDWORDWINAPIGetFinalPathNameByHandleW'),
+		'GetFinalPathNameByHandleW TCC guard'
 	assert compact_builtin_source.count('C.WriteConsoleW(console_handle,wide_ptr,C.DWORD(remaining_chars),voidptr(&chars_written),nil)') == 2,
 		'WriteConsoleW source call count'
 	assert compact_builtin_source.count('C.WriteFile(handle,ptr,C.DWORD(chunk),voidptr(&written),nil)') == 1,
 		'builtin WriteFile source call count'
 	assert compact_process_source.count('C.WriteFile(rhandle,_s.str,u32(_s.len),voidptr(&bytes_write),0)') == 1,
 		'os WriteFile source call count'
+	get_file_attributes_source_calls := compact_os_source.count('C.GetFileAttributesW(') +
+		compact_os_stat_windows_source.count('C.GetFileAttributesW(')
+	assert get_file_attributes_source_calls == 4,
+		'GetFileAttributesW source call count'
+	assert compact_os_windows_source.count('C.CreateDirectory(') == 1,
+		'CreateDirectory source call count'
+	assert compact_os_source.count('C.GetFinalPathNameByHandleW(') == 2,
+		'GetFinalPathNameByHandleW source call count'
+	wait_source_calls := compact_os_windows_source.count('C.WaitForSingleObject(') +
+		compact_process_source.count('C.WaitForSingleObject(')
+	assert wait_source_calls == 2,
+		'WaitForSingleObject source call count'
 	for generated_code in [c_code, fallback_program.c_code] {
 		compact_calls := generated_code.replace('\t', '').replace(' ', '').replace('\r', '').replace('\n',
 			'')
+		assert generated_code.count('#define FILE_ATTRIBUTE_READONLY 0x00000001U') == 1,
+			generated_code
+		assert compact_calls.count('externDWORDWINAPIGetFinalPathNameByHandleW(void*hFile,unsignedshort*lpFilePath,DWORDnSize,DWORDdwFlags);') == 1,
+			generated_code
+		get_final_provider_pos := generated_code.index('extern DWORD WINAPI GetFinalPathNameByHandleW(') or {
+			-1
+		}
+		assert get_final_provider_pos >= 0, generated_code
+		if uses_tcc_atomic_header {
+			atomic_header_pos := generated_code.index('thirdparty/stdatomic/win/atomic.h') or {
+				-1
+			}
+			assert atomic_header_pos >= 0 && atomic_header_pos < get_final_provider_pos,
+				generated_code
+		} else {
+			winapi_pos := generated_code.index('#define WINAPI __stdcall') or { -1 }
+			assert winapi_pos >= 0 && winapi_pos < get_final_provider_pos, generated_code
+		}
 		for expected in [
 			'GetConsoleMode(osfh,(void*)(&mode))',
 			'QueryPerformanceCounter((void*)(&counter))',
@@ -663,12 +734,34 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 		}
 		assert compact_calls.count('WriteConsoleW(console_handle,wide_ptr,') == 1,
 			'active WriteConsoleW backend call count'
+		wait_line := wait_header_generated_extern_line(generated_code, 'WaitForSingleObject')
+		last_error_line := wait_header_generated_extern_line(generated_code, 'GetLastError')
+		create_directory_line := wait_header_generated_extern_line(generated_code,
+			'CreateDirectoryW')
+		file_attributes_line := wait_header_generated_extern_line(generated_code,
+			'GetFileAttributesW')
+		get_final_path_line := wait_header_generated_extern_line(generated_code,
+			'GetFinalPathNameByHandleW')
 		write_console_line := wait_header_generated_extern_line(generated_code, 'WriteConsoleW')
 		write_file_line := wait_header_generated_extern_line(generated_code, 'WriteFile')
 		if uses_tcc_atomic_header {
+			assert wait_line == '', generated_code
+			assert last_error_line == '', generated_code
+			assert create_directory_line == '', generated_code
+			assert file_attributes_line == '', generated_code
+			assert get_final_path_line == '', generated_code
 			assert write_console_line == '', generated_code
 			assert write_file_line == '', generated_code
 		} else {
+			assert wait_line == 'DWORD WINAPI WaitForSingleObject(HANDLE handle, DWORD milliseconds);',
+				wait_line
+			assert last_error_line == 'DWORD WINAPI GetLastError(void);', last_error_line
+			assert create_directory_line == 'bool WINAPI CreateDirectoryW(u16*, void*);',
+				create_directory_line
+			assert file_attributes_line == 'u32 WINAPI GetFileAttributesW(u16* lpFileName);',
+				file_attributes_line
+			assert get_final_path_line == 'u32 WINAPI GetFinalPathNameByHandleW(void* hFile, u16* lpFilePath, u32 nSize, u32 dwFlags);',
+				get_final_path_line
 			assert write_console_line == 'bool WINAPI WriteConsoleW(void*, u16*, u32, DWORD*, void*);',
 				write_console_line
 			assert write_file_line == 'bool WINAPI WriteFile(void*, u8*, u32, DWORD*, void*);',
@@ -691,7 +784,8 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	} else {
 		crt_referenced.clone()
 	}
-	assert sdk_owned.len == 16
+	assert sdk_owned.len == 20
+	assert wait_header_windows_tcc_insert_owned_fns() == ['GetFinalPathNameByHandleW']
 	assert crt_referenced.len == 15
 	assert crt_owned.len == if uses_tcc_atomic_header { 1 } else { 0 }
 	assert crt_generated.len == if uses_tcc_atomic_header { 14 } else { 15 }
@@ -752,6 +846,11 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 		assert wait_header_generated_extern_count(fallback_program.c_code, name) == expected_count,
 			name
 	}
+	expected_get_final_generated := if uses_tcc_atomic_header { 0 } else { 1 }
+	assert wait_header_generated_extern_count(c_code,
+		'GetFinalPathNameByHandleW') == expected_get_final_generated
+	assert wait_header_generated_extern_count(fallback_program.c_code,
+		'GetFinalPathNameByHandleW') == expected_get_final_generated
 	if !uses_tcc_atomic_header {
 		for generated_code in [c_code, fallback_program.c_code] {
 			alias_pos := generated_code.index(wide_console_alias) or { -1 }

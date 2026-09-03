@@ -18437,15 +18437,20 @@ fn (mut g FlatGen) system_libc_preamble() {
 	g.writeln('#endif')
 }
 
-// c_windows_system_libc_declared_fns is the exact unconditional function set
-// supplied by system_libc_headers() on Windows. NLS and SRW/condition-variable
-// APIs are deliberately excluded because their declarations are conditional.
+// c_windows_system_libc_declared_fns is the exact effective ownership set for
+// Windows system-libc mode. System headers supply it except that the TCC-only
+// builtin file API provider supplies GetFinalPathNameByHandleW. NLS and
+// SRW/condition-variable APIs are excluded because their declarations are conditional.
 const c_windows_system_libc_declared_fns = [
+	'CreateDirectoryW',
 	'FileTimeToSystemTime',
 	'GetConsoleMode',
 	'GetConsoleScreenBufferInfo',
 	'GetCurrentProcessId',
 	'GetCurrentThreadId',
+	'GetFileAttributesW',
+	'GetFinalPathNameByHandleW',
+	'GetLastError',
 	'GetStdHandle',
 	'GetSystemTimeAsFileTime',
 	'QueryPerformanceCounter',
@@ -18455,6 +18460,7 @@ const c_windows_system_libc_declared_fns = [
 	'SetConsoleMode',
 	'Sleep',
 	'SystemTimeToTzSpecificLocalTime',
+	'WaitForSingleObject',
 	'WriteConsoleW',
 	'_chsize_s',
 	'_dup',
@@ -18850,9 +18856,9 @@ fn (mut g FlatGen) headerless_libc_preamble() {
 	g.writeln('#endif')
 	if !g.uses_windows_tcc_atomic_header() {
 		g.writeln('HANDLE CreateThread(void* attributes, size_t stack_size, DWORD (WINAPI *start)(void*), void* parameter, DWORD flags, DWORD* thread_id);')
-		g.writeln('DWORD WaitForSingleObject(HANDLE handle, DWORD milliseconds);')
+		g.writeln('DWORD WINAPI WaitForSingleObject(HANDLE handle, DWORD milliseconds);')
 		g.writeln('BOOL CloseHandle(HANDLE handle);')
-		g.writeln('DWORD GetLastError(void);')
+		g.writeln('DWORD WINAPI GetLastError(void);')
 		g.writeln('DWORD WINAPI TlsAlloc(void);')
 		g.writeln('void* WINAPI TlsGetValue(DWORD index);')
 		g.writeln('BOOL WINAPI TlsSetValue(DWORD index, void* value);')
@@ -19131,11 +19137,17 @@ const c_headerless_windows_early_runtime_declared_fns = [
 	'ReleaseSRWLockExclusive',
 ]
 
+const c_headerless_windows_manual_sdk_declared_fns = [
+	'GetLastError',
+	'WaitForSingleObject',
+]
+
 fn (mut g FlatGen) headerless_windows_early_runtime_decls() {
 	if g.target.os != 'windows' || g.uses_windows_tcc_atomic_header() {
 		return
 	}
 	g.collect_preserved_c_fns(c_headerless_windows_early_runtime_declared_fns)
+	g.collect_preserved_c_fns(c_headerless_windows_manual_sdk_declared_fns)
 	for name in c_headerless_windows_early_runtime_declared_fns {
 		g.writeln('void WINAPI ${name}(void*);')
 	}
@@ -20122,6 +20134,7 @@ fn (mut g FlatGen) headerless_windows_constants() {
 	g.writeln('#define FILE_SHARE_DELETE 0x00000004U')
 	g.writeln('#define OPEN_EXISTING 3')
 	g.writeln('#define OPEN_ALWAYS 4')
+	g.writeln('#define FILE_ATTRIBUTE_READONLY 0x00000001U')
 	g.writeln('#define FILE_ATTRIBUTE_NORMAL 0x00000080U')
 	g.writeln('#define FILE_ATTRIBUTE_DIRECTORY 0x00000010U')
 	g.writeln('#define INVALID_FILE_ATTRIBUTES 0xffffffffU')

@@ -43,6 +43,8 @@ fn test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations() {
 	g.preamble()
 	g.atomic_builtin_compat_decls()
 	c_code := g.sb.str()
+	g.inlined_c_declared_fns['GetFinalPathNameByHandleW'] = true
+	assert !g.should_emit_c_extern_decl('GetFinalPathNameByHandleW')
 	compat_include := '#include "thirdparty/stdatomic/win/atomic.h"'
 	compat_pos := c_code.index(compat_include) or { -1 }
 	file_pos := c_code.index('typedef struct FILE FILE;') or { -1 }
@@ -69,9 +71,10 @@ fn test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations() {
 	assert !c_code.contains('typedef struct COORD { i16 X; i16 Y; } COORD;'), c_code
 	assert !c_code.contains('typedef struct INPUT_RECORD {'), c_code
 	assert !c_code.contains('HANDLE CreateThread(void* attributes'), c_code
-	assert !c_code.contains('DWORD WaitForSingleObject(HANDLE handle, DWORD milliseconds);'), c_code
+	assert !c_code.contains('DWORD WINAPI WaitForSingleObject(HANDLE handle, DWORD milliseconds);'), c_code
 	assert !c_code.contains('BOOL CloseHandle(HANDLE handle);'), c_code
-	assert !c_code.contains('DWORD GetLastError(void);'), c_code
+	assert !c_code.contains('DWORD WINAPI GetLastError(void);'), c_code
+	assert c_code.count('#define FILE_ATTRIBUTE_READONLY 0x00000001U') == 1, c_code
 	assert c_code.contains('typedef struct { HANDLE handle; void* context; } __v_thread;'), c_code
 	assert c_code.contains('result.handle = CreateThread(NULL, __v_thread_stack_size,'), c_code
 	assert c_code.contains('struct fd_set { unsigned int fd_count; SOCKET fd_array[FD_SETSIZE]; };'), c_code
@@ -659,11 +662,15 @@ fn test_windows_headers_guard_conditional_nls_and_vista_externs() {
 
 fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 	expected_central := [
+		'CreateDirectoryW',
 		'FileTimeToSystemTime',
 		'GetConsoleMode',
 		'GetConsoleScreenBufferInfo',
 		'GetCurrentProcessId',
 		'GetCurrentThreadId',
+		'GetFileAttributesW',
+		'GetFinalPathNameByHandleW',
+		'GetLastError',
 		'GetStdHandle',
 		'GetSystemTimeAsFileTime',
 		'QueryPerformanceCounter',
@@ -673,6 +680,7 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 		'SetConsoleMode',
 		'Sleep',
 		'SystemTimeToTzSpecificLocalTime',
+		'WaitForSingleObject',
 		'WriteConsoleW',
 		'_chsize_s',
 		'_dup',
@@ -706,13 +714,17 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 	assert c_windows_system_libc_declared_fns == expected_central
 	assert c_windows_nls_conditional_extern_fns.keys().sorted() == expected_nls
 	assert c_windows_vista_conditional_extern_fns.keys().sorted() == expected_vista
+	for name in ['CreateDirectoryW', 'GetFileAttributesW', 'GetFinalPathNameByHandleW',
+		'GetLastError', 'WaitForSingleObject'] {
+		assert c_extern_calling_convention(name) == 'WINAPI', name
+	}
 
 	mut central := map[string]bool{}
 	for name in expected_central {
 		assert name !in central, name
 		central[name] = true
 	}
-	assert central.len == 30
+	assert central.len == 35
 	for name in expected_nls {
 		assert name !in central, name
 		assert c_extern_calling_convention(name) == 'WINAPI', name
@@ -725,7 +737,7 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 	mut effective := central.clone()
 	assert '_wremove' in c_manual_stdlib_declared_fns
 	effective['_wremove'] = true
-	assert effective.len == 31
+	assert effective.len == 36
 
 	mut g := FlatGen.new()
 	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
@@ -857,6 +869,8 @@ fn test_system_libc_windows_tcc_atomic_header_does_not_preserve_sdk_functions() 
 }
 
 fn test_headerless_windows_non_tcc_keeps_local_sdk_fallbacks() {
+	manual_sdk_fns := ['GetLastError', 'WaitForSingleObject']
+	assert c_headerless_windows_manual_sdk_declared_fns == manual_sdk_fns
 	mut ast := &flat.FlatAst{}
 	mut tc := types.TypeChecker.new(ast)
 	mut g := FlatGen.new()
@@ -891,11 +905,48 @@ fn test_headerless_windows_non_tcc_keeps_local_sdk_fallbacks() {
 	assert c_code.count('typedef PTOP_LEVEL_EXCEPTION_FILTER LPTOP_LEVEL_EXCEPTION_FILTER;') == 1, c_code
 
 	assert c_code.count('LPTOP_LEVEL_EXCEPTION_FILTER WINAPI SetUnhandledExceptionFilter(') == 1, c_code
+	assert c_code.count('DWORD WINAPI WaitForSingleObject(HANDLE handle, DWORD milliseconds);') == 1,
+		c_code
+	assert c_code.count('DWORD WINAPI GetLastError(void);') == 1, c_code
+	assert c_code.count('#define FILE_ATTRIBUTE_READONLY 0x00000001U') == 1, c_code
+	for name in manual_sdk_fns {
+		assert name in g.inlined_c_declared_fns, name
+		assert !g.should_emit_c_extern_decl(name), name
+	}
+	// The TCC-only inserted helper is scanned conservatively. Headerless GCC/Clang/MSVC
+	// must still emit the one GetFinalPathNameByHandleW fallback that they need.
+	g.inlined_c_declared_fns['GetFinalPathNameByHandleW'] = true
+	assert g.should_emit_c_extern_decl('GetFinalPathNameByHandleW')
 
 	assert !g.should_emit_c_extern_decl('_aligned_malloc')
 	assert !g.should_emit_c_extern_decl('_aligned_free')
 	assert !g.should_emit_c_extern_decl('_putenv_s')
 	assert !g.should_emit_c_extern_decl('SetUnhandledExceptionFilter')
+
+	mut x86_g := FlatGen.new()
+	x86_g.set_target(pref.target_from('windows', 'x86') or { panic(err) })
+	x86_g.set_ccompiler('gcc')
+	x86_g.has_builtins = true
+	x86_g.preamble()
+	x86_code := x86_g.sb.str()
+	assert x86_code.contains('#if defined(_WIN32) && (defined(__i386__) || defined(_M_IX86))\n#define WINAPI __stdcall'),
+		x86_code
+	assert x86_code.count('DWORD WINAPI WaitForSingleObject(HANDLE handle, DWORD milliseconds);') == 1,
+		x86_code
+	assert x86_code.count('DWORD WINAPI GetLastError(void);') == 1, x86_code
+	for compiler in ['clang', 'msvc'] {
+		mut family_g := FlatGen.new()
+		family_g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+		family_g.set_ccompiler(compiler)
+		family_g.has_builtins = true
+		family_g.preamble()
+		family_g.inlined_c_declared_fns['GetFinalPathNameByHandleW'] = true
+		assert family_g.should_emit_c_extern_decl('GetFinalPathNameByHandleW'), compiler
+		for name in manual_sdk_fns {
+			assert name in family_g.inlined_c_declared_fns, '${compiler}: ${name}'
+			assert !family_g.should_emit_c_extern_decl(name), '${compiler}: ${name}'
+		}
+	}
 }
 
 fn test_headerless_windows_non_tcc_emits_early_runtime_providers() {
@@ -999,6 +1050,11 @@ fn test_non_windows_preamble_does_not_emit_windows_abi_fallbacks() {
 	g.preamble()
 	g.builtin_abi_decls()
 	c_code := g.sb.after(0)
+	for name in c_headerless_windows_manual_sdk_declared_fns {
+		assert name !in g.inlined_c_declared_fns, name
+	}
+	g.inlined_c_declared_fns['GetFinalPathNameByHandleW'] = true
+	assert !g.should_emit_c_extern_decl('GetFinalPathNameByHandleW')
 	for declaration in [
 		'int _putenv_s(const char *name, const char *value);',
 		'struct _EXCEPTION_POINTERS;',

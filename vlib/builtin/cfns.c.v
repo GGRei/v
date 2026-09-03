@@ -333,7 +333,7 @@ fn C.CreateProcessW(lpApplicationName &u16, lpCommandLine &u16, lpProcessAttribu
 
 fn C.ReadFile(hFile voidptr, lpBuffer voidptr, nNumberOfBytesToRead u32, lpNumberOfBytesRead &u32, lpOverlapped voidptr) bool
 
-fn C.GetFileAttributesW(lpFileName &u8) u32
+fn C.GetFileAttributesW(lpFileName &u16) u32
 
 fn C.RegQueryValueEx(hKey voidptr, lpValueName &u16, lp_reserved &u32, lpType &u32, lpData &u8, lpcbData &u32) i32
 
@@ -455,7 +455,7 @@ fn C.URLDownloadToFile(i32, &u16, &u16, i32, i32)
 @[trusted]
 fn C.GetLastError() u32
 
-fn C.CreateDirectory(&u8, i32) bool
+fn C.CreateDirectory(&u16, voidptr) bool
 
 // win crypto
 fn C.BCryptGenRandom(i32, voidptr, i32, i32) i32
@@ -463,7 +463,7 @@ fn C.BCryptGenRandom(i32, voidptr, i32, i32) i32
 // win synchronization
 fn C.CreateMutex(i32, bool, &u8) voidptr
 
-fn C.WaitForSingleObject(voidptr, i32) i32
+fn C.WaitForSingleObject(voidptr, u32) u32
 
 fn C.ReleaseMutex(voidptr) bool
 

@@ -16745,6 +16745,13 @@ const c_windows_vista_conditional_extern_fns = {
 }
 
 fn (g &FlatGen) should_emit_c_extern_decl(cfn string) bool {
+	// The builtin TCC-only helper is guarded in C, but the lightweight inline-header
+	// scanner deliberately records declarations without evaluating C preprocessor
+	// branches. Restore the SDK fallback only for headerless non-TCC Windows units.
+	if g.target.os == 'windows' && g.has_builtins && !g.c_directives_use_system_libc()
+		&& !g.uses_windows_tcc_atomic_header() && cfn == 'GetFinalPathNameByHandleW' {
+		return true
+	}
 	if g.target.os == 'windows' && g.has_builtins && !g.c_directives_use_system_libc()
 		&& cfn in ['_aligned_malloc', '_aligned_free'] {
 		return false

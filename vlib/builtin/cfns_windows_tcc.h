@@ -3,13 +3,12 @@
 // TCC does not ship. As a result GetFinalPathNameByHandleW has no declaration
 // in scope when TCC compiles code that uses it (e.g. os.real_path).
 //
-// Provide the declaration for TCC only. GCC/MSVC get it from the Windows SDK
-// (via <windows.h> -> <fileapi.h>); emitting a V-side extern there would
-// conflict with the SDK's `DWORD WINAPI` signature, since DWORD is
-// `unsigned long`, not `unsigned int`.
+// Provide the native declaration for TCC only. System-header GCC/MSVC get it
+// from the Windows SDK (via <windows.h> -> <fileapi.h>); headerless V3
+// non-TCC units emit their own ABI-compatible fallback.
 #ifdef __TINYC__
 #ifndef GetFinalPathNameByHandleW
-extern unsigned int GetFinalPathNameByHandleW(void *hFile, unsigned short *lpFilePath,
-	unsigned int nSize, unsigned int dwFlags);
+extern DWORD WINAPI GetFinalPathNameByHandleW(void *hFile, unsigned short *lpFilePath,
+	DWORD nSize, DWORD dwFlags);
 #endif
 #endif
