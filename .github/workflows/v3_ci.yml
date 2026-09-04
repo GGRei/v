@@ -329,6 +329,8 @@ jobs:
             'test_comptime_pkgconfig_value_uses_pkgconfig_runner')
           Run-Owner -Label v3-parser-pkgconfig -Path 'vlib/v3/parser/comptime_pkgconfig_test.v' -Common $v3Common -Names @(
             'test_comptime_pkgconfig_function_keeps_dollar_prefix')
+          Run-Owner -Label v3-pointer-voidptr -Path 'vlib/v3/tests/pointer_voidptr_compat_test.v' -Common $v3Common -Names @(
+            'test_explicit_voidptr_slot_addresses_preserve_source_storage')
           Run-Owner -Label v3-cflags -Path 'vlib/v3/driver/c_compiler_flags_test.v' -Common $v3Common -Names @(
             'test_v3_user_ldflags_are_final_and_do_not_change_dynamic_plan_when_absent',
             'test_v3_object_mode_ignores_link_only_user_flags',
@@ -704,6 +706,8 @@ jobs:
             test_comptime_pkgconfig_value_uses_pkgconfig_runner
           run_owner v3-parser-pkgconfig vlib/v3/parser/comptime_pkgconfig_test.v \
             test_comptime_pkgconfig_function_keeps_dollar_prefix
+          run_owner v3-pointer-voidptr vlib/v3/tests/pointer_voidptr_compat_test.v \
+            test_explicit_voidptr_slot_addresses_preserve_source_storage
           run_owner v3-cflags vlib/v3/driver/c_compiler_flags_test.v \
             test_v3_user_ldflags_are_final_and_do_not_change_dynamic_plan_when_absent \
             test_v3_object_mode_ignores_link_only_user_flags \
