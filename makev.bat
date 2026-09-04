@@ -296,6 +296,7 @@ if exist "%tcc_dir%" (
 	echo Updating TCC
 	echo  ^> Syncing TCC from !tcc_url!
 	if exist "lib\advapi32.def" git checkout -- lib\advapi32.def >nul 2>nul
+	if exist "lib\kernel32.def" git checkout -- lib\kernel32.def >nul 2>nul
 	git pull --rebase --quiet
 	if !ERRORLEVEL! NEQ 0 (
 		set tcc_update_error=!ERRORLEVEL!
@@ -317,9 +318,16 @@ exit /b 0
 
 :patch_tcc_defs
 set "advapi32_def=%tcc_dir%\lib\advapi32.def"
-if not exist "%advapi32_def%" exit /b 0
-for %%G in (RegEnumKeyExW RegEnumValueW RegQueryInfoKeyW) do (
-	findstr /x /c:"%%G" "%advapi32_def%" >nul || >>"%advapi32_def%" echo %%G
+if exist "%advapi32_def%" (
+	for %%G in (RegEnumKeyExW RegEnumValueW RegQueryInfoKeyW) do (
+		findstr /x /c:"%%G" "%advapi32_def%" >nul || >>"%advapi32_def%" echo %%G
+	)
+)
+set "kernel32_def=%tcc_dir%\lib\kernel32.def"
+if exist "%kernel32_def%" (
+	for %%G in (FlsAlloc FlsGetValue FlsSetValue) do (
+		findstr /x /c:"%%G" "%kernel32_def%" >nul || >>"%kernel32_def%" echo %%G
+	)
 )
 exit /b 0
 
