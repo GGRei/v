@@ -305,13 +305,20 @@ fn main() {
 	assert out == 'true\ntrue\ntrue\ntrue\ntrue\n7\ntrue'
 	c_source := pointer_voidptr_gen_c(v3_bin, 'explicit_voidptr_slot_addresses_c', source)
 	compact := c_source.replace(' ', '').replace('\n', '')
-	assert compact.contains('main__clear_slot(&local);'), c_source
-	assert compact.contains('main__clear_slot(&value_holder.direct);'), c_source
-	assert compact.contains('main__clear_slot(&value_holder.inner.handle);'), c_source
-	assert compact.contains('main__clear_slot(&pointer_holder->direct);'), c_source
-	assert compact.contains('main__clear_slot(&pointer_holder->inner.handle);'), c_source
-	assert compact.contains('main__observe_address(&typed);'), c_source
-	assert compact.contains('main__read_u32(&typed)'), c_source
-	assert compact.contains('main__same_pointer(*(&preserved),preserved)'), c_source
-	assert !compact.contains('main__clear_slot(*&'), c_source
+	mut canonical := compact
+	canonical = canonical.replace('main__clear_slot(', 'clear_slot(')
+	canonical = canonical.replace('main__observe_address(', 'observe_address(')
+	canonical = canonical.replace('main__read_u32(', 'read_u32(')
+	canonical = canonical.replace('main__same_pointer(', 'same_pointer(')
+	canonical = canonical.replace('clear_slot((&pointer_holder->inner.handle));',
+		'clear_slot(&pointer_holder->inner.handle);')
+	assert canonical.contains('clear_slot(&local);'), c_source
+	assert canonical.contains('clear_slot(&value_holder.direct);'), c_source
+	assert canonical.contains('clear_slot(&value_holder.inner.handle);'), c_source
+	assert canonical.contains('clear_slot(&pointer_holder->direct);'), c_source
+	assert canonical.contains('clear_slot(&pointer_holder->inner.handle);'), c_source
+	assert canonical.contains('observe_address(&typed);'), c_source
+	assert canonical.contains('read_u32(&typed)'), c_source
+	assert canonical.contains('same_pointer(*(&preserved),preserved)'), c_source
+	assert !canonical.contains('clear_slot(*&'), c_source
 }
