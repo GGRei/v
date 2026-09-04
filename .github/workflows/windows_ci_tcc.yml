@@ -123,9 +123,97 @@ jobs:
               Write-Host "${name}: no LIBRARY line found to rewrite in $defPath"
             }
           }
+      - name: Preprovision pinned vc and TCC for RUN37b diagnostics
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:GIT_TERMINAL_PROMPT = '0'
+          $env:GCM_INTERACTIVE = 'Never'
+          $expectedVc = '28ca47a2e1f7e7660175df906859a3f915e68d4a'
+          $expectedVcBlob = '8bafd5f31ed4c797fd3e02d9f24de63aa1e583dd'
+          $expectedTcc = '86ae5844b8b56071b21ae3aa138b247d5eb9ddd9'
+          $vcPath = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'vc'))
+          $tccPath = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'thirdparty\tcc'))
+          foreach ($path in @($vcPath, $tccPath)) {
+            if (Test-Path -LiteralPath $path) { throw "dependency path is not fresh: $path" }
+          }
+          git init --initial-branch=issue74-pinned -- $vcPath
+          if ($LASTEXITCODE -ne 0) { throw "git init vc failed: $LASTEXITCODE" }
+          git -C $vcPath remote add origin https://github.com/vlang/vc.git
+          if ($LASTEXITCODE -ne 0) { throw "git remote vc failed: $LASTEXITCODE" }
+          git -C $vcPath fetch --no-tags --depth=1 origin $expectedVc
+          if ($LASTEXITCODE -ne 0) { throw "git fetch vc failed: $LASTEXITCODE" }
+          git -C $vcPath checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { throw "git checkout vc failed: $LASTEXITCODE" }
+          git init --initial-branch=issue74-pinned -- $tccPath
+          if ($LASTEXITCODE -ne 0) { throw "git init TCC failed: $LASTEXITCODE" }
+          git -C $tccPath remote add origin https://github.com/vlang/tccbin.git
+          if ($LASTEXITCODE -ne 0) { throw "git remote TCC failed: $LASTEXITCODE" }
+          git -C $tccPath fetch --no-tags --depth=1 origin $expectedTcc
+          if ($LASTEXITCODE -ne 0) { throw "git fetch TCC failed: $LASTEXITCODE" }
+          git -C $tccPath checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { throw "git checkout TCC failed: $LASTEXITCODE" }
+          foreach ($path in @($vcPath, $tccPath)) {
+            $item = Get-Item -LiteralPath $path -Force
+            if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+              throw "dependency is not a real directory: $path"
+            }
+            if (-not [string]::Equals($item.FullName, $path, [StringComparison]::OrdinalIgnoreCase)) {
+              throw "dependency path is not canonical: $path"
+            }
+          }
+          $vcHead = (git -C $vcPath rev-parse HEAD).Trim(); $vcHeadRc = $LASTEXITCODE
+          $vcBlob = (git -C $vcPath rev-parse 'HEAD:v_win.c').Trim(); $vcBlobRc = $LASTEXITCODE
+          $tccHead = (git -C $tccPath rev-parse HEAD).Trim(); $tccHeadRc = $LASTEXITCODE
+          if ($vcHeadRc -ne 0 -or $vcBlobRc -ne 0 -or $tccHeadRc -ne 0 -or $vcHead -cne $expectedVc -or $vcBlob -cne $expectedVcBlob -or $tccHead -cne $expectedTcc) {
+            throw "dependency identity mismatch: vc=$vcHead blob=$vcBlob tcc=$tccHead"
+          }
+          $advapi = Join-Path $tccPath 'lib\advapi32.def'
+          $tccExe = Join-Path $tccPath 'tcc.exe'
+          foreach ($leaf in @($advapi, $tccExe)) {
+            $item = Get-Item -LiteralPath $leaf -Force
+            if (-not ($item -is [IO.FileInfo]) -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+              throw "TCC leaf is not a real file: $leaf"
+            }
+          }
+          $symbols = @('RegEnumKeyExW', 'RegEnumValueW', 'RegQueryInfoKeyW')
+          foreach ($symbol in $symbols) {
+            $count = @([IO.File]::ReadAllLines($advapi) | Where-Object { $_ -ceq $symbol }).Count
+            if ($count -eq 0) { Add-Content -LiteralPath $advapi -Value $symbol -Encoding ascii }
+            elseif ($count -ne 1) { throw "advapi symbol cardinality before patch ${symbol}=$count" }
+          }
+          foreach ($symbol in $symbols) {
+            $count = @([IO.File]::ReadAllLines($advapi) | Where-Object { $_ -ceq $symbol }).Count
+            if ($count -ne 1) { throw "advapi symbol cardinality after patch ${symbol}=$count" }
+          }
+          $tccDirty = @(git -C $tccPath status --porcelain --untracked-files=no)
+          if ($LASTEXITCODE -ne 0 -or $tccDirty.Count -ne 1 -or $tccDirty[0] -cne ' M lib/advapi32.def') {
+            throw "unexpected TCC dirty state: $($tccDirty -join ',')"
+          }
       - name: Build with makev.bat -tcc
         run: |
-          .\makev.bat -tcc
+          .\makev.bat -tcc --local
+          $makevRc = $LASTEXITCODE
+          $vcHead = (git -C vc rev-parse HEAD).Trim(); $vcHeadRc = $LASTEXITCODE
+          $vcBlob = (git -C vc rev-parse 'HEAD:v_win.c').Trim(); $vcBlobRc = $LASTEXITCODE
+          $tccHead = (git -C thirdparty\tcc rev-parse HEAD).Trim(); $tccHeadRc = $LASTEXITCODE
+          $advapi = 'thirdparty\tcc\lib\advapi32.def'
+          $tccExe = 'thirdparty\tcc\tcc.exe'
+          foreach ($leaf in @($advapi, $tccExe)) {
+            $item = Get-Item -LiteralPath $leaf -Force
+            if (-not ($item -is [IO.FileInfo]) -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "invalid TCC leaf after makev: $leaf" }
+          }
+          foreach ($symbol in @('RegEnumKeyExW', 'RegEnumValueW', 'RegQueryInfoKeyW')) {
+            if (@([IO.File]::ReadAllLines($advapi) | Where-Object { $_ -ceq $symbol }).Count -ne 1) { throw "invalid advapi symbol after makev: $symbol" }
+          }
+          $tccDirty = @(git -C thirdparty\tcc status --porcelain --untracked-files=no)
+          if ($LASTEXITCODE -ne 0 -or $tccDirty.Count -ne 1 -or $tccDirty[0] -cne ' M lib/advapi32.def') {
+            throw "unexpected TCC dirty state after makev: $($tccDirty -join ',')"
+          }
+          if ($vcHeadRc -ne 0 -or $vcBlobRc -ne 0 -or $tccHeadRc -ne 0 -or $vcHead -cne '28ca47a2e1f7e7660175df906859a3f915e68d4a' -or $vcBlob -cne '8bafd5f31ed4c797fd3e02d9f24de63aa1e583dd' -or $tccHead -cne '86ae5844b8b56071b21ae3aa138b247d5eb9ddd9') {
+            throw "dependency identity changed during makev: vc=$vcHead blob=$vcBlob tcc=$tccHead"
+          }
+          if ($makevRc -ne 0) { throw "makev.bat failed: $makevRc" }
           .\v.exe symlink
       - name: Pkg-config regression (TCC dynamic isolation)
         run: |
@@ -237,9 +325,97 @@ jobs:
       VTEST_SHOW_LONGEST_BY_TOTALTIME: 3
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Preprovision pinned vc and TCC for RUN37b diagnostics
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:GIT_TERMINAL_PROMPT = '0'
+          $env:GCM_INTERACTIVE = 'Never'
+          $expectedVc = '28ca47a2e1f7e7660175df906859a3f915e68d4a'
+          $expectedVcBlob = '8bafd5f31ed4c797fd3e02d9f24de63aa1e583dd'
+          $expectedTcc = '86ae5844b8b56071b21ae3aa138b247d5eb9ddd9'
+          $vcPath = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'vc'))
+          $tccPath = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'thirdparty\tcc'))
+          foreach ($path in @($vcPath, $tccPath)) {
+            if (Test-Path -LiteralPath $path) { throw "dependency path is not fresh: $path" }
+          }
+          git init --initial-branch=issue74-pinned -- $vcPath
+          if ($LASTEXITCODE -ne 0) { throw "git init vc failed: $LASTEXITCODE" }
+          git -C $vcPath remote add origin https://github.com/vlang/vc.git
+          if ($LASTEXITCODE -ne 0) { throw "git remote vc failed: $LASTEXITCODE" }
+          git -C $vcPath fetch --no-tags --depth=1 origin $expectedVc
+          if ($LASTEXITCODE -ne 0) { throw "git fetch vc failed: $LASTEXITCODE" }
+          git -C $vcPath checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { throw "git checkout vc failed: $LASTEXITCODE" }
+          git init --initial-branch=issue74-pinned -- $tccPath
+          if ($LASTEXITCODE -ne 0) { throw "git init TCC failed: $LASTEXITCODE" }
+          git -C $tccPath remote add origin https://github.com/vlang/tccbin.git
+          if ($LASTEXITCODE -ne 0) { throw "git remote TCC failed: $LASTEXITCODE" }
+          git -C $tccPath fetch --no-tags --depth=1 origin $expectedTcc
+          if ($LASTEXITCODE -ne 0) { throw "git fetch TCC failed: $LASTEXITCODE" }
+          git -C $tccPath checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { throw "git checkout TCC failed: $LASTEXITCODE" }
+          foreach ($path in @($vcPath, $tccPath)) {
+            $item = Get-Item -LiteralPath $path -Force
+            if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+              throw "dependency is not a real directory: $path"
+            }
+            if (-not [string]::Equals($item.FullName, $path, [StringComparison]::OrdinalIgnoreCase)) {
+              throw "dependency path is not canonical: $path"
+            }
+          }
+          $vcHead = (git -C $vcPath rev-parse HEAD).Trim(); $vcHeadRc = $LASTEXITCODE
+          $vcBlob = (git -C $vcPath rev-parse 'HEAD:v_win.c').Trim(); $vcBlobRc = $LASTEXITCODE
+          $tccHead = (git -C $tccPath rev-parse HEAD).Trim(); $tccHeadRc = $LASTEXITCODE
+          if ($vcHeadRc -ne 0 -or $vcBlobRc -ne 0 -or $tccHeadRc -ne 0 -or $vcHead -cne $expectedVc -or $vcBlob -cne $expectedVcBlob -or $tccHead -cne $expectedTcc) {
+            throw "dependency identity mismatch: vc=$vcHead blob=$vcBlob tcc=$tccHead"
+          }
+          $advapi = Join-Path $tccPath 'lib\advapi32.def'
+          $tccExe = Join-Path $tccPath 'tcc.exe'
+          foreach ($leaf in @($advapi, $tccExe)) {
+            $item = Get-Item -LiteralPath $leaf -Force
+            if (-not ($item -is [IO.FileInfo]) -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+              throw "TCC leaf is not a real file: $leaf"
+            }
+          }
+          $symbols = @('RegEnumKeyExW', 'RegEnumValueW', 'RegQueryInfoKeyW')
+          foreach ($symbol in $symbols) {
+            $count = @([IO.File]::ReadAllLines($advapi) | Where-Object { $_ -ceq $symbol }).Count
+            if ($count -eq 0) { Add-Content -LiteralPath $advapi -Value $symbol -Encoding ascii }
+            elseif ($count -ne 1) { throw "advapi symbol cardinality before patch ${symbol}=$count" }
+          }
+          foreach ($symbol in $symbols) {
+            $count = @([IO.File]::ReadAllLines($advapi) | Where-Object { $_ -ceq $symbol }).Count
+            if ($count -ne 1) { throw "advapi symbol cardinality after patch ${symbol}=$count" }
+          }
+          $tccDirty = @(git -C $tccPath status --porcelain --untracked-files=no)
+          if ($LASTEXITCODE -ne 0 -or $tccDirty.Count -ne 1 -or $tccDirty[0] -cne ' M lib/advapi32.def') {
+            throw "unexpected TCC dirty state: $($tccDirty -join ',')"
+          }
       - name: Build with makev.bat -tcc
         run: |
-          .\makev.bat -tcc
+          .\makev.bat -tcc --local
+          $makevRc = $LASTEXITCODE
+          $vcHead = (git -C vc rev-parse HEAD).Trim(); $vcHeadRc = $LASTEXITCODE
+          $vcBlob = (git -C vc rev-parse 'HEAD:v_win.c').Trim(); $vcBlobRc = $LASTEXITCODE
+          $tccHead = (git -C thirdparty\tcc rev-parse HEAD).Trim(); $tccHeadRc = $LASTEXITCODE
+          $advapi = 'thirdparty\tcc\lib\advapi32.def'
+          $tccExe = 'thirdparty\tcc\tcc.exe'
+          foreach ($leaf in @($advapi, $tccExe)) {
+            $item = Get-Item -LiteralPath $leaf -Force
+            if (-not ($item -is [IO.FileInfo]) -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "invalid TCC leaf after makev: $leaf" }
+          }
+          foreach ($symbol in @('RegEnumKeyExW', 'RegEnumValueW', 'RegQueryInfoKeyW')) {
+            if (@([IO.File]::ReadAllLines($advapi) | Where-Object { $_ -ceq $symbol }).Count -ne 1) { throw "invalid advapi symbol after makev: $symbol" }
+          }
+          $tccDirty = @(git -C thirdparty\tcc status --porcelain --untracked-files=no)
+          if ($LASTEXITCODE -ne 0 -or $tccDirty.Count -ne 1 -or $tccDirty[0] -cne ' M lib/advapi32.def') {
+            throw "unexpected TCC dirty state after makev: $($tccDirty -join ',')"
+          }
+          if ($vcHeadRc -ne 0 -or $vcBlobRc -ne 0 -or $tccHeadRc -ne 0 -or $vcHead -cne '28ca47a2e1f7e7660175df906859a3f915e68d4a' -or $vcBlob -cne '8bafd5f31ed4c797fd3e02d9f24de63aa1e583dd' -or $tccHead -cne '86ae5844b8b56071b21ae3aa138b247d5eb9ddd9') {
+            throw "dependency identity changed during makev: vc=$vcHead blob=$vcBlob tcc=$tccHead"
+          }
+          if ($makevRc -ne 0) { throw "makev.bat failed: $makevRc" }
           .\v.exe symlink
       - name: Checkout pinned Windows TCC bundle
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -573,12 +749,99 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Preprovision pinned vc and TCC for RUN37b diagnostics
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:GIT_TERMINAL_PROMPT = '0'
+          $env:GCM_INTERACTIVE = 'Never'
+          $expectedVc = '28ca47a2e1f7e7660175df906859a3f915e68d4a'
+          $expectedVcBlob = '8bafd5f31ed4c797fd3e02d9f24de63aa1e583dd'
+          $expectedTcc = '86ae5844b8b56071b21ae3aa138b247d5eb9ddd9'
+          $vcPath = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'vc'))
+          $tccPath = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'thirdparty\tcc'))
+          foreach ($path in @($vcPath, $tccPath)) {
+            if (Test-Path -LiteralPath $path) { throw "dependency path is not fresh: $path" }
+          }
+          git init --initial-branch=issue74-pinned -- $vcPath
+          if ($LASTEXITCODE -ne 0) { throw "git init vc failed: $LASTEXITCODE" }
+          git -C $vcPath remote add origin https://github.com/vlang/vc.git
+          if ($LASTEXITCODE -ne 0) { throw "git remote vc failed: $LASTEXITCODE" }
+          git -C $vcPath fetch --no-tags --depth=1 origin $expectedVc
+          if ($LASTEXITCODE -ne 0) { throw "git fetch vc failed: $LASTEXITCODE" }
+          git -C $vcPath checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { throw "git checkout vc failed: $LASTEXITCODE" }
+          git init --initial-branch=issue74-pinned -- $tccPath
+          if ($LASTEXITCODE -ne 0) { throw "git init TCC failed: $LASTEXITCODE" }
+          git -C $tccPath remote add origin https://github.com/vlang/tccbin.git
+          if ($LASTEXITCODE -ne 0) { throw "git remote TCC failed: $LASTEXITCODE" }
+          git -C $tccPath fetch --no-tags --depth=1 origin $expectedTcc
+          if ($LASTEXITCODE -ne 0) { throw "git fetch TCC failed: $LASTEXITCODE" }
+          git -C $tccPath checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { throw "git checkout TCC failed: $LASTEXITCODE" }
+          foreach ($path in @($vcPath, $tccPath)) {
+            $item = Get-Item -LiteralPath $path -Force
+            if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+              throw "dependency is not a real directory: $path"
+            }
+            if (-not [string]::Equals($item.FullName, $path, [StringComparison]::OrdinalIgnoreCase)) {
+              throw "dependency path is not canonical: $path"
+            }
+          }
+          $vcHead = (git -C $vcPath rev-parse HEAD).Trim(); $vcHeadRc = $LASTEXITCODE
+          $vcBlob = (git -C $vcPath rev-parse 'HEAD:v_win.c').Trim(); $vcBlobRc = $LASTEXITCODE
+          $tccHead = (git -C $tccPath rev-parse HEAD).Trim(); $tccHeadRc = $LASTEXITCODE
+          if ($vcHeadRc -ne 0 -or $vcBlobRc -ne 0 -or $tccHeadRc -ne 0 -or $vcHead -cne $expectedVc -or $vcBlob -cne $expectedVcBlob -or $tccHead -cne $expectedTcc) {
+            throw "dependency identity mismatch: vc=$vcHead blob=$vcBlob tcc=$tccHead"
+          }
+          $advapi = Join-Path $tccPath 'lib\advapi32.def'
+          $tccExe = Join-Path $tccPath 'tcc.exe'
+          foreach ($leaf in @($advapi, $tccExe)) {
+            $item = Get-Item -LiteralPath $leaf -Force
+            if (-not ($item -is [IO.FileInfo]) -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+              throw "TCC leaf is not a real file: $leaf"
+            }
+          }
+          $symbols = @('RegEnumKeyExW', 'RegEnumValueW', 'RegQueryInfoKeyW')
+          foreach ($symbol in $symbols) {
+            $count = @([IO.File]::ReadAllLines($advapi) | Where-Object { $_ -ceq $symbol }).Count
+            if ($count -eq 0) { Add-Content -LiteralPath $advapi -Value $symbol -Encoding ascii }
+            elseif ($count -ne 1) { throw "advapi symbol cardinality before patch ${symbol}=$count" }
+          }
+          foreach ($symbol in $symbols) {
+            $count = @([IO.File]::ReadAllLines($advapi) | Where-Object { $_ -ceq $symbol }).Count
+            if ($count -ne 1) { throw "advapi symbol cardinality after patch ${symbol}=$count" }
+          }
+          $tccDirty = @(git -C $tccPath status --porcelain --untracked-files=no)
+          if ($LASTEXITCODE -ne 0 -or $tccDirty.Count -ne 1 -or $tccDirty[0] -cne ' M lib/advapi32.def') {
+            throw "unexpected TCC dirty state: $($tccDirty -join ',')"
+          }
       - name: Build V with TCC
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          .\makev.bat -tcc
-          if ($LASTEXITCODE -ne 0) { throw "makev.bat failed: $LASTEXITCODE" }
+          .\makev.bat -tcc --local
+          $makevRc = $LASTEXITCODE
+          $vcHead = (git -C vc rev-parse HEAD).Trim(); $vcHeadRc = $LASTEXITCODE
+          $vcBlob = (git -C vc rev-parse 'HEAD:v_win.c').Trim(); $vcBlobRc = $LASTEXITCODE
+          $tccHead = (git -C thirdparty\tcc rev-parse HEAD).Trim(); $tccHeadRc = $LASTEXITCODE
+          $advapi = 'thirdparty\tcc\lib\advapi32.def'
+          $tccExe = 'thirdparty\tcc\tcc.exe'
+          foreach ($leaf in @($advapi, $tccExe)) {
+            $item = Get-Item -LiteralPath $leaf -Force
+            if (-not ($item -is [IO.FileInfo]) -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "invalid TCC leaf after makev: $leaf" }
+          }
+          foreach ($symbol in @('RegEnumKeyExW', 'RegEnumValueW', 'RegQueryInfoKeyW')) {
+            if (@([IO.File]::ReadAllLines($advapi) | Where-Object { $_ -ceq $symbol }).Count -ne 1) { throw "invalid advapi symbol after makev: $symbol" }
+          }
+          $tccDirty = @(git -C thirdparty\tcc status --porcelain --untracked-files=no)
+          if ($LASTEXITCODE -ne 0 -or $tccDirty.Count -ne 1 -or $tccDirty[0] -cne ' M lib/advapi32.def') {
+            throw "unexpected TCC dirty state after makev: $($tccDirty -join ',')"
+          }
+          if ($vcHeadRc -ne 0 -or $vcBlobRc -ne 0 -or $tccHeadRc -ne 0 -or $vcHead -cne '28ca47a2e1f7e7660175df906859a3f915e68d4a' -or $vcBlob -cne '8bafd5f31ed4c797fd3e02d9f24de63aa1e583dd' -or $tccHead -cne '86ae5844b8b56071b21ae3aa138b247d5eb9ddd9') {
+            throw "dependency identity changed during makev: vc=$vcHead blob=$vcBlob tcc=$tccHead"
+          }
+          if ($makevRc -ne 0) { throw "makev.bat failed: $makevRc" }
       - name: Run Issue 74 V1 negative owners
         shell: pwsh
         run: |
