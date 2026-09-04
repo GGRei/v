@@ -123,9 +123,67 @@ jobs:
               Write-Host "${name}: no LIBRARY line found to rewrite in $defPath"
             }
           }
+      - name: Pin bootstrap vc for RUN37 TCC diagnostics
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expectedVc = '28ca47a2e1f7e7660175df906859a3f915e68d4a'
+          $expectedBlob = '8bafd5f31ed4c797fd3e02d9f24de63aa1e583dd'
+          $pinParent = [System.IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'issue74-vc-pin'))
+          if (Test-Path -LiteralPath $pinParent) { throw "vc pin parent path is not fresh: $pinParent" }
+          [void](New-Item -ItemType Directory -Path $pinParent)
+          $parentItem = Get-Item -LiteralPath $pinParent -Force
+          if (-not $parentItem.PSIsContainer -or ($parentItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            throw "vc pin parent is not a real directory: $pinParent"
+          }
+          if (-not [string]::Equals($parentItem.FullName, $pinParent, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "vc pin parent path is not canonical: $pinParent"
+          }
+          $mirror = [System.IO.Path]::GetFullPath((Join-Path $pinParent 'vc.git'))
+          if (Test-Path -LiteralPath $mirror) { throw "vc mirror path is not fresh: $mirror" }
+          git init --bare --initial-branch=issue74-pinned -- $mirror
+          if ($LASTEXITCODE -ne 0) { throw "git init vc mirror failed: $LASTEXITCODE" }
+          $mirrorItem = Get-Item -LiteralPath $mirror -Force
+          if (-not $mirrorItem.PSIsContainer -or ($mirrorItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            throw "vc mirror is not a real directory: $mirror"
+          }
+          if (-not [string]::Equals($mirrorItem.FullName, $mirror, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "vc mirror path is not canonical: $mirror"
+          }
+          git -C $mirror fetch --no-tags --depth=1 https://github.com/vlang/vc.git $expectedVc
+          if ($LASTEXITCODE -ne 0) { throw "git fetch pinned vc failed: $LASTEXITCODE" }
+          git -C $mirror update-ref refs/heads/issue74-pinned FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { throw "git update-ref pinned vc failed: $LASTEXITCODE" }
+          git -C $mirror symbolic-ref HEAD refs/heads/issue74-pinned
+          if ($LASTEXITCODE -ne 0) { throw "git symbolic-ref pinned vc failed: $LASTEXITCODE" }
+          $actualVc = (git -C $mirror rev-parse refs/heads/issue74-pinned).Trim()
+          $actualVcRc = $LASTEXITCODE
+          $actualBlob = (git -C $mirror rev-parse 'refs/heads/issue74-pinned:v_win.c').Trim()
+          $actualBlobRc = $LASTEXITCODE
+          if ($actualVcRc -ne 0 -or $actualVc -cne $expectedVc) { throw "unexpected pinned vc revision: $actualVc" }
+          if ($actualBlobRc -ne 0 -or $actualBlob -cne $expectedBlob) { throw "unexpected pinned vc v_win.c blob: $actualBlob" }
+          if (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'vc')) { throw 'vc checkout exists before makev' }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "VC_GIT=$mirror"
       - name: Build with makev.bat -tcc
         run: |
           .\makev.bat -tcc
+          $makevRc = $LASTEXITCODE
+          $vcPath = [System.IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'vc'))
+          $vcItem = Get-Item -LiteralPath $vcPath -Force
+          if (-not $vcItem.PSIsContainer -or ($vcItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            throw "makev vc checkout is not a real directory: $vcPath"
+          }
+          if (-not [string]::Equals($vcItem.FullName, $vcPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "makev vc checkout path is not canonical: $vcPath"
+          }
+          $actualVc = (git -C $vcPath rev-parse HEAD).Trim()
+          $actualVcRc = $LASTEXITCODE
+          $actualBlob = (git -C $vcPath rev-parse 'HEAD:v_win.c').Trim()
+          $actualBlobRc = $LASTEXITCODE
+          if ($actualVcRc -ne 0 -or $actualBlobRc -ne 0 -or $actualVc -cne '28ca47a2e1f7e7660175df906859a3f915e68d4a' -or $actualBlob -cne '8bafd5f31ed4c797fd3e02d9f24de63aa1e583dd') {
+            throw "makev used unexpected vc revision: $actualVc"
+          }
+          if ($makevRc -ne 0) { throw "makev.bat failed: $makevRc" }
           .\v.exe symlink
       - name: Pkg-config regression (TCC dynamic isolation)
         run: |
@@ -237,9 +295,67 @@ jobs:
       VTEST_SHOW_LONGEST_BY_TOTALTIME: 3
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Pin bootstrap vc for RUN37 TCC diagnostics
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expectedVc = '28ca47a2e1f7e7660175df906859a3f915e68d4a'
+          $expectedBlob = '8bafd5f31ed4c797fd3e02d9f24de63aa1e583dd'
+          $pinParent = [System.IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'issue74-vc-pin'))
+          if (Test-Path -LiteralPath $pinParent) { throw "vc pin parent path is not fresh: $pinParent" }
+          [void](New-Item -ItemType Directory -Path $pinParent)
+          $parentItem = Get-Item -LiteralPath $pinParent -Force
+          if (-not $parentItem.PSIsContainer -or ($parentItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            throw "vc pin parent is not a real directory: $pinParent"
+          }
+          if (-not [string]::Equals($parentItem.FullName, $pinParent, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "vc pin parent path is not canonical: $pinParent"
+          }
+          $mirror = [System.IO.Path]::GetFullPath((Join-Path $pinParent 'vc.git'))
+          if (Test-Path -LiteralPath $mirror) { throw "vc mirror path is not fresh: $mirror" }
+          git init --bare --initial-branch=issue74-pinned -- $mirror
+          if ($LASTEXITCODE -ne 0) { throw "git init vc mirror failed: $LASTEXITCODE" }
+          $mirrorItem = Get-Item -LiteralPath $mirror -Force
+          if (-not $mirrorItem.PSIsContainer -or ($mirrorItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            throw "vc mirror is not a real directory: $mirror"
+          }
+          if (-not [string]::Equals($mirrorItem.FullName, $mirror, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "vc mirror path is not canonical: $mirror"
+          }
+          git -C $mirror fetch --no-tags --depth=1 https://github.com/vlang/vc.git $expectedVc
+          if ($LASTEXITCODE -ne 0) { throw "git fetch pinned vc failed: $LASTEXITCODE" }
+          git -C $mirror update-ref refs/heads/issue74-pinned FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { throw "git update-ref pinned vc failed: $LASTEXITCODE" }
+          git -C $mirror symbolic-ref HEAD refs/heads/issue74-pinned
+          if ($LASTEXITCODE -ne 0) { throw "git symbolic-ref pinned vc failed: $LASTEXITCODE" }
+          $actualVc = (git -C $mirror rev-parse refs/heads/issue74-pinned).Trim()
+          $actualVcRc = $LASTEXITCODE
+          $actualBlob = (git -C $mirror rev-parse 'refs/heads/issue74-pinned:v_win.c').Trim()
+          $actualBlobRc = $LASTEXITCODE
+          if ($actualVcRc -ne 0 -or $actualVc -cne $expectedVc) { throw "unexpected pinned vc revision: $actualVc" }
+          if ($actualBlobRc -ne 0 -or $actualBlob -cne $expectedBlob) { throw "unexpected pinned vc v_win.c blob: $actualBlob" }
+          if (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'vc')) { throw 'vc checkout exists before makev' }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "VC_GIT=$mirror"
       - name: Build with makev.bat -tcc
         run: |
           .\makev.bat -tcc
+          $makevRc = $LASTEXITCODE
+          $vcPath = [System.IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'vc'))
+          $vcItem = Get-Item -LiteralPath $vcPath -Force
+          if (-not $vcItem.PSIsContainer -or ($vcItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            throw "makev vc checkout is not a real directory: $vcPath"
+          }
+          if (-not [string]::Equals($vcItem.FullName, $vcPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "makev vc checkout path is not canonical: $vcPath"
+          }
+          $actualVc = (git -C $vcPath rev-parse HEAD).Trim()
+          $actualVcRc = $LASTEXITCODE
+          $actualBlob = (git -C $vcPath rev-parse 'HEAD:v_win.c').Trim()
+          $actualBlobRc = $LASTEXITCODE
+          if ($actualVcRc -ne 0 -or $actualBlobRc -ne 0 -or $actualVc -cne '28ca47a2e1f7e7660175df906859a3f915e68d4a' -or $actualBlob -cne '8bafd5f31ed4c797fd3e02d9f24de63aa1e583dd') {
+            throw "makev used unexpected vc revision: $actualVc"
+          }
+          if ($makevRc -ne 0) { throw "makev.bat failed: $makevRc" }
           .\v.exe symlink
       - name: Checkout pinned Windows TCC bundle
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -573,12 +689,69 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Pin bootstrap vc for RUN37 TCC diagnostics
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expectedVc = '28ca47a2e1f7e7660175df906859a3f915e68d4a'
+          $expectedBlob = '8bafd5f31ed4c797fd3e02d9f24de63aa1e583dd'
+          $pinParent = [System.IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP 'issue74-vc-pin'))
+          if (Test-Path -LiteralPath $pinParent) { throw "vc pin parent path is not fresh: $pinParent" }
+          [void](New-Item -ItemType Directory -Path $pinParent)
+          $parentItem = Get-Item -LiteralPath $pinParent -Force
+          if (-not $parentItem.PSIsContainer -or ($parentItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            throw "vc pin parent is not a real directory: $pinParent"
+          }
+          if (-not [string]::Equals($parentItem.FullName, $pinParent, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "vc pin parent path is not canonical: $pinParent"
+          }
+          $mirror = [System.IO.Path]::GetFullPath((Join-Path $pinParent 'vc.git'))
+          if (Test-Path -LiteralPath $mirror) { throw "vc mirror path is not fresh: $mirror" }
+          git init --bare --initial-branch=issue74-pinned -- $mirror
+          if ($LASTEXITCODE -ne 0) { throw "git init vc mirror failed: $LASTEXITCODE" }
+          $mirrorItem = Get-Item -LiteralPath $mirror -Force
+          if (-not $mirrorItem.PSIsContainer -or ($mirrorItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            throw "vc mirror is not a real directory: $mirror"
+          }
+          if (-not [string]::Equals($mirrorItem.FullName, $mirror, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "vc mirror path is not canonical: $mirror"
+          }
+          git -C $mirror fetch --no-tags --depth=1 https://github.com/vlang/vc.git $expectedVc
+          if ($LASTEXITCODE -ne 0) { throw "git fetch pinned vc failed: $LASTEXITCODE" }
+          git -C $mirror update-ref refs/heads/issue74-pinned FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { throw "git update-ref pinned vc failed: $LASTEXITCODE" }
+          git -C $mirror symbolic-ref HEAD refs/heads/issue74-pinned
+          if ($LASTEXITCODE -ne 0) { throw "git symbolic-ref pinned vc failed: $LASTEXITCODE" }
+          $actualVc = (git -C $mirror rev-parse refs/heads/issue74-pinned).Trim()
+          $actualVcRc = $LASTEXITCODE
+          $actualBlob = (git -C $mirror rev-parse 'refs/heads/issue74-pinned:v_win.c').Trim()
+          $actualBlobRc = $LASTEXITCODE
+          if ($actualVcRc -ne 0 -or $actualVc -cne $expectedVc) { throw "unexpected pinned vc revision: $actualVc" }
+          if ($actualBlobRc -ne 0 -or $actualBlob -cne $expectedBlob) { throw "unexpected pinned vc v_win.c blob: $actualBlob" }
+          if (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'vc')) { throw 'vc checkout exists before makev' }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "VC_GIT=$mirror"
       - name: Build V with TCC
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           .\makev.bat -tcc
-          if ($LASTEXITCODE -ne 0) { throw "makev.bat failed: $LASTEXITCODE" }
+          $makevRc = $LASTEXITCODE
+          $vcPath = [System.IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'vc'))
+          $vcItem = Get-Item -LiteralPath $vcPath -Force
+          if (-not $vcItem.PSIsContainer -or ($vcItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            throw "makev vc checkout is not a real directory: $vcPath"
+          }
+          if (-not [string]::Equals($vcItem.FullName, $vcPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "makev vc checkout path is not canonical: $vcPath"
+          }
+          $actualVc = (git -C $vcPath rev-parse HEAD).Trim()
+          $actualVcRc = $LASTEXITCODE
+          $actualBlob = (git -C $vcPath rev-parse 'HEAD:v_win.c').Trim()
+          $actualBlobRc = $LASTEXITCODE
+          if ($actualVcRc -ne 0 -or $actualBlobRc -ne 0 -or $actualVc -cne '28ca47a2e1f7e7660175df906859a3f915e68d4a' -or $actualBlob -cne '8bafd5f31ed4c797fd3e02d9f24de63aa1e583dd') {
+            throw "makev used unexpected vc revision: $actualVc"
+          }
+          if ($makevRc -ne 0) { throw "makev.bat failed: $makevRc" }
       - name: Run Issue 74 V1 negative owners
         shell: pwsh
         run: |
