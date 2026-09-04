@@ -232,3 +232,86 @@ fn main() {
 	assert run.exit_code == 0, run.output
 	assert run.output.trim_space() == '17'
 }
+
+fn test_explicit_voidptr_slot_addresses_preserve_source_storage() {
+	v3_bin := pointer_voidptr_build_v3()
+	source := 'struct InnerSlot {
+mut:
+	handle voidptr
+}
+
+struct SlotHolder {
+mut:
+	direct voidptr
+	inner  InnerSlot
+}
+
+fn clear_slot(address voidptr) {
+	slot := &&u8(address)
+	unsafe {
+		*slot = &u8(nil)
+	}
+}
+
+fn observe_address(_ voidptr) {}
+
+fn same_pointer(address voidptr, expected voidptr) bool {
+	return address == expected
+}
+
+fn read_u32(value &u32) u32 {
+	return *value
+}
+
+fn main() {
+	mut local_value := u8(1)
+	mut direct_value := u8(2)
+	mut nested_value := u8(3)
+	mut pointer_direct_value := u8(4)
+	mut pointer_nested_value := u8(5)
+	mut local := voidptr(&local_value)
+	mut value_holder := SlotHolder{
+		direct: voidptr(&direct_value)
+		inner: InnerSlot{
+			handle: voidptr(&nested_value)
+		}
+	}
+	mut pointer_holder := &SlotHolder{
+		direct: voidptr(&pointer_direct_value)
+		inner: InnerSlot{
+			handle: voidptr(&pointer_nested_value)
+		}
+	}
+	clear_slot(&local)
+	clear_slot(&value_holder.direct)
+	clear_slot(&value_holder.inner.handle)
+	clear_slot(&pointer_holder.direct)
+	clear_slot((&pointer_holder.inner.handle))
+	println(local == unsafe { nil })
+	println(value_holder.direct == unsafe { nil })
+	println(value_holder.inner.handle == unsafe { nil })
+	println(pointer_holder.direct == unsafe { nil })
+	println(pointer_holder.inner.handle == unsafe { nil })
+
+	mut typed := u32(7)
+	observe_address(&typed)
+	println(read_u32(&typed))
+	mut preserved_value := u8(9)
+	mut preserved := voidptr(&preserved_value)
+	println(same_pointer(*(&preserved), preserved))
+}
+'
+	out := pointer_voidptr_run_good(v3_bin, 'explicit_voidptr_slot_addresses', source)
+	assert out == 'true\ntrue\ntrue\ntrue\ntrue\n7\ntrue'
+	c_source := pointer_voidptr_gen_c(v3_bin, 'explicit_voidptr_slot_addresses_c', source)
+	compact := c_source.replace(' ', '').replace('\n', '')
+	assert compact.contains('main__clear_slot(&local);'), c_source
+	assert compact.contains('main__clear_slot(&value_holder.direct);'), c_source
+	assert compact.contains('main__clear_slot(&value_holder.inner.handle);'), c_source
+	assert compact.contains('main__clear_slot(&pointer_holder->direct);'), c_source
+	assert compact.contains('main__clear_slot(&pointer_holder->inner.handle);'), c_source
+	assert compact.contains('main__observe_address(&typed);'), c_source
+	assert compact.contains('main__read_u32(&typed)'), c_source
+	assert compact.contains('main__same_pointer(*(&preserved),preserved)'), c_source
+	assert !compact.contains('main__clear_slot(*&'), c_source
+}

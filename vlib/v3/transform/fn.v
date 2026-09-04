@@ -2872,6 +2872,17 @@ fn (mut t Transformer) transform_call_arg_for_param_isolated(arg_id flat.NodeId,
 		&& t.call_arg_is_fn_pointer_value(arg_id, *arg_node) {
 		return t.transform_expr(arg_id)
 	}
+	// `voidptr` accepts any pointer value. An address explicitly written by the
+	// caller therefore denotes the address of that storage, even when the
+	// storage itself has type `voidptr`. Do not let the contextual value
+	// coercion turn source `&slot` into the synthetic value load `*(&slot)`.
+	// This exception is intentionally narrower than the general pointer group:
+	// byteptr/charptr and compiler-generated address nodes retain their historic
+	// coercion paths.
+	if t.normalize_type_alias(param_type.trim_space()) == 'voidptr'
+		&& t.call_arg_is_explicit_source_address(arg_id) {
+		return t.transform_expr(arg_id)
+	}
 	if transform_param_type_is_void_pointer(param_type) {
 		// C APIs commonly spell a null callback/data pointer as the integer
 		// literal `0`.  It is already a pointer value in that context; taking
@@ -3087,6 +3098,18 @@ fn (mut t Transformer) transform_call_arg_for_param_isolated(arg_id flat.NodeId,
 		}
 	}
 	return t.transform_expr_for_type(arg_id, param_type)
+}
+
+fn (t &Transformer) call_arg_is_explicit_source_address(arg_id flat.NodeId) bool {
+	if int(arg_id) < 0 || int(arg_id) >= t.a.nodes.len {
+		return false
+	}
+	node := t.a.nodes[int(arg_id)]
+	if node.kind in [.paren, .expr_stmt] && node.children_count == 1 {
+		return t.call_arg_is_explicit_source_address(t.a.child(&node, 0))
+	}
+	return node.kind == .prefix && node.op == .amp && node.children_count == 1
+		&& node.pos.is_valid()
 }
 
 fn (t &Transformer) call_arg_is_zero_pointer_literal(id flat.NodeId) bool {
