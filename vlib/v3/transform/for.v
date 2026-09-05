@@ -897,8 +897,7 @@ fn (mut t Transformer) lower_iterator_for_in(id flat.NodeId, node flat.Node, key
 	} else {
 		t.make_empty()
 	}
-	elem_type := info.elem_type
-	t.set_var_type(elem_name, elem_type)
+	mut elem_type := info.elem_type
 	t.mark_fn_used_name(info.next_method)
 	next_receiver := if iter_type.trim_space().starts_with('&') {
 		t.make_ident(iter_name)
@@ -908,6 +907,21 @@ fn (mut t Transformer) lower_iterator_for_in(id flat.NodeId, node flat.Node, key
 	next_call := t.make_call_typed(info.next_method, [
 		next_receiver,
 	], '?${elem_type}')
+	// The iterator metadata predates specialization of the container. Resolve
+	// this actual next call before copying its payload type into local bindings.
+	if !isnil(t.tc) {
+		concrete_next_type := t.concrete_generic_call_return_type(next_call, t.a.nodes[int(next_call)])
+		if concrete_next_type.starts_with('?') {
+			next_type := t.tc.parse_resolution_type(concrete_next_type)
+			if payload := t.iterator_for_in_elem_type_from_next_return(next_type) {
+				if payload.len > 0 && !t.generic_arg_is_unresolved(payload) {
+					elem_type = payload
+					t.set_node_typ(int(next_call), '?${elem_type}')
+				}
+			}
+		}
+	}
+	t.set_var_type(elem_name, elem_type)
 	next_decl := t.make_decl_assign_typed(next_name, next_call, '?${elem_type}')
 	no_value := t.make_prefix(.not, t.make_selector(t.make_ident(next_name), 'ok', 'bool'))
 	break_if_done := t.make_if(no_value, t.make_block([t.a.add(.break_stmt)]), t.make_empty())

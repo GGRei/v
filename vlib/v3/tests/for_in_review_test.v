@@ -146,6 +146,16 @@ fn for_in_review_capture_c(root string, name string, source string) bool {
 	return for_in_review_capture_text(root, name, content)
 }
 
+fn for_in_review_has_typed_iterator_slot(code string, definition string, typed_slot string, erased_slot string) bool {
+	if code.count(definition) != 1 {
+		return false
+	}
+	tail := code.all_after(definition)
+	end := tail.index('\n}\n') or { return false }
+	body := tail[..end].replace('\r', '').replace('\n', '').replace('\t', '').replace(' ', '')
+	return body.contains(typed_slot) && !body.contains(erased_slot)
+}
+
 fn test_reverse_iterator_preserves_parameter_and_recursive_field_element_types() {
 	root := for_in_review_temp_path('reverse_iterator_types')
 	os.mkdir_all(root) or { panic(err) }
@@ -171,6 +181,9 @@ fn node_id(node &Node) int {
 fn parameter_order(items []Item) int {
 	mut order := 0
 	for item in arrays.reverse_iterator(items) {
+		if item.id != item_id(item) {
+			panic(\'parameter iterator field type changed\')
+		}
 		order = order * 10 + item_id(item)
 	}
 	return order
@@ -179,6 +192,9 @@ fn parameter_order(items []Item) int {
 fn field_order(node &Node) int {
 	mut order := 0
 	for child in arrays.reverse_iterator(node.children) {
+		if child.id != node_id(child) {
+			panic(\'recursive iterator field type changed\')
+		}
 		order = order * 10 + node_id(child)
 	}
 	return order
@@ -267,6 +283,18 @@ fn main() {
 		passed = passed && ok
 		report += '${generation}: compile_rc=${compile.exit_code} run_rc=${run_code} passed=${ok} c=${c_path}\n'
 	}
+	// Check the local C slots only after both generations' evidence is retained.
+	v3_c := if capture_ok {
+		os.read_file(os.join_path(evidence, 'v3.c')) or { '' }
+	} else {
+		''
+	}
+	parameter_slot_ok := for_in_review_has_typed_iterator_slot(v3_c,
+		'int parameter_order(Array items) {', 'main__Item*item=__iter_next_', 'int*item=')
+	field_slot_ok := for_in_review_has_typed_iterator_slot(v3_c,
+		'int field_order(main__Node* node) {', 'main__Node*child=__iter_next_', 'int*child=')
+	passed = passed && parameter_slot_ok && field_slot_ok
+	report += 'parameter_slot_typed=${parameter_slot_ok} field_slot_typed=${field_slot_ok}\n'
 	// Eight text files, each <=8 MiB: no binaries and at most 64 MiB per artifact.
 	report += 'capture_complete=${capture_ok}\n'
 	if !for_in_review_capture_text(evidence, 'results.txt', report) {
