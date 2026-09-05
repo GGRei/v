@@ -903,6 +903,45 @@ cleanup:
 }
 
 
+// Build the existing CONNECT request without interpreting UTF-16 as bytes.
+// The return value excludes the terminating NUL; zero leaves a Windows error.
+static INT vschannel_format_proxy_connect(CHAR *message, INT capacity, LPCWSTR host, INT port_number) {
+	static const CHAR prefix[] = "CONNECT ";
+	static const CHAR suffix[] = " HTTP/1.0\r\nUser-Agent: webclient\r\n\r\n";
+	if(message == NULL || host == NULL || capacity <= 0) {
+		SetLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	INT host_bytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, host, -1, NULL, 0, NULL, NULL);
+	if(host_bytes == 0) {
+		return 0;
+	}
+	CHAR port_text[16];
+	_itoa(port_number, port_text, 10);
+	INT prefix_bytes = (INT)sizeof(prefix) - 1;
+	INT suffix_bytes = (INT)sizeof(suffix) - 1;
+	INT port_bytes = (INT)strlen(port_text);
+	// host_bytes includes its NUL. Replace that NUL with ':' and reserve the
+	// final NUL as well: capacity >= prefix + host_bytes + port + suffix + 1.
+	INT fixed_bytes = prefix_bytes + port_bytes + suffix_bytes + 1;
+	if(capacity < fixed_bytes || host_bytes > capacity - fixed_bytes) {
+		SetLastError(ERROR_INSUFFICIENT_BUFFER);
+		return 0;
+	}
+	memcpy(message, prefix, prefix_bytes);
+	INT converted = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, host, -1,
+		message + prefix_bytes, host_bytes, NULL, NULL);
+	if(converted == 0) {
+		return 0;
+	}
+	INT cursor = prefix_bytes + converted - 1;
+	message[cursor++] = ':';
+	memcpy(message + cursor, port_text, port_bytes);
+	cursor += port_bytes;
+	memcpy(message + cursor, suffix, suffix_bytes + 1);
+	return cursor + suffix_bytes;
+}
+
 static INT connect_to_server(TlsContext *tls_ctx, LPWSTR host, INT port_number) {
 	SOCKET Socket;
 	
@@ -929,7 +968,7 @@ static INT connect_to_server(TlsContext *tls_ctx, LPWSTR host, INT port_number) 
 	int res = wsprintf(service_name, L"%d", port_number);
 
 	if(WSAConnectByNameW(Socket,connect_name, service_name, &local_address_length, 
-		&local_address, &remote_address_length, &remote_address, &tv, NULL) == FALSE) {
+		(LPSOCKADDR)&local_address, &remote_address_length, (LPSOCKADDR)&remote_address, &tv, NULL) == FALSE) {
 		INT err_code = WSAGetLastError();
 		vschannel_set_last_error(tls_ctx, err_code);
 		closesocket(Socket);
@@ -937,16 +976,18 @@ static INT connect_to_server(TlsContext *tls_ctx, LPWSTR host, INT port_number) 
 	}
 
 	if(use_proxy) {
-		BYTE  pbMessage[200]; 
+		CHAR pbMessage[200];
 		DWORD cbMessage;
 
 		// Build message for proxy server
-		strcpy(pbMessage, "CONNECT ");
-		strcat(pbMessage, host);
-		strcat(pbMessage, ":");
-		_itoa(port_number, pbMessage + strlen(pbMessage), 10);
-		strcat(pbMessage, " HTTP/1.0\r\nUser-Agent: webclient\r\n\r\n");
-		cbMessage = (DWORD)strlen(pbMessage);
+		INT message_length = vschannel_format_proxy_connect(pbMessage, sizeof(pbMessage), host, port_number);
+		if(message_length == 0) {
+			INT err_code = (INT)GetLastError();
+			vschannel_set_last_error(tls_ctx, err_code);
+			closesocket(Socket);
+			return err_code;
+		}
+		cbMessage = (DWORD)message_length;
 
 		// Send message to proxy server
 		if(send(Socket, pbMessage, cbMessage, 0) == SOCKET_ERROR) {

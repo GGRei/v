@@ -625,6 +625,60 @@ fn main() {
 	assert c_code.contains('int _chsize_s(void*, u64);'), c_code
 }
 
+fn wait_header_windows_vschannel_connect_source() string {
+	vschannel_dir := os.join_path(os.dir(wait_header_vlib_dir), 'thirdparty', 'vschannel').replace('\\',
+		'/')
+	return "module main
+
+#preinclude <stdio.h>
+#preinclude <winsock2.h>
+#preinclude <windows.h>
+#flag -I \$first_existing('${vschannel_dir}')
+#flag -DUNICODE -D_UNICODE
+#flag -l ws2_32 -l crypt32 -l secur32 -l user32
+#include \"vschannel.c\"
+
+fn C.vschannel_format_proxy_connect(&char, int, &u16, int) int
+
+fn check_connect(host string, port int) {
+	expected := 'CONNECT ' + host + ':' + port.str() +
+		' HTTP/1.0\\r\\nUser-Agent: webclient\\r\\n\\r\\n'
+	for capacity in [200, expected.len + 1] {
+		mut buffer := []u8{len: capacity + 2, init: 0xa5}
+		length := C.vschannel_format_proxy_connect(unsafe { &char(&buffer[1]) },
+			capacity, host.to_wide(), port)
+		assert length == expected.len
+		assert buffer[1..1 + length] == expected.bytes()
+		assert buffer[1 + length] == 0
+		assert buffer[0] == 0xa5 && buffer[capacity + 1] == 0xa5
+	}
+	check_rejected(host.to_wide(), expected.len, int(C.ERROR_INSUFFICIENT_BUFFER), port)
+}
+
+fn check_rejected(host &u16, capacity int, expected_error int, port int) {
+	mut buffer := []u8{len: capacity + 2, init: 0xa5}
+	length := C.vschannel_format_proxy_connect(unsafe { &char(&buffer[1]) },
+		capacity, host, port)
+	assert length == 0
+	assert int(C.GetLastError()) == expected_error
+	for value in buffer {
+		assert value == 0xa5
+	}
+}
+
+fn main() {
+	check_connect('example.com', 443)
+	check_connect('héllo-世界', 8443)
+	overhead := 'CONNECT :443 HTTP/1.0\\r\\nUser-Agent: webclient\\r\\n\\r\\n'.len
+	check_connect('x'.repeat(199 - overhead), 443)
+	check_rejected('x'.repeat(200).to_wide(), 200, int(C.ERROR_INSUFFICIENT_BUFFER), 443)
+	invalid_host := [u16(0xd800), 0]
+	check_rejected(unsafe { &invalid_host[0] }, 200, int(C.ERROR_NO_UNICODE_TRANSLATION), 443)
+	println('windows-vschannel-connect-ok')
+}
+"
+}
+
 fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	$if !windows {
 		return
@@ -723,7 +777,9 @@ fn main() {
 	output := fields['output_basename'] or { panic('missing output_basename') }
 	assert output is string
 	assert (output as string) == expected_output
-	root := os.join_path(os.temp_dir(), 'v3_sdk_helper_' + os.getpid().str())
+	assert os.args.len == 2
+	assert os.is_dir(os.args[1])
+	root := os.join_path(os.args[1], 'v3_sdk_helper_' + os.getpid().str())
 	os.mkdir(root) or { panic(err) }
 	path := os.join_path(root, 'report-世界.json')
 	defer {
@@ -767,9 +823,27 @@ fn main() {
 		sdk_program.c_code
 	assert sdk_compact.contains('VirtualProtect(ptr,size,PAGE_READWRITE,&tmp)'),
 		sdk_program.c_code
-	sdk_run := wait_header_execute_without_vflags(os.quoted_path(sdk_program.out))
+	sdk_parent := os.dir(sdk_program.out)
+	sdk_run := wait_header_execute_without_vflags(os.quoted_path(sdk_program.out) + ' ' +
+		os.quoted_path(sdk_parent))
 	assert sdk_run.exit_code == 0, sdk_run.output
 	assert sdk_run.output.trim_space() == 'windows-closure-sdk-ok', sdk_run.output
+	connect_source := wait_header_windows_vschannel_connect_source()
+	for generation in ['v1', 'v3'] {
+		compiler := if generation == 'v1' {
+			os.quoted_path(wait_header_vexe) + ' -old-compiler -gc none'
+		} else {
+			v3_bin
+		}
+		connect_program := wait_header_compile(compiler, 'windows_vschannel_connect_' +
+			generation, connect_source)
+		assert connect_program.c_code.contains('vschannel_format_proxy_connect('),
+			connect_program.c_code
+		connect_run := wait_header_execute_without_vflags(os.quoted_path(connect_program.out))
+		assert connect_run.exit_code == 0, connect_run.output
+		assert connect_run.output.trim_space() == 'windows-vschannel-connect-ok',
+			connect_run.output
+	}
 	default_program := wait_header_compile(v3_bin, 'windows_system_header_owners_default',
 		wait_header_windows_system_owner_source(''))
 	fallback_program := wait_header_compile(v3_bin, 'windows_system_header_owners_fallback',
