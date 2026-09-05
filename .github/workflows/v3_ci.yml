@@ -453,6 +453,9 @@ jobs:
             Run-Owner -Label v3-reader-homonym -Path 'vlib/v3/tests/interface_fn_parameter_test.v' -Common $v3Common -Names @(
               'test_interface_method_fn_parameter_uses_c_typedef',
               'test_homonymous_struct_does_not_replace_interface_method_signature')
+            Run-Owner -Label v3-reverse-iterator-types -Path 'vlib/v3/tests/for_in_review_test.v' -Common $v3Common -Names @(
+              'test_custom_iterator_pointer_for_in_uses_single_indirection',
+              'test_reverse_iterator_preserves_parameter_and_recursive_field_element_types')
           } finally {
             if ($oldTestCcPresent) {
               Set-Item -LiteralPath $testCcEnvPath -Value $oldTestCc
@@ -500,6 +503,18 @@ jobs:
             ${{ runner.temp }}/issue74-reader-evidence/*.c
             ${{ runner.temp }}/issue74-reader-evidence/*.log
             ${{ runner.temp }}/issue74-reader-evidence/*.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Preserve ReverseIterator reproduction evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-reverse-iterator-${{ matrix.lane }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/issue74-reverse-iterator-evidence/*.c
+            ${{ runner.temp }}/issue74-reverse-iterator-evidence/*.log
+            ${{ runner.temp }}/issue74-reverse-iterator-evidence/*.txt
           if-no-files-found: error
           retention-days: 7
 
@@ -870,6 +885,10 @@ jobs:
             run_owner v3-reader-homonym vlib/v3/tests/interface_fn_parameter_test.v \
               test_interface_method_fn_parameter_uses_c_typedef \
               test_homonymous_struct_does_not_replace_interface_method_signature
+          ISSUE74_V3_DRIVER_TEST_CC="$gcc_path" ISSUE74_V3_DRIVER_TEST_CXX="$gpp_path" \
+            run_owner v3-reverse-iterator-types vlib/v3/tests/for_in_review_test.v \
+              test_custom_iterator_pointer_for_in_uses_single_indirection \
+              test_reverse_iterator_preserves_parameter_and_recursive_field_element_types
 
           git diff --exit-code
           git diff --cached --exit-code
@@ -895,5 +914,16 @@ jobs:
             ${{ runner.temp }}/issue74-reader-evidence/*.c
             ${{ runner.temp }}/issue74-reader-evidence/*.log
             ${{ runner.temp }}/issue74-reader-evidence/*.txt
+          if-no-files-found: error
+          retention-days: 7
+      - name: Preserve ReverseIterator reproduction evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-reverse-iterator-linux-gcc-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/issue74-reverse-iterator-evidence/*.c
+            ${{ runner.temp }}/issue74-reverse-iterator-evidence/*.log
+            ${{ runner.temp }}/issue74-reverse-iterator-evidence/*.txt
           if-no-files-found: error
           retention-days: 7
