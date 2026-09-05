@@ -461,6 +461,9 @@ jobs:
             Run-Owner -Label v3-reverse-iterator-types -Path 'vlib/v3/tests/for_in_review_test.v' -Common $v3Common -Names @(
               'test_custom_iterator_pointer_for_in_uses_single_indirection',
               'test_reverse_iterator_preserves_parameter_and_recursive_field_element_types')
+            Run-Owner -Label v3-global-padding -Path 'vlib/v3/tests/global_decl_codegen_test.v' -Common $v3Common -Names @(
+              'test_implicit_global_dynamic_array_is_initialized_before_append',
+              'test_inferred_global_if_padding_preserves_nominal_type')
           } finally {
             if ($oldTestCcPresent) {
               Set-Item -LiteralPath $testCcEnvPath -Value $oldTestCc
@@ -520,6 +523,18 @@ jobs:
             ${{ runner.temp }}/issue74-reverse-iterator-evidence/*.c
             ${{ runner.temp }}/issue74-reverse-iterator-evidence/*.log
             ${{ runner.temp }}/issue74-reverse-iterator-evidence/*.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Preserve Padding reproduction evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-padding-${{ matrix.lane }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/issue74-padding-evidence/*.c
+            ${{ runner.temp }}/issue74-padding-evidence/*.log
+            ${{ runner.temp }}/issue74-padding-evidence/*.txt
           if-no-files-found: error
           retention-days: 7
 
@@ -901,6 +916,10 @@ jobs:
             run_owner v3-reverse-iterator-types vlib/v3/tests/for_in_review_test.v \
               test_custom_iterator_pointer_for_in_uses_single_indirection \
               test_reverse_iterator_preserves_parameter_and_recursive_field_element_types
+          ISSUE74_V3_DRIVER_TEST_CC="$gcc_path" ISSUE74_V3_DRIVER_TEST_CXX="$gpp_path" \
+            run_owner v3-global-padding vlib/v3/tests/global_decl_codegen_test.v \
+              test_implicit_global_dynamic_array_is_initialized_before_append \
+              test_inferred_global_if_padding_preserves_nominal_type
 
           git diff --exit-code
           git diff --cached --exit-code
@@ -937,5 +956,16 @@ jobs:
             ${{ runner.temp }}/issue74-reverse-iterator-evidence/*.c
             ${{ runner.temp }}/issue74-reverse-iterator-evidence/*.log
             ${{ runner.temp }}/issue74-reverse-iterator-evidence/*.txt
+          if-no-files-found: error
+          retention-days: 7
+      - name: Preserve Padding reproduction evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-padding-linux-gcc-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/issue74-padding-evidence/*.c
+            ${{ runner.temp }}/issue74-padding-evidence/*.log
+            ${{ runner.temp }}/issue74-padding-evidence/*.txt
           if-no-files-found: error
           retention-days: 7
