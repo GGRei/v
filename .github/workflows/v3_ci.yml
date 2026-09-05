@@ -593,6 +593,19 @@ jobs:
             '-run-only', ($cflagsTests -join ','),
             'vlib/v3/driver/c_compiler_flags_test.v'
           )
+          $msvcPathTests = @(
+            'test_msvc_string_flags_evaluates_ecdsa_search_path_macros',
+            'test_msvc_string_flags_path_macros_preserve_required_fallback_and_other_flags',
+            'test_msvc_string_flags_uses_cached_thirdparty_obj_path',
+            'test_msvc_string_flags_rewrites_obj_flags_through_cached_path',
+            'test_msvc_string_flags_selects_windows_libcrypto_without_legacy_crypto_name',
+            'test_msvc_ordered_pkgconfig_linker_args_keeps_dynamic_flags_on_legacy_path'
+          )
+          Assert-ExactTestDefinitions -Path 'vlib/v/builder/msvc_windows_test.v' -Names $msvcPathTests
+          Invoke-AuditedVTest -Label msvc-path-macros -Tail @(
+            '-run-only', ($msvcPathTests -join ','),
+            'vlib/v/builder/msvc_windows_test.v'
+          )
           $preambleTests = @(
             'test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations',
             'test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions',

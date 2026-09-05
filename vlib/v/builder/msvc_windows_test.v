@@ -99,6 +99,129 @@ fn test_windows_tcc_link_flags_select_libcrypto_without_legacy_crypto_name() {
 	assert '-lcrypto' !in libs
 }
 
+fn test_msvc_string_flags_evaluates_ecdsa_search_path_macros() {
+	source := os.read_file(os.join_path(@VEXEROOT, 'vlib', 'crypto', 'ecdsa', 'ecdsa.c.v')) or {
+		panic(err)
+	}
+	paths := ['C:/Program Files/OpenSSL-Win64/include',
+		'C:/Program Files/OpenSSL-Win64/lib/VC/x64/MD', 'C:/Program Files/OpenSSL/include',
+		'C:/Program Files/OpenSSL/lib/VC/x64/MD']
+	names := ['-I', '-L', '-I', '-L']
+	mut directives := []string{}
+	for line in source.split_into_lines() {
+		if line.starts_with('#flag windows -I') || line.starts_with('#flag windows -L') {
+			directives << line.all_after('#flag ')
+		}
+	}
+	assert directives.len == 4
+	for i, path in paths {
+		assert directives[i] == 'windows ${names[i]}' + r'$when_first_existing' + "('${path}')"
+	}
+	root := os.join_path(os.vtmp_dir(), 'issue74 ecdsa MSVC ${os.getpid()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	mut builder := msvc_new_builder_for_args(['-cc', 'msvc', '-os', 'windows', '-m64',
+		msvc_hello_world_example()])
+	for mask in 0 .. 16 {
+		state := os.join_path(root, mask.str())
+		mapped := [os.join_path(state, 'OpenSSL-Win64', 'include'),
+			os.join_path(state, 'OpenSSL-Win64', 'lib', 'VC', 'x64', 'MD'),
+			os.join_path(state, 'OpenSSL', 'include'),
+			os.join_path(state, 'OpenSSL', 'lib', 'VC', 'x64', 'MD')]
+		builder.table.cflags = []cflag.CFlag{}
+		mut original := []cflag.CFlag{}
+		mut expected_includes := []string{}
+		mut expected_libraries := []string{}
+		for i, path in mapped {
+			if (mask & (1 << i)) != 0 {
+				os.mkdir_all(path) or { panic(err) }
+				original << cflag.CFlag{
+					mod:   'crypto.ecdsa'
+					os:    'windows'
+					name:  names[i]
+					value: path
+				}
+				if names[i] == '-I' {
+					expected_includes << '/I"${os.real_path(path)}"'
+				} else {
+					expected_libraries << '/LIBPATH:"${os.real_path(path)}"'
+					expected_libraries << '/LIBPATH:"${os.real_path(os.join_path(path,
+						'msvc'))}"'
+				}
+			}
+			builder.table.parse_cflag(directives[i].replace(paths[i], path), 'crypto.ecdsa',
+				builder.pref.compile_defines_all) or { panic(err) }
+		}
+		if (mask & 5) == 5 {
+			os.write_file(os.join_path(mapped[2], 'issue74_fallback.h'), '#define ISSUE74_FALLBACK 1\n') or {
+				panic(err)
+			}
+			assert !os.exists(os.join_path(mapped[0], 'issue74_fallback.h'))
+		}
+		selected := builder.get_os_cflags()
+		assert selected.len == 4
+		actual := builder.msvc_string_flags(selected)
+		expected := builder.msvc_string_flags(original)
+		assert actual.inc_paths == expected_includes, 'mask ${mask}: ${actual.inc_paths}'
+		assert actual.lib_paths == expected_libraries, 'mask ${mask}: ${actual.lib_paths}'
+		assert actual.inc_paths == expected.inc_paths
+		assert actual.lib_paths == expected.lib_paths
+		assert actual.real_libs == expected.real_libs && actual.real_libs.len == 0
+		assert actual.defines == expected.defines && actual.defines.len == 0
+		assert actual.other_flags == expected.other_flags && actual.other_flags.len == 0
+		for i, flag in selected {
+			assert flag.name == names[i] && flag.os == 'windows'
+			assert flag.value == r'$when_first_existing' + "('${mapped[i]}')"
+		}
+	}
+}
+
+fn test_msvc_string_flags_path_macros_preserve_required_fallback_and_other_flags() {
+	root := os.join_path(os.vtmp_dir(), 'issue74 MSVC required paths ${os.getpid()}')
+	first := os.join_path(root, 'first existing')
+	second := os.join_path(root, 'second existing')
+	missing := os.join_path(root, 'not present')
+	os.mkdir_all(first) or { panic(err) }
+	os.mkdir_all(second) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	literal := 'ISSUE74_LITERAL=' + r'$first_existing' + "('${missing}')"
+	mut builder := msvc_new_builder_for_args(['-cc', 'msvc', '-os', 'windows', '-m64',
+		msvc_hello_world_example()])
+	sflags := builder.msvc_string_flags([
+		cflag.CFlag{
+			name:  '-I'
+			value: r'$first_existing' + "('${missing}', '${first}', '${second}')"
+		},
+		cflag.CFlag{
+			name:  '-L'
+			value: r'$first_existing' + "('${first}', '${second}')"
+		},
+		cflag.CFlag{
+			name:  '-I'
+			value: missing
+		},
+		cflag.CFlag{
+			name:  '-D'
+			value: literal
+		},
+		cflag.CFlag{
+			value: '/NODEFAULTLIB'
+		},
+	])
+	assert sflags.inc_paths == ['/I"${os.real_path(first)}"', '/I"${os.real_path(missing)}"']
+	assert sflags.lib_paths == [
+		'/LIBPATH:"${os.real_path(first)}"',
+		'/LIBPATH:"${os.real_path(os.join_path(first, 'msvc'))}"',
+	]
+	assert sflags.defines == ['/D${literal}']
+	assert sflags.other_flags == ['/NODEFAULTLIB']
+	assert sflags.real_libs.len == 0
+}
+
 fn test_msvc_ordered_pkgconfig_linker_args_routes_static_paths_and_libs() {
 	mut builder := msvc_new_builder_for_args(['-cc', 'msvc', '-m64', msvc_hello_world_example()])
 	lib_dir := os.join_path(os.getwd(), 'msvc_pkgconfig_static_libs')

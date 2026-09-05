@@ -713,7 +713,17 @@ pub fn (mut v Builder) msvc_string_flags(cflags []cflag.CFlag) MsvcStringFlags {
 	mut lib_paths := []string{}
 	mut defines := []string{}
 	mut other_flags := []string{}
-	for flag in cflags {
+	for raw_flag in cflags {
+		mut flag := raw_flag
+		if flag.name in ['-I', '-L']
+			&& (flag.value.contains(r'$first_existing(')
+			|| flag.value.contains(r'$when_first_existing(')) {
+			value := flag.eval() or { continue }
+			flag = cflag.CFlag{
+				...flag
+				value: value
+			}
+		}
 		if flag.name == '' {
 			consumed, leftover := split_and_apply_gnu_flags(flag.value, mut inc_paths, mut
 				lib_paths, mut real_libs)

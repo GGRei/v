@@ -336,6 +336,13 @@ jobs:
             'test_cpp_linker_rejects_msvc_driver_mode_from_environment_flags',
             'test_cpp_linker_driver_classifier_fails_closed_for_unknown_commands',
             'test_cpp_linker_does_not_change_builds_without_directive')
+          Run-Owner msvc-path-macros 'vlib/v/builder/msvc_windows_test.v' @(
+            'test_msvc_string_flags_evaluates_ecdsa_search_path_macros',
+            'test_msvc_string_flags_path_macros_preserve_required_fallback_and_other_flags',
+            'test_msvc_string_flags_uses_cached_thirdparty_obj_path',
+            'test_msvc_string_flags_rewrites_obj_flags_through_cached_path',
+            'test_msvc_string_flags_selects_windows_libcrypto_without_legacy_crypto_name',
+            'test_msvc_ordered_pkgconfig_linker_args_keeps_dynamic_flags_on_legacy_path')
           Run-Owner msvc-pkgconfig 'vlib/v/checker/pkgconfig_static_mode_test.v' @(
             'test_package_without_options_keeps_historical_dynamic_defaults',
             'test_msvc_pkgconfig_stays_dynamic_by_default',
