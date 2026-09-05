@@ -889,7 +889,28 @@ fn (mut t Transformer) lower_iterator_for_in(id flat.NodeId, node flat.Node, key
 	iter_expr := t.transform_expr(container_id)
 	mut prefix := []flat.NodeId{}
 	t.drain_pending(mut prefix)
-	prefix << t.make_decl_assign_typed(iter_name, iter_expr, iter_type)
+	mut bound_iter_type := iter_type
+	mut bound_info := info
+	if !isnil(t.tc) && !t.skip_generics && t.generic_arg_is_unresolved(iter_type) {
+		transformed_type := t.a.nodes[int(iter_expr)].typ.trim_space()
+		old_depth, old_clean := pointer_type_depth_and_base(iter_type)
+		new_depth, new_clean := pointer_type_depth_and_base(transformed_type)
+		old_base, _, old_generic := generic_app_parts(old_clean)
+		new_base, _, new_generic := generic_app_parts(new_clean)
+		if old_generic && new_generic && old_base == new_base && old_depth == new_depth
+			&& old_base in t.tc.struct_generic_params && transformed_type.len > 0
+			&& !t.generic_arg_is_unresolved(transformed_type) {
+			if concrete_info := t.iterator_for_in_info(transformed_type) {
+				if concrete_info.next_method.len > 0 && concrete_info.elem_type.len > 0
+					&& !t.generic_arg_is_unresolved(concrete_info.elem_type) {
+					// Keep receiver and next metadata from the same concrete factory.
+					bound_iter_type = transformed_type
+					bound_info = concrete_info
+				}
+			}
+		}
+	}
+	prefix << t.make_decl_assign_typed(iter_name, iter_expr, bound_iter_type)
 	idx_name := if has_index && key.value == '_' { t.new_temp('for_idx') } else { key.value }
 	init := if has_index {
 		t.set_var_type(idx_name, 'int')
@@ -897,14 +918,14 @@ fn (mut t Transformer) lower_iterator_for_in(id flat.NodeId, node flat.Node, key
 	} else {
 		t.make_empty()
 	}
-	mut elem_type := info.elem_type
-	t.mark_fn_used_name(info.next_method)
-	next_receiver := if iter_type.trim_space().starts_with('&') {
+	mut elem_type := bound_info.elem_type
+	t.mark_fn_used_name(bound_info.next_method)
+	next_receiver := if bound_iter_type.trim_space().starts_with('&') {
 		t.make_ident(iter_name)
 	} else {
 		t.make_prefix(.amp, t.make_ident(iter_name))
 	}
-	next_call := t.make_call_typed(info.next_method, [
+	next_call := t.make_call_typed(bound_info.next_method, [
 		next_receiver,
 	], '?${elem_type}')
 	// The iterator metadata predates specialization of the container. Resolve

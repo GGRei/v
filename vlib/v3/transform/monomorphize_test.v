@@ -609,10 +609,10 @@ fn iterator_boundary_nodes(a &flat.FlatAst, id flat.NodeId, kind flat.NodeKind, 
 
 // Observe actual generated nodes. No inferred type or spec is inserted into
 // the AST, checker maps, or inference state by this diagnostic.
-fn iterator_boundary_observe(source_path string, reverse_source string, name string) (string, bool) {
+fn iterator_boundary_observe(source_path string, reverse_source string, name string) (string, bool, bool) {
 	mut report := 'function=${name}\n'
 	if !os.is_file(source_path) || !os.is_file(reverse_source) {
-		return report + 'source=<missing>\n', false
+		return report + 'source=<missing>\n', false, false
 	}
 	mut p := parser.Parser.new(pref.new_preferences())
 	mut a := p.parse_files([reverse_source, source_path])
@@ -631,7 +631,7 @@ fn iterator_boundary_observe(source_path string, reverse_source string, name str
 	}
 	report += 'module=${t.cur_module} roots=${roots.len} skip_generics=${t.skip_generics}\n'
 	if roots.len != 1 {
-		return report + 'function_root=<missing-or-ambiguous>\n', false
+		return report + 'function_root=<missing-or-ambiguous>\n', false, false
 	}
 	fn_id := flat.NodeId(roots[0])
 	mut loops := []flat.NodeId{}
@@ -661,6 +661,18 @@ fn iterator_boundary_observe(source_path string, reverse_source string, name str
 	mut receivers := 0
 	mut next_calls := []flat.NodeId{}
 	mut slots := 0
+	expected := if name == 'parameter_order' { 'Item' } else { 'Node' }
+	// Generic argument resolution can lock a caller-owned type as main.Item
+	// (or main.Node); both exact spellings denote the same fixture declaration.
+	receiver_types := ['arrays.ReverseIterator[${expected}]',
+		'arrays.ReverseIterator[main.${expected}]']
+	next_types := ['?&${expected}', '?&main.${expected}']
+	slot_types := ['&${expected}', '&main.${expected}']
+	mut receiver_type := ''
+	mut receiver_typed := false
+	mut next_typed := false
+	mut receiver_arg_typed := false
+	mut slot_typed := false
 	for decl_id in declarations {
 		decl := a.node(decl_id)
 		if decl.children_count != 2 {
@@ -672,20 +684,27 @@ fn iterator_boundary_observe(source_path string, reverse_source string, name str
 		if lhs.value.starts_with('__iter_') && !lhs.value.starts_with('__iter_next_') {
 			receivers++
 			report += 'after: receiver=${lhs.value} decl.typ=${decl.typ} lhs.typ=${lhs.typ} factory.kind=${rhs.kind} factory.typ=${rhs.typ}\n'
+			receiver_type = lhs.typ
+			receiver_typed = decl.typ == lhs.typ && lhs.typ == rhs.typ
+				&& rhs.typ in receiver_types
 		} else if lhs.value.starts_with('__iter_next_') {
 			next_calls << rhs_id
 			report += 'after: next=${lhs.value} decl.typ=${decl.typ} lhs.typ=${lhs.typ} call.kind=${rhs.kind} call.typ=${rhs.typ}\n'
+			next_typed = decl.typ == lhs.typ && lhs.typ == rhs.typ && rhs.typ in next_types
 			for child in a.children_of(rhs) {
 				arg := a.node(child)
 				report += 'after: next_child kind=${arg.kind} value=${arg.value} typ=${arg.typ}\n'
 				if arg.kind == .prefix && arg.children_count == 1 {
 					value := a.child_node(arg, 0)
 					report += 'after: receiver_ident=${value.value} typ=${value.typ}\n'
+					receiver_arg_typed = arg.op == .amp && value.kind == .ident
+						&& value.typ == receiver_type && value.typ in receiver_types
 				}
 			}
 		} else if lhs.value in ['item', 'child'] {
 			slots++
 			report += 'after: slot=${lhs.value} decl.typ=${decl.typ} lhs.typ=${lhs.typ} rhs.kind=${rhs.kind} rhs.value=${rhs.value} rhs.typ=${rhs.typ}\n'
+			slot_typed = decl.typ == lhs.typ && lhs.typ == rhs.typ && rhs.typ in slot_types
 		}
 	}
 	// Derive text only AFTER observing the generated tree. A cached spec is
@@ -704,8 +723,10 @@ fn iterator_boundary_observe(source_path string, reverse_source string, name str
 		}
 	}
 	report += 'b5_return_value_observed=false receivers=${receivers} next_calls=${next_calls.len} slots=${slots}\n'
+	report += 'concrete: receiver=${receiver_typed} next=${next_typed} receiver_arg=${receiver_arg_typed} slot=${slot_typed}\n'
 	return report, t.cur_module == 'main' && loops.len == 1 && receivers == 1
-		&& next_calls.len == 1 && slots == 1
+		&& next_calls.len == 1 && slots == 1, receiver_typed && next_typed
+		&& receiver_arg_typed && slot_typed
 }
 
 fn test_reverse_iterator_lowering_records_concrete_payload_boundary() {
@@ -744,12 +765,15 @@ fn main() {}
 	mut report := 'Reduced parser input, not the native 80-file import graph.\n'
 	report += 'source_order=[${reverse_source}, ${source_path}]\n'
 	mut observed := true
+	mut concrete := true
 	for name in ['parameter_order', 'field_order'] {
-		detail, present := iterator_boundary_observe(source_path, reverse_source, name)
+		detail, present, typed := iterator_boundary_observe(source_path, reverse_source, name)
 		report += detail
 		observed = observed && present
+		concrete = concrete && typed
 	}
 	report += 'observation_complete=${observed}\n'
+	report += 'concrete_boundary=${concrete}\n'
 	runner_temp := os.getenv('RUNNER_TEMP')
 	report_base := if runner_temp.len > 0 { runner_temp } else { os.vtmp_dir() }
 	report_path := os.join_path(report_base, 'issue74-iterator-boundary.txt')
@@ -767,8 +791,9 @@ fn main() {}
 			&& (os.read_file(report_path) or { '' }) == report
 		eprintln(bounded)
 	}
-	// Only completeness is asserted. Concrete slots here would mean this
-	// observation did not reproduce the native boundary, not a product fix.
+	// Retain the complete observation before checking the concrete boundary.
+	// The separate native fixture still checks generated C and runtime values.
 	assert captured, 'iterator observation capture failed'
 	assert observed, report
+	assert concrete, report
 }
