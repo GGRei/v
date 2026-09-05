@@ -148,6 +148,13 @@ fn main() {
 	mut capture_ok := sife_capture_text(evidence, 'fixture.v', source)
 	v3_bin := sife_build_v3()
 	cc_args := sife_c_compiler_args()
+	selected_cc := os.getenv('ISSUE74_V3_DRIVER_TEST_CC')
+	mut link_args := []string{}
+	if selected_cc.replace('\\', '/').to_lower().ends_with('/ucrt64/bin/clang.exe') {
+		lld := os.join_path(os.dir(selected_cc), 'ld.lld.exe')
+		assert os.is_file(lld), 'missing selected LLVM linker: ${lld}'
+		link_args = ['-ldflags', '-fuse-ld=lld']
+	}
 	old_vtmp := os.getenv('VTMP')
 	defer {
 		os.setenv('VTMP', old_vtmp, true)
@@ -163,6 +170,7 @@ fn main() {
 		mut args := if generation == 'v1' { ['-old-compiler'] } else { []string{} }
 		args << ['-gc', 'none', '-prod', '-showcc', '-keepc', '-no-retry-compilation', '-b', 'c']
 		args << cc_args
+		args << link_args
 		args << ['-path', '${sife_vlib_dir}|@vlib|@vmodules', '-o', bin, source_path]
 		command := cmdexec.display(compiler, args)
 		compile := cmdexec.run(compiler, args)

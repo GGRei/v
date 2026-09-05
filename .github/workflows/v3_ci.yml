@@ -154,7 +154,7 @@ jobs:
             family: gcc
           - lane: ucrt64-clang
             msystem: UCRT64
-            package: mingw-w64-ucrt-x86_64-clang
+            package: mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld
             pkgconf_package: mingw-w64-ucrt-x86_64-pkgconf
             prefix: ucrt64
             cc: clang
@@ -205,6 +205,18 @@ jobs:
           $cxxPath = Join-Path $toolBin '${{ matrix.cxx }}.exe'
           $pkgConfigPath = Join-Path $toolBin 'pkg-config.exe'
           $env:Path = "$toolBin;$env:SystemRoot\System32;$env:SystemRoot"
+          if ('${{ matrix.lane }}' -eq 'ucrt64-clang') {
+            $lldPath = Join-Path $toolBin 'ld.lld.exe'
+            if (-not (Test-Path -LiteralPath $lldPath -PathType Leaf)) {
+              throw "missing selected LLVM linker: $lldPath"
+            }
+            $lldVersion = (& $lldPath --version 2>&1 | Out-String)
+            $lldCode = $LASTEXITCODE
+            Write-Host "$lldPath`n$lldVersion"
+            if ($lldCode -ne 0 -or $lldVersion -notmatch '(?i)\bLLD\b') {
+              throw "selected LLVM linker preflight failed: exit=$lldCode path=$lldPath"
+            }
+          }
 
           function Assert-ExactCompiler([string] $Name, [string] $Expected, [string] $Family) {
             if (-not (Test-Path -LiteralPath $Expected -PathType Leaf)) {
