@@ -818,7 +818,7 @@ fn main() {
 		'GetFullPathNameW', 'LocalFree', 'ReadFile', 'RemoveDirectoryW', 'SetHandleInformation'] {
 		assert sdk_compact.contains('&' + name), sdk_program.c_code
 	}
-	assert sdk_compact.contains('DWORDtmp=(DWORD)(0)'), sdk_program.c_code
+	assert sdk_compact.contains('DWORDtmp=(u32)(0)'), sdk_program.c_code
 	assert sdk_compact.contains('VirtualProtect(ptr,size,PAGE_EXECUTE_READ,&tmp)'),
 		sdk_program.c_code
 	assert sdk_compact.contains('VirtualProtect(ptr,size,PAGE_READWRITE,&tmp)'),
