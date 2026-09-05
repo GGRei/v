@@ -9584,6 +9584,10 @@ pub fn (tc &TypeChecker) interface_metadata_name(name string) string {
 		|| lookup in tc.interface_embeds || lookup in tc.interface_fields {
 		return lookup
 	}
+	// A known qualified struct is not an interface with the same short name.
+	if lookup.contains('.') && lookup in tc.structs {
+		return lookup
+	}
 	if !lookup.contains('.') {
 		qname := tc.qualify_name(lookup)
 		if qname in tc.interface_names || qname in tc.interface_abstract_methods

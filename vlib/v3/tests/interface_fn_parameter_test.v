@@ -81,6 +81,12 @@ fn test_interface_method_fn_parameter_uses_c_typedef() {
 fn interface_fn_reader_metadata(tc &types.TypeChecker, stage string) (string, bool) {
 	mut report := '${stage}: homonym_metadata=${tc.interface_metadata_name('a_records.Reader')}\n'
 	mut valid := tc.interface_metadata_name('a_records.Reader') == 'a_records.Reader'
+	exact_reader := tc.interface_metadata_name('stream.Reader')
+	short_reader := tc.interface_metadata_name('Reader')
+	exact_lines := tc.interface_metadata_name('a_records.LineReader')
+	report += '${stage}: exact_reader=${exact_reader} short_reader=${short_reader} exact_lines=${exact_lines}\n'
+	valid = valid && exact_reader == 'stream.Reader' && short_reader == 'stream.Reader'
+		&& exact_lines == 'a_records.LineReader'
 	for iface in ['stream.Reader', 'a_records.LineReader'] {
 		decl_key := tc.interface_method_signature_key(iface, 'read') or { '${iface}.read' }
 		decl_params := tc.fn_param_types[decl_key] or { []types.Type{} }
