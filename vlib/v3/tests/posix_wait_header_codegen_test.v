@@ -734,6 +734,8 @@ fn main() {
 	assert C._IOFBF == 0
 	assert C._IOLBF == 0x0040
 	assert C._IONBF == 0x0004
+	_ = voidptr(&C.WriteFile)
+	_ = voidptr(&C.WriteConsoleW)
 	unbuffer_stdout()
 	println('windows-headerless-stdio-ok')
 }
@@ -754,6 +756,17 @@ fn main() {
 		assert os.real_path(header) == os.real_path(expected_header), stdio_program.c_code
 	} else {
 		assert !wait_header_has_include_directive(stdio_program.c_code), stdio_program.c_code
+	}
+	assert stdio_program.c_code.count('#define FILE_ATTRIBUTE_READONLY 0x00000001U') == 1,
+		stdio_program.c_code
+	// This source has no imports or SDK request. Keep the native headerless ABI
+	// witness here instead of inferring headerlessness from the C compiler name.
+	for declaration in ['bool WINAPI WriteFile(void*, u8*, u32, DWORD*, void*);',
+		'bool WINAPI WriteConsoleW(void*, u16*, u32, DWORD*, void*);'] {
+		name := wait_header_generated_extern_name(declaration)
+		expected := if stdio_program.compiler_family == 'tcc' { '' } else { declaration }
+		assert wait_header_generated_extern_line(stdio_program.c_code, name) == expected,
+			stdio_program.c_code
 	}
 	stdio_run := wait_header_execute_without_vflags(os.quoted_path(stdio_program.out))
 	assert stdio_run.exit_code == 0, stdio_run.output
@@ -1011,7 +1024,12 @@ println('windows-wide-top-level-argv-ok')
 	for generated_code in [c_code, fallback_program.c_code] {
 		compact_calls := generated_code.replace('\t', '').replace(' ', '').replace('\r', '').replace('\n',
 			'')
-		assert generated_code.count('#define FILE_ATTRIBUTE_READONLY 0x00000001U') == 1,
+		// os/fd.c.v explicitly requests Winsock even without an import of net.
+		// Both programs therefore use the SDK, including the conditional fallback case.
+		winsock_pos := generated_code.index('#include <winsock2.h>') or { -1 }
+		windows_pos := generated_code.index('#include <windows.h>') or { -1 }
+		assert winsock_pos >= 0 && windows_pos > winsock_pos, generated_code
+		assert generated_code.count('#define FILE_ATTRIBUTE_READONLY 0x00000001U') == 0,
 			generated_code
 		assert compact_calls.count('externDWORDWINAPIGetFinalPathNameByHandleW(void*hFile,unsignedshort*lpFilePath,DWORDnSize,DWORDdwFlags);') == 1,
 			generated_code
@@ -1026,8 +1044,7 @@ println('windows-wide-top-level-argv-ok')
 			assert atomic_header_pos >= 0 && atomic_header_pos < get_final_provider_pos,
 				generated_code
 		} else {
-			winapi_pos := generated_code.index('#define WINAPI __stdcall') or { -1 }
-			assert winapi_pos >= 0 && winapi_pos < get_final_provider_pos, generated_code
+			assert windows_pos < get_final_provider_pos, generated_code
 		}
 		for expected in [
 			'GetConsoleMode(osfh,(void*)(&mode))',
@@ -1050,38 +1067,9 @@ println('windows-wide-top-level-argv-ok')
 		}
 		assert compact_calls.count('WriteConsoleW(console_handle,wide_ptr,') == 1,
 			'active WriteConsoleW backend call count'
-		wait_line := wait_header_generated_extern_line(generated_code, 'WaitForSingleObject')
-		last_error_line := wait_header_generated_extern_line(generated_code, 'GetLastError')
-		create_directory_line := wait_header_generated_extern_line(generated_code,
-			'CreateDirectoryW')
-		file_attributes_line := wait_header_generated_extern_line(generated_code,
-			'GetFileAttributesW')
-		get_final_path_line := wait_header_generated_extern_line(generated_code,
-			'GetFinalPathNameByHandleW')
-		write_console_line := wait_header_generated_extern_line(generated_code, 'WriteConsoleW')
-		write_file_line := wait_header_generated_extern_line(generated_code, 'WriteFile')
-		if uses_tcc_atomic_header {
-			assert wait_line == '', generated_code
-			assert last_error_line == '', generated_code
-			assert create_directory_line == '', generated_code
-			assert file_attributes_line == '', generated_code
-			assert get_final_path_line == '', generated_code
-			assert write_console_line == '', generated_code
-			assert write_file_line == '', generated_code
-		} else {
-			assert wait_line == 'DWORD WINAPI WaitForSingleObject(HANDLE handle, DWORD milliseconds);',
-				wait_line
-			assert last_error_line == 'DWORD WINAPI GetLastError(void);', last_error_line
-			assert create_directory_line == 'bool WINAPI CreateDirectoryW(u16*, void*);',
-				create_directory_line
-			assert file_attributes_line == 'u32 WINAPI GetFileAttributesW(u16* lpFileName);',
-				file_attributes_line
-			assert get_final_path_line == 'u32 WINAPI GetFinalPathNameByHandleW(void* hFile, u16* lpFilePath, u32 nSize, u32 dwFlags);',
-				get_final_path_line
-			assert write_console_line == 'bool WINAPI WriteConsoleW(void*, u16*, u32, DWORD*, void*);',
-				write_console_line
-			assert write_file_line == 'bool WINAPI WriteFile(void*, u8*, u32, DWORD*, void*);',
-				write_file_line
+		for name in ['WaitForSingleObject', 'GetLastError', 'CreateDirectoryW',
+			'GetFileAttributesW', 'GetFinalPathNameByHandleW', 'WriteConsoleW', 'WriteFile'] {
+			assert wait_header_generated_extern_line(generated_code, name) == '', generated_code
 		}
 		assert !generated_code.contains('bool WINAPI WriteConsoleW(void*, u16*, u32, u32*, void*);'),
 			generated_code
@@ -1090,21 +1078,9 @@ println('windows-wide-top-level-argv-ok')
 	}
 	sdk_owned := wait_header_windows_sdk_owned_fns()
 	crt_referenced := wait_header_windows_crt_referenced_fns()
-	crt_owned := if uses_tcc_atomic_header {
-		wait_header_windows_atomic_crt_owned_fns()
-	} else {
-		[]string{}
-	}
-	crt_generated := if uses_tcc_atomic_header {
-		wait_header_windows_crt_generated_fns()
-	} else {
-		crt_referenced.clone()
-	}
 	assert sdk_owned.len == 20
 	assert wait_header_windows_tcc_insert_owned_fns() == ['GetFinalPathNameByHandleW']
 	assert crt_referenced.len == 15
-	assert crt_owned.len == if uses_tcc_atomic_header { 1 } else { 0 }
-	assert crt_generated.len == if uses_tcc_atomic_header { 14 } else { 15 }
 	thread_start_alias := 'typedef DWORD (WINAPI *PTHREAD_START_ROUTINE)(void*);'
 	lpthread_start_alias := 'typedef PTHREAD_START_ROUTINE LPTHREAD_START_ROUTINE;'
 	timezone_alias := 'typedef struct _TIME_ZONE_INFORMATION TIME_ZONE_INFORMATION;'
@@ -1120,80 +1096,29 @@ println('windows-wide-top-level-argv-ok')
 			'SystemTimeToTzSpecificLocalTime')
 		assert thread_helper_pos >= 0, generated_code
 		assert closure_helper_pos >= 0, generated_code
-		if uses_tcc_atomic_header {
-			assert !generated_code.contains(wide_console_alias), generated_code
-			assert generated_code.count(thread_start_alias) == 0, generated_code
-			assert generated_code.count(lpthread_start_alias) == 0, generated_code
-			assert generated_code.count(timezone_alias) == 0, generated_code
-			assert timezone_extern == '', generated_code
-			for name in ['AcquireSRWLockExclusive', 'ReleaseSRWLockExclusive'] {
-				prototype := 'void WINAPI ${name}(void*);'
-				assert generated_code.count(prototype) == 1, generated_code
-				prototype_pos := generated_code.index(prototype) or { -1 }
-				assert prototype_pos > closure_helper_pos, generated_code
-			}
-		} else {
-			assert generated_code.count(wide_console_alias) == 1, generated_code
-			assert generated_code.count(thread_start_alias) == 1, generated_code
-			assert generated_code.count(lpthread_start_alias) == 1, generated_code
-			assert generated_code.count(timezone_alias) == 1, generated_code
-			thread_start_pos := generated_code.index(thread_start_alias) or { -1 }
-			lpthread_start_pos := generated_code.index(lpthread_start_alias) or { -1 }
-			timezone_pos := generated_code.index(timezone_alias) or { -1 }
-			wide_console_pos := generated_code.index(wide_console_alias) or { -1 }
-			timezone_extern_pos := generated_code.index(timezone_extern) or { -1 }
-			assert thread_start_pos >= 0 && thread_start_pos < lpthread_start_pos, generated_code
-			assert lpthread_start_pos < thread_helper_pos, generated_code
-			assert wide_console_pos >= 0, generated_code
-			assert timezone_extern.len > 0, generated_code
-			assert timezone_pos >= 0 && timezone_pos < timezone_extern_pos, generated_code
-			for name in ['AcquireSRWLockExclusive', 'ReleaseSRWLockExclusive'] {
-				prototype := 'void WINAPI ${name}(void*);'
-				assert generated_code.count(prototype) == 1, generated_code
-				prototype_pos := generated_code.index(prototype) or { -1 }
-				assert prototype_pos >= 0 && prototype_pos < closure_helper_pos, generated_code
-			}
+		assert !generated_code.contains(wide_console_alias), generated_code
+		assert !generated_code.contains('ScrollConsoleScreenBufferA'), generated_code
+		assert generated_code.count(thread_start_alias) == 0, generated_code
+		assert generated_code.count(lpthread_start_alias) == 0, generated_code
+		assert generated_code.count(timezone_alias) == 0, generated_code
+		assert timezone_extern == '', generated_code
+		for name in ['AcquireSRWLockExclusive', 'ReleaseSRWLockExclusive'] {
+			prototype := 'void WINAPI ${name}(void*);'
+			assert generated_code.count(prototype) == 1, generated_code
+			prototype_pos := generated_code.index(prototype) or { -1 }
+			assert prototype_pos > closure_helper_pos, generated_code
 		}
 	}
-	mut crt_partition := map[string]bool{}
 	for name in sdk_owned {
-		expected_count := if uses_tcc_atomic_header { 0 } else { 1 }
-		assert wait_header_generated_extern_count(c_code, name) == expected_count, name
-		assert wait_header_generated_extern_count(fallback_program.c_code, name) == expected_count,
+		assert wait_header_generated_extern_count(c_code, name) == 0, name
+		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 0,
 			name
 	}
-	expected_get_final_generated := if uses_tcc_atomic_header { 0 } else { 1 }
-	assert wait_header_generated_extern_count(c_code,
-		'GetFinalPathNameByHandleW') == expected_get_final_generated
-	assert wait_header_generated_extern_count(fallback_program.c_code,
-		'GetFinalPathNameByHandleW') == expected_get_final_generated
-	if !uses_tcc_atomic_header {
-		for generated_code in [c_code, fallback_program.c_code] {
-			alias_pos := generated_code.index(wide_console_alias) or { -1 }
-			extern_line := wait_header_generated_extern_line(generated_code,
-				'ScrollConsoleScreenBuffer')
-			extern_pos := generated_code.index(extern_line) or { -1 }
-			assert alias_pos >= 0 && alias_pos < extern_pos, generated_code
-			assert !generated_code.contains('ScrollConsoleScreenBufferA'), generated_code
-		}
-	}
-	for name in crt_owned {
-		assert name in crt_referenced, name
-		assert name !in crt_partition, name
-		crt_partition[name] = true
+	assert wait_header_generated_extern_count(c_code, 'GetFinalPathNameByHandleW') == 0
+	assert wait_header_generated_extern_count(fallback_program.c_code, 'GetFinalPathNameByHandleW') == 0
+	for name in crt_referenced {
 		assert wait_header_generated_extern_count(c_code, name) == 0, name
 		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 0, name
-	}
-	for name in crt_generated {
-		assert name in crt_referenced, name
-		assert name !in crt_partition, name
-		crt_partition[name] = true
-		assert wait_header_generated_extern_count(c_code, name) == 1, name
-		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 1, name
-	}
-	assert crt_partition.len == crt_referenced.len
-	for name in crt_referenced {
-		assert crt_partition[name], name
 	}
 	stat_body := 'struct __stat64 {\n\tu32 st_dev;\n\tu16 st_ino;\n\tu16 st_mode;\n\tu16 st_nlink;\n\tu16 st_uid;\n\tu16 st_gid;\n\tu32 st_rdev;\n\tu64 st_size;\n\ti64 st_atime;\n\ti64 st_mtime;\n\ti64 st_ctime;\n};'
 	stat_init := '(struct __stat64){'
@@ -1201,36 +1126,23 @@ println('windows-wide-top-level-argv-ok')
 	filetime_body := 'struct _FILETIME {\n\tu32 dwLowDateTime;\n\tu32 dwHighDateTime;\n};'
 	filetime_init := '(_FILETIME){'
 	for generated_code in [c_code, fallback_program.c_code] {
-		assert generated_code.count(stat_body) == 1, generated_code
+		assert generated_code.count(stat_body) == 0, generated_code
+		assert generated_code.count('struct __stat64 {') == 0, generated_code
 		assert generated_code.count(stat_init) == 1, generated_code
 		assert generated_code.count('struct __stat64;') == 0, generated_code
 		assert generated_code.count('typedef struct __stat64 __stat64;') == 0, generated_code
-		body_pos := generated_code.index(stat_body) or { -1 }
-		init_pos := generated_code.index(stat_init) or { -1 }
-		assert body_pos >= 0 && body_pos < init_pos, generated_code
-		expected_aliases := if uses_tcc_atomic_header { 1 } else { 2 }
-		expected_bodies := if uses_tcc_atomic_header { 0 } else { 1 }
-		assert generated_code.count(filetime_alias) == expected_aliases, generated_code
-		assert generated_code.count(filetime_body) == expected_bodies, generated_code
+		assert generated_code.count(filetime_alias) == 1, generated_code
+		assert generated_code.count(filetime_body) == 0, generated_code
+		assert generated_code.count('struct _FILETIME {') == 0, generated_code
 		assert generated_code.count('struct _FILETIME;') == 0, generated_code
 		assert generated_code.count(filetime_init) == 1, generated_code
-		first_filetime_alias_pos := generated_code.index(filetime_alias) or { -1 }
-		last_filetime_alias_pos := generated_code.last_index(filetime_alias) or { -1 }
+		filetime_alias_pos := generated_code.index(filetime_alias) or { -1 }
 		filetime_init_pos := generated_code.index(filetime_init) or { -1 }
-		assert first_filetime_alias_pos >= 0 && first_filetime_alias_pos <= last_filetime_alias_pos,
+		assert filetime_alias_pos >= 0 && filetime_alias_pos < filetime_init_pos,
 			generated_code
-		if uses_tcc_atomic_header {
-			assert last_filetime_alias_pos < filetime_init_pos, generated_code
-		} else {
-			filetime_body_pos := generated_code.index(filetime_body) or { -1 }
-			assert first_filetime_alias_pos < last_filetime_alias_pos, generated_code
-			assert last_filetime_alias_pos < filetime_body_pos
-				&& filetime_body_pos < filetime_init_pos, generated_code
-		}
 	}
-	expected_fence_externs := if uses_tcc_atomic_header { 0 } else { 1 }
-	assert wait_header_generated_extern_count(c_code, 'atomic_thread_fence') == expected_fence_externs
-	assert wait_header_generated_extern_count(fallback_program.c_code, 'atomic_thread_fence') == expected_fence_externs
+	assert wait_header_generated_extern_count(c_code, 'atomic_thread_fence') == 0
+	assert wait_header_generated_extern_count(fallback_program.c_code, 'atomic_thread_fence') == 0
 	if uses_tcc_atomic_header {
 		for generated_code in [c_code, fallback_program.c_code] {
 			assert !generated_code.contains('_V_atomic_thread_fence'), generated_code
@@ -1240,13 +1152,10 @@ println('windows-wide-top-level-argv-ok')
 			}
 		}
 	}
-	good_wstat := 'i32 _wstat(u16* path, struct _stat* buffer);'
 	bad_wstat := 'i32 _wstat(u16* path, _stat* buffer);'
-	assert wait_header_generated_extern_line(c_code, '_wstat') == good_wstat, c_code
-	assert wait_header_generated_extern_line(fallback_program.c_code, '_wstat') == good_wstat,
+	assert wait_header_generated_extern_line(c_code, '_wstat') == '', c_code
+	assert wait_header_generated_extern_line(fallback_program.c_code, '_wstat') == '',
 		fallback_program.c_code
-	assert c_code.count(good_wstat) == 1, c_code
-	assert fallback_program.c_code.count(good_wstat) == 1, fallback_program.c_code
 	assert c_code.count(bad_wstat) == 0, c_code
 	assert fallback_program.c_code.count(bad_wstat) == 0, fallback_program.c_code
 	for name in wait_header_windows_nls_fns() {
@@ -1258,16 +1167,11 @@ println('windows-wide-top-level-argv-ok')
 		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 1, name
 		default_guard := '#ifdef NONLS\n${default_line}\n#endif'
 		fallback_guard := '#ifdef NONLS\n${fallback_line}\n#endif'
-		if uses_tcc_atomic_header {
-			assert c_code.contains(default_guard), default_line
-			assert fallback_program.c_code.contains(fallback_guard), fallback_line
-		} else {
-			assert !c_code.contains(default_guard), default_line
-			assert !fallback_program.c_code.contains(fallback_guard), fallback_line
-		}
+		assert c_code.contains(default_guard), default_line
+		assert fallback_program.c_code.contains(fallback_guard), fallback_line
 	}
-	// Headerless routes do not select the system-libc preamble. All Vista APIs remain
-	// present exactly once; non-TCC emits the two early runtime providers above.
+	// The SDK owns the enabled APIs; unchanged fallback declarations remain only
+	// under their real C guards, including the deliberately older target above.
 	for name in wait_header_windows_vista_fns() {
 		default_line := wait_header_generated_extern_line(c_code, name)
 		fallback_line := wait_header_generated_extern_line(fallback_program.c_code, name)
@@ -1275,9 +1179,9 @@ println('windows-wide-top-level-argv-ok')
 		assert fallback_line.contains(' WINAPI ${name}('), fallback_line
 		assert wait_header_generated_extern_count(c_code, name) == 1, name
 		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 1, name
-		assert !c_code.contains('#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${default_line}\n#endif'),
+		assert c_code.contains('#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${default_line}\n#endif'),
 			default_line
-		assert !fallback_program.c_code.contains('#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${fallback_line}\n#endif'),
+		assert fallback_program.c_code.contains('#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${fallback_line}\n#endif'),
 			fallback_line
 	}
 	for generated_code in [c_code, fallback_program.c_code] {

@@ -4697,6 +4697,8 @@ fn (mut g FlatGen) collect_c_directive(module_name string, node flat.Node, sourc
 					source_file, g.preinclude_macro_state)
 				g.preinclude_directives << directive
 			}
+			// A later unconditional request can follow an already recorded guarded one.
+			g.collect_direct_windows_sdk_include_fns(module_name, include_arg)
 		} else if directive !in g.postinclude_directives {
 			g.postinclude_directives << directive
 		}
@@ -4793,6 +4795,9 @@ fn (mut g FlatGen) collect_c_directive(module_name string, node flat.Node, sourc
 			&& g.collect_preserved_header_tree(include_arg, source_file, include_dirs) {
 			g.add_c_directive(module_name, '#include ${include_arg}', before_import)
 			g.mark_header_owned_c_extern_source(source_file, node.value, include_arg)
+			if node.value == 'include' {
+				g.collect_direct_windows_sdk_include_fns(module_name, include_arg)
+			}
 			return true
 		}
 		if header := c_inline_header_text_scoped(include_arg, g.compiler_vroot, source_file,
@@ -4855,7 +4860,7 @@ fn (mut g FlatGen) collect_c_directive(module_name string, node flat.Node, sourc
 		} else if c_should_preserve_uninlined_include(include_arg) || (g.cache_split
 			&& include_arg in ['<mach/mach.h>', '<mach/task.h>', '<mach/mach_time.h>'])
 			|| (node.value == 'include' && g.target.os == 'windows'
-			&& include_arg in ['<winsock2.h>', '<ws2tcpip.h>']) {
+			&& include_arg in ['<winsock2.h>', '<ws2tcpip.h>', '<bcrypt.h>']) {
 			// The preserved header is emitted before generated externs. Suppress known
 			// declarations from it by symbol; unrelated C declarations from the same V
 			// file still need generated extern prototypes.
@@ -4871,6 +4876,9 @@ fn (mut g FlatGen) collect_c_directive(module_name string, node flat.Node, sourc
 			}
 			g.add_c_directive(module_name, '#include ${include_arg}', before_import)
 			g.mark_header_owned_c_extern_source(source_file, node.value, include_arg)
+			if node.value == 'include' {
+				g.collect_direct_windows_sdk_include_fns(module_name, include_arg)
+			}
 		}
 		return true
 	}
@@ -4882,6 +4890,24 @@ fn (mut g FlatGen) collect_c_directive(module_name string, node flat.Node, sourc
 		return true
 	}
 	return false
+}
+
+fn (mut g FlatGen) collect_direct_windows_sdk_include_fns(module_name string, include_arg string) {
+	if g.target.os != 'windows' || include_arg !in ['<winsock2.h>', '<bcrypt.h>'] {
+		return
+	}
+	local_context := g.native_source_contexts[module_name] or { []NativeSourceContextDirective{} }
+	context := g.ordered_native_source_context(module_name, local_context)
+	// Direct V directives can still be surrounded by native #if/#ifdef directives.
+	// Do not claim global ownership from any open C conditional, even #if 1.
+	if c_native_source_context_depth(context) != 0 {
+		return
+	}
+	if include_arg == '<winsock2.h>' {
+		g.collect_preserved_c_fns(['WSAStartup', 'closesocket'])
+	} else {
+		g.collect_preserved_c_fns(['BCryptGenRandom'])
+	}
 }
 
 fn c_extern_source_key(source_file string) string {
@@ -18254,6 +18280,15 @@ fn (mut g FlatGen) preamble() {
 		g.writeln('#if defined(__linux__) && !defined(__ANDROID__)')
 		g.writeln('#include <features.h>')
 		g.writeln('#endif')
+		if g.target.os == 'windows' {
+			// The embedded V1 fragment starts after its compiler-identity macros.
+			// Restore V1's GCC predicate so MinGW selects its native stdio provider.
+			g.writeln('#if defined(__GNUC__) && !defined(__TINYC__) && !defined(__cplusplus) && !defined(__clang__) && !defined(_MSC_VER)')
+			g.writeln('#ifndef __V_GCC__')
+			g.writeln('#define __V_GCC__')
+			g.writeln('#endif')
+			g.writeln('#endif')
+		}
 		g.write(manual_stdlib_c_headers())
 		g.writeln('void abort(void);')
 		g.system_libc_headers()
@@ -18451,15 +18486,22 @@ fn (mut g FlatGen) system_libc_preamble() {
 // builtin file API provider supplies GetFinalPathNameByHandleW. NLS and
 // SRW/condition-variable APIs are excluded because their declarations are conditional.
 const c_windows_system_libc_declared_fns = [
+	'CloseClipboard',
+	'CopyFileW',
 	'CreateDirectoryW',
 	'CreateFileW',
 	'CreatePipe',
 	'CreateProcessW',
+	'CreateWindowExW',
+	'DefWindowProcW',
+	'EmptyClipboard',
 	'ExpandEnvironmentStringsW',
 	'FileTimeToSystemTime',
 	'FindClose',
 	'FindFirstFileW',
+	'FindNextFileW',
 	'FormatMessageW',
+	'FreeLibrary',
 	'GetConsoleMode',
 	'GetConsoleScreenBufferInfo',
 	'GetCurrentProcessId',
@@ -18469,24 +18511,36 @@ const c_windows_system_libc_declared_fns = [
 	'GetFinalPathNameByHandleW',
 	'GetFullPathNameW',
 	'GetLastError',
+	'GetLongPathNameW',
+	'GetModuleFileNameW',
 	'GetNativeSystemInfo',
+	'GetProcAddress',
 	'GetStdHandle',
 	'GetSystemTimeAsFileTime',
+	'GetTickCount',
+	'GlobalAlloc',
+	'GlobalFree',
+	'GlobalUnlock',
+	'LoadLibraryW',
 	'LocalFree',
+	'OpenClipboard',
 	'QueryPerformanceCounter',
 	'QueryPerformanceFrequency',
 	'ReadFile',
+	'RegisterClassExW',
 	'RemoveDirectoryW',
 	'ScrollConsoleScreenBuffer',
 	'SetConsoleCursorPosition',
 	'SetConsoleMode',
 	'SetHandleInformation',
+	'SetLastError',
 	'Sleep',
 	'SystemTimeToTzSpecificLocalTime',
 	'VirtualAlloc',
 	'VirtualProtect',
 	'WaitForSingleObject',
 	'WriteConsoleW',
+	'WriteFile',
 	'_chsize_s',
 	'_dup',
 	'_dup2',

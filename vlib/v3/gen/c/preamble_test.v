@@ -663,15 +663,22 @@ fn test_windows_headers_guard_conditional_nls_and_vista_externs() {
 fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 	assert_windows_system_dword_storage_is_nominal_only_in_sdk_mode()
 	expected_central := [
+		'CloseClipboard',
+		'CopyFileW',
 		'CreateDirectoryW',
 		'CreateFileW',
 		'CreatePipe',
 		'CreateProcessW',
+		'CreateWindowExW',
+		'DefWindowProcW',
+		'EmptyClipboard',
 		'ExpandEnvironmentStringsW',
 		'FileTimeToSystemTime',
 		'FindClose',
 		'FindFirstFileW',
+		'FindNextFileW',
 		'FormatMessageW',
+		'FreeLibrary',
 		'GetConsoleMode',
 		'GetConsoleScreenBufferInfo',
 		'GetCurrentProcessId',
@@ -681,24 +688,36 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 		'GetFinalPathNameByHandleW',
 		'GetFullPathNameW',
 		'GetLastError',
+		'GetLongPathNameW',
+		'GetModuleFileNameW',
 		'GetNativeSystemInfo',
+		'GetProcAddress',
 		'GetStdHandle',
 		'GetSystemTimeAsFileTime',
+		'GetTickCount',
+		'GlobalAlloc',
+		'GlobalFree',
+		'GlobalUnlock',
+		'LoadLibraryW',
 		'LocalFree',
+		'OpenClipboard',
 		'QueryPerformanceCounter',
 		'QueryPerformanceFrequency',
 		'ReadFile',
+		'RegisterClassExW',
 		'RemoveDirectoryW',
 		'ScrollConsoleScreenBuffer',
 		'SetConsoleCursorPosition',
 		'SetConsoleMode',
 		'SetHandleInformation',
+		'SetLastError',
 		'Sleep',
 		'SystemTimeToTzSpecificLocalTime',
 		'VirtualAlloc',
 		'VirtualProtect',
 		'WaitForSingleObject',
 		'WriteConsoleW',
+		'WriteFile',
 		'_chsize_s',
 		'_dup',
 		'_dup2',
@@ -741,7 +760,7 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 		assert name !in central, name
 		central[name] = true
 	}
-	assert central.len == 51
+	assert central.len == 70
 	for name in expected_nls {
 		assert name !in central, name
 		assert c_extern_calling_convention(name) == 'WINAPI', name
@@ -754,7 +773,7 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 	mut effective := central.clone()
 	assert '_wremove' in c_manual_stdlib_declared_fns
 	effective['_wremove'] = true
-	assert effective.len == 52
+	assert effective.len == 71
 
 	mut g := FlatGen.new()
 	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
@@ -867,6 +886,36 @@ fn test_windows_system_libc_headers_define_fixed_crt_and_vista_contract() {
 	stat_header_pos := c_code.index('#include <sys/stat.h>') or { -1 }
 	guard_pos := c_code.index(guard) or { -1 }
 	assert stat_header_pos >= 0 && stat_header_pos < guard_pos, c_code
+}
+
+fn test_windows_system_libc_replays_v1_gcc_stdio_provider() {
+	predicate := '#if defined(__GNUC__) && !defined(__TINYC__) && !defined(__cplusplus) && !defined(__clang__) && !defined(_MSC_VER)'
+	identity := predicate + '\n#ifndef __V_GCC__\n#define __V_GCC__\n#endif\n#endif\n'
+	// V3 embeds only the c_headers fragment, after V1's compiler-identity block.
+	fragment := manual_stdlib_c_headers()
+	assert !fragment.contains('#define __V_GCC__')
+	assert fragment.contains('#elif (defined(__MINGW32__) || defined(__MINGW64__)) && defined(__V_GCC__)')
+	for target_os in ['windows', 'linux', 'macos'] {
+		for system_mode in [false, true] {
+			mut g := FlatGen.new()
+			g.set_target(pref.target_from(target_os, 'amd64') or { panic(err) })
+			g.set_ccompiler('gcc')
+			if system_mode {
+				g.add_c_directive('main', '#include <stddef.h>', false)
+			}
+			assert g.c_directives_use_system_libc() == system_mode
+			g.preamble()
+			code := g.sb.str()
+			if target_os == 'windows' && system_mode {
+				assert code.count(identity) == 1, code
+				identity_pos := code.index(identity) or { -1 }
+				fragment_pos := code.index(fragment) or { -1 }
+				assert identity_pos >= 0 && fragment_pos > identity_pos, code
+			} else {
+				assert !code.contains(identity), '${target_os} system=${system_mode}'
+			}
+		}
+	}
 }
 
 fn test_windows_preserved_sdk_headers_own_cross_file_externs() {

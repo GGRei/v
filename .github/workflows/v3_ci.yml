@@ -362,6 +362,8 @@ jobs:
             'test_cache_extern_declaration_avoids_tgmath_macro_expansion',
             'test_windows_unresolved_ordinary_winsock_headers_preserve_native_tag',
             'test_winsock_header_fallback_preserves_headerless_and_nonwindows_boundaries',
+            'test_windows_unresolved_ordinary_bcrypt_header_owns_exact_extern',
+            'test_windows_direct_sdk_provider_ownership_respects_native_conditions',
             'test_pkgconfig_dynamic_argv_is_historically_byte_for_byte_unchanged',
             'test_pkgconfig_global_static_mode_inserts_one_static_option',
             'test_local_pkgconfig_static_option_does_not_require_global_static_mode',
@@ -378,6 +380,9 @@ jobs:
             'test_windows_sokol_default_backend_cflags_remain_glcore',
             'test_windows_sokol_d3d11_backend_cflags_select_only_d3d11')
           Run-Owner -Label v3-preamble -Path 'vlib/v3/gen/c/preamble_test.v' -Common $v3Common -Names @(
+            'test_windows_preserved_sdk_headers_own_cross_file_externs',
+            'test_windows_system_libc_replays_v1_gcc_stdio_provider',
+            'test_headerless_windows_emits_exact_stat_platform_struct',
             'test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations',
             'test_headerless_windows_emits_or_aliases_exact_filetime_platform_struct',
             'test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions',
@@ -669,6 +674,8 @@ jobs:
           )
           $preambleTests = @(
             'test_windows_preserved_sdk_headers_own_cross_file_externs',
+            'test_windows_system_libc_replays_v1_gcc_stdio_provider',
+            'test_headerless_windows_emits_exact_stat_platform_struct',
             'test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations',
             'test_headerless_windows_emits_or_aliases_exact_filetime_platform_struct',
             'test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions',
@@ -807,6 +814,8 @@ jobs:
             test_cache_extern_declaration_avoids_tgmath_macro_expansion \
             test_windows_unresolved_ordinary_winsock_headers_preserve_native_tag \
             test_winsock_header_fallback_preserves_headerless_and_nonwindows_boundaries \
+            test_windows_unresolved_ordinary_bcrypt_header_owns_exact_extern \
+            test_windows_direct_sdk_provider_ownership_respects_native_conditions \
             test_pkgconfig_dynamic_argv_is_historically_byte_for_byte_unchanged \
             test_pkgconfig_global_static_mode_inserts_one_static_option \
             test_local_pkgconfig_static_option_does_not_require_global_static_mode \
@@ -820,6 +829,9 @@ jobs:
             test_noinline_attribute_is_preserved_for_generic_specialization \
             test_function_definition_attributes_are_composed_as_prefixes
           run_owner v3-preamble vlib/v3/gen/c/preamble_test.v \
+            test_windows_preserved_sdk_headers_own_cross_file_externs \
+            test_windows_system_libc_replays_v1_gcc_stdio_provider \
+            test_headerless_windows_emits_exact_stat_platform_struct \
             test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations \
             test_headerless_windows_emits_or_aliases_exact_filetime_platform_struct \
             test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions \

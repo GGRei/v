@@ -195,6 +195,107 @@ fn test_winsock_header_fallback_preserves_headerless_and_nonwindows_boundaries()
 	}
 }
 
+fn test_windows_unresolved_ordinary_bcrypt_header_owns_exact_extern() {
+	provider := '/virtual/vlib/crypto/rand/rand_windows.c.v'
+	declaration := '/virtual/vlib/builtin/cfns.c.v'
+	mut a := flat.FlatAst.new()
+	mut tc := types.TypeChecker.new(&a)
+	mut g := FlatGen.new()
+	g.a = &a
+	g.tc = &tc
+	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	assert c_flag_include_dirs(g.c_flags).len == 0
+	for _ in 0 .. 2 {
+		g.collect_c_directive('crypto.rand', flat.Node{
+			kind:  .directive
+			value: 'include'
+			typ:   '<bcrypt.h>'
+		}, provider, false)
+	}
+	assert g.c_directives_use_system_libc()
+	assert !g.header_owned_c_extern_sources[c_extern_source_key(declaration)]
+	assert !g.should_emit_c_extern_decl_from_file('BCryptGenRandom', declaration)
+	for name in ['WSAStartup', 'closesocket', 'issue74_unrelated_c_symbol'] {
+		assert g.should_emit_c_extern_decl_from_file(name, declaration), name
+	}
+	g.emit_preserved_c_directives()
+	assert g.sb.str().count('#include <bcrypt.h>') == 1, g.sb.str()
+	for target_os in ['windows', 'linux', 'macos'] {
+		mut boundary := FlatGen.new()
+		boundary.set_target(pref.target_from(target_os, 'amd64') or { panic(err) })
+		boundary.collect_c_directive('crypto.rand', flat.Node{
+			kind:  .directive
+			value: if target_os == 'windows' { 'insert' } else { 'include' }
+			typ:   '<bcrypt.h>'
+		}, provider, false)
+		assert !boundary.c_directives_use_system_libc(), target_os
+		assert boundary.should_emit_c_extern_decl_from_file('BCryptGenRandom', declaration),
+			target_os
+	}
+	mut unknown := FlatGen.new()
+	unknown.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	unknown.collect_c_directive('crypto.rand', flat.Node{
+		kind:  .directive
+		value: 'include'
+		typ:   '<issue74_unknown_bcrypt.h>'
+	}, provider, false)
+	assert !unknown.c_directives_use_system_libc()
+	assert unknown.should_emit_c_extern_decl_from_file('BCryptGenRandom', declaration)
+}
+
+fn test_windows_direct_sdk_provider_ownership_respects_native_conditions() {
+	provider := '/virtual/issue74/sdk_provider.c.v'
+	declaration := '/virtual/vlib/builtin/cfns.c.v'
+	for header in ['<winsock2.h>', '<bcrypt.h>'] {
+		names := if header == '<winsock2.h>' {
+			['WSAStartup', 'closesocket']
+		} else {
+			['BCryptGenRandom']
+		}
+		for directive_name in ['include', 'preinclude'] {
+			for guard in [['if', '0'], ['ifdef', 'ISSUE74_UNKNOWN_PROVIDER'], ['if', '1']] {
+				mut g := FlatGen.new()
+				g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+				assert c_flag_include_dirs(g.c_flags).len == 0
+				g.collect_c_directive('sdk_provider', flat.Node{
+					kind:  .directive
+					value: guard[0]
+					typ:   guard[1]
+				}, provider, false)
+				g.collect_c_directive('sdk_provider', flat.Node{
+					kind:  .directive
+					value: directive_name
+					typ:   header
+				}, provider, false)
+				assert !g.header_owned_c_extern_sources[c_extern_source_key(declaration)]
+				for name in names {
+					assert g.should_emit_c_extern_decl_from_file(name, declaration),
+						'${directive_name} ${header} under ${guard}: ${name}'
+				}
+				g.collect_c_directive('sdk_provider', flat.Node{
+					kind:  .directive
+					value: 'endif'
+				}, provider, false)
+				// Do not let an earlier guarded, deduplicated preinclude poison ownership.
+				g.collect_c_directive('sdk_provider', flat.Node{
+					kind:  .directive
+					value: directive_name
+					typ:   header
+				}, provider, false)
+				for name in names {
+					assert !g.should_emit_c_extern_decl_from_file(name, declaration),
+						'${directive_name} ${header} after endif: ${name}'
+				}
+				assert g.should_emit_c_extern_decl_from_file('issue74_unrelated_c_symbol',
+					declaration)
+				if directive_name == 'preinclude' {
+					assert g.preinclude_directives == ['#include ${header}']
+				}
+			}
+		}
+	}
+}
+
 fn test_c_v_ordinary_emitted_header_owns_only_same_file_c_externs() {
 	root := os.join_path(os.vtmp_dir(), 'v3_c_v_header_owner_${os.getpid()}')
 	os.rmdir_all(root) or {}
