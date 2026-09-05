@@ -661,24 +661,38 @@ fn test_windows_headers_guard_conditional_nls_and_vista_externs() {
 }
 
 fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
+	assert_windows_system_dword_storage_is_nominal_only_in_sdk_mode()
 	expected_central := [
 		'CreateDirectoryW',
+		'CreateFileW',
+		'CreatePipe',
+		'CreateProcessW',
+		'ExpandEnvironmentStringsW',
 		'FileTimeToSystemTime',
+		'FindClose',
+		'FindFirstFileW',
+		'FormatMessageW',
 		'GetConsoleMode',
 		'GetConsoleScreenBufferInfo',
 		'GetCurrentProcessId',
 		'GetCurrentThreadId',
+		'GetExitCodeProcess',
 		'GetFileAttributesW',
 		'GetFinalPathNameByHandleW',
+		'GetFullPathNameW',
 		'GetLastError',
 		'GetNativeSystemInfo',
 		'GetStdHandle',
 		'GetSystemTimeAsFileTime',
+		'LocalFree',
 		'QueryPerformanceCounter',
 		'QueryPerformanceFrequency',
+		'ReadFile',
+		'RemoveDirectoryW',
 		'ScrollConsoleScreenBuffer',
 		'SetConsoleCursorPosition',
 		'SetConsoleMode',
+		'SetHandleInformation',
 		'Sleep',
 		'SystemTimeToTzSpecificLocalTime',
 		'VirtualAlloc',
@@ -727,7 +741,7 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 		assert name !in central, name
 		central[name] = true
 	}
-	assert central.len == 38
+	assert central.len == 51
 	for name in expected_nls {
 		assert name !in central, name
 		assert c_extern_calling_convention(name) == 'WINAPI', name
@@ -740,7 +754,7 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 	mut effective := central.clone()
 	assert '_wremove' in c_manual_stdlib_declared_fns
 	effective['_wremove'] = true
-	assert effective.len == 39
+	assert effective.len == 52
 
 	mut g := FlatGen.new()
 	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
@@ -777,8 +791,62 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 			unrelated.add_c_directive('main', '#include <stdio.h>', false)
 		}
 		unrelated.preamble()
-		for name in ['GetNativeSystemInfo', 'VirtualAlloc', 'VirtualProtect'] {
+		for name in ['GetNativeSystemInfo', 'VirtualAlloc', 'VirtualProtect',
+			'CreateFileW', 'CreatePipe', 'CreateProcessW', 'ExpandEnvironmentStringsW',
+			'FindClose', 'FindFirstFileW', 'FormatMessageW', 'GetExitCodeProcess',
+			'GetFullPathNameW', 'LocalFree', 'ReadFile', 'RemoveDirectoryW', 'SetHandleInformation'] {
 			assert unrelated.should_emit_c_extern_decl(name), '${target_os}: ${name}'
+		}
+	}
+}
+
+fn assert_windows_system_dword_storage_is_nominal_only_in_sdk_mode() {
+	dword := types.Type(types.Alias{
+		name:      'C.DWORD'
+		base_type: types.Type(types.u32_)
+	})
+	for target_os in ['windows', 'linux', 'macos'] {
+		for compiler in ['gcc', 'clang', 'tinyc'] {
+			for system_mode in [false, true] {
+				mut ast := &flat.FlatAst{}
+				mut tc := types.TypeChecker.new(ast)
+				mut storage := FlatGen.new()
+				storage.a = ast
+				storage.tc = &tc
+				storage.set_target(pref.target_from(target_os, 'amd64') or { panic(err) })
+				storage.set_ccompiler(compiler)
+				if system_mode {
+					storage.add_c_directive('main', '#include <stdio.h>', false)
+				}
+				expected := if target_os == 'windows' && system_mode { 'DWORD' } else { 'u32' }
+				assert storage.value_c_type(dword) == expected
+				assert storage.cast_c_type(dword) == expected
+				for alias_name in ['C.OtherDword', 'AppDword'] {
+					other := types.Type(types.Alias{
+						name:      alias_name
+						base_type: types.Type(types.u32_)
+					})
+					assert storage.value_c_type(other) == 'u32'
+					assert storage.cast_c_type(other) == 'u32'
+				}
+				for other_base in [types.Type(types.i32_), types.Type(types.Pointer{
+					base_type: types.Type(types.u32_)
+				}), types.Type(types.Struct{
+					name: 'C.OtherStorage'
+				})] {
+					other := types.Type(types.Alias{
+						name:      'C.DWORD'
+						base_type: other_base
+					})
+					assert storage.value_c_type(other) == tc.c_type(other_base)
+					assert storage.cast_c_type(other) == tc.c_type(other_base)
+				}
+				pointer := types.Type(types.Pointer{
+					base_type: dword
+				})
+				// This change does not alter general pointer storage/signatures.
+				assert storage.value_c_type(pointer) == 'u32*'
+			}
 		}
 	}
 }

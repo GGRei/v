@@ -662,8 +662,23 @@ fn main() {
 	assert stdio_run.output.trim_space() == 'windows-headerless-stdio-ok', stdio_run.output
 	sdk_program := wait_header_compile(v3_bin, 'windows_closure_sdk_owners', "module main
 
+import os
+import json2
+
 #preinclude <stdio.h>
 #preinclude <windows.h>
+
+struct SdkRecord {
+	driver            string
+	driver_basename   string
+	expanded_argv     []string
+	generation        string
+	link_output_token string
+	linkage           string
+	output_basename   string
+	response_path     string
+	transport         string
+}
 
 fn main() {
 	mut info := C.SYSTEM_INFO{}
@@ -671,6 +686,61 @@ fn main() {
 	assert info.dwPageSize > 0
 	_ = voidptr(&C.VirtualAlloc)
 	_ = voidptr(&C.VirtualProtect)
+	_ = voidptr(&C.CreateFileW)
+	_ = voidptr(&C.CreatePipe)
+	_ = voidptr(&C.CreateProcessW)
+	_ = voidptr(&C.ExpandEnvironmentStringsW)
+	_ = voidptr(&C.FindClose)
+	_ = voidptr(&C.FindFirstFileW)
+	_ = voidptr(&C.FormatMessageW)
+	_ = voidptr(&C.GetExitCodeProcess)
+	_ = voidptr(&C.GetFullPathName)
+	_ = voidptr(&C.LocalFree)
+	_ = voidptr(&C.ReadFile)
+	_ = voidptr(&C.RemoveDirectoryW)
+	_ = voidptr(&C.SetHandleInformation)
+	expected_output := 'probe-世界.exe'
+	captured := fn [expected_output] () string {
+		return expected_output
+	}
+	assert captured() == expected_output
+	record := SdkRecord{
+		driver:            'clang.exe'
+		driver_basename:   'clang.exe'
+		expanded_argv:     ['-o', expected_output]
+		generation:        'v3'
+		link_output_token: expected_output
+		linkage:           'static'
+		output_basename:   expected_output
+		response_path:     ''
+		transport:         'direct'
+	}
+	encoded := json2.encode(record, escape_unicode: true)
+	value := json2.decode[json2.Any](encoded, strict: true) or { panic(err) }
+	assert value is map[string]json2.Any
+	fields := value as map[string]json2.Any
+	assert fields.len == 9
+	output := fields['output_basename'] or { panic('missing output_basename') }
+	assert output is string
+	assert (output as string) == expected_output
+	root := os.join_path(os.temp_dir(), 'v3_sdk_helper_' + os.getpid().str())
+	os.mkdir(root) or { panic(err) }
+	path := os.join_path(root, 'report-世界.json')
+	defer {
+		os.rm(path) or {}
+		os.rmdir(root) or {}
+	}
+	os.write_file(path, encoded) or { panic(err) }
+	stat := os.lstat(path) or { panic(err) }
+	assert stat.size == u64(encoded.len)
+	assert !os.is_link(path)
+	assert os.is_file(os.real_path(path))
+	assert os.read_file(path) or { panic(err) } == encoded
+	cmd_exe := os.join_path(os.getenv('SystemRoot'), 'System32', 'cmd.exe')
+	assert os.is_file(cmd_exe)
+	exec_result := os.exec([cmd_exe, '/d', '/c', 'echo', 'windows-sdk-exec-ok'])
+	assert exec_result.exit_code == 0
+	assert exec_result.output.trim_space() == 'windows-sdk-exec-ok'
 	println('windows-closure-sdk-ok')
 }
 ")
@@ -680,10 +750,23 @@ fn main() {
 	assert sdk_compact.contains('GetNativeSystemInfo('), sdk_program.c_code
 	assert sdk_compact.contains('&VirtualAlloc'), sdk_program.c_code
 	assert sdk_compact.contains('&VirtualProtect'), sdk_program.c_code
-	for name in ['GetNativeSystemInfo', 'VirtualAlloc', 'VirtualProtect'] {
+	for name in ['GetNativeSystemInfo', 'VirtualAlloc', 'VirtualProtect',
+		'CreateFileW', 'CreatePipe', 'CreateProcessW', 'ExpandEnvironmentStringsW',
+		'FindClose', 'FindFirstFileW', 'FormatMessageW', 'GetExitCodeProcess',
+		'GetFullPathNameW', 'LocalFree', 'ReadFile', 'RemoveDirectoryW', 'SetHandleInformation'] {
 		assert wait_header_generated_extern_count(sdk_program.c_code, name) == 0,
 			sdk_program.c_code
 	}
+	for name in ['CreateFileW', 'CreatePipe', 'CreateProcessW', 'ExpandEnvironmentStringsW',
+		'FindClose', 'FindFirstFileW', 'FormatMessageW', 'GetExitCodeProcess',
+		'GetFullPathNameW', 'LocalFree', 'ReadFile', 'RemoveDirectoryW', 'SetHandleInformation'] {
+		assert sdk_compact.contains('&' + name), sdk_program.c_code
+	}
+	assert sdk_compact.contains('DWORDtmp=(DWORD)(0)'), sdk_program.c_code
+	assert sdk_compact.contains('VirtualProtect(ptr,size,PAGE_EXECUTE_READ,&tmp)'),
+		sdk_program.c_code
+	assert sdk_compact.contains('VirtualProtect(ptr,size,PAGE_READWRITE,&tmp)'),
+		sdk_program.c_code
 	sdk_run := wait_header_execute_without_vflags(os.quoted_path(sdk_program.out))
 	assert sdk_run.exit_code == 0, sdk_run.output
 	assert sdk_run.output.trim_space() == 'windows-closure-sdk-ok', sdk_run.output

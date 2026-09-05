@@ -131,6 +131,13 @@ fn (mut g FlatGen) current_fn_optional_type_name(t types.Type) string {
 }
 
 fn (mut g FlatGen) value_c_type(t types.Type) string {
+	// The Windows SDK owns DWORD as unsigned long, not V's unsigned int u32.
+	// Preserve its explicit scalar slot/cast so &slot matches SDK PDWORD.
+	// Headerless storage and all other aliases retain their existing erasure.
+	if t is types.Alias && t.name == 'C.DWORD' && t.base_type == types.Type(types.u32_)
+		&& g.target.os == 'windows' && g.c_directives_use_system_libc() {
+		return 'DWORD'
+	}
 	if shared_alias_ptr := g.shared_alias_pointer_type(t) {
 		return g.tc.c_type(shared_alias_ptr)
 	}
