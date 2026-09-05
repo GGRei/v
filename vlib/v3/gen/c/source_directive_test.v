@@ -106,6 +106,95 @@ fn test_unscanned_preserved_header_only_suppresses_known_symbols() {
 	assert g.should_emit_c_extern_decl_from_file('unrelated_api', os.join_path(root, 'other.v'))
 }
 
+fn test_windows_unresolved_ordinary_winsock_headers_preserve_native_tag() {
+	source := '/virtual/vlib/net/net_windows.c.v'
+	mut a := flat.FlatAst.new()
+	mut tc := types.TypeChecker.new(&a)
+	tc.structs['C.WSAData'] = []types.StructField{}
+	mut g := FlatGen.new()
+	g.a = &a
+	g.tc = &tc
+	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	g.register_struct_decl_info('C.WSAData', 'C.WSAData', 'net', source, flat.Node{
+		value: 'WSAData'
+	})
+	assert c_flag_include_dirs(g.c_flags).len == 0
+	for header in ['<winsock2.h>', '<ws2tcpip.h>', '<winsock2.h>'] {
+		assert c_include_file_paths(header, g.compiler_vroot, source, []string{}).len == 0
+		g.collect_c_directive('net', flat.Node{
+			kind:  .directive
+			value: 'include'
+			typ:   header
+		}, source, false)
+	}
+	assert g.c_directives_use_system_libc()
+	assert g.preinclude_directives.len == 0
+	assert g.inlined_c_structs['WSAData']
+	assert 'WSAData' !in g.inlined_c_typedef_names
+	assert g.inlined_c_typedef_names['WSADATA']
+	assert g.inlined_c_typedef_names['LPWSADATA']
+	assert g.skip_builtin_struct('C.WSAData')
+	assert g.header_owned_c_extern_sources[c_extern_source_key(source)]
+	assert g.should_emit_c_extern_decl_from_file('unrelated_header_api',
+		'/virtual/vlib/other.c.v')
+	g.emit_preserved_c_directives()
+	g.system_libc_headers()
+	g.gen_type_declaration_block()
+	c_code := g.sb.str()
+	alias := 'typedef struct WSAData WSAData;'
+	assert c_code.count('#include <winsock2.h>') == 1, c_code
+	assert c_code.count('#include <ws2tcpip.h>') == 1, c_code
+	assert c_code.count(alias) == 1, c_code
+	assert !c_code.contains('struct WSAData {'), c_code
+	assert !c_code.contains('struct WSAData;'), c_code
+	winsock_pos := c_code.index('#include <winsock2.h>') or { -1 }
+	ws2tcpip_pos := c_code.index('#include <ws2tcpip.h>') or { -1 }
+	windows_pos := c_code.index('#include <windows.h>') or { -1 }
+	alias_pos := c_code.index(alias) or { -1 }
+	assert winsock_pos >= 0 && ws2tcpip_pos > winsock_pos && windows_pos > ws2tcpip_pos,
+		c_code
+	assert alias_pos > windows_pos, c_code
+}
+
+fn test_winsock_header_fallback_preserves_headerless_and_nonwindows_boundaries() {
+	source := '/virtual/vlib/net/net_windows.c.v'
+	mut headerless := FlatGen.new()
+	headerless.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	assert !headerless.c_directives_use_system_libc()
+	assert 'WSAData' !in headerless.inlined_c_structs
+	assert 'WSADATA' !in headerless.inlined_c_typedef_names
+
+	mut unknown := FlatGen.new()
+	unknown.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
+	unknown.collect_c_directive('net', flat.Node{
+		kind:  .directive
+		value: 'include'
+		typ:   '<issue74_unknown_winsock_header.h>'
+	}, source, false)
+	assert !unknown.c_directives_use_system_libc()
+	assert !unknown.header_owned_c_extern_sources[c_extern_source_key(source)]
+	assert 'WSAData' !in unknown.inlined_c_structs
+
+	for target_os in ['linux', 'macos', 'windows'] {
+		mut g := FlatGen.new()
+		g.set_target(pref.target_from(target_os, 'amd64') or { panic(err) })
+		directive_name := if target_os == 'windows' { 'insert' } else { 'include' }
+		for header in ['<winsock2.h>', '<ws2tcpip.h>'] {
+			g.collect_c_directive('net', flat.Node{
+				kind:  .directive
+				value: directive_name
+				typ:   header
+			}, source, false)
+		}
+		assert !g.c_directives_use_system_libc(), target_os
+		assert g.c_directives.len == 0, target_os
+		assert 'WSAData' !in g.inlined_c_structs, target_os
+		assert 'WSADATA' !in g.inlined_c_typedef_names, target_os
+		assert 'LPWSADATA' !in g.inlined_c_typedef_names, target_os
+		assert !g.header_owned_c_extern_sources[c_extern_source_key(source)], target_os
+	}
+}
+
 fn test_c_v_ordinary_emitted_header_owns_only_same_file_c_externs() {
 	root := os.join_path(os.vtmp_dir(), 'v3_c_v_header_owner_${os.getpid()}')
 	os.rmdir_all(root) or {}

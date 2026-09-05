@@ -4853,13 +4853,22 @@ fn (mut g FlatGen) collect_c_directive(module_name string, node flat.Node, sourc
 				g.mark_header_owned_c_extern_source(source_file, node.value, include_arg)
 			}
 		} else if c_should_preserve_uninlined_include(include_arg) || (g.cache_split
-			&& include_arg in ['<mach/mach.h>', '<mach/task.h>', '<mach/mach_time.h>']) {
+			&& include_arg in ['<mach/mach.h>', '<mach/task.h>', '<mach/mach_time.h>'])
+			|| (node.value == 'include' && g.target.os == 'windows'
+			&& include_arg in ['<winsock2.h>', '<ws2tcpip.h>']) {
 			// The preserved header is emitted before generated externs. Suppress known
 			// declarations from it by symbol; unrelated C declarations from the same V
 			// file still need generated extern prototypes.
 			g.collect_preserved_c_fns(c_preserved_system_include_declared_fns(include_arg))
 			g.collect_preserved_c_structs(c_preserved_system_include_struct_names(include_arg))
 			g.collect_preserved_c_typedef_names(c_preserved_system_include_typedef_names(include_arg))
+			if node.value == 'include' && g.target.os == 'windows'
+				&& include_arg == '<winsock2.h>' {
+				// Implicit SDK search paths need not occur in -I. The header owns
+				// the layout; WSAData is its tag, not either of its typedef names.
+				g.collect_preserved_c_structs(['WSAData'])
+				g.collect_preserved_c_typedef_names(['WSADATA', 'LPWSADATA'])
+			}
 			g.add_c_directive(module_name, '#include ${include_arg}', before_import)
 			g.mark_header_owned_c_extern_source(source_file, node.value, include_arg)
 		}
