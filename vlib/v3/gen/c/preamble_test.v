@@ -627,6 +627,8 @@ fn test_headerless_windows_emits_or_aliases_exact_filetime_platform_struct() {
 
 fn test_windows_headers_guard_conditional_nls_and_vista_externs() {
 	declaration := 'int MultiByteToWideChar(void);'
+	symlink_declaration := 'i32 WINAPI CreateSymbolicLinkW(u16*, u16*, u32);'
+	symlink_guard := '#if defined(__TINYC__) || !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${symlink_declaration}\n#elif defined(WINAPI_FAMILY_PARTITION)\n#if !WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)\n${symlink_declaration}\n#endif\n#endif'
 	mut g := FlatGen.new()
 	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
 	g.set_ccompiler('tinyc')
@@ -647,7 +649,15 @@ fn test_windows_headers_guard_conditional_nls_and_vista_externs() {
 		assert system_g.c_windows_conditional_system_extern_decl(name, declaration) == '#ifdef NONLS\n${declaration}\n#endif'
 	}
 	for name in c_windows_vista_conditional_extern_fns.keys() {
+		if name == 'CreateSymbolicLinkW' {
+			continue
+		}
 		assert system_g.c_windows_conditional_system_extern_decl(name, declaration) == '#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${declaration}\n#endif'
+	}
+	for compiler in ['tinyc', 'gcc', 'clang', 'msvc'] {
+		system_g.set_ccompiler(compiler)
+		assert system_g.c_windows_conditional_system_extern_decl('CreateSymbolicLinkW', symlink_declaration) == symlink_guard,
+			compiler
 	}
 	g.set_ccompiler('gcc')
 	for name in ['MultiByteToWideChar', 'WideCharToMultiByte'] {
@@ -657,6 +667,15 @@ fn test_windows_headers_guard_conditional_nls_and_vista_externs() {
 	g.set_ccompiler('tinyc')
 	for name in ['MultiByteToWideChar', 'WideCharToMultiByte'] {
 		assert g.c_windows_conditional_system_extern_decl(name, declaration) == declaration
+	}
+	for target_os in ['windows', 'linux'] {
+		g.set_target(pref.target_from(target_os, 'amd64') or { panic(err) })
+		for compiler in ['tinyc', 'gcc', 'clang', 'msvc'] {
+			g.set_ccompiler(compiler)
+			assert !g.c_directives_use_system_libc()
+			assert g.c_windows_conditional_system_extern_decl('CreateSymbolicLinkW', symlink_declaration) == symlink_declaration,
+				'${target_os}: ${compiler}'
+		}
 	}
 }
 
@@ -738,6 +757,7 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 	expected_vista := [
 		'AcquireSRWLockExclusive',
 		'AcquireSRWLockShared',
+		'CreateSymbolicLinkW',
 		'InitializeConditionVariable',
 		'InitializeSRWLock',
 		'ReleaseSRWLockExclusive',

@@ -16750,6 +16750,12 @@ fn (g &FlatGen) c_windows_conditional_system_extern_decl(cfn string, declaration
 	}
 	if g.target.os == 'windows' && g.c_directives_use_system_libc()
 		&& cfn in c_windows_vista_conditional_extern_fns {
+		if cfn == 'CreateSymbolicLinkW' {
+			// TinyCC's bundled header does not declare this API. Modern SDKs restrict it to
+			// desktop; SDKs without partition macros keep the traditional Vista guard.
+			// Nest the partition check so an absent function-like macro is never called.
+			return '#if defined(__TINYC__) || !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${declaration}\n#elif defined(WINAPI_FAMILY_PARTITION)\n#if !WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)\n${declaration}\n#endif\n#endif'
+		}
 		return '#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${declaration}\n#endif'
 	}
 	return declaration
@@ -16763,6 +16769,7 @@ const c_windows_nls_conditional_extern_fns = {
 const c_windows_vista_conditional_extern_fns = {
 	'AcquireSRWLockExclusive':     true
 	'AcquireSRWLockShared':        true
+	'CreateSymbolicLinkW':         true
 	'InitializeConditionVariable': true
 	'InitializeSRWLock':           true
 	'ReleaseSRWLockExclusive':     true

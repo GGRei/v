@@ -277,6 +277,7 @@ fn wait_header_windows_vista_fns() []string {
 	return [
 		'AcquireSRWLockExclusive',
 		'AcquireSRWLockShared',
+		'CreateSymbolicLinkW',
 		'InitializeConditionVariable',
 		'InitializeSRWLock',
 		'ReleaseSRWLockExclusive',
@@ -1187,6 +1188,16 @@ println('windows-wide-top-level-argv-ok')
 		fallback_line := wait_header_generated_extern_line(fallback_program.c_code, name)
 		assert default_line.contains(' WINAPI ${name}('), default_line
 		assert fallback_line.contains(' WINAPI ${name}('), fallback_line
+		if name == 'CreateSymbolicLinkW' {
+			// Two textual fallbacks are in mutually exclusive preprocessor branches.
+			assert wait_header_generated_extern_count(c_code, name) == 2, name
+			assert wait_header_generated_extern_count(fallback_program.c_code, name) == 2, name
+			default_guard := '#if defined(__TINYC__) || !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${default_line}\n#elif defined(WINAPI_FAMILY_PARTITION)\n#if !WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)\n${default_line}\n#endif\n#endif'
+			fallback_guard := '#if defined(__TINYC__) || !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${fallback_line}\n#elif defined(WINAPI_FAMILY_PARTITION)\n#if !WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)\n${fallback_line}\n#endif\n#endif'
+			assert c_code.count(default_guard) == 1, default_line
+			assert fallback_program.c_code.count(fallback_guard) == 1, fallback_line
+			continue
+		}
 		assert wait_header_generated_extern_count(c_code, name) == 1, name
 		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 1, name
 		if name in ['AcquireSRWLockExclusive', 'ReleaseSRWLockExclusive'] {
