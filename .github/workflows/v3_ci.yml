@@ -431,6 +431,9 @@ jobs:
               'test_driver_static_pkgconfig_fact_ldflags_and_dynamic_c_invariance',
               'test_driver_cpp_linker_directive_is_exact_and_non_link_outputs_stay_c',
               'test_driver_cpp_linker_uses_final_cpp_driver_and_keeps_sources_c')
+            Run-Owner -Label v3-fixed-array-declared-defaults -Path 'vlib/v3/tests/struct_init_embed_fixed_array_codegen_test.v' -Common $v3Common -Names @(
+              'test_struct_init_embed_plus_fixed_array_sets_both',
+              'test_struct_fixed_array_declared_defaults_survive_result_fallback')
           } finally {
             if ($oldTestCcPresent) {
               Set-Item -LiteralPath $testCcEnvPath -Value $oldTestCc
@@ -456,6 +459,18 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $status.Length -ne 0) {
             throw "the worktree is not clean after the Windows GNU tests: $status"
           }
+      - name: Preserve fixed-array reproduction evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-fixed-array-${{ matrix.lane }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/issue74-fixed-array-evidence/*.v
+            ${{ runner.temp }}/issue74-fixed-array-evidence/*.c
+            ${{ runner.temp }}/issue74-fixed-array-evidence/*.log
+            ${{ runner.temp }}/issue74-fixed-array-evidence/*.txt
+          if-no-files-found: error
+          retention-days: 7
 
   v3-windows-msvc-negative:
     runs-on: windows-2022
@@ -811,7 +826,23 @@ jobs:
             test_driver_static_pkgconfig_fact_ldflags_and_dynamic_c_invariance \
             test_driver_cpp_linker_directive_is_exact_and_non_link_outputs_stay_c \
             test_driver_cpp_linker_uses_final_cpp_driver_and_keeps_sources_c
+          ISSUE74_V3_DRIVER_TEST_CC="$gcc_path" ISSUE74_V3_DRIVER_TEST_CXX="$gpp_path" \
+            run_owner v3-fixed-array-declared-defaults vlib/v3/tests/struct_init_embed_fixed_array_codegen_test.v \
+              test_struct_init_embed_plus_fixed_array_sets_both \
+              test_struct_fixed_array_declared_defaults_survive_result_fallback
 
           git diff --exit-code
           git diff --cached --exit-code
           [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
+      - name: Preserve fixed-array reproduction evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-fixed-array-linux-gcc-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/issue74-fixed-array-evidence/*.v
+            ${{ runner.temp }}/issue74-fixed-array-evidence/*.c
+            ${{ runner.temp }}/issue74-fixed-array-evidence/*.log
+            ${{ runner.temp }}/issue74-fixed-array-evidence/*.txt
+          if-no-files-found: error
+          retention-days: 7
