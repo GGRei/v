@@ -662,6 +662,7 @@ fn main() {
 	assert stdio_run.output.trim_space() == 'windows-headerless-stdio-ok', stdio_run.output
 	sdk_program := wait_header_compile(v3_bin, 'windows_closure_sdk_owners', "module main
 
+#preinclude <stdio.h>
 #preinclude <windows.h>
 
 fn main() {
@@ -673,6 +674,7 @@ fn main() {
 	println('windows-closure-sdk-ok')
 }
 ")
+	assert sdk_program.c_code.contains('#include <stdio.h>'), sdk_program.c_code
 	assert sdk_program.c_code.contains('#include <windows.h>'), sdk_program.c_code
 	sdk_compact := wait_header_compact_source(sdk_program.c_code)
 	assert sdk_compact.contains('GetNativeSystemInfo('), sdk_program.c_code
