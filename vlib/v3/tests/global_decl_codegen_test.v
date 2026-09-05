@@ -357,7 +357,7 @@ fn test_inferred_global_if_padding_preserves_nominal_type() {
 module panel
 
 __global inferred_theme = theme_defaults
-__global typed_theme Theme = theme_defaults
+__global typed_theme = Theme{medium: theme_defaults.medium, large: theme_defaults.large}
 '
 		'panel/theme.v': 'module panel
 
