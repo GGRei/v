@@ -458,12 +458,41 @@ jobs:
             Run-Owner -Label v3-reader-homonym -Path 'vlib/v3/tests/interface_fn_parameter_test.v' -Common $v3Common -Names @(
               'test_interface_method_fn_parameter_uses_c_typedef',
               'test_homonymous_struct_does_not_replace_interface_method_signature')
-            Run-Owner -Label v3-reverse-iterator-types -Path 'vlib/v3/tests/for_in_review_test.v' -Common $v3Common -Names @(
-              'test_custom_iterator_pointer_for_in_uses_single_indirection',
-              'test_reverse_iterator_preserves_parameter_and_recursive_field_element_types')
-            Run-Owner -Label v3-global-padding -Path 'vlib/v3/tests/global_decl_codegen_test.v' -Common $v3Common -Names @(
-              'test_implicit_global_dynamic_array_is_initialized_before_append',
-              'test_inferred_global_if_padding_preserves_nominal_type')
+            # These three independent reductions all run; none can erase a red verdict.
+            $reductionFailures = @()
+            try {
+              Run-Owner -Label v3-iterator-boundary -Path 'vlib/v3/transform/monomorphize_test.v' -Common $v3Common -Names @(
+                'test_generic_unresolved_type_detects_multi_return_placeholders',
+                'test_reverse_iterator_lowering_records_concrete_payload_boundary')
+              $boundaryReport = Join-Path $env:RUNNER_TEMP 'issue74-iterator-boundary.txt'
+              $boundaryItem = Get-Item -LiteralPath $boundaryReport -ErrorAction Stop
+              if ($boundaryItem.PSIsContainer -or ($boundaryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $boundaryItem.Length -gt 16384) {
+                throw 'invalid iterator boundary report'
+              }
+              Write-Host ([IO.File]::ReadAllText($boundaryReport))
+            } catch {
+              $reductionFailures += 'iterator-boundary'
+              Write-Host "iterator-boundary failed: $($_.Exception.Message)"
+            }
+            try {
+              Run-Owner -Label v3-reverse-iterator-types -Path 'vlib/v3/tests/for_in_review_test.v' -Common $v3Common -Names @(
+                'test_custom_iterator_pointer_for_in_uses_single_indirection',
+                'test_reverse_iterator_preserves_parameter_and_recursive_field_element_types')
+            } catch {
+              $reductionFailures += 'reverse-iterator'
+              Write-Host "reverse-iterator failed: $($_.Exception.Message)"
+            }
+            try {
+              Run-Owner -Label v3-global-padding -Path 'vlib/v3/tests/global_decl_codegen_test.v' -Common $v3Common -Names @(
+                'test_implicit_global_dynamic_array_is_initialized_before_append',
+                'test_inferred_global_if_padding_preserves_nominal_type')
+            } catch {
+              $reductionFailures += 'padding'
+              Write-Host "padding failed: $($_.Exception.Message)"
+            }
+            if ($reductionFailures.Count -ne 0) {
+              throw "independent reductions failed: $($reductionFailures -join ', ')"
+            }
           } finally {
             if ($oldTestCcPresent) {
               Set-Item -LiteralPath $testCcEnvPath -Value $oldTestCc
@@ -912,14 +941,40 @@ jobs:
             run_owner v3-reader-homonym vlib/v3/tests/interface_fn_parameter_test.v \
               test_interface_method_fn_parameter_uses_c_typedef \
               test_homonymous_struct_does_not_replace_interface_method_signature
-          ISSUE74_V3_DRIVER_TEST_CC="$gcc_path" ISSUE74_V3_DRIVER_TEST_CXX="$gpp_path" \
-            run_owner v3-reverse-iterator-types vlib/v3/tests/for_in_review_test.v \
-              test_custom_iterator_pointer_for_in_uses_single_indirection \
-              test_reverse_iterator_preserves_parameter_and_recursive_field_element_types
-          ISSUE74_V3_DRIVER_TEST_CC="$gcc_path" ISSUE74_V3_DRIVER_TEST_CXX="$gpp_path" \
-            run_owner v3-global-padding vlib/v3/tests/global_decl_codegen_test.v \
-              test_implicit_global_dynamic_array_is_initialized_before_append \
-              test_inferred_global_if_padding_preserves_nominal_type
+          # Simple subshell commands retain errexit inside run_owner/assert_defs.
+          # Only this three-owner parent scope collects rc values instead of stopping.
+          set +e
+          (
+            set -e
+            ISSUE74_V3_DRIVER_TEST_CC="$gcc_path" ISSUE74_V3_DRIVER_TEST_CXX="$gpp_path" \
+              run_owner v3-iterator-boundary vlib/v3/transform/monomorphize_test.v \
+                test_generic_unresolved_type_detects_multi_return_placeholders \
+                test_reverse_iterator_lowering_records_concrete_payload_boundary
+            boundary_report="$RUNNER_TEMP/issue74-iterator-boundary.txt"
+            [[ -f "$boundary_report" && ! -L "$boundary_report" ]]
+            [[ "$(wc -c < "$boundary_report")" -le 16384 ]]
+            sed -n '1,$p' "$boundary_report"
+          )
+          boundary_rc=$?
+          (
+            set -e
+            ISSUE74_V3_DRIVER_TEST_CC="$gcc_path" ISSUE74_V3_DRIVER_TEST_CXX="$gpp_path" \
+              run_owner v3-reverse-iterator-types vlib/v3/tests/for_in_review_test.v \
+                test_custom_iterator_pointer_for_in_uses_single_indirection \
+                test_reverse_iterator_preserves_parameter_and_recursive_field_element_types
+          )
+          reverse_rc=$?
+          (
+            set -e
+            ISSUE74_V3_DRIVER_TEST_CC="$gcc_path" ISSUE74_V3_DRIVER_TEST_CXX="$gpp_path" \
+              run_owner v3-global-padding vlib/v3/tests/global_decl_codegen_test.v \
+                test_implicit_global_dynamic_array_is_initialized_before_append \
+                test_inferred_global_if_padding_preserves_nominal_type
+          )
+          padding_rc=$?
+          set -e
+          echo "independent reductions: boundary=$boundary_rc reverse=$reverse_rc padding=$padding_rc"
+          [[ "$boundary_rc" == 0 && "$reverse_rc" == 0 && "$padding_rc" == 0 ]]
 
           git diff --exit-code
           git diff --cached --exit-code

@@ -1,6 +1,9 @@
 module transform
 
+import os
 import v3.flat
+import v3.parser
+import v3.pref
 import v3.types
 
 fn test_comptime_loop_type_metadata_survives_generic_specialization() {
@@ -592,4 +595,180 @@ fn test_free_generic_map_suffix_preserves_qualified_value_type() {
 	assert suffix == 'Map_string_binary__St'
 	decoded := generic_type_arg_from_suffix_with_containers(suffix)
 	assert decoded == 'map[string]binary.St'
+}
+
+fn iterator_boundary_nodes(a &flat.FlatAst, id flat.NodeId, kind flat.NodeKind, mut found []flat.NodeId) {
+	node := a.node(id)
+	if node.kind == kind {
+		found << id
+	}
+	for child in a.children_of(node) {
+		iterator_boundary_nodes(a, child, kind, mut found)
+	}
+}
+
+// Observe actual generated nodes. No inferred type or spec is inserted into
+// the AST, checker maps, or inference state by this diagnostic.
+fn iterator_boundary_observe(source_path string, reverse_source string, name string) (string, bool) {
+	mut report := 'function=${name}\n'
+	if !os.is_file(source_path) || !os.is_file(reverse_source) {
+		return report + 'source=<missing>\n', false
+	}
+	mut p := parser.Parser.new(pref.new_preferences())
+	mut a := p.parse_files([reverse_source, source_path])
+	mut tc := types.TypeChecker.new(a)
+	tc.collect(a)
+	tc.annotate_types()
+	mut t := new_transformer(mut a, &tc, map[string]bool{})
+	t.prepare_with_pre_scans()
+	t.cur_file = source_path
+	t.cur_module = tc.file_modules[source_path] or { '' }
+	mut roots := []int{}
+	for i, node in a.nodes {
+		if node.kind == .fn_decl && node.value == name {
+			roots << i
+		}
+	}
+	report += 'module=${t.cur_module} roots=${roots.len} skip_generics=${t.skip_generics}\n'
+	if roots.len != 1 {
+		return report + 'function_root=<missing-or-ambiguous>\n', false
+	}
+	fn_id := flat.NodeId(roots[0])
+	mut loops := []flat.NodeId{}
+	iterator_boundary_nodes(a, fn_id, .for_in_stmt, mut loops)
+	report += 'original_loops=${loops.len}\n'
+	for loop_id in loops {
+		loop := a.node(loop_id)
+		if loop.children_count < 3 {
+			report += 'container=<missing>\n'
+			continue
+		}
+		container_id := a.child(loop, 2)
+		container := a.node(container_id)
+		checked := if typ := tc.expr_type(container_id) { typ.name() } else { '' }
+		report += 'before: for.typ=${loop.typ} container.typ=${container.typ} checked=${checked}\n'
+		if info := tc.iterator_for_in_next_call_info_text(checked) {
+			report += 'before: checked_info.name=${info.name} checked_info.return=${info.return_type.name()}\n'
+		} else {
+			report += 'before: checked_info=<absent>\n'
+		}
+	}
+	// Use the real function entry to establish parameter/local scope. Each
+	// function gets a fresh parse/check/transform instance, not forged maps.
+	t.transform_fn_body(roots[0])
+	mut declarations := []flat.NodeId{}
+	iterator_boundary_nodes(a, fn_id, .decl_assign, mut declarations)
+	mut receivers := 0
+	mut next_calls := []flat.NodeId{}
+	mut slots := 0
+	for decl_id in declarations {
+		decl := a.node(decl_id)
+		if decl.children_count != 2 {
+			continue
+		}
+		lhs := a.child_node(decl, 0)
+		rhs_id := a.child(decl, 1)
+		rhs := a.node(rhs_id)
+		if lhs.value.starts_with('__iter_') && !lhs.value.starts_with('__iter_next_') {
+			receivers++
+			report += 'after: receiver=${lhs.value} decl.typ=${decl.typ} lhs.typ=${lhs.typ} factory.kind=${rhs.kind} factory.typ=${rhs.typ}\n'
+		} else if lhs.value.starts_with('__iter_next_') {
+			next_calls << rhs_id
+			report += 'after: next=${lhs.value} decl.typ=${decl.typ} lhs.typ=${lhs.typ} call.kind=${rhs.kind} call.typ=${rhs.typ}\n'
+			for child in a.children_of(rhs) {
+				arg := a.node(child)
+				report += 'after: next_child kind=${arg.kind} value=${arg.value} typ=${arg.typ}\n'
+				if arg.kind == .prefix && arg.children_count == 1 {
+					value := a.child_node(arg, 0)
+					report += 'after: receiver_ident=${value.value} typ=${value.typ}\n'
+				}
+			}
+		} else if lhs.value in ['item', 'child'] {
+			slots++
+			report += 'after: slot=${lhs.value} decl.typ=${decl.typ} lhs.typ=${lhs.typ} rhs.kind=${rhs.kind} rhs.value=${rhs.value} rhs.typ=${rhs.typ}\n'
+		}
+	}
+	// Derive text only AFTER observing the generated tree. A cached spec is
+	// not a trace of B5's returned value; absence does not prove an empty return.
+	for next_id in next_calls {
+		if spec := t.generic_call_spec_cache[int(next_id)] {
+			report += 'spec: present=true key=${spec.decl_key} args=${spec.args}\n'
+			if decl := t.generic_fn_decls_cache[spec.decl_key] {
+				derived := t.specialized_fn_return_type_text(decl, spec.args)
+				report += 'spec: derived_return_from_spec=${derived}\n'
+			} else {
+				report += 'spec: declaration=<absent> derived_return_from_spec=<unavailable>\n'
+			}
+		} else {
+			report += 'spec: present=false derived_return_from_spec=<unavailable>\n'
+		}
+	}
+	report += 'b5_return_value_observed=false receivers=${receivers} next_calls=${next_calls.len} slots=${slots}\n'
+	return report, t.cur_module == 'main' && loops.len == 1 && receivers == 1
+		&& next_calls.len == 1 && slots == 1
+}
+
+fn test_reverse_iterator_lowering_records_concrete_payload_boundary() {
+	vlib_dir := os.dir(os.dir(os.dir(@FILE)))
+	reverse_source := os.join_path(vlib_dir, 'arrays', 'reverse_iterator.v')
+	root := os.join_path(os.vtmp_dir(), 'iterator_boundary_${os.getpid()}')
+	os.mkdir_all(root) or { panic(err) }
+	source_path := os.join_path(root, 'main.v')
+	source := 'module main
+import arrays
+
+struct Item {
+	id int
+}
+struct Node {
+	id int
+	children []Node
+}
+fn parameter_order(items []Item) int {
+	mut order := 0
+	for item in arrays.reverse_iterator(items) {
+		order = order * 10 + item.id
+	}
+	return order
+}
+fn field_order(node &Node) int {
+	mut order := 0
+	for child in arrays.reverse_iterator(node.children) {
+		order = order * 10 + child.id
+	}
+	return order
+}
+fn main() {}
+'
+	os.write_file(source_path, source) or { panic(err) }
+	mut report := 'Reduced parser input, not the native 80-file import graph.\n'
+	report += 'source_order=[${reverse_source}, ${source_path}]\n'
+	mut observed := true
+	for name in ['parameter_order', 'field_order'] {
+		detail, present := iterator_boundary_observe(source_path, reverse_source, name)
+		report += detail
+		observed = observed && present
+	}
+	report += 'observation_complete=${observed}\n'
+	runner_temp := os.getenv('RUNNER_TEMP')
+	report_base := if runner_temp.len > 0 { runner_temp } else { os.vtmp_dir() }
+	report_path := os.join_path(report_base, 'issue74-iterator-boundary.txt')
+	mut captured := false
+	if !os.is_link(report_path) {
+		bounded := if report.len <= 16 * 1024 {
+			report
+		} else {
+			report[..16 * 1024 - 64] + '\nREPORT EXCEEDS 16 KiB; observation incomplete\n'
+		}
+		os.write_file(report_path, bounded) or {
+			eprintln('cannot retain iterator observation: ${err}')
+		}
+		captured = os.is_file(report_path) && report.len <= 16 * 1024
+			&& (os.read_file(report_path) or { '' }) == report
+		eprintln(bounded)
+	}
+	// Only completeness is asserted. Concrete slots here would mean this
+	// observation did not reproduce the native boundary, not a product fix.
+	assert captured, 'iterator observation capture failed'
+	assert observed, report
 }
