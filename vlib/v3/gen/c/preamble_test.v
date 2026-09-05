@@ -1266,13 +1266,24 @@ fn test_headerless_windows_non_tcc_emits_early_runtime_providers() {
 		system_g.add_c_directive('main', '#include <stdio.h>', false)
 		system_g.preamble()
 		system_code := system_g.sb.str()
+		early_block := '#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\nvoid WINAPI AcquireSRWLockExclusive(void*);\nvoid WINAPI ReleaseSRWLockExclusive(void*);\n#ifndef __TINYC__\nDWORD WINAPI GetFinalPathNameByHandleW(HANDLE, LPWSTR, DWORD, DWORD);\n#endif\n#endif'
+		assert system_code.count(early_block) == 1, compiler
+		windows_pos := system_code.index('#include <windows.h>') or { -1 }
+		early_pos := system_code.index(early_block) or { -1 }
+		helper_pos := system_code.index('typedef struct { HANDLE handle; void* context; } __v_thread;') or {
+			-1
+		}
+		assert windows_pos >= 0 && early_pos > windows_pos && helper_pos > early_pos,
+			compiler
 		assert !system_code.contains(wide_console_alias), compiler
 		assert 'ScrollConsoleScreenBuffer' !in system_g.inlined_c_active_macros, compiler
 		for declaration in [thread_start_alias, lpthread_start_alias, timezone_alias] {
 			assert !system_code.contains(declaration), '${compiler}: ${declaration}'
 		}
 		for name in expected_fns {
-			assert !system_code.contains('void WINAPI ${name}(void*);'), '${compiler}: ${name}'
+			assert system_code.count('void WINAPI ${name}(void*);') == 1, '${compiler}: ${name}'
+			assert name in system_g.inlined_c_declared_fns, '${compiler}: ${name}'
+			assert !system_g.should_emit_c_extern_decl(name), '${compiler}: ${name}'
 		}
 	}
 }
