@@ -123,17 +123,23 @@ fn absent() !Shape {
 
 fn main() {
 	direct := Shape{}
-	assert direct.transform[0] == 1 && direct.transform[3] == 1
-	assert direct.labels[0] == \'a\' && direct.labels[1] == \'b\'
+	if direct.transform[0] != 1 || direct.transform[3] != 1
+		|| direct.labels[0] != \'a\' || direct.labels[1] != \'b\' {
+		panic(\'direct defaults changed\')
+	}
 	explicit := Shape{
 		transform: [f32(2), 0, 0, 2, 0, 0]!
 		labels: [\'x\', \'y\']!
 	}
-	assert explicit.transform[0] == 2 && explicit.transform[3] == 2
-	assert explicit.labels[0] == \'x\' && explicit.labels[1] == \'y\'
+	if explicit.transform[0] != 2 || explicit.transform[3] != 2
+		|| explicit.labels[0] != \'x\' || explicit.labels[1] != \'y\' {
+		panic(\'explicit values changed\')
+	}
 	fallback := absent() or { Shape{} }
-	assert fallback.transform[0] == 1 && fallback.transform[3] == 1
-	assert fallback.labels[0] == \'a\' && fallback.labels[1] == \'b\'
+	if fallback.transform[0] != 1 || fallback.transform[3] != 1
+		|| fallback.labels[0] != \'a\' || fallback.labels[1] != \'b\' {
+		panic(\'fallback defaults changed\')
+	}
 	println(\'fixed-default-ok\')
 }
 '

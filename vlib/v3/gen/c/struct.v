@@ -1633,8 +1633,25 @@ fn (mut g FlatGen) gen_struct_default_fields(type_name string, mut set_fields ma
 			g.write(', ')
 		}
 		g.write('.${g.cname(field.value)} = ')
-		g.gen_struct_field_expr_for_field(g.a.child(field, 0), info.full_name, field.value, g.struct_default_field_type(info,
-			field))
+		value_id := g.a.child(field, 0)
+		expected := g.struct_default_field_type(info, field)
+		value := g.a.node(value_id)
+		is_fixed_literal := value.kind == .array_literal
+			|| (value.kind == .postfix && value.op == .not && value.children_count == 1
+			&& g.a.child_node(value, 0).kind == .array_literal)
+		mut initializer := ''
+		if is_fixed_literal && g.shared_field_info(info.full_name, field.value) == none {
+			if fixed := array_fixed_type(expected) {
+				// This is an inline array member of a C aggregate, not an array
+				// expression. Synthesized defaults need braces without a type cast.
+				initializer = g.fixed_array_initializer_string(value_id, fixed)
+			}
+		}
+		if initializer.len > 0 {
+			g.write(initializer)
+		} else {
+			g.gen_struct_field_expr_for_field(value_id, info.full_name, field.value, expected)
+		}
 		set_fields[field.value] = true
 		has = true
 	}
