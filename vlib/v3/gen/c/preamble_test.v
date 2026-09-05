@@ -869,6 +869,117 @@ fn test_windows_system_libc_headers_define_fixed_crt_and_vista_contract() {
 	assert stat_header_pos >= 0 && stat_header_pos < guard_pos, c_code
 }
 
+fn test_windows_preserved_sdk_headers_own_cross_file_externs() {
+	provider_source := '/virtual/issue74/sdk_providers.c.v'
+	// Canonical exports and declaration owners from the issue74 full-showcase C.
+	// GetProcAddress has two declarations; the C does not identify which won.
+	owners := [
+		['BCryptGenRandom', 'builtin/cfns.c.v', 'bcrypt'],
+		['FindNextFileW', 'builtin/cfns.c.v', 'windows'],
+		['GetModuleFileNameW', 'builtin/cfns.c.v', 'windows'],
+		['GetTickCount', 'builtin/cfns.c.v', 'windows'],
+		['WSAStartup', 'builtin/cfns.c.v', 'winsock'],
+		['closesocket', 'builtin/cfns.c.v', 'winsock'],
+		['CloseClipboard', 'clipboard/clipboard_windows.c.v', 'windows'],
+		['CreateWindowExW', 'clipboard/clipboard_windows.c.v', 'windows'],
+		['DefWindowProcW', 'clipboard/clipboard_windows.c.v', 'windows'],
+		['EmptyClipboard', 'clipboard/clipboard_windows.c.v', 'windows'],
+		['GlobalAlloc', 'clipboard/clipboard_windows.c.v', 'windows'],
+		['GlobalFree', 'clipboard/clipboard_windows.c.v', 'windows'],
+		['GlobalUnlock', 'clipboard/clipboard_windows.c.v', 'windows'],
+		['OpenClipboard', 'clipboard/clipboard_windows.c.v', 'windows'],
+		['RegisterClassExW', 'clipboard/clipboard_windows.c.v', 'windows'],
+		['SetLastError', 'clipboard/clipboard_windows.c.v', 'windows'],
+		['CopyFileW', 'os/os.c.v', 'windows'],
+		['GetLongPathNameW', 'os/os_windows.c.v', 'windows'],
+		['FreeLibrary', 'dl/dl_windows.c.v', 'windows'],
+		['GetProcAddress', 'dl/dl_windows.c.v', 'windows'],
+		['LoadLibraryW', 'dl/dl_windows.c.v', 'windows'],
+		['GetProcAddress', 'os/process_windows.c.v', 'windows'],
+	]
+	mut exports := map[string]bool{}
+	mut pairs := map[string]bool{}
+	for owner in owners {
+		assert owner.len == 3
+		assert owner[2] in ['windows', 'winsock', 'bcrypt']
+		assert '/virtual/vlib/' + owner[1] != provider_source
+		exports[owner[0]] = true
+		pairs[owner[0] + '\t' + owner[1]] = true
+	}
+	assert owners.len == 22 && pairs.len == 22 && exports.len == 21
+	mut mismatches := []string{}
+	for state in ['headerless', 'nonwindows', 'windows', 'winsock', 'bcrypt', 'all'] {
+		mut a := flat.FlatAst.new()
+		mut tc := types.TypeChecker.new(&a)
+		mut g := FlatGen.new()
+		g.a = &a
+		g.tc = &tc
+		target_os := if state == 'nonwindows' { 'linux' } else { 'windows' }
+		g.set_target(pref.target_from(target_os, 'amd64') or { panic(err) })
+		// The headerless negative is GNU, not TCC's SDK-backed atomic provider.
+		g.set_ccompiler('gcc')
+		assert !g.uses_windows_tcc_atomic_header()
+		assert c_flag_include_dirs(g.c_flags).len == 0
+		if state != 'headerless' {
+			g.collect_c_directive('sdk_provider', flat.Node{
+				kind:  .directive
+				value: 'preinclude'
+				typ:   '<stdio.h>'
+			}, provider_source, false)
+			if state in ['winsock', 'all'] {
+				g.collect_c_directive('sdk_provider', flat.Node{
+					kind:  .directive
+					value: 'include'
+					typ:   '<winsock2.h>'
+				}, provider_source, false)
+			}
+			if state in ['bcrypt', 'all'] {
+				g.collect_c_directive('sdk_provider', flat.Node{
+					kind:  .directive
+					value: 'preinclude'
+					typ:   '<bcrypt.h>'
+				}, provider_source, false)
+			}
+			g.emit_preinclude_directives()
+			g.emit_preserved_c_directives()
+			g.system_libc_headers()
+			g.system_libc_preamble()
+		}
+		assert g.c_directives_use_system_libc() == (state != 'headerless'), state
+		code := g.sb.str()
+		if state != 'headerless' {
+			assert code.contains('#include <stdio.h>'), state
+			assert code.contains('#include <windows.h>'), state
+		}
+		assert code.contains('#include <winsock2.h>') == (state in ['winsock', 'all']), state
+		assert code.contains('#include <bcrypt.h>') == (state in ['bcrypt', 'all']), state
+		before := mismatches.len
+		for owner in owners {
+			declaration_source := '/virtual/vlib/' + owner[1]
+			assert !g.header_owned_c_extern_sources[c_extern_source_key(declaration_source)],
+				declaration_source
+			// Without explicit Winsock tracking, retain the historical route. This
+			// does not claim windows.h can never transitively provide Winsock1.
+			provider_present := state !in ['headerless', 'nonwindows']
+				&& (owner[2] == 'windows' || (owner[2] == 'winsock'
+				&& state in ['winsock', 'all']) || (owner[2] == 'bcrypt'
+				&& state in ['bcrypt', 'all']))
+			expected_emit := !provider_present
+			observed_emit := g.should_emit_c_extern_decl_from_file(owner[0], declaration_source)
+			if observed_emit != expected_emit {
+				mismatches << '${state}: ${owner[0]} owner=${owner[1]} expected_emit=${expected_emit} observed_emit=${observed_emit}'
+			}
+		}
+		if !g.should_emit_c_extern_decl_from_file('issue74_unrelated_c_symbol',
+			'/virtual/issue74/unrelated.c.v') {
+			mismatches << '${state}: unrelated C symbol was suppressed'
+		}
+		println('sdk-cross-file-state=${state} checked=${owners.len} mismatches=${mismatches.len - before}')
+	}
+	// This is a metadata predicate reproduction, not a native SDK compile/run.
+	assert mismatches.len == 0, mismatches.join('\n')
+}
+
 fn test_unresolved_windows_header_does_not_replace_central_system_ownership() {
 	source := '/virtual/vlib/builtin/builtin_windows.c.v'
 	mut g := FlatGen.new()

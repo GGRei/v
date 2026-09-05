@@ -653,6 +653,7 @@ jobs:
             'vlib/v/builder/msvc_windows_test.v'
           )
           $preambleTests = @(
+            'test_windows_preserved_sdk_headers_own_cross_file_externs',
             'test_headerless_windows_tcc_uses_one_compat_header_and_sdk_declarations',
             'test_headerless_windows_emits_or_aliases_exact_filetime_platform_struct',
             'test_headerless_windows_tcc_preserves_only_atomic_header_sdk_functions',
