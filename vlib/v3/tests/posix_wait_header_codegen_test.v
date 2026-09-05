@@ -735,6 +735,10 @@ struct SdkRecord {
 }
 
 fn main() {
+	if os.args.len == 2 && os.args[1] == 'windows-sdk-exec-child' {
+		println('windows-sdk-exec-ok')
+		return
+	}
 	mut info := C.SYSTEM_INFO{}
 	C.GetNativeSystemInfo(&info)
 	assert info.dwPageSize > 0
@@ -792,11 +796,9 @@ fn main() {
 	assert !os.is_link(path)
 	assert os.is_file(os.real_path(path))
 	assert os.read_file(path) or { panic(err) } == encoded
-	cmd_exe := os.join_path(os.getenv('SystemRoot'), 'System32', 'cmd.exe')
-	assert os.is_file(cmd_exe)
-	exec_result := os.exec([cmd_exe, '/d', '/c', 'echo', 'windows-sdk-exec-ok'])
-	assert exec_result.exit_code == 0
-	assert exec_result.output.trim_space() == 'windows-sdk-exec-ok'
+	exec_result := os.exec([os.args[0], 'windows-sdk-exec-child'])
+	assert exec_result.exit_code == 0, exec_result.output
+	assert exec_result.output.trim_space() == 'windows-sdk-exec-ok', exec_result.output
 	println('windows-closure-sdk-ok')
 }
 ")
