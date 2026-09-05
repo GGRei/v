@@ -662,7 +662,7 @@ fn main() {
 	assert stdio_run.output.trim_space() == 'windows-headerless-stdio-ok', stdio_run.output
 	sdk_program := wait_header_compile(v3_bin, 'windows_closure_sdk_owners', "module main
 
-#include <windows.h>
+#preinclude <windows.h>
 
 fn main() {
 	mut info := C.SYSTEM_INFO{}
