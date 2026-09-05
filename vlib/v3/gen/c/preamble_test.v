@@ -779,6 +779,20 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
 	g.add_c_directive('main', '#include <stdio.h>', false)
 	g.system_libc_preamble()
+	expected_early := ['AcquireSRWLockExclusive', 'ReleaseSRWLockExclusive']
+	assert c_headerless_windows_early_runtime_declared_fns == expected_early
+	for name in expected_early {
+		assert name !in central, name
+		assert name in g.inlined_c_declared_fns, name
+	}
+	early_block := '#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\nvoid WINAPI AcquireSRWLockExclusive(void*);\nvoid WINAPI ReleaseSRWLockExclusive(void*);\n#ifndef __TINYC__\nDWORD WINAPI GetFinalPathNameByHandleW(HANDLE, LPWSTR, DWORD, DWORD);\n#endif\n#endif'
+	code := g.sb.str()
+	assert code.count(early_block) == 1, code
+	early_pos := code.index(early_block) or { -1 }
+	helper_pos := code.index('typedef struct { HANDLE handle; void* context; } __v_thread;') or {
+		-1
+	}
+	assert early_pos >= 0 && helper_pos > early_pos, code
 	for name in expected_central {
 		assert !g.should_emit_c_extern_decl(name), name
 	}
@@ -787,7 +801,7 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 		assert g.should_emit_c_extern_decl(name), name
 	}
 	for name in expected_vista {
-		assert g.should_emit_c_extern_decl(name), name
+		assert g.should_emit_c_extern_decl(name) == (name !in expected_early), name
 	}
 	owned_source := '/virtual/vlib/sync/sync_windows.c.v'
 	g.header_owned_c_extern_sources[c_extern_source_key(owned_source)] = true
@@ -795,7 +809,8 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 		assert g.should_emit_c_extern_decl_from_file(name, owned_source), name
 	}
 	for name in expected_vista {
-		assert g.should_emit_c_extern_decl_from_file(name, owned_source), name
+		assert g.should_emit_c_extern_decl_from_file(name, owned_source) == (name !in expected_early),
+			name
 	}
 	assert !g.should_emit_c_extern_decl_from_file('unrelated_header_api', owned_source)
 	assert g.inlined_c_structs['__stat64']
@@ -1050,6 +1065,7 @@ fn test_unresolved_windows_header_does_not_replace_central_system_ownership() {
 }
 
 fn test_system_libc_windows_tcc_atomic_header_does_not_preserve_sdk_functions() {
+	expected_early := ['AcquireSRWLockExclusive', 'ReleaseSRWLockExclusive']
 	mut g := FlatGen.new()
 	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
 	g.set_ccompiler('tinyc')
@@ -1074,8 +1090,8 @@ fn test_system_libc_windows_tcc_atomic_header_does_not_preserve_sdk_functions() 
 		assert g.should_emit_c_extern_decl(name), name
 	}
 	for name in c_windows_vista_conditional_extern_fns.keys() {
-		assert name !in g.inlined_c_declared_fns, name
-		assert g.should_emit_c_extern_decl(name), name
+		assert (name in g.inlined_c_declared_fns) == (name in expected_early), name
+		assert g.should_emit_c_extern_decl(name) == (name !in expected_early), name
 	}
 	for name in c_headerless_windows_tcc_sdk_declared_fns {
 		if name !in c_windows_system_libc_declared_fns {
@@ -1093,8 +1109,8 @@ fn test_system_libc_windows_tcc_atomic_header_does_not_preserve_sdk_functions() 
 		assert g.should_emit_c_extern_decl(name), name
 	}
 	for name in c_windows_vista_conditional_extern_fns.keys() {
-		assert name !in g.inlined_c_declared_fns, name
-		assert g.should_emit_c_extern_decl(name), name
+		assert (name in g.inlined_c_declared_fns) == (name in expected_early), name
+		assert g.should_emit_c_extern_decl(name) == (name !in expected_early), name
 	}
 	for name in c_headerless_windows_tcc_sdk_declared_fns {
 		if name !in c_windows_system_libc_declared_fns {

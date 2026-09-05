@@ -1068,9 +1068,11 @@ println('windows-wide-top-level-argv-ok')
 		assert compact_calls.count('WriteConsoleW(console_handle,wide_ptr,') == 1,
 			'active WriteConsoleW backend call count'
 		for name in ['WaitForSingleObject', 'GetLastError', 'CreateDirectoryW',
-			'GetFileAttributesW', 'GetFinalPathNameByHandleW', 'WriteConsoleW', 'WriteFile'] {
+			'GetFileAttributesW', 'WriteConsoleW', 'WriteFile'] {
 			assert wait_header_generated_extern_line(generated_code, name) == '', generated_code
 		}
+		assert wait_header_generated_extern_line(generated_code, 'GetFinalPathNameByHandleW') == 'DWORD WINAPI GetFinalPathNameByHandleW(HANDLE, LPWSTR, DWORD, DWORD);',
+			generated_code
 		assert !generated_code.contains('bool WINAPI WriteConsoleW(void*, u16*, u32, u32*, void*);'),
 			generated_code
 		assert !generated_code.contains('bool WINAPI WriteFile(void*, u8*, u32, u32*, void*);'),
@@ -1085,6 +1087,7 @@ println('windows-wide-top-level-argv-ok')
 	lpthread_start_alias := 'typedef PTHREAD_START_ROUTINE LPTHREAD_START_ROUTINE;'
 	timezone_alias := 'typedef struct _TIME_ZONE_INFORMATION TIME_ZONE_INFORMATION;'
 	wide_console_alias := '#ifndef ScrollConsoleScreenBuffer\n#define ScrollConsoleScreenBuffer ScrollConsoleScreenBufferW\n#endif'
+	early_vista_block := '#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\nvoid WINAPI AcquireSRWLockExclusive(void*);\nvoid WINAPI ReleaseSRWLockExclusive(void*);\n#ifndef __TINYC__\nDWORD WINAPI GetFinalPathNameByHandleW(HANDLE, LPWSTR, DWORD, DWORD);\n#endif\n#endif'
 	for generated_code in [c_code, fallback_program.c_code] {
 		thread_helper_pos := generated_code.index('static inline int v_sync_thread_create_detached') or {
 			-1
@@ -1096,6 +1099,11 @@ println('windows-wide-top-level-argv-ok')
 			'SystemTimeToTzSpecificLocalTime')
 		assert thread_helper_pos >= 0, generated_code
 		assert closure_helper_pos >= 0, generated_code
+		assert generated_code.count(early_vista_block) == 1, generated_code
+		early_pos := generated_code.index(early_vista_block) or { -1 }
+		windows_pos := generated_code.index('#include <windows.h>') or { -1 }
+		assert windows_pos >= 0 && early_pos > windows_pos && early_pos < closure_helper_pos,
+			generated_code
 		assert !generated_code.contains(wide_console_alias), generated_code
 		assert !generated_code.contains('ScrollConsoleScreenBufferA'), generated_code
 		assert generated_code.count(thread_start_alias) == 0, generated_code
@@ -1106,7 +1114,7 @@ println('windows-wide-top-level-argv-ok')
 			prototype := 'void WINAPI ${name}(void*);'
 			assert generated_code.count(prototype) == 1, generated_code
 			prototype_pos := generated_code.index(prototype) or { -1 }
-			assert prototype_pos > closure_helper_pos, generated_code
+			assert prototype_pos >= early_pos && prototype_pos < closure_helper_pos, generated_code
 		}
 	}
 	for name in sdk_owned {
@@ -1114,8 +1122,10 @@ println('windows-wide-top-level-argv-ok')
 		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 0,
 			name
 	}
-	assert wait_header_generated_extern_count(c_code, 'GetFinalPathNameByHandleW') == 0
-	assert wait_header_generated_extern_count(fallback_program.c_code, 'GetFinalPathNameByHandleW') == 0
+	// The early non-TCC fallback and the existing multiline TCC insert have
+	// complementary C guards; only the former is a generated single-line extern.
+	assert wait_header_generated_extern_count(c_code, 'GetFinalPathNameByHandleW') == 1
+	assert wait_header_generated_extern_count(fallback_program.c_code, 'GetFinalPathNameByHandleW') == 1
 	for name in crt_referenced {
 		assert wait_header_generated_extern_count(c_code, name) == 0, name
 		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 0, name
@@ -1179,10 +1189,15 @@ println('windows-wide-top-level-argv-ok')
 		assert fallback_line.contains(' WINAPI ${name}('), fallback_line
 		assert wait_header_generated_extern_count(c_code, name) == 1, name
 		assert wait_header_generated_extern_count(fallback_program.c_code, name) == 1, name
-		assert c_code.contains('#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${default_line}\n#endif'),
-			default_line
-		assert fallback_program.c_code.contains('#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${fallback_line}\n#endif'),
-			fallback_line
+		if name in ['AcquireSRWLockExclusive', 'ReleaseSRWLockExclusive'] {
+			assert c_code.contains(early_vista_block), default_line
+			assert fallback_program.c_code.contains(early_vista_block), fallback_line
+		} else {
+			assert c_code.contains('#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${default_line}\n#endif'),
+				default_line
+			assert fallback_program.c_code.contains('#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600\n${fallback_line}\n#endif'),
+				fallback_line
+		}
 	}
 	for generated_code in [c_code, fallback_program.c_code] {
 		wide_line := wait_header_generated_extern_line(generated_code, 'WideCharToMultiByte')

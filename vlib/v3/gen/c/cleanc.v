@@ -18432,6 +18432,17 @@ fn (mut g FlatGen) system_libc_preamble() {
 		// Both are C tags. MinGW maps __stat64 to _stat64; _FILETIME needs a
 		// local bare-name alias because the SDK typedef is named FILETIME.
 		g.collect_preserved_c_structs(['__stat64', '_FILETIME'])
+		// Native closure helpers precede the generated extern block. Keep their
+		// pre-Vista providers here, after the SDK types and before those helpers.
+		g.writeln('#if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0600')
+		for name in c_headerless_windows_early_runtime_declared_fns {
+			g.writeln('void WINAPI ${name}(void*);')
+		}
+		g.writeln('#ifndef __TINYC__')
+		g.writeln('DWORD WINAPI GetFinalPathNameByHandleW(HANDLE, LPWSTR, DWORD, DWORD);')
+		g.writeln('#endif')
+		g.writeln('#endif')
+		g.collect_preserved_c_fns(c_headerless_windows_early_runtime_declared_fns)
 	}
 	g.writeln('#ifdef _WIN32')
 	g.writeln('typedef struct { HANDLE handle; void* context; } __v_thread;')
@@ -18482,8 +18493,8 @@ fn (mut g FlatGen) system_libc_preamble() {
 }
 
 // c_windows_system_libc_declared_fns is the exact effective ownership set for
-// Windows system-libc mode. System headers supply it except that the TCC-only
-// builtin file API provider supplies GetFinalPathNameByHandleW. NLS and
+// Windows system-libc mode. GetFinalPathNameByHandleW comes from the SDK, the
+// early pre-Vista fallback, or the TCC-only builtin file API provider. NLS and
 // SRW/condition-variable APIs are excluded because their declarations are conditional.
 const c_windows_system_libc_declared_fns = [
 	'CloseClipboard',
