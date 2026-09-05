@@ -1,6 +1,11 @@
 import time
 
 fn test_unbuffer_stdout() {
+	$if windows {
+		assert C._IOFBF == 0
+		assert C._IOLBF == 0x0040
+		assert C._IONBF == 0x0004
+	}
 	// TODO: add a more extensive test, perhaps using expect,
 	// that does not require an active user to verify its validity.
 	// Currently this just tests that unbuffer_stdout/0 can be called,

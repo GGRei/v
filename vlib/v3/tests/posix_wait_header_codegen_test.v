@@ -630,6 +630,36 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 		return
 	}
 	v3_bin := wait_header_build_v3()
+	stdio_program := wait_header_compile(v3_bin, 'windows_headerless_stdio_modes', "module main
+
+fn main() {
+	assert C._IOFBF == 0
+	assert C._IOLBF == 0x0040
+	assert C._IONBF == 0x0004
+	unbuffer_stdout()
+	println('windows-headerless-stdio-ok')
+}
+")
+	if stdio_program.compiler_family == 'tcc' {
+		mut includes := []string{}
+		for line in stdio_program.c_code.split_into_lines() {
+			if line.trim_space().starts_with('#include') {
+				includes << line.trim_space()
+			}
+		}
+		assert includes.len == 1, stdio_program.c_code
+		assert includes[0].starts_with('#include "') && includes[0].ends_with('"'),
+			stdio_program.c_code
+		header := includes[0]['#include "'.len..includes[0].len - 1]
+		expected_header := os.join_path(os.dir(wait_header_vlib_dir), 'thirdparty', 'stdatomic',
+			'win', 'atomic.h')
+		assert os.real_path(header) == os.real_path(expected_header), stdio_program.c_code
+	} else {
+		assert !wait_header_has_include_directive(stdio_program.c_code), stdio_program.c_code
+	}
+	stdio_run := wait_header_execute_without_vflags(os.quoted_path(stdio_program.out))
+	assert stdio_run.exit_code == 0, stdio_run.output
+	assert stdio_run.output.trim_space() == 'windows-headerless-stdio-ok', stdio_run.output
 	sdk_program := wait_header_compile(v3_bin, 'windows_closure_sdk_owners', "module main
 
 #include <windows.h>

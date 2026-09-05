@@ -372,6 +372,8 @@ jobs:
             'test_non_windows_preamble_does_not_emit_windows_abi_fallbacks')
           Run-Owner -Label v3-windows-native-c-types -Path 'vlib/v3/types/c_type_cache_identity_test.v' -Common $v3Common -Names @(
             'test_c_type_renders_windows_stat_tag_without_inventing_typedef')
+          Run-Owner -Label v1-stdio -Path 'vlib/builtin/builtin_unbuffer_stdout_test.v' -Common $v1Common -Names @(
+            'test_unbuffer_stdout')
           $waitHeaderCcEnvName = 'ISSUE74_V3_WAIT_HEADER_CC'
           $waitHeaderCxxEnvName = 'ISSUE74_V3_WAIT_HEADER_CXX'
           $waitHeaderCcEnvPath = "Env:$waitHeaderCcEnvName"

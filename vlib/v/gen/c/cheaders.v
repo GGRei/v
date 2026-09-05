@@ -711,10 +711,18 @@ V_CRT_LINKAGE int V_CRT_CALL _vsnprintf_s(char *buffer, size_t size, size_t coun
 	#define _IOFBF 0
 #endif
 #ifndef _IOLBF
+	#if defined(_WIN32) || defined(_WIN64)
+	#define _IOLBF 0x0040
+	#else
 	#define _IOLBF 1
+	#endif
 #endif
 #ifndef _IONBF
+	#if defined(_WIN32) || defined(_WIN64)
+	#define _IONBF 0x0004
+	#else
 	#define _IONBF 2
+	#endif
 #endif
 #ifndef EOF
 	#define EOF (-1)
