@@ -671,6 +671,7 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 		'GetFileAttributesW',
 		'GetFinalPathNameByHandleW',
 		'GetLastError',
+		'GetNativeSystemInfo',
 		'GetStdHandle',
 		'GetSystemTimeAsFileTime',
 		'QueryPerformanceCounter',
@@ -680,6 +681,8 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 		'SetConsoleMode',
 		'Sleep',
 		'SystemTimeToTzSpecificLocalTime',
+		'VirtualAlloc',
+		'VirtualProtect',
 		'WaitForSingleObject',
 		'WriteConsoleW',
 		'_chsize_s',
@@ -724,7 +727,7 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 		assert name !in central, name
 		central[name] = true
 	}
-	assert central.len == 35
+	assert central.len == 38
 	for name in expected_nls {
 		assert name !in central, name
 		assert c_extern_calling_convention(name) == 'WINAPI', name
@@ -737,7 +740,7 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 	mut effective := central.clone()
 	assert '_wremove' in c_manual_stdlib_declared_fns
 	effective['_wremove'] = true
-	assert effective.len == 36
+	assert effective.len == 39
 
 	mut g := FlatGen.new()
 	g.set_target(pref.target_from('windows', 'amd64') or { panic(err) })
@@ -766,6 +769,18 @@ fn test_windows_system_libc_owns_exact_header_backed_extern_sets() {
 	assert g.inlined_c_structs['_FILETIME']
 	assert '__stat64' !in g.inlined_c_typedef_names
 	assert '_FILETIME' !in g.inlined_c_typedef_names
+	for target_os in ['windows', 'linux', 'macos'] {
+		mut unrelated := FlatGen.new()
+		unrelated.set_target(pref.target_from(target_os, 'amd64') or { panic(err) })
+		unrelated.set_ccompiler('gcc')
+		if target_os != 'windows' {
+			unrelated.add_c_directive('main', '#include <stdio.h>', false)
+		}
+		unrelated.preamble()
+		for name in ['GetNativeSystemInfo', 'VirtualAlloc', 'VirtualProtect'] {
+			assert unrelated.should_emit_c_extern_decl(name), '${target_os}: ${name}'
+		}
+	}
 }
 
 fn test_windows_system_libc_headers_define_fixed_crt_and_vista_contract() {

@@ -630,6 +630,31 @@ fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 		return
 	}
 	v3_bin := wait_header_build_v3()
+	sdk_program := wait_header_compile(v3_bin, 'windows_closure_sdk_owners', "module main
+
+#include <windows.h>
+
+fn main() {
+	mut info := C.SYSTEM_INFO{}
+	C.GetNativeSystemInfo(&info)
+	assert info.dwPageSize > 0
+	_ = voidptr(&C.VirtualAlloc)
+	_ = voidptr(&C.VirtualProtect)
+	println('windows-closure-sdk-ok')
+}
+")
+	assert sdk_program.c_code.contains('#include <windows.h>'), sdk_program.c_code
+	sdk_compact := wait_header_compact_source(sdk_program.c_code)
+	assert sdk_compact.contains('GetNativeSystemInfo('), sdk_program.c_code
+	assert sdk_compact.contains('&VirtualAlloc'), sdk_program.c_code
+	assert sdk_compact.contains('&VirtualProtect'), sdk_program.c_code
+	for name in ['GetNativeSystemInfo', 'VirtualAlloc', 'VirtualProtect'] {
+		assert wait_header_generated_extern_count(sdk_program.c_code, name) == 0,
+			sdk_program.c_code
+	}
+	sdk_run := wait_header_execute_without_vflags(os.quoted_path(sdk_program.out))
+	assert sdk_run.exit_code == 0, sdk_run.output
+	assert sdk_run.output.trim_space() == 'windows-closure-sdk-ok', sdk_run.output
 	default_program := wait_header_compile(v3_bin, 'windows_system_header_owners_default',
 		wait_header_windows_system_owner_source(''))
 	fallback_program := wait_header_compile(v3_bin, 'windows_system_header_owners_fallback',
