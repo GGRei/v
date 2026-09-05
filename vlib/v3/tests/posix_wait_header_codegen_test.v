@@ -826,7 +826,9 @@ fn main() {
 	assert sdk_compact.contains('VirtualProtect(ptr,size,PAGE_READWRITE,&tmp)'),
 		sdk_program.c_code
 	sdk_parent := os.dir(sdk_program.out)
-	sdk_run := wait_header_execute_without_vflags(os.quoted_path(sdk_program.out) + ' ' +
+	sdk_exe := sdk_program.out + '.exe'
+	assert os.is_file(sdk_exe), sdk_exe
+	sdk_run := wait_header_execute_without_vflags(os.quoted_path(sdk_exe) + ' ' +
 		os.quoted_path(sdk_parent))
 	assert sdk_run.exit_code == 0, sdk_run.output
 	assert sdk_run.output.trim_space() == 'windows-closure-sdk-ok', sdk_run.output
