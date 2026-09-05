@@ -314,6 +314,10 @@ jobs:
             'test_cpp_linker_real_drivers_keep_c_inputs_and_supply_their_runtime',
             'test_cpp_linker_compile_only_paths_do_not_probe_the_cpp_driver',
             'test_cpp_linker_cross_target_executable_reports_before_driver_selection')
+          Run-Owner -Label v1-ecdsa-search-paths -Path 'vlib/v/ast/cflags_test.v' -Common $v1Common -Names @(
+            'test_ecdsa_windows_search_flags_keep_independent_existing_paths')
+          Run-Owner -Label v3-ecdsa-search-paths -Path 'vlib/v3/gen/c/target_test.v' -Common $v3Common -Names @(
+            'test_ecdsa_windows_search_flags_keep_independent_existing_paths')
           Run-Owner -Label v3-fastcdriver -Path 'vlib/v3/fastcdriver/fastcdriver_test.v' -Common $v3Common -Names @(
             'test_fastc_is_v3_entry_accepts_exact_native_entry',
             'test_fastc_vroot_for_input_replaces_nonempty_only_when_building_v')
@@ -708,6 +712,8 @@ jobs:
             test_comptime_pkgconfig_value_uses_pkgconfig_runner
           run_owner v3-parser-pkgconfig vlib/v3/parser/comptime_pkgconfig_test.v \
             test_comptime_pkgconfig_function_keeps_dollar_prefix
+          run_owner v3-ecdsa-search-paths vlib/v3/gen/c/target_test.v \
+            test_ecdsa_windows_search_flags_keep_independent_existing_paths
           run_owner v3-pointer-voidptr vlib/v3/tests/pointer_voidptr_compat_test.v \
             test_explicit_voidptr_slot_addresses_preserve_source_storage
           run_owner v3-cflags vlib/v3/driver/c_compiler_flags_test.v \

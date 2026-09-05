@@ -289,6 +289,72 @@ fn test_disabled_c_flag_does_not_expand_existing_path_macros() {
 	assert c_flag_args('linux \$first_existing(\'${missing}\')', '', '', target).len == 0
 }
 
+fn test_ecdsa_windows_search_flags_keep_independent_existing_paths() {
+	source := os.read_file(os.join_path(os.dir(@FILE), '..', '..', '..', 'crypto', 'ecdsa',
+		'ecdsa.c.v')) or { panic(err) }
+	paths := ['C:/Program Files/OpenSSL-Win64/include',
+		'C:/Program Files/OpenSSL-Win64/lib/VC/x64/MD', 'C:/Program Files/OpenSSL/include',
+		'C:/Program Files/OpenSSL/lib/VC/x64/MD']
+	names := ['-I', '-L', '-I', '-L']
+	mut directives := []string{}
+	for line in source.split_into_lines() {
+		if line.starts_with('#flag windows -I') || line.starts_with('#flag windows -L') {
+			directives << line.all_after('#flag ')
+		}
+	}
+	assert directives.len == 4
+	for i, path in paths {
+		assert directives[i] == 'windows ${names[i]}' + r'$when_first_existing' + "('${path}')"
+	}
+	assert source.contains('#flag windows -l libcrypto')
+	windows := pref.target_from('windows', 'amd64') or { panic(err) }
+	root := os.join_path(os.vtmp_dir(), 'issue74 ecdsa V3 ${os.getpid()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	for mask in 0 .. 16 {
+		state := os.join_path(root, mask.str())
+		mapped := [os.join_path(state, 'OpenSSL-Win64', 'include'),
+			os.join_path(state, 'OpenSSL-Win64', 'lib', 'VC', 'x64', 'MD'),
+			os.join_path(state, 'OpenSSL', 'include'),
+			os.join_path(state, 'OpenSSL', 'lib', 'VC', 'x64', 'MD')]
+		mut expected := []string{}
+		mut actual := []string{}
+		for i, path in mapped {
+			if (mask & (1 << i)) != 0 {
+				os.mkdir_all(path) or { panic(err) }
+				expected << '${names[i]}${path}'
+			}
+		}
+		if (mask & 5) == 5 {
+			// Both search paths must survive when only the second contains a header.
+			os.write_file(os.join_path(mapped[2], 'issue74_fallback.h'), '#define ISSUE74_FALLBACK 1\n') or {
+				panic(err)
+			}
+			assert !os.exists(os.join_path(mapped[0], 'issue74_fallback.h'))
+		}
+		for i, directive in directives {
+			mapped_directive := directive.replace(paths[i], mapped[i])
+			args := c_flag_args(mapped_directive, '', @FILE, windows)
+			if (mask & (1 << i)) != 0 {
+				assert args == ['${names[i]}${mapped[i]}'], 'mask ${mask}: ${args}'
+			} else {
+				assert args.len == 0, 'mask ${mask}: ${args}'
+			}
+			actual << args
+			for target_os in ['linux', 'macos'] {
+				target := pref.target_from(target_os, 'amd64') or { panic(err) }
+				assert c_flag_args(mapped_directive, '', @FILE, target).len == 0
+			}
+		}
+		assert actual == expected, 'mask ${mask}: ${actual} != ${expected}'
+		for arg in actual {
+			assert arg.starts_with('-I') || arg.starts_with('-L'), arg
+		}
+	}
+}
+
 fn test_split_forced_include_flags_are_cache_inputs() {
 	dir := os.join_path(os.vtmp_dir(), 'v3_split_forced_include_flags')
 	os.rmdir_all(dir) or {}

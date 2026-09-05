@@ -1,5 +1,6 @@
 import v.ast
 import v.cflag
+import os
 
 const module_name = 'main'
 const cdefines = []string{}
@@ -57,6 +58,75 @@ fn test_parse_platform_partitioned_libcrypto_flags() {
 		make_flag('windows', '-l', 'libcrypto'),
 		make_flag(no_os, '-l', 'crypto'),
 	]
+}
+
+fn test_ecdsa_windows_search_flags_keep_independent_existing_paths() {
+	source := os.read_file(os.join_path(os.dir(@FILE), '..', '..', 'crypto', 'ecdsa',
+		'ecdsa.c.v')) or { panic(err) }
+	paths := ['C:/Program Files/OpenSSL-Win64/include',
+		'C:/Program Files/OpenSSL-Win64/lib/VC/x64/MD', 'C:/Program Files/OpenSSL/include',
+		'C:/Program Files/OpenSSL/lib/VC/x64/MD']
+	names := ['-I', '-L', '-I', '-L']
+	mut directives := []string{}
+	for line in source.split_into_lines() {
+		if line.starts_with('#flag windows -I') || line.starts_with('#flag windows -L') {
+			directives << line.all_after('#flag ')
+		}
+	}
+	assert directives.len == 4
+	for i, path in paths {
+		assert directives[i] == 'windows ${names[i]}' + r'$when_first_existing' + "('${path}')"
+	}
+	assert source.contains('#flag windows -l libcrypto')
+	root := os.join_path(os.vtmp_dir(), 'issue74 ecdsa V1 ${os.getpid()}')
+	os.mkdir_all(root) or { panic(err) }
+	defer {
+		os.rmdir_all(root) or {}
+	}
+	for mask in 0 .. 16 {
+		state := os.join_path(root, mask.str())
+		mapped := [os.join_path(state, 'OpenSSL-Win64', 'include'),
+			os.join_path(state, 'OpenSSL-Win64', 'lib', 'VC', 'x64', 'MD'),
+			os.join_path(state, 'OpenSSL', 'include'),
+			os.join_path(state, 'OpenSSL', 'lib', 'VC', 'x64', 'MD')]
+		mut original := ast.new_table()
+		mut revised := ast.new_table()
+		for i, path in mapped {
+			if (mask & (1 << i)) != 0 {
+				os.mkdir_all(path) or { panic(err) }
+			}
+			original.parse_cflag('windows ${names[i]}${path}', module_name, cdefines) or {
+				panic(err)
+			}
+			revised.parse_cflag(directives[i].replace(paths[i], path), module_name, cdefines) or {
+				panic(err)
+			}
+		}
+		if (mask & 5) == 5 {
+			// A present first include directory must not hide the second installation.
+			os.write_file(os.join_path(mapped[2], 'issue74_fallback.h'), '#define ISSUE74_FALLBACK 1\n') or {
+				panic(err)
+			}
+			assert !os.exists(os.join_path(mapped[0], 'issue74_fallback.h'))
+		}
+		assert original.cflags.len == 4 && revised.cflags.len == 4
+		mut expected := []string{}
+		mut actual := []string{}
+		for i, cf in original.cflags {
+			assert cf.name == names[i] && cf.os == 'windows'
+			// Only absent search directories are omitted; existing flags retain V1 formatting.
+			if os.exists(cf.value) {
+				expected << cf.format() or { panic('existing original flag did not format') }
+			}
+		}
+		for i, cf in revised.cflags {
+			assert cf.name == names[i] && cf.os == 'windows'
+			if formatted := cf.format() {
+				actual << formatted
+			}
+		}
+		assert actual == expected, 'mask ${mask}: ${actual} != ${expected}'
+	}
 }
 
 fn test_parse_invalid_cflags() {
@@ -168,10 +238,10 @@ fn assert_parse_invalid_flag(mut t ast.Table, flag string) {
 	assert false
 }
 
-fn make_flag(os string, name string, value string) cflag.CFlag {
+fn make_flag(flag_os string, name string, value string) cflag.CFlag {
 	return cflag.CFlag{
 		mod:   module_name
-		os:    os
+		os:    flag_os
 		name:  name
 		value: value
 	}
