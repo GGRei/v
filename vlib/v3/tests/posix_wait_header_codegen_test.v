@@ -679,6 +679,50 @@ fn main() {
 "
 }
 
+fn test_windows_ordinary_winsock_headers_preserve_ipv6_contract() {
+	$if !windows {
+		return
+	}
+	source := "module main
+
+import net
+
+fn main() {
+	if int(net.AddrFamily.ip6) != 23 {
+		panic('unexpected Windows IPv6 address family')
+	}
+	if int(net.Protocol.ipv6) != 41 {
+		panic('unexpected IPv6 protocol')
+	}
+	if int(net.Protocol.icmpv6) != 58 {
+		panic('unexpected ICMPv6 protocol')
+	}
+	println('windows-ordinary-winsock-ok')
+}
+"
+	v1_compiler := os.quoted_path(wait_header_vexe) + ' -old-compiler -gc none'
+	v1_program := wait_header_compile(v1_compiler, 'windows_ordinary_winsock_v1', source)
+	v1_run := wait_header_execute_without_vflags(os.quoted_path(v1_program.out))
+	assert v1_run.exit_code == 0, v1_run.output
+	assert v1_run.output.trim_space() == 'windows-ordinary-winsock-ok', v1_run.output
+	println('ordinary-winsock-stage=v1-runtime-pass')
+	v3_bin := wait_header_build_v3()
+	c_code := wait_header_gen_c(v3_bin, 'windows_ordinary_winsock_v3_order', source)
+	println('ordinary-winsock-stage=v3-generated')
+	winsock_idx := c_code.index('#include <winsock2.h>') or { -1 }
+	ws2tcpip_idx := c_code.index('#include <ws2tcpip.h>') or { -1 }
+	windows_idx := c_code.index('#include <windows.h>') or { -1 }
+	assert winsock_idx >= 0 && ws2tcpip_idx > winsock_idx && windows_idx > ws2tcpip_idx,
+		'ordinary Windows includes: winsock2=${winsock_idx}, ws2tcpip=${ws2tcpip_idx}, windows=${windows_idx}'
+	println('ordinary-winsock-stage=v3-header-order-pass')
+	// An earlier failure proves neither native compilation nor WSA startup.
+	v3_program := wait_header_compile(v3_bin, 'windows_ordinary_winsock_v3', source)
+	v3_run := wait_header_execute_without_vflags(os.quoted_path(v3_program.out))
+	assert v3_run.exit_code == 0, v3_run.output
+	assert v3_run.output.trim_space() == 'windows-ordinary-winsock-ok', v3_run.output
+	println('ordinary-winsock-stage=v3-runtime-pass')
+}
+
 fn test_windows_system_headers_own_crt_externs_and_native_tags() {
 	$if !windows {
 		return

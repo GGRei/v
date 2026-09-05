@@ -151,8 +151,8 @@ fn main() {
 	selected_cc := os.getenv('ISSUE74_V3_DRIVER_TEST_CC')
 	mut link_args := []string{}
 	if selected_cc.replace('\\', '/').to_lower().ends_with('/ucrt64/bin/clang.exe') {
-		lld := os.join_path(os.dir(selected_cc), 'ld.lld.exe')
-		assert os.is_file(lld), 'missing selected LLVM linker: ${lld}'
+		fixture_lld_path := os.join_path(os.dir(selected_cc), 'ld.lld.exe')
+		assert os.is_file(fixture_lld_path), 'missing selected LLVM linker: ${fixture_lld_path}'
 		link_args = ['-ldflags', '-fuse-ld=lld']
 	}
 	old_vtmp := os.getenv('VTMP')
